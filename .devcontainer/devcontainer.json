@@ -1,0 +1,48 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "NVIDIA TensorRT-LLM + llama.cpp",
+	// Build from custom Dockerfile with llama.cpp pre-built
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	// GPU passthrough
+	"runArgs": ["--gpus", "all"],
+	// Mount host cache directories to container
+	"mounts": [
+		{
+			"type": "bind",
+			"source": "${localEnv:HOME}/.cache/huggingface",
+			"target": "/home/vscode/.cache/huggingface"
+		},
+		{
+			"type": "bind",
+			"source": "${localEnv:HOME}/.cache/llama.cpp",
+			"target": "/home/vscode/.cache/llama.cpp"
+		}
+	],
+	"features": {
+		"ghcr.io/devcontainers/features/node:1": {
+			"nodeGypDependencies": true,
+			"version": "lts",
+			"pnpmVersion": "latest",
+			"nvmVersion": "latest"
+		}
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"anthropics.claude-code"
+			]
+		}
+	},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	"postCreateCommand": "bash -lc 'sudo chown -R vscode:vscode /home/vscode/.cache 2>/dev/null; command -v claude >/dev/null 2>&1 || (curl -fsSL https://claude.ai/install.sh | bash); claude --version || true'",
+
+	// Connect as non-root user with sudo access
+	"remoteUser": "vscode"
+}
