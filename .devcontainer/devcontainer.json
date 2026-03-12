@@ -38,7 +38,13 @@
 	},
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
+	"forwardPorts": [5173],
+	"portsAttributes": {
+		"5173": {
+			"label": "Mica Dev",
+			"onAutoForward": "notify"
+		}
+	},
 
 	// Use 'postCreateCommand' to run commands after the container is created.
 	"postCreateCommand": "bash -lc 'sudo chown -R vscode:vscode /home/vscode/.cache 2>/dev/null; command -v claude >/dev/null 2>&1 || (curl -fsSL https://claude.ai/install.sh | bash); claude --version || true'",
