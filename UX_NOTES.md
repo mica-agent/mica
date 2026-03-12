@@ -177,9 +177,6 @@ Components are **clean rectangles** with rounded corners, connected by thin line
 
 Decision records appear as **cards that split** — one card divides into two or three options, each slightly overlapping, with the system's recommendation having a slightly brighter edge.
 
-**Architecture (Third Layer)**
-Looking down through two translucent layers above, you can see both the mission and the experience artifacts as faint outlines — a constant reminder of what this architecture serves. New connection lines appear linking architecture components to the wireframes above, visible as lines passing through the translucent layers.
-
 **Implementation (Deepest Layer)**
 The deepest stratum. All three layers above are faintly visible as ghostly outlines — mission, experience, architecture — providing constant context for implementation decisions. When a piece of code relates to a specific wireframe, you can see the connection line stretching upward through all layers.
 

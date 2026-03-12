@@ -35,7 +35,7 @@
 /* ── App Layout ─────────────────────────────────── */
 
 .app {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: var(--bg);
   color: var(--text);

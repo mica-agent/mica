@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { LAYERS, LAYER_DATA, PROJECT_NAME } from './data';
 import type { LayerId } from './data';
 import LayerWorkspace from './LayerWorkspace';
+import AIChatPanel from './ai/AIChatPanel';
 import './App.css';
+import './ai/ai.css';
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -61,7 +63,6 @@ export default function App() {
 
   useEffect(() => {
     function onWheel(e: WheelEvent) {
-      // Ignore if inside a scrollable workspace that hasn't reached its edge
       const target = e.target as HTMLElement;
       const workspace = target.closest('.workspace');
       if (workspace) {
@@ -101,13 +102,12 @@ export default function App() {
         const t = e.changedTouches[i];
         touchesRef.current.set(t.identifier, { x: t.clientX, y: t.clientY });
 
-        // Detect left-edge touch for swipe-to-ascend
         if (t.clientX < 30 && touchesRef.current.size === 1) {
           edgeSwipeRef.current = { startX: t.clientX, startY: t.clientY, id: t.identifier };
         }
       }
       if (touchesRef.current.size >= 2) {
-        edgeSwipeRef.current = null; // Cancel edge swipe if multi-touch
+        edgeSwipeRef.current = null;
         const pts = Array.from(touchesRef.current.values());
         initialPinchRef.current = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
       }
@@ -118,7 +118,6 @@ export default function App() {
         const t = e.changedTouches[i];
         touchesRef.current.set(t.identifier, { x: t.clientX, y: t.clientY });
 
-        // Left-edge swipe detection
         if (edgeSwipeRef.current && t.identifier === edgeSwipeRef.current.id) {
           const dx = t.clientX - edgeSwipeRef.current.startX;
           const dy = Math.abs(t.clientY - edgeSwipeRef.current.startY);
@@ -129,7 +128,6 @@ export default function App() {
         }
       }
 
-      // Pinch detection
       if (touchesRef.current.size >= 2 && initialPinchRef.current !== null) {
         const pts = Array.from(touchesRef.current.values());
         const currentDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
@@ -175,7 +173,6 @@ export default function App() {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); descend(); }
       if (e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); ascend(); }
-      // Number keys jump to layers
       const n = parseInt(e.key);
       if (n >= 1 && n <= 4) navigateTo(n - 1);
     }
@@ -185,79 +182,88 @@ export default function App() {
 
   // ── Render ─────────────────────────────────────────────
 
+  const layerIdMap: ('mission' | 'experience' | 'architecture' | 'implementation')[] =
+    ['mission', 'experience', 'architecture', 'implementation'];
+
   return (
-    <div className="app">
-      {/* Background tint that shifts with active layer */}
-      <div
-        className="app-bg-tint"
-        style={{ background: currentLayer.bgTint }}
-      />
-      <div
-        className="app-bg-glow"
-        style={{ background: currentLayer.color }}
-      />
-
-      {/* Breadcrumb */}
-      <nav className="breadcrumb">
-        <span className="breadcrumb-project">{PROJECT_NAME}</span>
-        <span className="breadcrumb-sep">›</span>
-        {LAYERS.map((layer) => (
-          <span
-            key={layer.id}
-            className={`breadcrumb-layer ${layer.index === activeLayer ? 'breadcrumb-layer--active' : ''}`}
-            style={{
-              color: layer.index === activeLayer ? layer.color : undefined,
-              background: layer.index === activeLayer ? `${layer.color}15` : undefined,
-              borderColor: layer.index === activeLayer ? `${layer.color}30` : undefined,
-            }}
-            onClick={() => navigateTo(layer.index)}
-          >
-            {layer.icon} {layer.label}
-          </span>
-        ))}
-      </nav>
-
-      {/* Depth indicator */}
-      <div className="depth-indicator">
-        {LAYERS.map((layer) => (
+    <div className="app-with-ai">
+      <div className="app-main">
+        <div className="app">
           <div
-            key={layer.id}
-            className={`depth-segment ${layer.index === activeLayer ? 'depth-segment--active' : ''}`}
-            style={{ '--layer-color': layer.color } as React.CSSProperties}
-            onClick={() => navigateTo(layer.index)}
-          >
-            <span className="depth-icon" style={{ color: layer.color }}>
-              {layer.icon}
-            </span>
-            <span className="depth-label">{layer.label}</span>
+            className="app-bg-tint"
+            style={{ background: currentLayer.bgTint }}
+          />
+          <div
+            className="app-bg-glow"
+            style={{ background: currentLayer.color }}
+          />
+
+          <nav className="breadcrumb">
+            <span className="breadcrumb-project">{PROJECT_NAME}</span>
+            <span className="breadcrumb-sep">›</span>
+            {LAYERS.map((layer) => (
+              <span
+                key={layer.id}
+                className={`breadcrumb-layer ${layer.index === activeLayer ? 'breadcrumb-layer--active' : ''}`}
+                style={{
+                  color: layer.index === activeLayer ? layer.color : undefined,
+                  background: layer.index === activeLayer ? `${layer.color}15` : undefined,
+                  borderColor: layer.index === activeLayer ? `${layer.color}30` : undefined,
+                }}
+                onClick={() => navigateTo(layer.index)}
+              >
+                {layer.icon} {layer.label}
+              </span>
+            ))}
+          </nav>
+
+          <div className="depth-indicator">
+            {LAYERS.map((layer) => (
+              <div
+                key={layer.id}
+                className={`depth-segment ${layer.index === activeLayer ? 'depth-segment--active' : ''}`}
+                style={{ '--layer-color': layer.color } as React.CSSProperties}
+                onClick={() => navigateTo(layer.index)}
+              >
+                <span className="depth-icon" style={{ color: layer.color }}>
+                  {layer.icon}
+                </span>
+                <span className="depth-label">{layer.label}</span>
+              </div>
+            ))}
           </div>
-        ))}
+
+          <div className="layer-stack">
+            {LAYERS.map((layer) => (
+              <div
+                key={layer.id}
+                className={`layer-container ${layerPosition(layer.index, activeLayer)}`}
+              >
+                <LayerWorkspace
+                  layer={layer}
+                  data={LAYER_DATA[layer.id as LayerId]}
+                />
+              </div>
+            ))}
+          </div>
+
+          <div
+            className={`edge-swipe-hint ${activeLayer > 0 ? 'edge-swipe-hint--visible' : ''}`}
+            style={{ '--layer-color': currentLayer.color } as React.CSSProperties}
+          />
+
+          <div className={`nav-hint ${navHintVisible ? 'nav-hint--visible' : ''}`}>
+            {navHint}
+          </div>
+        </div>
       </div>
 
-      {/* Layer stack */}
-      <div className="layer-stack">
-        {LAYERS.map((layer) => (
-          <div
-            key={layer.id}
-            className={`layer-container ${layerPosition(layer.index, activeLayer)}`}
-          >
-            <LayerWorkspace
-              layer={layer}
-              data={LAYER_DATA[layer.id as LayerId]}
-            />
-          </div>
-        ))}
-      </div>
-
-      {/* Left-edge swipe hint (visible when can ascend) */}
-      <div
-        className={`edge-swipe-hint ${activeLayer > 0 ? 'edge-swipe-hint--visible' : ''}`}
-        style={{ '--layer-color': currentLayer.color } as React.CSSProperties}
-      />
-
-      {/* Navigation hint */}
-      <div className={`nav-hint ${navHintVisible ? 'nav-hint--visible' : ''}`}>
-        {navHint}
+      {/* AI Sidebar — always available, uses Claude subscription */}
+      <div className="ai-sidebar">
+        <AIChatPanel
+          activeLayer={layerIdMap[activeLayer]}
+          layerColor={currentLayer.color}
+        />
       </div>
     </div>
   );

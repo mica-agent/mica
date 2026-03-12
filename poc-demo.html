@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Mica — Interactive Concept Demo</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+  :root{
+    --bg:#0a0a0a;--surface:#131313;--surface2:#1a1a1a;--surface3:#222;
+    --text:#e8e8e8;--text-dim:#999;--text-faint:#555;
+    --mission:#d4c8a0;--mission-bg:rgba(212,200,160,0.07);--mission-border:rgba(212,200,160,0.18);
+    --experience:#c88c82;--experience-bg:rgba(200,140,130,0.07);--experience-border:rgba(200,140,130,0.18);
+    --architecture:#64aaa0;--architecture-bg:rgba(100,170,160,0.07);--architecture-border:rgba(100,170,160,0.18);
+    --implementation:#8c78b4;--implementation-bg:rgba(140,120,180,0.07);--implementation-border:rgba(140,120,180,0.18);
+    --green:#5cb85c;--amber:#e8a838;--red:#d9534f;
+  }
+
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',system-ui,sans-serif;
+    background:var(--bg);color:var(--text);overflow:hidden;height:100vh;width:100vw;
+    -webkit-font-smoothing:antialiased;cursor:default;user-select:none;
+  }
+
+  /* Grain overlay */
+  body::after{
+    content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:0.35;
+    background:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  }
+
+  /* ===== LAYOUT ===== */
+  .app{display:flex;height:100vh;width:100vw}
+  .canvas-area{flex:1;position:relative;overflow:hidden}
+  .sidebar{width:340px;border-left:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;background:rgba(0,0,0,0.3);flex-shrink:0}
+
+  /* ===== TOP BAR ===== */
+  .topbar{
+    position:absolute;top:0;left:0;right:0;z-index:100;
+    display:flex;align-items:center;padding:12px 20px;gap:12px;
+    background:rgba(10,10,10,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+    border-bottom:1px solid rgba(255,255,255,0.06);
+  }
+  .topbar .logo{font-size:16px;font-weight:700;letter-spacing:1px;
+    background:linear-gradient(135deg,var(--mission),var(--experience),var(--architecture),var(--implementation));
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  }
+  .topbar .sep{width:1px;height:20px;background:rgba(255,255,255,0.08)}
+  .topbar .breadcrumb{font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px}
+  .topbar .breadcrumb .bc-layer{padding:3px 10px;border-radius:12px;cursor:pointer;transition:all 0.3s}
+  .topbar .breadcrumb .bc-layer:hover{background:rgba(255,255,255,0.06)}
+  .topbar .breadcrumb .bc-layer.active{font-weight:600}
+  .topbar .spacer{flex:1}
+  .topbar .hint{font-size:11px;color:var(--text-faint);letter-spacing:0.3px}
+
+  /* ===== DEPTH GAUGE ===== */
+  .depth-gauge{
+    position:absolute;left:20px;top:50%;transform:translateY(-50%);z-index:90;
+    display:flex;flex-direction:column;align-items:center;gap:4px;
+  }
+  .depth-gauge .dg-label{
+    font-size:8px;letter-spacing:2px;text-transform:uppercase;color:var(--text-faint);
+    writing-mode:vertical-rl;margin-bottom:8px;
+  }
+  .depth-gauge .dg-dot{
+    width:10px;height:10px;border-radius:50%;border:1.5px solid rgba(255,255,255,0.15);
+    transition:all 0.5s cubic-bezier(0.4,0,0.2,1);cursor:pointer;position:relative;
+  }
+  .depth-gauge .dg-dot::after{
+    content:attr(data-label);position:absolute;left:20px;top:50%;transform:translateY(-50%);
+    font-size:10px;color:var(--text-faint);white-space:nowrap;opacity:0;transition:opacity 0.3s;pointer-events:none;
+  }
+  .depth-gauge .dg-dot:hover::after{opacity:1}
+  .depth-gauge .dg-dot.active{transform:scale(1.3);border-color:currentColor}
+  .depth-gauge .dg-line{width:1px;height:16px;background:rgba(255,255,255,0.08)}
+
+  /* ===== LAYER CONTAINER ===== */
+  .layer-viewport{
+    position:absolute;inset:0;padding-top:52px;
+    transition:opacity 0.5s cubic-bezier(0.4,0,0.2,1),transform 0.5s cubic-bezier(0.4,0,0.2,1);
+  }
+  .layer-viewport.hidden-above{opacity:0;transform:scale(1.15);pointer-events:none}
+  .layer-viewport.hidden-below{opacity:0;transform:scale(0.85);pointer-events:none}
+  .layer-viewport.active{opacity:1;transform:scale(1);pointer-events:auto}
+
+  /* Ghost layers */
+  .ghost{
+    position:absolute;left:60px;right:20px;border-radius:8px;padding:10px 16px;
+    pointer-events:none;transition:opacity 0.5s;font-size:11px;
+  }
+  .ghost-above{top:60px}
+  .ghost-below{bottom:12px}
+
+  .ghost-mission{background:linear-gradient(180deg,rgba(212,200,160,0.05),transparent);
+    border:1px dashed rgba(212,200,160,0.1);color:rgba(212,200,160,0.3)}
+  .ghost-experience{background:linear-gradient(180deg,rgba(200,140,130,0.05),transparent);
+    border:1px dashed rgba(200,140,130,0.1);color:rgba(200,140,130,0.3)}
+  .ghost-architecture{background:linear-gradient(180deg,rgba(100,170,160,0.05),transparent);
+    border:1px dashed rgba(100,170,160,0.1);color:rgba(100,170,160,0.3)}
+  .ghost-implementation{background:linear-gradient(0deg,rgba(140,120,180,0.05),transparent);
+    border:1px dashed rgba(140,120,180,0.1);color:rgba(140,120,180,0.3)}
+
+  /* ===== LAYER CONTENT ===== */
+  .layer-content{
+    position:absolute;top:60px;left:60px;right:0;bottom:0;
+    padding:20px 24px;overflow-y:auto;
+  }
+  .layer-content::-webkit-scrollbar{width:4px}
+  .layer-content::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:2px}
+
+  .layer-goal{
+    display:flex;align-items:center;gap:10px;padding:10px 16px;
+    border-radius:8px;margin-bottom:16px;font-size:13px;
+  }
+  .layer-goal .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .layer-goal .label{font-weight:600;white-space:nowrap}
+  .layer-goal .text{color:var(--text-dim);flex:1}
+  .layer-goal .badge{padding:3px 10px;border-radius:20px;font-size:10px;font-weight:600;white-space:nowrap}
+
+  /* Quality dots */
+  .q{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
+  .q.g{background:var(--green);box-shadow:0 0 6px rgba(92,184,92,0.4)}
+  .q.a{background:var(--amber);box-shadow:0 0 6px rgba(232,168,56,0.4)}
+  .q.r{background:var(--red);box-shadow:0 0 6px rgba(217,83,79,0.4)}
+
+  /* Cards */
+  .card{
+    background:var(--surface2);border:1px solid rgba(255,255,255,0.06);
+    border-radius:10px;padding:16px;position:relative;
+    box-shadow:0 2px 12px rgba(0,0,0,0.3);transition:transform 0.2s,box-shadow 0.2s;
+  }
+  .card:hover{transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,0,0,0.4)}
+  .card .card-label{font-size:9px;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px}
+  .card .card-title{font-size:14px;font-weight:600;margin-bottom:4px}
+  .card .card-body{font-size:12px;color:var(--text-dim);line-height:1.6}
+
+  /* Trace line */
+  .trace{
+    display:flex;align-items:center;gap:6px;font-size:11px;flex-wrap:wrap;
+    margin-bottom:16px;padding:8px 12px;background:rgba(255,255,255,0.02);
+    border-radius:6px;border:1px solid rgba(255,255,255,0.04);
+  }
+  .trace .t-tag{padding:2px 10px;border-radius:12px;font-size:10px;border:1px solid}
+  .trace .t-arrow{color:var(--text-faint)}
+
+  /* ===== MISSION LAYER ===== */
+  .mission-narrative{
+    font-size:24px;font-weight:300;line-height:1.7;font-style:italic;
+    max-width:560px;margin:24px 0 32px;
+  }
+  .persona-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:20px}
+  .persona{
+    background:linear-gradient(135deg,var(--surface2),var(--surface3));
+    border:1px solid var(--mission-border);border-radius:10px;
+    padding:14px 16px;min-width:160px;
+    box-shadow:0 4px 16px rgba(0,0,0,0.3),inset 0 1px 0 rgba(255,255,255,0.03);
+  }
+  .persona .avatar{
+    width:32px;height:32px;border-radius:50%;display:flex;align-items:center;
+    justify-content:center;font-size:14px;margin-bottom:8px;
+    background:rgba(212,200,160,0.12);color:var(--mission);
+  }
+  .persona .name{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+  .persona .role{font-size:11px;color:var(--text-dim);margin-top:2px}
+  .constraint-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+  .marginalia{
+    font-size:12px;font-style:italic;line-height:1.5;opacity:0.45;
+    max-width:280px;margin-top:24px;
+  }
+  .marginalia .src{font-size:10px;color:var(--text-faint);font-style:normal;margin-top:4px}
+
+  /* ===== EXPERIENCE LAYER ===== */
+  .wireframe-row{display:flex;gap:16px;margin-bottom:24px;align-items:flex-start;flex-wrap:wrap}
+  .wireframe{
+    border-radius:10px;padding:14px;position:relative;min-width:170px;flex:1;
+  }
+  .wf-sketch{border:2px dashed rgba(200,140,130,0.2);background:transparent}
+  .wf-wire{border:1px solid rgba(200,140,130,0.25);background:rgba(200,140,130,0.03)}
+  .wf-mockup{border:1px solid rgba(200,140,130,0.35);background:rgba(200,140,130,0.06)}
+  .wf-badge{
+    position:absolute;top:-9px;right:12px;font-size:8px;font-weight:700;
+    letter-spacing:1px;padding:2px 8px;border-radius:3px;text-transform:uppercase;
+  }
+  .wf-rect{border-radius:4px;margin-bottom:6px}
+  .flow-arrow-h{display:flex;align-items:center;flex-shrink:0;padding:0 2px}
+  .flow-arrow-h svg{overflow:visible}
+
+  /* Gen loop */
+  .gen-loop{display:flex;align-items:center;gap:0;margin-top:20px}
+  .gen-step{
+    flex:1;padding:10px;text-align:center;font-size:11px;font-weight:500;
+    border:1px solid;transition:all 0.3s;
+  }
+  .gen-step:first-child{border-radius:6px 0 0 6px}
+  .gen-step:last-child{border-radius:0 6px 6px 0}
+
+  /* ===== ARCHITECTURE LAYER ===== */
+  .arch-grid{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:20px}
+  .comp-box{
+    border-radius:10px;padding:14px;border:1px solid;min-width:150px;flex:1;
+    transition:transform 0.2s,box-shadow 0.2s;cursor:default;
+  }
+  .comp-box:hover{transform:translateY(-2px);box-shadow:0 4px 20px rgba(0,0,0,0.4)}
+  .comp-box .comp-name{font-size:13px;font-weight:600;margin-bottom:2px}
+  .comp-box .comp-type{font-size:9px;opacity:0.5;text-transform:uppercase;letter-spacing:1px}
+  .comp-box .comp-api{font-size:10px;opacity:0.6;margin-top:8px;line-height:1.7;font-family:monospace}
+  .comp-service{background:rgba(100,170,160,0.08);border-color:rgba(100,170,160,0.25);color:var(--architecture)}
+  .comp-data{background:rgba(80,140,160,0.08);border-color:rgba(80,140,160,0.25);color:#60b0c8}
+  .comp-external{background:rgba(128,128,128,0.06);border-color:rgba(128,128,128,0.2);color:#888}
+
+  .decision-card{
+    background:var(--surface);border-radius:10px;padding:16px;margin-top:20px;
+    border:1px solid var(--architecture-border);
+  }
+  .decision-card h5{font-size:13px;font-weight:600;color:var(--architecture);margin-bottom:4px}
+  .decision-options{display:flex;gap:10px;margin-top:12px}
+  .decision-opt{
+    flex:1;padding:12px;border-radius:8px;font-size:12px;
+    border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);
+  }
+  .decision-opt.rec{border-color:rgba(100,170,160,0.4);background:rgba(100,170,160,0.06)}
+  .decision-opt .opt-label{font-size:9px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-faint);margin-bottom:4px}
+  .decision-opt.rec .opt-label{color:var(--architecture)}
+
+  /* ===== IMPLEMENTATION LAYER ===== */
+  .impl-grid{display:flex;gap:16px;margin-bottom:20px}
+  .impl-progress{flex:0 0 200px;display:flex;flex-direction:column;gap:12px}
+  .prog-item .prog-header{display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px}
+  .prog-bar{height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden}
+  .prog-fill{height:100%;border-radius:2px;transition:width 0.8s}
+
+  .code-panel{
+    flex:1;background:#12121e;border:1px solid rgba(140,120,180,0.2);
+    border-radius:10px;padding:16px;font-family:'SF Mono',Monaco,monospace;
+    font-size:12px;line-height:1.8;overflow-x:auto;
+  }
+  .code-panel .file-header{font-size:10px;color:var(--text-faint);margin-bottom:10px;display:flex;justify-content:space-between}
+  .ln{color:var(--text-faint);display:inline-block;width:20px;text-align:right;margin-right:12px;user-select:none}
+  .kw{color:#c586c0}.fn{color:#dcdcaa}.str{color:#ce9178}.tp{color:#4ec9b0}.cm{color:#6a9955}.vr{color:#9cdcfe}
+  .code-add{background:rgba(92,184,92,0.08);border-left:3px solid var(--green);padding-left:8px;margin-left:-11px}
+  .code-del{background:rgba(217,83,79,0.06);border-left:3px solid var(--red);padding-left:8px;margin-left:-11px;text-decoration:line-through;opacity:0.4}
+
+  .test-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+  .test-pass{background:rgba(92,184,92,0.12);color:var(--green);border:1px solid rgba(92,184,92,0.2)}
+  .test-fail{background:rgba(217,83,79,0.12);color:var(--red);border:1px solid rgba(217,83,79,0.2)}
+
+  .activity-feed{flex:0 0 200px;display:flex;flex-direction:column;gap:0;max-height:340px;overflow-y:auto;
+    border:1px solid rgba(255,255,255,0.04);border-radius:10px;background:rgba(0,0,0,0.2)}
+  .activity-feed .af-title{padding:10px 14px;font-size:11px;font-weight:600;color:var(--text-dim);
+    border-bottom:1px solid rgba(255,255,255,0.04);display:flex;align-items:center;gap:6px}
+  .activity-feed .af-title .af-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+  .af-item{padding:8px 14px;border-bottom:1px solid rgba(255,255,255,0.03);font-size:11px}
+  .af-item .time{font-size:9px;color:var(--text-faint);margin-bottom:1px}
+
+  /* Escalation */
+  .escalation{
+    padding:10px 14px;border-radius:8px;font-size:12px;
+    border:1px solid rgba(232,168,56,0.3);background:rgba(232,168,56,0.06);
+    color:var(--amber);margin-top:16px;animation:float-up 4s ease-in-out infinite;
+  }
+
+  /* ===== SIDEBAR ===== */
+  .sidebar-header{
+    padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.06);
+    font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;flex-shrink:0;
+  }
+  .sidebar-header .s-dot{width:8px;height:8px;border-radius:50%;animation:pulse 2s infinite}
+  .sidebar-messages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+  .msg{
+    padding:10px 14px;border-radius:8px;font-size:12px;line-height:1.6;
+    max-width:92%;transition:opacity 0.4s;
+  }
+  .msg.ai{border:1px solid;margin-right:auto}
+  .msg.human{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);margin-left:auto;color:var(--text-dim)}
+  .msg .msg-actions{display:flex;gap:5px;margin-top:8px}
+  .msg .msg-actions button{
+    padding:3px 10px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);
+    background:rgba(255,255,255,0.03);color:var(--text-dim);font-size:10px;cursor:pointer;
+  }
+  .msg .msg-actions button:first-child{border-color:var(--green);color:var(--green)}
+  .msg .msg-actions button:hover{background:rgba(255,255,255,0.06)}
+  .sidebar-input{
+    padding:12px;border-top:1px solid rgba(255,255,255,0.06);display:flex;gap:8px;flex-shrink:0;
+  }
+  .sidebar-input input{
+    flex:1;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
+    border-radius:20px;padding:8px 16px;color:var(--text);font-size:12px;outline:none;
+  }
+  .sidebar-input input:focus{border-color:rgba(255,255,255,0.15)}
+  .sidebar-input button{
+    width:32px;height:32px;border-radius:50%;border:none;
+    background:rgba(255,255,255,0.05);color:var(--text-dim);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;font-size:14px;
+  }
+
+  /* Context bar */
+  .context-bar{
+    display:flex;gap:10px;padding:10px 16px;flex-wrap:wrap;
+    background:rgba(0,0,0,0.3);border-top:1px solid rgba(255,255,255,0.04);
+    font-size:10px;flex-shrink:0;
+  }
+  .ctx-item{display:flex;align-items:center;gap:5px;color:var(--text-dim)}
+
+  /* ===== ANIMATIONS ===== */
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+  @keyframes float-up{0%{transform:translateY(0);opacity:0.8}50%{transform:translateY(-8px);opacity:1}100%{transform:translateY(0);opacity:0.8}}
+  @keyframes fade-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .fade-in{animation:fade-in 0.5s ease-out both}
+  .fade-in-d1{animation-delay:0.1s}
+  .fade-in-d2{animation-delay:0.2s}
+  .fade-in-d3{animation-delay:0.3s}
+  .fade-in-d4{animation-delay:0.4s}
+
+  /* ===== TRANSITION INDICATOR ===== */
+  .transition-flash{
+    position:fixed;inset:0;pointer-events:none;z-index:200;opacity:0;
+    transition:opacity 0.15s;
+  }
+  .transition-flash.active{opacity:1}
+
+  /* ===== RESPONSIVE ===== */
+  @media(max-width:900px){
+    .sidebar{display:none}
+    .layer-content{right:0}
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ===== CANVAS AREA ===== -->
+  <div class="canvas-area" id="canvasArea">
+
+    <!-- Top bar -->
+    <div class="topbar">
+      <span class="logo">Mica</span>
+      <div class="sep"></div>
+      <div class="breadcrumb" id="breadcrumb">
+        <span class="bc-layer active" data-layer="0" style="color:var(--mission)">Mission</span>
+        <span style="color:var(--text-faint)">/</span>
+        <span class="bc-layer" data-layer="1" style="color:var(--experience)">Experience</span>
+        <span style="color:var(--text-faint)">/</span>
+        <span class="bc-layer" data-layer="2" style="color:var(--architecture)">Architecture</span>
+        <span style="color:var(--text-faint)">/</span>
+        <span class="bc-layer" data-layer="3" style="color:var(--implementation)">Implementation</span>
+      </div>
+      <div class="spacer"></div>
+      <span class="hint">Scroll or click layers to navigate</span>
+    </div>
+
+    <!-- Depth gauge -->
+    <div class="depth-gauge">
+      <span class="dg-label">Depth</span>
+      <div class="dg-dot active" data-layer="0" data-label="Mission" style="color:var(--mission);border-color:var(--mission);background:var(--mission)"></div>
+      <div class="dg-line"></div>
+      <div class="dg-dot" data-layer="1" data-label="Experience" style="color:var(--experience)"></div>
+      <div class="dg-line"></div>
+      <div class="dg-dot" data-layer="2" data-label="Architecture" style="color:var(--architecture)"></div>
+      <div class="dg-line"></div>
+      <div class="dg-dot" data-layer="3" data-label="Implementation" style="color:var(--implementation)"></div>
+    </div>
+
+    <!-- Transition flash -->
+    <div class="transition-flash" id="transitionFlash"></div>
+
+    <!-- ==================== LAYER 0: MISSION ==================== -->
+    <div class="layer-viewport active" id="layer-0">
+      <!-- Ghost: Experience below -->
+      <div class="ghost ghost-below ghost-experience" style="left:60px;right:20px">
+        <span>Experience below: Login Flow → Dashboard → Upload → Analytics</span>
+      </div>
+
+      <div class="layer-content">
+        <div class="layer-goal fade-in" style="background:var(--mission-bg);border:1px solid var(--mission-border)">
+          <div class="dot" style="background:var(--mission)"></div>
+          <span class="label" style="color:var(--mission)">Goal</span>
+          <span class="text">Complete product brief with target users, constraints, success criteria</span>
+          <span class="badge" style="background:rgba(212,200,160,0.12);color:var(--mission)">Full Stack</span>
+        </div>
+
+        <div class="mission-narrative fade-in fade-in-d1" style="color:rgba(212,200,160,0.85)">
+          "A platform where independent musicians can distribute their work directly to listeners — no intermediaries, transparent royalties, and real-time analytics."
+        </div>
+
+        <div class="persona-row fade-in fade-in-d2">
+          <div class="persona">
+            <div class="avatar">A</div>
+            <div class="name" style="color:var(--mission)">Alex <span class="q g"></span></div>
+            <div class="role">Indie artist, 24, releases monthly</div>
+          </div>
+          <div class="persona">
+            <div class="avatar">M</div>
+            <div class="name" style="color:var(--mission)">Maya <span class="q g"></span></div>
+            <div class="role">Listener, 31, curates playlists</div>
+          </div>
+          <div class="persona">
+            <div class="avatar">R</div>
+            <div class="name" style="color:var(--mission)">Raj <span class="q a"></span></div>
+            <div class="role">Label owner, 45, manages 12 artists</div>
+          </div>
+        </div>
+
+        <div class="constraint-row fade-in fade-in-d3">
+          <div class="card" style="flex:1;border-color:var(--mission-border)">
+            <div class="card-label" style="color:var(--mission)">Constraint</div>
+            <div class="card-title" style="font-size:13px">Budget: MVP under $50K</div>
+            <div class="card-body">3-month timeline. Two-person team plus AI.</div>
+          </div>
+          <div class="card" style="flex:1;border-color:var(--mission-border)">
+            <div class="card-label" style="color:var(--mission)">Constraint</div>
+            <div class="card-title" style="font-size:13px">Web-first, no native apps V1</div>
+            <div class="card-body">Mobile responsive. Progressive web app.</div>
+          </div>
+          <div class="card" style="flex:1;border-color:var(--mission-border)">
+            <div class="card-label" style="color:var(--mission)">Constraint <span class="q a" style="margin-left:4px"></span></div>
+            <div class="card-title" style="font-size:13px">Music licensing TBD</div>
+            <div class="card-body">Legal review needed on royalty structure.</div>
+          </div>
+        </div>
+
+        <div class="marginalia fade-in fade-in-d4" style="color:var(--mission)">
+          "What happens when an artist has multiple labels? Does Raj manage exclusive or non-exclusive contracts?"
+          <div class="src">System · AI Marginalia</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== LAYER 1: EXPERIENCE ==================== -->
+    <div class="layer-viewport hidden-below" id="layer-1">
+      <!-- Ghost: Mission above -->
+      <div class="ghost ghost-above ghost-mission" style="left:60px;right:20px">
+        <span>"Independent musicians... no intermediaries..." · Alex · Maya · Raj</span>
+      </div>
+      <!-- Ghost: Architecture below -->
+      <div class="ghost ghost-below ghost-architecture" style="left:60px;right:20px">
+        <span>Architecture below: AuthService · UploadService · StreamDB · Analytics</span>
+      </div>
+
+      <div class="layer-content" style="top:100px">
+        <div class="layer-goal fade-in" style="background:var(--experience-bg);border:1px solid var(--experience-border)">
+          <div class="dot" style="background:var(--experience)"></div>
+          <span class="label" style="color:var(--experience)">Goal</span>
+          <span class="text">Full UX flow with wireframes for all primary paths</span>
+          <span class="badge" style="background:rgba(200,140,130,0.12);color:var(--experience)">Full Stack</span>
+        </div>
+
+        <div class="wireframe-row fade-in fade-in-d1">
+          <div class="wireframe wf-sketch" style="min-height:180px">
+            <div class="wf-badge" style="background:rgba(255,255,255,0.05);color:var(--text-dim)">Sketch</div>
+            <div style="text-align:center;font-size:10px;color:var(--text-faint);margin:6px 0 12px">Login</div>
+            <div class="wf-rect" style="height:28px;border:1px dashed rgba(200,140,130,0.15)"></div>
+            <div class="wf-rect" style="height:28px;border:1px dashed rgba(200,140,130,0.15)"></div>
+            <div style="margin:12px auto 0;width:80px;padding:5px;border:1px dashed rgba(200,140,130,0.15);border-radius:4px;text-align:center;font-size:9px;color:var(--text-faint)">Sign In</div>
+          </div>
+
+          <div class="flow-arrow-h">
+            <svg width="32" height="20"><line x1="0" y1="10" x2="22" y2="10" stroke="rgba(200,140,130,0.4)" stroke-width="1.5"/><polygon points="22,6 32,10 22,14" fill="rgba(200,140,130,0.4)"/></svg>
+          </div>
+
+          <div class="wireframe wf-wire" style="min-height:180px">
+            <div class="wf-badge" style="background:rgba(200,140,130,0.1);color:var(--experience)">Wireframe</div>
+            <div class="wf-rect" style="height:10px;background:rgba(200,140,130,0.1);width:50%;border-radius:2px"></div>
+            <div style="display:flex;gap:8px;margin:10px 0">
+              <div style="flex:1;height:50px;background:rgba(200,140,130,0.04);border:1px solid rgba(200,140,130,0.12);border-radius:4px;padding:6px">
+                <div style="font-size:8px;color:var(--text-faint)">Streams</div>
+                <div style="font-size:14px;font-weight:600;color:var(--text-dim)">12.4K</div>
+              </div>
+              <div style="flex:1;height:50px;background:rgba(200,140,130,0.04);border:1px solid rgba(200,140,130,0.12);border-radius:4px;padding:6px">
+                <div style="font-size:8px;color:var(--text-faint)">Revenue</div>
+                <div style="font-size:14px;font-weight:600;color:var(--text-dim)">$847</div>
+              </div>
+            </div>
+            <div class="wf-rect" style="height:6px;background:rgba(200,140,130,0.06);width:90%;border-radius:2px"></div>
+            <div class="wf-rect" style="height:6px;background:rgba(200,140,130,0.06);width:70%;border-radius:2px"></div>
+          </div>
+
+          <div class="flow-arrow-h">
+            <svg width="32" height="20"><line x1="0" y1="10" x2="22" y2="10" stroke="rgba(200,140,130,0.4)" stroke-width="1.5"/><polygon points="22,6 32,10 22,14" fill="rgba(200,140,130,0.4)"/></svg>
+          </div>
+
+          <div class="wireframe wf-mockup" style="min-height:180px">
+            <div class="wf-badge" style="background:rgba(200,140,130,0.2);color:var(--experience)">Mockup</div>
+            <div class="wf-rect" style="height:10px;background:rgba(200,140,130,0.2);width:40%;border-radius:2px"></div>
+            <div style="height:60px;border:2px dashed rgba(200,140,130,0.2);border-radius:6px;display:flex;align-items:center;justify-content:center;margin:10px 0">
+              <span style="font-size:10px;color:var(--experience)">Drop audio files here</span>
+            </div>
+            <div style="padding:6px 0;background:var(--experience);border-radius:4px;text-align:center;font-size:10px;color:#000;font-weight:600">Upload &amp; Distribute</div>
+          </div>
+        </div>
+
+        <div class="gen-loop fade-in fade-in-d2">
+          <div class="gen-step" style="border-color:rgba(200,140,130,0.15);background:rgba(200,140,130,0.03);color:rgba(200,140,130,0.4)">Sketch</div>
+          <div class="gen-step" style="border-color:rgba(200,140,130,0.25);background:rgba(200,140,130,0.06);color:rgba(200,140,130,0.6)">Wireframe</div>
+          <div class="gen-step" style="border-color:rgba(200,140,130,0.4);background:rgba(200,140,130,0.1);color:rgba(200,140,130,0.8);font-weight:600">Mockup</div>
+          <div class="gen-step" style="border-color:var(--experience);background:rgba(200,140,130,0.15);color:var(--experience);font-weight:600">Prototype</div>
+        </div>
+        <div style="font-size:10px;color:var(--text-faint);text-align:center;margin-top:6px">Progressive rendering — same artifact gains fidelity at each stage →</div>
+      </div>
+    </div>
+
+    <!-- ==================== LAYER 2: ARCHITECTURE ==================== -->
+    <div class="layer-viewport hidden-below" id="layer-2">
+      <!-- Ghosts -->
+      <div class="ghost ghost-above ghost-mission" style="left:60px;right:20px;height:24px;font-size:9px">
+        <span>"Independent musicians... transparent royalties..."</span>
+      </div>
+      <div class="ghost ghost-above ghost-experience" style="left:60px;right:20px;top:92px;font-size:10px">
+        <span style="display:flex;gap:8px">
+          <span style="border:1px dashed currentColor;padding:1px 6px;border-radius:3px">Login</span>
+          <span style="border:1px dashed currentColor;padding:1px 6px;border-radius:3px">Dashboard</span>
+          <span style="border:1px dashed currentColor;padding:1px 6px;border-radius:3px">Upload</span>
+          <span style="border:1px dashed currentColor;padding:1px 6px;border-radius:3px">Analytics</span>
+        </span>
+      </div>
+      <!-- Ghost below -->
+      <div class="ghost ghost-below ghost-implementation" style="left:60px;right:20px">
+        <span>Implementation: auth.controller.ts · upload.handler.ts · migrations</span>
+      </div>
+
+      <div class="layer-content" style="top:124px">
+        <div class="layer-goal fade-in" style="background:var(--architecture-bg);border:1px solid var(--architecture-border)">
+          <div class="dot" style="background:var(--architecture)"></div>
+          <span class="label" style="color:var(--architecture)">Goal</span>
+          <span class="text">Component architecture with dependency map and API contracts</span>
+          <span class="badge" style="background:rgba(100,170,160,0.12);color:var(--architecture)">Full Stack</span>
+        </div>
+
+        <div class="arch-grid fade-in fade-in-d1">
+          <div class="comp-box comp-service">
+            <div class="comp-name">AuthService</div>
+            <div class="comp-type">Service</div>
+            <div class="comp-api">POST /auth/login<br>POST /auth/register<br>GET /auth/me</div>
+          </div>
+          <div class="comp-box comp-service" style="border-color:rgba(100,170,160,0.45);background:rgba(100,170,160,0.12)">
+            <div class="comp-name">UploadService</div>
+            <div class="comp-type">Service · selected</div>
+            <div class="comp-api">POST /upload/track<br>PUT /upload/metadata<br>GET /upload/status</div>
+          </div>
+          <div class="comp-box comp-service">
+            <div class="comp-name">AnalyticsEngine</div>
+            <div class="comp-type">Service</div>
+            <div class="comp-api">GET /analytics/artist<br>GET /analytics/track</div>
+          </div>
+        </div>
+
+        <div class="arch-grid fade-in fade-in-d2">
+          <div class="comp-box comp-data">
+            <div class="comp-name">StreamDB</div>
+            <div class="comp-type">Data Store</div>
+            <div class="comp-api">PostgreSQL<br>tracks, users, streams</div>
+          </div>
+          <div class="comp-box comp-external">
+            <div class="comp-name">PaymentGateway</div>
+            <div class="comp-type">External</div>
+            <div class="comp-api">Stripe Connect<br>Royalty payouts</div>
+          </div>
+          <div class="comp-box comp-external">
+            <div class="comp-name">CDN / Storage</div>
+            <div class="comp-type">External</div>
+            <div class="comp-api">S3 + CloudFront<br>Audio delivery</div>
+          </div>
+        </div>
+
+        <div class="decision-card fade-in fade-in-d3">
+          <h5>Decision: Upload Strategy</h5>
+          <div style="font-size:12px;color:var(--text-dim)">How should large audio files be uploaded?</div>
+          <div class="decision-options">
+            <div class="decision-opt">
+              <div class="opt-label">Option A</div>
+              <div style="color:var(--text-dim)">Single upload<br><span style="font-size:10px;color:var(--text-faint)">Simple but fails on spotty connections</span></div>
+            </div>
+            <div class="decision-opt rec">
+              <div class="opt-label">✓ Recommended</div>
+              <div style="color:var(--text)">Chunked resumable<br><span style="font-size:10px;color:var(--text-dim)">Handles interrupted uploads (Raj's constraint)</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== LAYER 3: IMPLEMENTATION ==================== -->
+    <div class="layer-viewport hidden-below" id="layer-3">
+      <!-- Ghosts (all 3) -->
+      <div class="ghost ghost-above ghost-mission" style="left:60px;right:20px;height:20px;font-size:8px;opacity:0.08">
+        <span>"Independent musicians... no intermediaries..."</span>
+      </div>
+      <div class="ghost ghost-above ghost-experience" style="left:60px;right:20px;top:86px;height:22px;font-size:8px;opacity:0.1">
+        <span style="display:flex;gap:4px">
+          <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Login</span>
+          <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Upload</span>
+          <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Dash</span>
+        </span>
+      </div>
+      <div class="ghost ghost-above ghost-architecture" style="left:60px;right:20px;top:114px;height:22px;font-size:8px;opacity:0.1">
+        <span style="display:flex;gap:4px">
+          <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Auth</span>
+          <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Upload</span>
+          <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">DB</span>
+        </span>
+      </div>
+
+      <div class="layer-content" style="top:144px">
+        <div class="layer-goal fade-in" style="background:var(--implementation-bg);border:1px solid var(--implementation-border)">
+          <div class="dot" style="background:var(--implementation)"></div>
+          <span class="label" style="color:var(--implementation)">Goal</span>
+          <span class="text">Deployed, tested product matching architecture</span>
+          <span class="badge" style="background:rgba(140,120,180,0.12);color:var(--implementation)">Full Stack</span>
+        </div>
+
+        <!-- Full trace -->
+        <div class="trace fade-in fade-in-d1">
+          <span class="t-tag" style="color:var(--mission);border-color:var(--mission-border);background:var(--mission-bg)">"Quick access"</span>
+          <span class="t-arrow">→</span>
+          <span class="t-tag" style="color:var(--experience);border-color:var(--experience-border);background:var(--experience-bg)">Login Screen</span>
+          <span class="t-arrow">→</span>
+          <span class="t-tag" style="color:var(--architecture);border-color:var(--architecture-border);background:var(--architecture-bg)">AuthService</span>
+          <span class="t-arrow">→</span>
+          <span class="t-tag" style="color:var(--implementation);border-color:var(--implementation-border);background:var(--implementation-bg);font-weight:600">auth.controller.ts</span>
+        </div>
+
+        <div class="impl-grid fade-in fade-in-d2">
+          <div class="impl-progress">
+            <div style="font-size:10px;font-weight:600;letter-spacing:1px;color:var(--text-faint);text-transform:uppercase;margin-bottom:4px">Components</div>
+            <div class="prog-item">
+              <div class="prog-header"><span>AuthService</span><span style="color:var(--green)">100%</span></div>
+              <div class="prog-bar"><div class="prog-fill" style="width:100%;background:var(--green)"></div></div>
+            </div>
+            <div class="prog-item">
+              <div class="prog-header"><span>UploadService</span><span style="color:var(--implementation)">72%</span></div>
+              <div class="prog-bar"><div class="prog-fill" style="width:72%;background:var(--implementation)"></div></div>
+            </div>
+            <div class="prog-item">
+              <div class="prog-header"><span>StreamDB</span><span style="color:var(--green)">100%</span></div>
+              <div class="prog-bar"><div class="prog-fill" style="width:100%;background:var(--green)"></div></div>
+            </div>
+            <div class="prog-item">
+              <div class="prog-header"><span>AnalyticsEngine</span><span style="color:var(--amber)">35%</span></div>
+              <div class="prog-bar"><div class="prog-fill" style="width:35%;background:var(--amber)"></div></div>
+            </div>
+            <div class="prog-item">
+              <div class="prog-header"><span>PaymentGateway</span><span style="color:var(--red)">0%</span></div>
+              <div class="prog-bar"><div class="prog-fill" style="width:0%;background:var(--red)"></div></div>
+            </div>
+          </div>
+
+          <div class="code-panel">
+            <div class="file-header">
+              <span>src/services/auth/auth.controller.ts</span>
+              <div style="display:flex;gap:6px">
+                <span class="test-badge test-pass">✓ 12 passing</span>
+                <span class="test-badge test-pass">✓ 94% cov</span>
+              </div>
+            </div>
+            <div><span class="ln">1</span><span class="kw">import</span> { <span class="tp">Controller</span>, <span class="tp">Post</span>, <span class="tp">Body</span> } <span class="kw">from</span> <span class="str">'@nestjs/common'</span>;</div>
+            <div><span class="ln">2</span><span class="kw">import</span> { <span class="tp">AuthService</span> } <span class="kw">from</span> <span class="str">'./auth.service'</span>;</div>
+            <div><span class="ln">3</span></div>
+            <div><span class="ln">4</span><span class="cm">// Implements: Login Screen (Experience)</span></div>
+            <div><span class="ln">5</span><span class="cm">// Serves: Alex — "quick access to publish"</span></div>
+            <div><span class="ln">6</span>@<span class="fn">Controller</span>(<span class="str">'auth'</span>)</div>
+            <div><span class="ln">7</span><span class="kw">export class</span> <span class="tp">AuthController</span> {</div>
+            <div><span class="ln">8</span>  <span class="kw">constructor</span>(<span class="kw">private</span> <span class="vr">auth</span>: <span class="tp">AuthService</span>) {}</div>
+            <div><span class="ln">9</span></div>
+            <div class="code-add"><span class="ln">10</span>  @<span class="fn">Post</span>(<span class="str">'magic-link'</span>)</div>
+            <div class="code-add"><span class="ln">11</span>  <span class="kw">async</span> <span class="fn">sendMagicLink</span>(@<span class="fn">Body</span>() { <span class="vr">email</span> }) {</div>
+            <div class="code-add"><span class="ln">12</span>    <span class="kw">return</span> <span class="kw">this</span>.<span class="vr">auth</span>.<span class="fn">createMagicLink</span>(<span class="vr">email</span>);</div>
+            <div class="code-add"><span class="ln">13</span>  }</div>
+            <div><span class="ln">14</span></div>
+            <div><span class="ln">15</span>  @<span class="fn">Post</span>(<span class="str">'verify'</span>)</div>
+            <div><span class="ln">16</span>  <span class="kw">async</span> <span class="fn">verify</span>(@<span class="fn">Body</span>() { <span class="vr">token</span> }) {</div>
+            <div><span class="ln">17</span>    <span class="kw">return</span> <span class="kw">this</span>.<span class="vr">auth</span>.<span class="fn">verifyToken</span>(<span class="vr">token</span>);</div>
+            <div><span class="ln">18</span>  }</div>
+            <div class="code-del"><span class="ln">19</span>  <span class="cm">// Removed: password login (Decision: Magic Link)</span></div>
+            <div><span class="ln">20</span>}</div>
+          </div>
+
+          <div class="activity-feed">
+            <div class="af-title"><div class="af-dot"></div>Activity</div>
+            <div class="af-item"><div class="time">2m ago</div><div style="color:var(--green)">✓ AuthService: 12 tests passing</div></div>
+            <div class="af-item"><div class="time">5m ago</div><div style="color:var(--implementation)">▸ UploadService: chunked handler</div></div>
+            <div class="af-item"><div class="time">8m ago</div><div style="color:var(--green)">✓ StreamDB: migration complete</div></div>
+            <div class="af-item"><div class="time">15m ago</div><div style="color:var(--amber)">⚠ PaymentGateway: blocked</div></div>
+            <div class="af-item"><div class="time">20m ago</div><div style="color:var(--green)">✓ Auth: magic link deployed</div></div>
+          </div>
+        </div>
+
+        <div class="escalation fade-in fade-in-d3">⚠ PaymentGateway blocked — needs API contract from Architecture layer</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== SIDEBAR ===== -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <div class="s-dot" id="sidebarDot" style="background:var(--mission)"></div>
+      <span>System</span>
+      <span style="font-size:10px;color:var(--text-faint);margin-left:auto" id="sidebarLayerLabel">Mission</span>
+    </div>
+    <div class="sidebar-messages" id="sidebarMessages">
+      <!-- Populated by JS per layer -->
+    </div>
+    <div class="sidebar-input">
+      <input type="text" placeholder="Type a message..." id="chatInput">
+      <button title="Voice">♪</button>
+      <button title="Draw">✎</button>
+    </div>
+    <div class="context-bar" id="contextBar">
+      <!-- Populated by JS -->
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // ===== STATE =====
+  var currentLayer = 0;
+  var transitioning = false;
+  var layers = ['mission','experience','architecture','implementation'];
+  var colors = ['var(--mission)','var(--experience)','var(--architecture)','var(--implementation)'];
+  var labels = ['Mission','Experience','Architecture','Implementation'];
+
+  // ===== SIDEBAR CONTENT =====
+  var conversations = {
+    0: [
+      {type:'ai',color:'mission',text:"I've drafted personas from your brief. Alex and Maya look solid. A few questions about Raj:",actions:true},
+      {type:'ai',color:'mission',text:"What happens when an artist has multiple labels? Does Raj manage exclusive or non-exclusive contracts?"},
+      {type:'human',text:"Non-exclusive. Artists can be on multiple labels. Raj sees only his own catalog."},
+      {type:'ai',color:'mission',text:"Got it — updated Raj's persona. Also: have you considered offline scenarios? Artists in rural areas may upload on spotty connections.",actions:true},
+      {type:'human',text:"Good catch. Add a constraint: must handle interrupted uploads gracefully."},
+      {type:'ai',color:'mission',text:"Done. Added \"Resilient Upload\" to constraints and flagged it for Architecture. Your brief is nearly context-ready — just need success criteria for the label-owner path."},
+    ],
+    1: [
+      {type:'ai',color:'experience',text:"I've structured your Login sketch into a wireframe. Dashboard is next — Alex's persona needs quick access to upload. Should the dashboard lead with upload or analytics?",actions:true},
+      {type:'human',text:"Upload first. Alex wants to publish fast, analytics is secondary."},
+      {type:'ai',color:'experience',text:"Makes sense. Promoted upload CTA to primary position. I also noticed Login and Signup share an auth pattern — I can extract a reusable component for Architecture."},
+      {type:'ai',color:'experience',text:"The upload wireframe is approaching mockup fidelity. Ready for review before I animate it as a prototype.",actions:true},
+    ],
+    2: [
+      {type:'ai',color:'architecture',text:"Based on the Experience wireframes, I've identified 6 components. The UploadService is the most complex — it needs to handle chunked uploads per the resilient-upload constraint.",actions:true},
+      {type:'human',text:"What about the payment integration? Stripe Connect?"},
+      {type:'ai',color:'architecture',text:"Good call. I've added PaymentGateway as an external dependency. For the upload strategy, I recommend chunked resumable — it directly addresses Raj's constraint about interrupted uploads. See the decision card on canvas."},
+      {type:'ai',color:'architecture',text:"One concern: the AnalyticsEngine needs real-time stream counts. This means either WebSocket subscriptions or polling. WebSocket is better UX but adds infrastructure complexity.",actions:true},
+    ],
+    3: [
+      {type:'ai',color:'implementation',text:"AuthService is complete — 12 tests passing, 94% coverage. Magic link flow deployed to staging. Here's the code for review:",actions:true},
+      {type:'human',text:"Looks good. What's next?"},
+      {type:'ai',color:'implementation',text:"UploadService is at 72% — implementing the chunked handler now. StreamDB migration is done. PaymentGateway is blocked — I need the API contract from Architecture. Want me to escalate?"},
+      {type:'human',text:"Yes, escalate it."},
+      {type:'ai',color:'implementation',text:"Escalated to Architecture layer. In the meantime, I'm moving to AnalyticsEngine scaffolding. The query layer is straightforward — should have it at 60% by end of session."},
+    ],
+  };
+
+  var contextBars = {
+    0: [
+      {q:'g',text:'Mission Narrative'},{q:'g',text:'Personas (2/3)'},{q:'a',text:'Persona: Raj'},
+      {q:'g',text:'Budget'},{q:'g',text:'Platform'},{q:'a',text:'Legal'},{q:'r',text:'Success Criteria'},
+    ],
+    1: [
+      {q:'g',text:'Login flow'},{q:'g',text:'Dashboard'},{q:'g',text:'Upload mockup'},
+      {q:'a',text:'Analytics sketch'},{q:'a',text:'Error states'},
+    ],
+    2: [
+      {q:'g',text:'AuthService'},{q:'g',text:'UploadService'},{q:'g',text:'StreamDB'},
+      {q:'a',text:'AnalyticsEngine'},{q:'g',text:'PaymentGateway'},{q:'g',text:'CDN'},
+    ],
+    3: [
+      {q:'g',text:'Auth: deployed'},{q:'a',text:'Upload: 72%'},{q:'g',text:'DB: migrated'},
+      {q:'a',text:'Analytics: scaffolding'},{q:'r',text:'Payment: blocked'},
+    ],
+  };
+
+  // ===== RENDER SIDEBAR =====
+  function renderSidebar(layer) {
+    var msgContainer = document.getElementById('sidebarMessages');
+    var ctxContainer = document.getElementById('contextBar');
+    var dot = document.getElementById('sidebarDot');
+    var layerLabel = document.getElementById('sidebarLayerLabel');
+
+    dot.style.background = colors[layer];
+    layerLabel.textContent = labels[layer];
+
+    // Messages
+    var html = '';
+    var msgs = conversations[layer];
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      if (m.type === 'human') {
+        html += '<div class="msg human">' + m.text + '</div>';
+      } else {
+        var borderColor = m.color === 'mission' ? 'var(--mission-border)' :
+                          m.color === 'experience' ? 'var(--experience-border)' :
+                          m.color === 'architecture' ? 'var(--architecture-border)' :
+                          'var(--implementation-border)';
+        var bgColor = m.color === 'mission' ? 'rgba(212,200,160,0.06)' :
+                      m.color === 'experience' ? 'rgba(200,140,130,0.06)' :
+                      m.color === 'architecture' ? 'rgba(100,170,160,0.06)' :
+                      'rgba(140,120,180,0.06)';
+        var textColor = m.color === 'mission' ? 'rgba(212,200,160,0.9)' :
+                        m.color === 'experience' ? 'rgba(200,140,130,0.9)' :
+                        m.color === 'architecture' ? 'rgba(100,170,160,0.9)' :
+                        'rgba(140,120,180,0.9)';
+        html += '<div class="msg ai" style="background:'+bgColor+';border-color:'+borderColor+';color:'+textColor+'">';
+        html += m.text;
+        if (m.actions) {
+          html += '<div class="msg-actions"><button>Accept</button><button>Revise</button><button>Discuss</button></div>';
+        }
+        html += '</div>';
+      }
+    }
+    msgContainer.innerHTML = html;
+    msgContainer.scrollTop = msgContainer.scrollHeight;
+
+    // Context bar
+    var ctxHtml = '';
+    var items = contextBars[layer];
+    for (var j = 0; j < items.length; j++) {
+      ctxHtml += '<div class="ctx-item"><span class="q '+items[j].q+'"></span>'+items[j].text+'</div>';
+    }
+    ctxContainer.innerHTML = ctxHtml;
+  }
+
+  // ===== NAVIGATE =====
+  function navigateTo(target) {
+    if (target === currentLayer || transitioning || target < 0 || target > 3) return;
+    transitioning = true;
+
+    var direction = target > currentLayer ? 'below' : 'above';
+    var oldEl = document.getElementById('layer-' + currentLayer);
+    var newEl = document.getElementById('layer-' + target);
+
+    // Flash
+    var flash = document.getElementById('transitionFlash');
+    var flashColor = target > currentLayer ? colors[target] : colors[currentLayer];
+    flash.style.background = 'radial-gradient(ellipse at center,' +
+      flashColor.replace('var(','').replace(')','') + '11 0%, transparent 70%)';
+    // Use raw color for flash
+    var rawColors = ['rgba(212,200,160,0.06)','rgba(200,140,130,0.06)','rgba(100,170,160,0.06)','rgba(140,120,180,0.06)'];
+    flash.style.background = 'radial-gradient(ellipse at center,' + rawColors[target].replace('0.06','0.12') + ' 0%, transparent 70%)';
+    flash.classList.add('active');
+    setTimeout(function(){ flash.classList.remove('active'); }, 300);
+
+    // Animate out
+    oldEl.classList.remove('active');
+    oldEl.classList.add(direction === 'below' ? 'hidden-above' : 'hidden-below');
+
+    // Animate in
+    newEl.classList.remove('hidden-above', 'hidden-below');
+    newEl.classList.add('active');
+
+    // Re-trigger fade-in animations
+    var fadeEls = newEl.querySelectorAll('.fade-in');
+    for (var i = 0; i < fadeEls.length; i++) {
+      fadeEls[i].style.animation = 'none';
+      fadeEls[i].offsetHeight; // reflow
+      fadeEls[i].style.animation = '';
+    }
+
+    currentLayer = target;
+
+    // Update breadcrumb
+    var bcLayers = document.querySelectorAll('.bc-layer');
+    for (var b = 0; b < bcLayers.length; b++) {
+      bcLayers[b].classList.toggle('active', b === target);
+      bcLayers[b].style.background = b === target ? 'rgba(255,255,255,0.06)' : '';
+    }
+
+    // Update depth gauge
+    var dots = document.querySelectorAll('.dg-dot');
+    for (var d = 0; d < dots.length; d++) {
+      var isActive = parseInt(dots[d].dataset.layer) === target;
+      dots[d].classList.toggle('active', isActive);
+      if (isActive) {
+        var c = dots[d].style.color;
+        dots[d].style.background = c;
+        dots[d].style.borderColor = c;
+      } else {
+        dots[d].style.background = 'transparent';
+        dots[d].style.borderColor = 'rgba(255,255,255,0.15)';
+      }
+    }
+
+    // Update sidebar
+    renderSidebar(target);
+
+    setTimeout(function(){ transitioning = false; }, 500);
+  }
+
+  // ===== SCROLL HANDLER =====
+  var scrollAccumulator = 0;
+  var scrollThreshold = 120;
+  var scrollTimer;
+
+  document.getElementById('canvasArea').addEventListener('wheel', function(e) {
+    e.preventDefault();
+    scrollAccumulator += e.deltaY;
+
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(function(){ scrollAccumulator = 0; }, 300);
+
+    if (Math.abs(scrollAccumulator) > scrollThreshold) {
+      if (scrollAccumulator > 0) {
+        navigateTo(currentLayer + 1);
+      } else {
+        navigateTo(currentLayer - 1);
+      }
+      scrollAccumulator = 0;
+    }
+  }, { passive: false });
+
+  // ===== TOUCH HANDLER (pinch) =====
+  var lastTouchDistance = 0;
+  var touchAccumulator = 0;
+
+  document.getElementById('canvasArea').addEventListener('touchstart', function(e) {
+    if (e.touches.length === 2) {
+      lastTouchDistance = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      touchAccumulator = 0;
+    }
+  });
+
+  document.getElementById('canvasArea').addEventListener('touchmove', function(e) {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      var dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      touchAccumulator += dist - lastTouchDistance;
+      lastTouchDistance = dist;
+
+      if (Math.abs(touchAccumulator) > 80) {
+        if (touchAccumulator > 0) {
+          navigateTo(currentLayer - 1); // spread = ascend
+        } else {
+          navigateTo(currentLayer + 1); // pinch = descend
+        }
+        touchAccumulator = 0;
+      }
+    }
+  }, { passive: false });
+
+  // ===== CLICK HANDLERS =====
+  document.querySelectorAll('.bc-layer').forEach(function(el) {
+    el.addEventListener('click', function() {
+      navigateTo(parseInt(this.dataset.layer));
+    });
+  });
+  document.querySelectorAll('.dg-dot').forEach(function(el) {
+    el.addEventListener('click', function() {
+      navigateTo(parseInt(this.dataset.layer));
+    });
+  });
+
+  // ===== KEYBOARD =====
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowDown' || e.key === 'j') navigateTo(currentLayer + 1);
+    if (e.key === 'ArrowUp' || e.key === 'k') navigateTo(currentLayer - 1);
+    if (e.key >= '1' && e.key <= '4') navigateTo(parseInt(e.key) - 1);
+  });
+
+  // ===== INIT =====
+  renderSidebar(0);
+})();
+</script>
+</body>
+</html>
