@@ -1,0 +1,1489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mica — Working Within Layers</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0a0a;--surface:#141414;--surface2:#1a1a1a;--surface3:#222;
+    --text:#e8e8e8;--text-dim:#888;--text-faint:#555;
+    --mission:#d4c8a0;--mission-dark:#b4a078;--mission-bg:rgba(212,200,160,0.06);--mission-border:rgba(212,200,160,0.15);
+    --experience:#c88c82;--experience-dark:#a06a60;--experience-bg:rgba(200,140,130,0.06);--experience-border:rgba(200,140,130,0.15);
+    --architecture:#64aaa0;--architecture-dark:#4a8a80;--architecture-bg:rgba(100,170,160,0.06);--architecture-border:rgba(100,170,160,0.15);
+    --implementation:#8c78b4;--implementation-dark:#6a5a90;--implementation-bg:rgba(140,120,180,0.06);--implementation-border:rgba(140,120,180,0.15);
+    --green:#5cb85c;--amber:#e8a838;--red:#d9534f;
+    --radius:12px;--radius-sm:8px;--radius-xs:4px;
+    --shadow:0 2px 20px rgba(0,0,0,0.4);--shadow-lg:0 4px 40px rgba(0,0,0,0.6);
+    --grain:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  }
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--text);line-height:1.6;
+    -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  }
+  body::after{content:'';position:fixed;inset:0;background:var(--grain);pointer-events:none;z-index:9999;opacity:0.4}
+
+  .container{max-width:1280px;margin:0 auto;padding:0 40px}
+
+  /* Hero */
+  .hero{padding:100px 0 60px;text-align:center;position:relative;overflow:hidden}
+  .hero::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:800px;height:400px;
+    background:radial-gradient(ellipse,rgba(212,200,160,0.08) 0%,rgba(200,140,130,0.05) 30%,rgba(100,170,160,0.03) 60%,transparent 80%);
+    pointer-events:none}
+  .hero h1{font-size:56px;font-weight:700;letter-spacing:-1.5px;margin-bottom:16px;
+    background:linear-gradient(135deg,var(--mission),var(--experience),var(--architecture),var(--implementation));
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+  .hero .subtitle{font-size:20px;color:var(--text-dim);max-width:720px;margin:0 auto;font-weight:300;line-height:1.7}
+
+  /* Section */
+  .section{padding:80px 0;position:relative}
+  .section-label{font-size:11px;letter-spacing:3px;text-transform:uppercase;font-weight:600;margin-bottom:8px}
+  .section-title{font-size:36px;font-weight:700;letter-spacing:-0.5px;margin-bottom:12px}
+  .section-desc{font-size:16px;color:var(--text-dim);max-width:600px;margin-bottom:40px;line-height:1.7}
+
+  .mission .section-label{color:var(--mission)}
+  .experience .section-label{color:var(--experience)}
+  .architecture .section-label{color:var(--architecture)}
+  .implementation .section-label{color:var(--implementation)}
+
+  /* Workspace Frame */
+  .workspace{
+    background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow-lg);
+    overflow:hidden;position:relative;margin-bottom:48px;
+  }
+  .workspace-bar{
+    height:40px;display:flex;align-items:center;padding:0 16px;gap:8px;
+    background:rgba(255,255,255,0.03);border-bottom:1px solid rgba(255,255,255,0.06);
+  }
+  .workspace-dot{width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,0.1)}
+  .workspace-dot:nth-child(1){background:#ff5f56}
+  .workspace-dot:nth-child(2){background:#ffbd2e}
+  .workspace-dot:nth-child(3){background:#27c93f}
+  .workspace-title{margin-left:12px;font-size:12px;color:var(--text-dim);font-weight:500}
+
+  .workspace-body{display:flex;min-height:560px;position:relative}
+  .workspace-canvas{flex:1;padding:24px;position:relative;overflow:hidden}
+  .workspace-sidebar{width:320px;border-left:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;background:rgba(0,0,0,0.2)}
+
+  /* Layer Goal Bar */
+  .layer-goal{
+    display:flex;align-items:center;gap:12px;padding:10px 16px;
+    border-radius:var(--radius-sm);margin-bottom:20px;font-size:13px;
+  }
+  .layer-goal .label{font-weight:600;white-space:nowrap}
+  .layer-goal .text{color:var(--text-dim);flex:1}
+  .layer-goal .badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
+
+  .mission .layer-goal{background:var(--mission-bg);border:1px solid var(--mission-border)}
+  .mission .layer-goal .label{color:var(--mission)}
+  .mission .layer-goal .badge{background:rgba(212,200,160,0.15);color:var(--mission)}
+
+  .experience .layer-goal{background:var(--experience-bg);border:1px solid var(--experience-border)}
+  .experience .layer-goal .label{color:var(--experience)}
+  .experience .layer-goal .badge{background:rgba(200,140,130,0.15);color:var(--experience)}
+
+  .architecture .layer-goal{background:var(--architecture-bg);border:1px solid var(--architecture-border)}
+  .architecture .layer-goal .label{color:var(--architecture)}
+  .architecture .layer-goal .badge{background:rgba(100,170,160,0.15);color:var(--architecture)}
+
+  .implementation .layer-goal{background:var(--implementation-bg);border:1px solid var(--implementation-border)}
+  .implementation .layer-goal .label{color:var(--implementation)}
+  .implementation .layer-goal .badge{background:rgba(140,120,180,0.15);color:var(--implementation)}
+
+  /* Ghost Layers */
+  .ghost-layer{
+    position:absolute;left:0;right:0;pointer-events:none;
+    border-radius:var(--radius-sm);padding:16px 20px;
+    opacity:0.12;filter:blur(0.5px);
+  }
+  .ghost-mission{
+    background:linear-gradient(180deg,rgba(212,200,160,0.08),transparent);
+    border-top:1px solid rgba(212,200,160,0.1);color:var(--mission);
+  }
+  .ghost-experience{
+    background:linear-gradient(180deg,rgba(200,140,130,0.08),transparent);
+    border-top:1px solid rgba(200,140,130,0.1);color:var(--experience);
+  }
+  .ghost-architecture{
+    background:linear-gradient(180deg,rgba(100,170,160,0.08),transparent);
+    border-top:1px solid rgba(100,170,160,0.1);color:var(--architecture);
+  }
+
+  /* Quality Dot */
+  .q-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+  .q-dot.green{background:var(--green);box-shadow:0 0 6px rgba(92,184,92,0.4)}
+  .q-dot.amber{background:var(--amber);box-shadow:0 0 6px rgba(232,168,56,0.4)}
+  .q-dot.red{background:var(--red);box-shadow:0 0 6px rgba(217,83,79,0.4)}
+
+  /* Cards */
+  .artifact-card{
+    background:var(--surface2);border:1px solid rgba(255,255,255,0.06);
+    border-radius:var(--radius-sm);padding:16px;position:relative;
+    box-shadow:0 2px 12px rgba(0,0,0,0.3);
+  }
+  .artifact-card .card-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .artifact-card .card-title{font-size:13px;font-weight:600}
+  .artifact-card .card-body{font-size:12px;color:var(--text-dim);line-height:1.6}
+
+  /* Persona Card (thick tactile) */
+  .persona-card{
+    background:linear-gradient(135deg,var(--surface2),var(--surface3));
+    border:1px solid var(--mission-border);border-radius:var(--radius);
+    padding:16px 18px;box-shadow:0 4px 16px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,255,255,0.04);
+    min-width:180px;
+  }
+  .persona-card .avatar{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:10px}
+  .persona-card .name{font-size:14px;font-weight:600;margin-bottom:4px}
+  .persona-card .role{font-size:11px;color:var(--text-dim)}
+
+  /* System Sidebar */
+  .sidebar-header{padding:16px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .sidebar-header .dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+  .sidebar-messages{flex:1;overflow-y:auto;padding:12px}
+  .sidebar-input{padding:12px;border-top:1px solid rgba(255,255,255,0.06);display:flex;gap:8px;align-items:center}
+  .sidebar-input input{flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:8px 16px;color:var(--text);font-size:13px;outline:none}
+  .sidebar-input button{width:32px;height:32px;border-radius:50%;border:none;background:rgba(255,255,255,0.06);color:var(--text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px}
+
+  .msg{margin-bottom:12px;padding:10px 14px;border-radius:var(--radius-sm);font-size:13px;line-height:1.6;max-width:90%}
+  .msg.ai{background:rgba(212,200,160,0.08);border:1px solid rgba(212,200,160,0.1);color:rgba(212,200,160,0.9)}
+  .msg.human{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.06);margin-left:auto;color:var(--text-dim)}
+  .msg.ai-exp{background:rgba(200,140,130,0.08);border:1px solid rgba(200,140,130,0.1);color:rgba(200,140,130,0.9)}
+  .msg.ai-arch{background:rgba(100,170,160,0.08);border:1px solid rgba(100,170,160,0.1);color:rgba(100,170,160,0.9)}
+  .msg.ai-impl{background:rgba(140,120,180,0.08);border:1px solid rgba(140,120,180,0.1);color:rgba(140,120,180,0.9)}
+  .msg-actions{display:flex;gap:6px;margin-top:8px}
+  .msg-actions button{padding:3px 10px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:var(--text-dim);font-size:11px;cursor:pointer}
+  .msg-actions button:first-child{border-color:var(--green);color:var(--green)}
+
+  /* Context Quality Bar */
+  .context-bar{
+    display:flex;gap:12px;padding:12px 16px;
+    background:rgba(0,0,0,0.3);border-top:1px solid rgba(255,255,255,0.04);
+    font-size:11px;flex-wrap:wrap;
+  }
+  .context-item{display:flex;align-items:center;gap:6px;color:var(--text-dim)}
+
+  /* Artifact Lifecycle */
+  .lifecycle{display:flex;align-items:center;gap:0;justify-content:center;margin:32px 0;flex-wrap:wrap}
+  .lifecycle-stage{
+    display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 24px;
+    background:var(--surface);border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,0.06);
+    min-width:120px;
+  }
+  .lifecycle-stage .icon{font-size:24px;margin-bottom:4px}
+  .lifecycle-stage .stage-name{font-size:12px;font-weight:600}
+  .lifecycle-stage .stage-desc{font-size:10px;color:var(--text-dim);text-align:center}
+  .lifecycle-arrow{font-size:20px;color:var(--text-faint);padding:0 4px}
+
+  /* Wireframe Elements */
+  .wireframe{
+    border-radius:var(--radius-sm);padding:12px;position:absolute;
+    background:var(--surface2);
+  }
+  .wireframe.sketch{border:2px dashed rgba(255,255,255,0.15);background:transparent}
+  .wireframe.clean{border:1px solid rgba(255,255,255,0.12)}
+  .wireframe.mockup{border:1px solid rgba(255,255,255,0.18);background:var(--surface3)}
+  .wireframe .wf-badge{position:absolute;top:-10px;right:12px;font-size:9px;font-weight:700;letter-spacing:1px;padding:2px 8px;border-radius:3px}
+  .wireframe .wf-header{height:10px;background:rgba(255,255,255,0.08);border-radius:2px;margin-bottom:8px}
+  .wireframe .wf-line{height:6px;background:rgba(255,255,255,0.05);border-radius:2px;margin-bottom:5px}
+  .wireframe .wf-button{display:inline-block;padding:4px 12px;border-radius:4px;font-size:9px;margin-top:4px}
+  .wireframe .wf-input{height:24px;border:1px solid rgba(255,255,255,0.08);border-radius:4px;margin-bottom:6px}
+  .wireframe .wf-avatar{width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,0.06);display:inline-block}
+
+  /* Flow Arrow */
+  .flow-arrow{
+    position:absolute;width:40px;height:2px;background:rgba(200,140,130,0.3);
+  }
+  .flow-arrow::after{content:'';position:absolute;right:-4px;top:-3px;border:4px solid transparent;border-left-color:rgba(200,140,130,0.3)}
+
+  /* Component boxes */
+  .comp-box{
+    position:absolute;border-radius:var(--radius-sm);padding:10px 14px;
+    border:1px solid;font-size:11px;min-width:120px;
+  }
+  .comp-box .comp-name{font-weight:600;margin-bottom:4px;font-size:12px}
+  .comp-box .comp-type{font-size:9px;opacity:0.6;text-transform:uppercase;letter-spacing:1px}
+  .comp-service{background:rgba(100,170,160,0.1);border-color:rgba(100,170,160,0.3);color:var(--architecture)}
+  .comp-data{background:rgba(80,140,160,0.1);border-color:rgba(80,140,160,0.3);color:#50a0c0}
+  .comp-external{background:rgba(128,128,128,0.1);border-color:rgba(128,128,128,0.3);color:#888}
+
+  /* Trace lines */
+  .trace-line{position:absolute;border-left:1px dashed;opacity:0.3}
+
+  /* Code panel */
+  .code-panel{
+    background:#1a1a2e;border:1px solid rgba(140,120,180,0.2);
+    border-radius:var(--radius-sm);padding:16px;font-family:'SF Mono',Monaco,'Cascadia Code',monospace;
+    font-size:12px;line-height:1.8;box-shadow:0 8px 32px rgba(0,0,0,0.4);
+    position:relative;
+  }
+  .code-panel .line-num{color:var(--text-faint);user-select:none;display:inline-block;width:24px;text-align:right;margin-right:12px}
+  .code-kw{color:#c586c0}
+  .code-fn{color:#dcdcaa}
+  .code-str{color:#ce9178}
+  .code-type{color:#4ec9b0}
+  .code-cm{color:#6a9955}
+  .code-var{color:#9cdcfe}
+  .code-num{color:#b5cea8}
+  .code-add{background:rgba(92,184,92,0.1);border-left:3px solid var(--green);padding-left:8px;margin-left:-11px}
+  .code-del{background:rgba(217,83,79,0.1);border-left:3px solid var(--red);padding-left:8px;margin-left:-11px;text-decoration:line-through;opacity:0.5}
+
+  /* Progress bars */
+  .progress{height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden}
+  .progress-fill{height:100%;border-radius:2px;transition:width 0.3s}
+
+  /* Activity feed */
+  .activity-item{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.04);font-size:12px}
+  .activity-item .time{color:var(--text-faint);font-size:10px;margin-bottom:2px}
+
+  /* Pulsing activity */
+  .pulse-region{
+    position:absolute;border-radius:50%;
+    background:radial-gradient(circle,rgba(140,120,180,0.15),transparent 70%);
+    animation:pulse-grow 3s ease-in-out infinite;
+  }
+
+  /* Context Flow Diagram */
+  .flow-diagram{
+    background:var(--surface);border-radius:var(--radius);padding:40px;
+    position:relative;min-height:480px;box-shadow:var(--shadow);
+  }
+  .flow-layer{
+    padding:20px 24px;border-radius:var(--radius-sm);margin-bottom:2px;
+    display:flex;align-items:center;gap:16px;position:relative;
+  }
+  .flow-layer .fl-label{font-size:13px;font-weight:600;min-width:120px}
+  .flow-layer .fl-artifacts{display:flex;gap:8px;flex:1;flex-wrap:wrap}
+  .flow-layer .fl-artifact{padding:4px 12px;border-radius:20px;font-size:11px;border:1px solid}
+
+  /* Side by Side */
+  .side-by-side{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:32px}
+  .scenario-card{
+    background:var(--surface);border-radius:var(--radius);overflow:hidden;
+    box-shadow:var(--shadow);
+  }
+  .scenario-header{padding:16px 20px;border-bottom:1px solid rgba(255,255,255,0.06)}
+  .scenario-header h4{font-size:15px;font-weight:600;margin-bottom:4px}
+  .scenario-header p{font-size:12px;color:var(--text-dim)}
+  .scenario-body{padding:20px;min-height:300px;position:relative}
+
+  /* Template Stack */
+  .stack-selector{display:flex;gap:8px;margin-bottom:32px}
+  .stack-option{
+    padding:10px 20px;border-radius:20px;font-size:13px;border:1px solid rgba(255,255,255,0.1);
+    background:rgba(255,255,255,0.03);color:var(--text-dim);cursor:pointer;
+  }
+  .stack-option.active{background:rgba(255,255,255,0.08);color:var(--text);border-color:rgba(255,255,255,0.2)}
+  .stack-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .stack-card{
+    background:var(--surface);border-radius:var(--radius);padding:20px;
+    border:1px solid rgba(255,255,255,0.06);box-shadow:var(--shadow);
+  }
+  .stack-card h4{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .stack-card .stack-row{display:flex;justify-content:space-between;font-size:11px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+  .stack-card .stack-row:last-child{border:none}
+  .stack-card .stack-row .label{color:var(--text-dim)}
+
+  /* Toolbar */
+  .toolbar{display:flex;align-items:center;gap:4px;padding:8px 12px;background:rgba(0,0,0,0.3);border-bottom:1px solid rgba(255,255,255,0.04)}
+  .tool-btn{padding:6px 14px;border-radius:6px;font-size:11px;color:var(--text-dim);background:transparent;border:none;cursor:pointer;font-weight:500}
+  .tool-btn.active{background:rgba(255,255,255,0.08);color:var(--text)}
+  .toolbar .spacer{flex:1}
+  .toolbar .gen-loop{font-size:10px;padding:4px 12px;border-radius:20px;border:1px solid;display:flex;align-items:center;gap:6px}
+  .toolbar .gen-loop .loop-dot{width:6px;height:6px;border-radius:50%;animation:pulse 1.5s infinite}
+
+  /* Decision Card */
+  .decision-card{
+    background:var(--surface);border-radius:var(--radius);padding:20px;margin-top:20px;
+    border:1px solid rgba(100,170,160,0.15);
+  }
+  .decision-card h5{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--architecture)}
+  .decision-options{display:flex;gap:12px;margin-top:12px}
+  .decision-option{
+    flex:1;padding:14px;border-radius:var(--radius-sm);
+    border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);
+    font-size:12px;
+  }
+  .decision-option.recommended{border-color:rgba(100,170,160,0.4);background:rgba(100,170,160,0.06)}
+  .decision-option .opt-label{font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;color:var(--text-dim)}
+  .decision-option.recommended .opt-label{color:var(--architecture)}
+
+  /* Generative Loop */
+  .gen-loop-viz{display:flex;align-items:stretch;gap:0;margin:40px 0;justify-content:center}
+  .gen-stage{flex:0 0 160px;padding:20px;text-align:center;position:relative;border-radius:var(--radius-sm)}
+  .gen-stage .stage-preview{height:80px;margin:0 auto 12px;border-radius:6px;width:100px;position:relative;overflow:hidden}
+  .gen-stage .stage-label{font-size:12px;font-weight:600;margin-bottom:4px}
+  .gen-stage .stage-ai{font-size:10px;color:var(--experience);margin-bottom:2px}
+  .gen-stage .stage-human{font-size:10px;color:var(--text-dim)}
+  .gen-arrow{display:flex;align-items:center;color:var(--text-faint);font-size:20px;padding:0 4px}
+
+  /* AI Suggestion */
+  .ai-suggestion{
+    position:absolute;padding:12px 16px;border-radius:var(--radius-sm);
+    background:rgba(200,140,130,0.1);border:1px solid rgba(200,140,130,0.2);
+    font-size:12px;color:var(--experience);max-width:260px;
+    box-shadow:0 4px 20px rgba(0,0,0,0.3);
+    animation:float 6s ease-in-out infinite;
+  }
+  .ai-suggestion::before{content:'System';display:block;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;opacity:0.6;margin-bottom:4px}
+
+  .consistency-badge{
+    position:absolute;padding:6px 14px;border-radius:20px;
+    background:rgba(200,140,130,0.1);border:1px solid rgba(200,140,130,0.15);
+    font-size:11px;color:var(--experience);
+  }
+
+  /* Narrative text */
+  .narrative{
+    font-size:22px;font-weight:300;line-height:1.8;color:rgba(212,200,160,0.85);
+    font-style:italic;max-width:480px;
+  }
+
+  /* Context Strip */
+  .context-strip{
+    display:flex;gap:20px;padding:14px 20px;
+    background:rgba(0,0,0,0.25);border-top:1px solid rgba(255,255,255,0.04);
+    font-size:11px;
+  }
+  .context-strip .strip-group{display:flex;align-items:center;gap:8px}
+  .context-strip .strip-label{color:var(--text-faint);font-weight:600;letter-spacing:0.5px;text-transform:uppercase;font-size:9px}
+  .context-strip .strip-tag{padding:2px 10px;border-radius:12px;font-size:10px}
+
+  /* Test badge */
+  .test-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600}
+  .test-badge.pass{background:rgba(92,184,92,0.12);color:var(--green);border:1px solid rgba(92,184,92,0.2)}
+  .test-badge.fail{background:rgba(217,83,79,0.12);color:var(--red);border:1px solid rgba(217,83,79,0.2)}
+
+  /* Escalation card animation */
+  .escalation{
+    position:absolute;padding:8px 14px;border-radius:var(--radius-sm);
+    border:1px solid rgba(232,168,56,0.3);background:rgba(232,168,56,0.08);
+    font-size:11px;color:var(--amber);
+    animation:float-up 4s ease-in-out infinite;
+  }
+
+  /* Animations */
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+  @keyframes pulse-grow{0%,100%{transform:scale(1);opacity:0.3}50%{transform:scale(1.15);opacity:0.6}}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  @keyframes float-up{0%{transform:translateY(0);opacity:0.8}50%{transform:translateY(-20px);opacity:1}100%{transform:translateY(0);opacity:0.8}}
+
+  /* Responsive */
+  @media(max-width:900px){
+    .container{padding:0 20px}
+    .workspace-body{flex-direction:column}
+    .workspace-sidebar{width:100%;border-left:none;border-top:1px solid rgba(255,255,255,0.06);max-height:300px}
+    .side-by-side{grid-template-columns:1fr}
+    .stack-grid{grid-template-columns:1fr 1fr}
+    .hero h1{font-size:36px}
+  }
+  @media(max-width:600px){
+    .stack-grid{grid-template-columns:1fr}
+  }
+
+  /* Cue Pills — facilitation prompt tags */
+  .cue-pills{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
+  .cue-pill{
+    display:inline-flex;align-items:center;gap:4px;
+    padding:3px 10px;border-radius:12px;font-size:9px;
+    letter-spacing:0.3px;cursor:pointer;transition:opacity 0.3s;
+  }
+  .cue-pill .cue-kind{font-weight:700;opacity:0.6}
+  .cue-pill:hover{opacity:0.85}
+  .cue-pill.active{opacity:1;box-shadow:0 0 0 1px currentColor}
+  .cue-pill .cue-detail{display:block;font-size:8px;opacity:0.65;margin-top:1px}
+  .cue-pill.active .cue-detail{opacity:0.8}
+</style>
+</head>
+<body>
+
+<!-- ============================================ -->
+<!-- HERO                                         -->
+<!-- ============================================ -->
+<section class="hero">
+  <div class="container">
+    <h1>Working Within Layers</h1>
+    <p class="subtitle">Each layer is a complete workspace. Artifacts at every layer serve as shared context for human and AI — flowing down, up, and across.</p>
+  </div>
+</section>
+
+<!-- ============================================ -->
+<!-- SECTION 2: MISSION LAYER                     -->
+<!-- ============================================ -->
+<section class="section mission">
+  <div class="container">
+    <div class="section-label">Layer 1</div>
+    <div class="section-title">Mission — The Strategic Surface</div>
+    <div class="section-desc">Where product intent is captured, questioned, and refined. Every downstream decision traces back here.</div>
+
+    <div class="workspace">
+      <div class="workspace-bar">
+        <div class="workspace-dot"></div><div class="workspace-dot"></div><div class="workspace-dot"></div>
+        <span class="workspace-title">Mission Workspace</span>
+      </div>
+      <div class="workspace-body">
+        <!-- Canvas -->
+        <div class="workspace-canvas">
+          <div class="layer-goal">
+            <span class="label">Goal</span>
+            <span class="text">Complete product brief with target users, constraints, success criteria</span>
+            <span class="badge">Full Stack</span>
+          </div>
+          <div class="cue-pills">
+            <span class="cue-pill" style="background:rgba(180,160,120,0.12);color:var(--mission)"><span class="cue-kind">?</span> Who is the primary user?</span>
+            <span class="cue-pill" style="background:rgba(180,160,120,0.12);color:var(--mission)"><span class="cue-kind">&#x270E;</span> One-sentence mission exercise</span>
+            <span class="cue-pill" style="background:rgba(180,160,120,0.12);color:var(--mission)"><span class="cue-kind">&#x2713;</span> Brief covers: user, problem, outcome, scope</span>
+          </div>
+
+          <!-- Narrative -->
+          <div class="narrative" style="margin-bottom:28px;">
+            "A platform where independent musicians can distribute their work directly to listeners — no intermediaries, transparent royalties, and real-time analytics."
+          </div>
+
+          <!-- Persona Cards Row -->
+          <div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap">
+            <div class="persona-card">
+              <div class="avatar" style="background:rgba(212,200,160,0.15);color:var(--mission)">A</div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <span class="name">Alex</span>
+                <span class="q-dot green"></span>
+              </div>
+              <div class="role">Indie artist, 24, releases monthly</div>
+            </div>
+            <div class="persona-card">
+              <div class="avatar" style="background:rgba(212,200,160,0.15);color:var(--mission)">M</div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <span class="name">Maya</span>
+                <span class="q-dot green"></span>
+              </div>
+              <div class="role">Listener, 31, curates playlists</div>
+            </div>
+            <div class="persona-card">
+              <div class="avatar" style="background:rgba(212,200,160,0.15);color:var(--mission)">R</div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <span class="name">Raj</span>
+                <span class="q-dot amber"></span>
+              </div>
+              <div class="role">Label owner, 45, manages 12 artists</div>
+            </div>
+          </div>
+
+          <!-- Constraint Map Cards -->
+          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+            <div class="artifact-card" style="width:200px">
+              <div class="card-header">
+                <span class="q-dot green"></span>
+                <span class="card-title" style="color:var(--mission)">Budget Constraint</span>
+              </div>
+              <div class="card-body">MVP under $50K. 3-month timeline. Two-person team plus AI.</div>
+            </div>
+            <div class="artifact-card" style="width:200px">
+              <div class="card-header">
+                <span class="q-dot green"></span>
+                <span class="card-title" style="color:var(--mission)">Platform Constraint</span>
+              </div>
+              <div class="card-body">Web-first. Mobile responsive. No native apps in V1.</div>
+            </div>
+            <div class="artifact-card" style="width:200px">
+              <div class="card-header">
+                <span class="q-dot amber"></span>
+                <span class="card-title" style="color:var(--mission)">Legal Constraint</span>
+              </div>
+              <div class="card-body">Music licensing TBD. Need legal review on royalty structure.</div>
+            </div>
+          </div>
+
+          <!-- Ghost hint of Experience layer -->
+          <div class="ghost-layer ghost-experience" style="bottom:0;height:60px;display:flex;align-items:center;gap:20px;font-size:11px;opacity:0.08">
+            <span style="border:1px dashed currentColor;padding:4px 12px;border-radius:4px">Login Screen</span>
+            <span style="border:1px dashed currentColor;padding:4px 12px;border-radius:4px">Dashboard</span>
+            <span style="border:1px dashed currentColor;padding:4px 12px;border-radius:4px">Upload Flow</span>
+          </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="workspace-sidebar">
+          <div class="sidebar-header">
+            <span class="dot"></span> System
+          </div>
+          <div class="sidebar-messages">
+            <div class="msg ai">
+              I've drafted personas from your brief. Alex and Maya look solid. A few questions about Raj:
+              <div class="msg-actions">
+                <button>Accept</button><button>Revise</button><button>Discuss</button>
+              </div>
+            </div>
+            <div class="msg ai" style="margin-top:4px">
+              What happens when an artist has multiple labels? Does Raj manage exclusive or non-exclusive contracts?
+            </div>
+            <div class="msg human">
+              Non-exclusive. Artists can be on multiple labels. Raj sees only his own catalog.
+            </div>
+            <div class="msg ai">
+              Got it. I've updated the Raj persona and added a "multi-label" constraint card. Also — have you considered offline scenarios? Artists in rural areas may upload from spotty connections.
+              <div class="msg-actions">
+                <button>Accept</button><button>Revise</button><button>Discuss</button>
+              </div>
+            </div>
+            <div class="msg human">
+              Good catch. Add a constraint: must handle interrupted uploads gracefully.
+            </div>
+            <div class="msg ai">
+              Done. I've added "Resilient Upload" to constraints and flagged it for Architecture layer. Your brief is nearly context-ready — just need success criteria for the label-owner path.
+            </div>
+          </div>
+          <div class="sidebar-input">
+            <input type="text" placeholder="Type a message...">
+            <button title="Voice input">&#9834;</button>
+            <button title="Stylus/draw">&#9998;</button>
+          </div>
+        </div>
+      </div>
+      <!-- Context quality bar -->
+      <div class="context-bar">
+        <div class="context-item"><span class="q-dot green"></span> Mission Narrative</div>
+        <div class="context-item"><span class="q-dot green"></span> Personas (2/3)</div>
+        <div class="context-item"><span class="q-dot amber"></span> Persona: Raj</div>
+        <div class="context-item"><span class="q-dot green"></span> Budget Constraint</div>
+        <div class="context-item"><span class="q-dot green"></span> Platform Constraint</div>
+        <div class="context-item"><span class="q-dot amber"></span> Legal Constraint</div>
+        <div class="context-item"><span class="q-dot red"></span> Success Criteria</div>
+      </div>
+    </div>
+
+    <!-- Artifact Lifecycle -->
+    <h4 style="font-size:15px;font-weight:600;margin-bottom:16px;color:var(--mission)">Artifact Lifecycle</h4>
+    <div class="lifecycle">
+      <div class="lifecycle-stage">
+        <div class="icon" style="color:var(--mission)">&#9679;</div>
+        <div class="stage-name">Idea</div>
+        <div class="stage-desc">Raw input from stakeholder</div>
+      </div>
+      <div class="lifecycle-arrow">&#8594;</div>
+      <div class="lifecycle-stage">
+        <div class="icon" style="color:var(--mission)">&#9634;</div>
+        <div class="stage-name">Brief</div>
+        <div class="stage-desc">Structured by AI from conversation</div>
+      </div>
+      <div class="lifecycle-arrow">&#8594;</div>
+      <div class="lifecycle-stage">
+        <div class="icon" style="color:var(--mission)">&#10003;</div>
+        <div class="stage-name">Validated</div>
+        <div class="stage-desc">Human-reviewed, gaps flagged</div>
+      </div>
+      <div class="lifecycle-arrow">&#8594;</div>
+      <div class="lifecycle-stage" style="border-color:var(--mission-border);background:var(--mission-bg)">
+        <div class="icon" style="color:var(--mission)">&#9733;</div>
+        <div class="stage-name" style="color:var(--mission)">Context-Ready</div>
+        <div class="stage-desc">Feeds downstream layers</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================ -->
+<!-- SECTION 3: EXPERIENCE LAYER                  -->
+<!-- ============================================ -->
+<section class="section experience">
+  <div class="container">
+    <div class="section-label">Layer 2</div>
+    <div class="section-title">Experience — The Design Studio</div>
+    <div class="section-desc">Where user journeys take shape through progressive rendering — from rough sketch to interactive prototype.</div>
+
+    <div class="workspace">
+      <div class="workspace-bar">
+        <div class="workspace-dot"></div><div class="workspace-dot"></div><div class="workspace-dot"></div>
+        <span class="workspace-title">Experience Workspace</span>
+      </div>
+      <!-- Toolbar -->
+      <div class="toolbar">
+        <button class="tool-btn active">Select</button>
+        <button class="tool-btn">Sketch</button>
+        <button class="tool-btn">Flow</button>
+        <button class="tool-btn">Annotate</button>
+        <div class="spacer"></div>
+        <div class="gen-loop" style="border-color:var(--experience-border);color:var(--experience)">
+          <span class="loop-dot" style="background:var(--experience)"></span>
+          Generative Loop Active
+        </div>
+      </div>
+      <div class="workspace-body" style="min-height:560px;">
+        <div class="workspace-canvas" style="position:relative">
+          <div class="layer-goal">
+            <span class="label">Goal</span>
+            <span class="text">Full UX flow with wireframes for all primary paths</span>
+            <span class="badge">Full Stack</span>
+          </div>
+          <div class="cue-pills">
+            <span class="cue-pill" style="background:rgba(200,140,130,0.12);color:var(--experience)"><span class="cue-kind">?</span> User journey walkthrough</span>
+            <span class="cue-pill active" style="background:rgba(200,140,130,0.2);color:var(--experience);flex-direction:column;align-items:flex-start"><span style="display:flex;align-items:center;gap:4px"><span class="cue-kind">&#x270E;</span> Sketch happy path in 3-5 steps</span><span class="cue-detail">Map each step from entry to goal completion</span></span>
+            <span class="cue-pill" style="background:rgba(200,140,130,0.12);color:var(--experience)"><span class="cue-kind">?</span> What should the user never think about?</span>
+          </div>
+
+          <!-- Ghost Mission layer at top -->
+          <div class="ghost-layer ghost-mission" style="top:56px;height:48px;display:flex;align-items:center;gap:16px;font-size:10px;letter-spacing:0.3px">
+            <span style="opacity:0.7">"Independent musicians... no intermediaries..."</span>
+            <span style="border:1px dashed currentColor;padding:2px 8px;border-radius:3px;font-size:9px">Alex</span>
+            <span style="border:1px dashed currentColor;padding:2px 8px;border-radius:3px;font-size:9px">Maya</span>
+            <span style="border:1px dashed currentColor;padding:2px 8px;border-radius:3px;font-size:9px">Raj</span>
+          </div>
+
+          <!-- Wireframe: Login (sketch) -->
+          <div class="wireframe sketch" style="top:120px;left:24px;width:150px;height:170px">
+            <div class="wf-badge" style="background:rgba(255,255,255,0.06);color:var(--text-dim)">SKETCH</div>
+            <div style="text-align:center;font-size:10px;color:var(--text-faint);margin:8px 0">Login</div>
+            <div class="wf-input" style="border-style:dashed"></div>
+            <div class="wf-input" style="border-style:dashed"></div>
+            <div class="wf-button" style="border:1px dashed rgba(255,255,255,0.15);color:var(--text-faint);font-size:9px;width:80%;text-align:center;display:block;margin:12px auto 0">Sign In</div>
+            <div style="font-size:8px;color:var(--text-faint);text-align:center;margin-top:8px">or continue with...</div>
+          </div>
+
+          <!-- Flow arrow 1 -->
+          <div class="flow-arrow" style="top:200px;left:182px;width:36px"></div>
+
+          <!-- Wireframe: Dashboard (clean) -->
+          <div class="wireframe clean" style="top:110px;left:226px;width:200px;height:190px">
+            <div class="wf-badge" style="background:rgba(200,140,130,0.12);color:var(--experience)">WIREFRAME</div>
+            <div class="wf-header" style="width:60%"></div>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <div style="flex:1;height:50px;background:rgba(255,255,255,0.04);border-radius:4px;border:1px solid rgba(255,255,255,0.08);padding:6px">
+                <div style="font-size:8px;color:var(--text-faint)">Streams</div>
+                <div style="font-size:14px;font-weight:600;color:var(--text-dim);margin-top:2px">12.4K</div>
+              </div>
+              <div style="flex:1;height:50px;background:rgba(255,255,255,0.04);border-radius:4px;border:1px solid rgba(255,255,255,0.08);padding:6px">
+                <div style="font-size:8px;color:var(--text-faint)">Revenue</div>
+                <div style="font-size:14px;font-weight:600;color:var(--text-dim);margin-top:2px">$847</div>
+              </div>
+            </div>
+            <div class="wf-line" style="width:90%"></div>
+            <div class="wf-line" style="width:75%"></div>
+            <div class="wf-line" style="width:85%"></div>
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <div class="wf-avatar"></div>
+              <div style="flex:1"><div class="wf-line" style="width:60%;margin-bottom:3px"></div><div class="wf-line" style="width:40%"></div></div>
+            </div>
+          </div>
+
+          <!-- Flow arrow 2 -->
+          <div class="flow-arrow" style="top:200px;left:434px;width:36px"></div>
+
+          <!-- Wireframe: Upload (mockup) -->
+          <div class="wireframe mockup" style="top:105px;left:478px;width:210px;height:200px">
+            <div class="wf-badge" style="background:rgba(200,140,130,0.2);color:var(--experience)">MOCKUP</div>
+            <div class="wf-header" style="width:40%;background:rgba(200,140,130,0.2)"></div>
+            <div style="height:70px;border:2px dashed rgba(200,140,130,0.2);border-radius:8px;display:flex;align-items:center;justify-content:center;margin:8px 0">
+              <span style="font-size:10px;color:var(--experience)">Drop audio files here</span>
+            </div>
+            <div style="display:flex;gap:6px;margin-bottom:6px">
+              <div style="flex:2;height:24px;background:rgba(200,140,130,0.08);border:1px solid rgba(200,140,130,0.15);border-radius:4px;padding:4px 8px;font-size:9px;color:var(--experience-dark)">Track Title</div>
+              <div style="flex:1;height:24px;background:rgba(200,140,130,0.08);border:1px solid rgba(200,140,130,0.15);border-radius:4px;padding:4px 8px;font-size:9px;color:var(--experience-dark)">Genre</div>
+            </div>
+            <div class="wf-button" style="background:var(--experience);color:#000;font-weight:600;display:block;text-align:center;width:100%;padding:6px">Upload &amp; Distribute</div>
+          </div>
+
+          <!-- Wireframe: Analytics (sketch) -->
+          <div class="wireframe sketch" style="top:320px;left:280px;width:160px;height:130px">
+            <div class="wf-badge" style="background:rgba(255,255,255,0.06);color:var(--text-dim)">SKETCH</div>
+            <div style="text-align:center;font-size:10px;color:var(--text-faint);margin:4px 0">Analytics</div>
+            <div style="height:50px;border-bottom:1px dashed rgba(255,255,255,0.1);position:relative">
+              <div style="position:absolute;bottom:5px;left:10%;width:12%;height:20px;background:rgba(255,255,255,0.05);border-radius:2px"></div>
+              <div style="position:absolute;bottom:5px;left:28%;width:12%;height:35px;background:rgba(255,255,255,0.05);border-radius:2px"></div>
+              <div style="position:absolute;bottom:5px;left:46%;width:12%;height:25px;background:rgba(255,255,255,0.05);border-radius:2px"></div>
+              <div style="position:absolute;bottom:5px;left:64%;width:12%;height:42px;background:rgba(255,255,255,0.05);border-radius:2px"></div>
+              <div style="position:absolute;bottom:5px;left:82%;width:12%;height:30px;background:rgba(255,255,255,0.05);border-radius:2px"></div>
+            </div>
+            <div class="wf-line" style="width:70%;margin-top:8px"></div>
+          </div>
+
+          <!-- Flow arrow down to analytics -->
+          <div class="flow-arrow" style="top:275px;left:340px;width:2px;height:36px;background:rgba(200,140,130,0.2);transform:rotate(90deg)"></div>
+
+          <!-- AI Suggestion floating card -->
+          <div class="ai-suggestion" style="bottom:80px;right:40px">
+            These two flows share a common pattern. Want me to create a reusable component?
+          </div>
+
+          <!-- Consistency badge -->
+          <div class="consistency-badge" style="top:80px;right:30px">
+            &#10024; 3 patterns detected across flows
+          </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="workspace-sidebar">
+          <div class="sidebar-header">
+            <span class="dot" style="background:var(--experience)"></span> System
+          </div>
+          <div class="sidebar-messages">
+            <div class="msg ai-exp">
+              I've structured your Login sketch into a wireframe. The dashboard is next — I see Alex's persona needs quick access to upload. Should the dashboard lead with upload or analytics?
+              <div class="msg-actions"><button>Accept</button><button>Revise</button><button>Discuss</button></div>
+            </div>
+            <div class="msg human">Upload first. Alex wants to publish fast, analytics is secondary.</div>
+            <div class="msg ai-exp">
+              Makes sense. I've promoted the upload CTA to primary position. I also noticed the Login and Signup flows share an auth pattern — I can extract a reusable auth component for Architecture.
+            </div>
+            <div class="msg ai-exp">
+              The upload wireframe is approaching mockup fidelity. Ready for you to review before I animate it as a prototype.
+              <div class="msg-actions"><button>Accept</button><button>Revise</button><button>Discuss</button></div>
+            </div>
+          </div>
+          <div class="sidebar-input">
+            <input type="text" placeholder="Type a message...">
+            <button title="Voice input">&#9834;</button>
+            <button title="Stylus/draw">&#9998;</button>
+          </div>
+        </div>
+      </div>
+      <!-- Context strip -->
+      <div class="context-strip">
+        <div class="strip-group">
+          <span class="strip-label" style="color:var(--mission-dark)">From Mission</span>
+          <span class="strip-tag" style="background:var(--mission-bg);border:1px solid var(--mission-border);color:var(--mission)">Alex</span>
+          <span class="strip-tag" style="background:var(--mission-bg);border:1px solid var(--mission-border);color:var(--mission)">Maya</span>
+          <span class="strip-tag" style="background:var(--mission-bg);border:1px solid var(--mission-border);color:var(--mission)">Budget: MVP</span>
+          <span class="q-dot green" style="margin-left:4px"></span>
+        </div>
+        <div class="strip-group" style="margin-left:auto">
+          <span class="strip-label" style="color:var(--architecture-dark)">To Architecture</span>
+          <span class="strip-tag" style="background:var(--architecture-bg);border:1px solid var(--architecture-border);color:var(--architecture)">AuthComponent</span>
+          <span class="strip-tag" style="background:var(--architecture-bg);border:1px solid var(--architecture-border);color:var(--architecture)">UploadService</span>
+          <span class="q-dot amber" style="margin-left:4px"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generative Loop Visualization -->
+    <h4 style="font-size:15px;font-weight:600;margin:40px 0 8px;color:var(--experience)">Generative Loop — Progressive Rendering</h4>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:24px">The same artifact literally becomes more detailed and saturated at each stage.</p>
+    <div class="gen-loop-viz">
+      <div class="gen-stage">
+        <div class="stage-preview" style="border:2px dashed rgba(200,140,130,0.2);background:transparent">
+          <div style="padding:12px">
+            <div style="height:6px;border-bottom:1px dashed rgba(200,140,130,0.15);margin-bottom:8px"></div>
+            <div style="height:20px;border:1px dashed rgba(200,140,130,0.1);border-radius:3px;margin-bottom:6px"></div>
+            <div style="height:8px;border-bottom:1px dashed rgba(200,140,130,0.1)"></div>
+          </div>
+        </div>
+        <div class="stage-label" style="color:var(--experience)">Sketch</div>
+        <div class="stage-ai">AI interprets intent</div>
+        <div class="stage-human">Human: creates</div>
+      </div>
+      <div class="gen-arrow">&#8594;</div>
+      <div class="gen-stage">
+        <div class="stage-preview" style="border:1px solid rgba(200,140,130,0.25);background:rgba(200,140,130,0.03)">
+          <div style="padding:10px">
+            <div style="height:8px;background:rgba(200,140,130,0.12);border-radius:2px;margin-bottom:6px;width:60%"></div>
+            <div style="height:18px;background:rgba(200,140,130,0.06);border:1px solid rgba(200,140,130,0.12);border-radius:3px;margin-bottom:5px"></div>
+            <div style="height:6px;background:rgba(200,140,130,0.08);border-radius:2px;width:80%"></div>
+          </div>
+        </div>
+        <div class="stage-label" style="color:var(--experience)">Wireframe</div>
+        <div class="stage-ai">AI structures layout</div>
+        <div class="stage-human">Human: approves</div>
+      </div>
+      <div class="gen-arrow">&#8594;</div>
+      <div class="gen-stage">
+        <div class="stage-preview" style="border:1px solid rgba(200,140,130,0.35);background:rgba(200,140,130,0.06)">
+          <div style="padding:8px">
+            <div style="height:10px;background:rgba(200,140,130,0.2);border-radius:2px;margin-bottom:5px;width:50%"></div>
+            <div style="height:20px;background:rgba(200,140,130,0.1);border:1px solid rgba(200,140,130,0.2);border-radius:4px;margin-bottom:4px"></div>
+            <div style="height:14px;background:var(--experience);border-radius:3px;opacity:0.4"></div>
+          </div>
+        </div>
+        <div class="stage-label" style="color:var(--experience)">Mockup</div>
+        <div class="stage-ai">AI enhances fidelity</div>
+        <div class="stage-human">Human: refines</div>
+      </div>
+      <div class="gen-arrow">&#8594;</div>
+      <div class="gen-stage">
+        <div class="stage-preview" style="border:1px solid rgba(200,140,130,0.5);background:rgba(200,140,130,0.1);box-shadow:0 0 20px rgba(200,140,130,0.1)">
+          <div style="padding:6px">
+            <div style="height:10px;background:rgba(200,140,130,0.3);border-radius:2px;margin-bottom:4px;width:45%"></div>
+            <div style="height:18px;background:rgba(200,140,130,0.15);border:1px solid rgba(200,140,130,0.3);border-radius:4px;margin-bottom:3px"></div>
+            <div style="height:16px;background:var(--experience);border-radius:4px;opacity:0.6;display:flex;align-items:center;justify-content:center">
+              <span style="font-size:7px;color:#000;font-weight:700">SUBMIT</span>
+            </div>
+          </div>
+        </div>
+        <div class="stage-label" style="color:var(--experience)">Prototype</div>
+        <div class="stage-ai">AI animates interactions</div>
+        <div class="stage-human">Human: tests &amp; approves</div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============================================ -->
+<!-- SECTION 4: ARCHITECTURE LAYER                -->
+<!-- ============================================ -->
+<section class="section architecture">
+  <div class="container">
+    <div class="section-label">Layer 3</div>
+    <div class="section-title">Architecture — The Technical War Room</div>
+    <div class="section-desc">Where components, dependencies, and API contracts are designed with full traceability to the layers above.</div>
+
+    <div class="workspace">
+      <div class="workspace-bar">
+        <div class="workspace-dot"></div><div class="workspace-dot"></div><div class="workspace-dot"></div>
+        <span class="workspace-title">Architecture Workspace</span>
+      </div>
+      <div class="workspace-body" style="min-height:560px">
+        <!-- Canvas -->
+        <div class="workspace-canvas" style="position:relative">
+          <div class="layer-goal">
+            <span class="label">Goal</span>
+            <span class="text">Component architecture with dependency map and API contracts</span>
+            <span class="badge">Full Stack</span>
+          </div>
+          <div class="cue-pills">
+            <span class="cue-pill" style="background:rgba(100,170,160,0.12);color:var(--architecture)"><span class="cue-kind">?</span> Hardest technical bet</span>
+            <span class="cue-pill" style="background:rgba(100,170,160,0.12);color:var(--architecture)"><span class="cue-kind">&#x270E;</span> 3 critical capabilities</span>
+          </div>
+
+          <!-- Ghost layers above -->
+          <div class="ghost-layer ghost-mission" style="top:56px;height:28px;display:flex;align-items:center;gap:12px;font-size:9px;opacity:0.08">
+            <span>"Independent musicians... transparent royalties..."</span>
+          </div>
+          <div class="ghost-layer ghost-experience" style="top:86px;height:32px;display:flex;align-items:center;gap:12px;font-size:9px;opacity:0.1">
+            <span style="border:1px dashed currentColor;padding:1px 6px;border-radius:2px">Login</span>
+            <span style="border:1px dashed currentColor;padding:1px 6px;border-radius:2px">Dashboard</span>
+            <span style="border:1px dashed currentColor;padding:1px 6px;border-radius:2px">Upload</span>
+            <span style="border:1px dashed currentColor;padding:1px 6px;border-radius:2px">Analytics</span>
+          </div>
+
+          <!-- Component Diagram -->
+          <!-- AuthService -->
+          <div class="comp-box comp-service" style="top:140px;left:30px;width:150px">
+            <div class="comp-name">AuthService</div>
+            <div class="comp-type">Service</div>
+            <div style="margin-top:8px;font-size:10px;opacity:0.7">POST /auth/login<br>POST /auth/register<br>GET /auth/me</div>
+          </div>
+
+          <!-- Trace line from AuthService to Login wireframe ghost -->
+          <div class="trace-line" style="top:88px;left:100px;height:52px;border-color:rgba(200,140,130,0.2)"></div>
+
+          <!-- UploadService (selected) -->
+          <div class="comp-box comp-service" style="top:140px;left:220px;width:160px;border-color:rgba(100,170,160,0.5);background:rgba(100,170,160,0.15)">
+            <div class="comp-name">UploadService</div>
+            <div class="comp-type">Service &bull; Selected</div>
+            <div style="margin-top:8px;font-size:10px;opacity:0.7">POST /upload/track<br>PUT /upload/metadata<br>GET /upload/status</div>
+          </div>
+
+          <!-- Trace line from UploadService to Upload wireframe ghost -->
+          <div class="trace-line" style="top:88px;left:300px;height:52px;border-color:rgba(200,140,130,0.25)"></div>
+
+          <!-- StreamDB -->
+          <div class="comp-box comp-data" style="top:300px;left:60px;width:140px">
+            <div class="comp-name">StreamDB</div>
+            <div class="comp-type">Data Store</div>
+            <div style="margin-top:6px;font-size:10px;opacity:0.7">PostgreSQL<br>tracks, users, streams</div>
+          </div>
+
+          <!-- AnalyticsEngine -->
+          <div class="comp-box comp-service" style="top:290px;left:250px;width:150px">
+            <div class="comp-name">AnalyticsEngine</div>
+            <div class="comp-type">Service</div>
+            <div style="margin-top:6px;font-size:10px;opacity:0.7">GET /analytics/artist<br>GET /analytics/track</div>
+          </div>
+
+          <!-- PaymentGateway (external) -->
+          <div class="comp-box comp-external" style="top:180px;left:430px;width:140px">
+            <div class="comp-name">PaymentGateway</div>
+            <div class="comp-type">External</div>
+            <div style="margin-top:6px;font-size:10px;opacity:0.7">Stripe Connect<br>Royalty payouts</div>
+          </div>
+
+          <!-- CDN (external) -->
+          <div class="comp-box comp-external" style="top:320px;left:440px;width:130px">
+            <div class="comp-name">CDN / Storage</div>
+            <div class="comp-type">External</div>
+            <div style="margin-top:6px;font-size:10px;opacity:0.7">S3 + CloudFront<br>Audio delivery</div>
+          </div>
+
+          <!-- Data flow lines -->
+          <div style="position:absolute;top:210px;left:180px;width:40px;border-top:1px solid rgba(100,170,160,0.25)"></div>
+          <div style="position:absolute;top:270px;left:130px;height:30px;border-left:1px solid rgba(80,140,160,0.25)"></div>
+          <div style="position:absolute;top:340px;left:200px;width:50px;border-top:1px solid rgba(80,140,160,0.2)"></div>
+          <div style="position:absolute;top:210px;left:380px;width:50px;border-top:1px solid rgba(128,128,128,0.2)"></div>
+          <div style="position:absolute;top:260px;left:340px;height:40px;width:110px;border-bottom:1px solid rgba(128,128,128,0.15);border-right:1px solid rgba(128,128,128,0.15);border-radius:0 0 6px 0"></div>
+        </div>
+
+        <!-- Detail Sidebar -->
+        <div class="workspace-sidebar" style="width:300px">
+          <div class="sidebar-header">
+            <span class="dot" style="background:var(--architecture)"></span> Component Detail
+          </div>
+          <div style="padding:16px;flex:1;overflow-y:auto">
+            <div style="font-size:15px;font-weight:600;color:var(--architecture);margin-bottom:4px">UploadService</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:16px">Handles track upload, metadata extraction, and distribution queue</div>
+
+            <div style="font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-faint);margin-bottom:8px">API Contract</div>
+            <div style="background:rgba(0,0,0,0.3);border-radius:6px;padding:10px;font-family:monospace;font-size:11px;margin-bottom:16px;color:var(--architecture);line-height:1.7">
+              POST /upload/track<br>
+              &nbsp;&nbsp;body: multipart/form-data<br>
+              &nbsp;&nbsp;returns: { trackId, status }<br><br>
+              PUT /upload/metadata<br>
+              &nbsp;&nbsp;body: { title, genre, tags }<br>
+              &nbsp;&nbsp;returns: { updated: true }
+            </div>
+
+            <div style="font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-faint);margin-bottom:8px">Dependencies</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">
+              <span style="padding:3px 10px;border-radius:12px;font-size:10px;background:rgba(80,140,160,0.1);border:1px solid rgba(80,140,160,0.2);color:#50a0c0">StreamDB</span>
+              <span style="padding:3px 10px;border-radius:12px;font-size:10px;background:rgba(128,128,128,0.1);border:1px solid rgba(128,128,128,0.2);color:#888">CDN / Storage</span>
+              <span style="padding:3px 10px;border-radius:12px;font-size:10px;background:rgba(100,170,160,0.1);border:1px solid rgba(100,170,160,0.2);color:var(--architecture)">AuthService</span>
+            </div>
+
+            <div style="font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-faint);margin-bottom:8px">Cross-Layer Trace</div>
+            <div style="font-size:12px;color:var(--text-dim);line-height:1.8;margin-bottom:16px">
+              <span style="color:var(--experience)">&#9650;</span> Implements: <span style="color:var(--experience)">Upload Flow</span>, <span style="color:var(--experience)">Dashboard Upload CTA</span><br>
+              <span style="color:var(--mission)">&#9650;</span> Serves: <span style="color:var(--mission)">Alex — "releases monthly"</span>
+            </div>
+
+            <div style="font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-faint);margin-bottom:8px">Context Quality</div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div class="context-item"><span class="q-dot green"></span><span style="font-size:11px">Experience wireframes complete</span></div>
+              <div class="context-item"><span class="q-dot green"></span><span style="font-size:11px">API contract defined</span></div>
+              <div class="context-item"><span class="q-dot amber"></span><span style="font-size:11px">Error handling spec partial</span></div>
+            </div>
+
+            <!-- Decision Record -->
+            <div class="decision-card">
+              <h5>Decision: Upload Strategy</h5>
+              <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">How should large audio files be uploaded?</div>
+              <div class="decision-options">
+                <div class="decision-option">
+                  <div class="opt-label">Option A</div>
+                  <div style="color:var(--text-dim)">Single upload<br><span style="font-size:10px;color:var(--text-faint)">Simple but fails on spotty connections</span></div>
+                </div>
+                <div class="decision-option recommended">
+                  <div class="opt-label">&#10003; Recommended</div>
+                  <div style="color:var(--text)">Chunked resumable<br><span style="font-size:10px;color:var(--text-dim)">Handles Raj's constraint: interrupted uploads</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="context-bar">
+        <div class="context-item"><span class="q-dot green"></span> AuthService</div>
+        <div class="context-item"><span class="q-dot green"></span> UploadService</div>
+        <div class="context-item"><span class="q-dot green"></span> StreamDB</div>
+        <div class="context-item"><span class="q-dot amber"></span> AnalyticsEngine</div>
+        <div class="context-item"><span class="q-dot green"></span> PaymentGateway</div>
+        <div class="context-item"><span class="q-dot green"></span> CDN / Storage</div>
+      </div>
+    </div>
+
+    <!-- Decision Record Card Visualization -->
+    <h4 style="font-size:15px;font-weight:600;margin:40px 0 8px;color:var(--architecture)">Decision Records — Splitting Into Options</h4>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:24px">When the system encounters a genuine tradeoff, it presents options as overlapping cards with a recommendation.</p>
+    <div style="display:flex;justify-content:center;gap:0;position:relative;padding:40px 0">
+      <!-- Source card -->
+      <div style="width:180px;padding:16px;background:var(--surface);border:1px solid var(--architecture-border);border-radius:var(--radius);text-align:center;z-index:3;position:relative">
+        <div style="font-size:11px;color:var(--architecture);font-weight:600;margin-bottom:6px">Authentication Strategy</div>
+        <div style="font-size:10px;color:var(--text-dim)">How should users authenticate?</div>
+        <div style="margin-top:10px;font-size:20px;color:var(--architecture)">&#8594;</div>
+      </div>
+      <!-- Options fanned out -->
+      <div style="display:flex;gap:12px;margin-left:24px">
+        <div style="width:160px;padding:14px;background:var(--surface);border:1px solid rgba(255,255,255,0.08);border-radius:var(--radius);transform:rotate(-2deg)">
+          <div style="font-size:9px;font-weight:600;letter-spacing:1px;color:var(--text-faint);margin-bottom:6px">OPTION A</div>
+          <div style="font-size:12px;color:var(--text-dim)">Email + Password</div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:4px">Traditional, high friction</div>
+        </div>
+        <div style="width:160px;padding:14px;background:var(--surface);border:2px solid rgba(100,170,160,0.4);border-radius:var(--radius);box-shadow:0 0 20px rgba(100,170,160,0.1);transform:rotate(0deg)">
+          <div style="font-size:9px;font-weight:600;letter-spacing:1px;color:var(--architecture);margin-bottom:6px">&#10003; RECOMMENDED</div>
+          <div style="font-size:12px;color:var(--text)">OAuth + Magic Link</div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:4px">Low friction, aligns with Alex persona</div>
+        </div>
+        <div style="width:160px;padding:14px;background:var(--surface);border:1px solid rgba(255,255,255,0.08);border-radius:var(--radius);transform:rotate(2deg)">
+          <div style="font-size:9px;font-weight:600;letter-spacing:1px;color:var(--text-faint);margin-bottom:6px">OPTION C</div>
+          <div style="font-size:12px;color:var(--text-dim)">Wallet-based Auth</div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:4px">Future-ready, complex for V1</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================ -->
+<!-- SECTION 5: IMPLEMENTATION LAYER              -->
+<!-- ============================================ -->
+<section class="section implementation">
+  <div class="container">
+    <div class="section-label">Layer 4</div>
+    <div class="section-title">Implementation — The Operations Dashboard</div>
+    <div class="section-desc">Where architecture becomes running code. AI teams execute while humans review, with full traceability through every layer above.</div>
+
+    <div class="workspace">
+      <div class="workspace-bar">
+        <div class="workspace-dot"></div><div class="workspace-dot"></div><div class="workspace-dot"></div>
+        <span class="workspace-title">Implementation Workspace</span>
+      </div>
+      <div class="workspace-body" style="min-height:560px">
+        <!-- LEFT: Progress overview -->
+        <div style="width:240px;border-right:1px solid rgba(255,255,255,0.06);padding:16px;position:relative;overflow:hidden">
+          <div class="layer-goal" style="background:var(--implementation-bg);border:1px solid var(--implementation-border)">
+            <span class="label" style="color:var(--implementation)">Goal</span>
+            <span class="text" style="font-size:11px">Deployed, tested product</span>
+          </div>
+          <div class="cue-pills">
+            <span class="cue-pill" style="background:rgba(140,120,180,0.12);color:var(--implementation)"><span class="cue-kind">&#x2713;</span> Input, output, metric per component</span>
+          </div>
+
+          <!-- Ghost layers (all 3 above) -->
+          <div style="margin-bottom:16px;padding:10px;border-radius:6px;background:rgba(255,255,255,0.015);border:1px solid rgba(255,255,255,0.03)">
+            <div style="font-size:8px;letter-spacing:1px;color:var(--text-faint);text-transform:uppercase;margin-bottom:6px">Layers Above</div>
+            <div style="font-size:9px;color:var(--mission);opacity:0.35;margin-bottom:3px">"Independent musicians... no intermediaries..."</div>
+            <div style="font-size:9px;color:var(--experience);opacity:0.3;margin-bottom:3px;display:flex;gap:4px">
+              <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Login</span>
+              <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Upload</span>
+              <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Dash</span>
+            </div>
+            <div style="font-size:9px;color:var(--architecture);opacity:0.3;display:flex;gap:4px">
+              <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Auth</span>
+              <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">Upload</span>
+              <span style="border:1px dashed currentColor;padding:0 4px;border-radius:2px">DB</span>
+            </div>
+          </div>
+
+          <!-- Component progress -->
+          <div style="font-size:10px;font-weight:600;letter-spacing:1px;color:var(--text-faint);text-transform:uppercase;margin-bottom:12px">Components</div>
+
+          <div style="margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span style="color:var(--text)">AuthService</span>
+              <span style="color:var(--green);font-size:10px">100%</span>
+            </div>
+            <div class="progress"><div class="progress-fill" style="width:100%;background:var(--green)"></div></div>
+          </div>
+
+          <div style="margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span style="color:var(--text)">UploadService</span>
+              <span style="color:var(--implementation);font-size:10px">72%</span>
+            </div>
+            <div class="progress"><div class="progress-fill" style="width:72%;background:var(--implementation)"></div></div>
+          </div>
+
+          <div style="margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span style="color:var(--text)">StreamDB</span>
+              <span style="color:var(--green);font-size:10px">100%</span>
+            </div>
+            <div class="progress"><div class="progress-fill" style="width:100%;background:var(--green)"></div></div>
+          </div>
+
+          <div style="margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span style="color:var(--text)">AnalyticsEngine</span>
+              <span style="color:var(--amber);font-size:10px">35%</span>
+            </div>
+            <div class="progress"><div class="progress-fill" style="width:35%;background:var(--amber)"></div></div>
+          </div>
+
+          <div style="margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+              <span style="color:var(--text)">PaymentGateway</span>
+              <span style="color:var(--red);font-size:10px">0%</span>
+            </div>
+            <div class="progress"><div class="progress-fill" style="width:0%;background:var(--red)"></div></div>
+          </div>
+
+          <!-- Pulsing activity regions -->
+          <div class="pulse-region" style="width:80px;height:80px;bottom:60px;right:-10px"></div>
+        </div>
+
+        <!-- CENTER: Code review panel -->
+        <div class="workspace-canvas" style="flex:1;padding:20px;position:relative">
+          <!-- Full context trace -->
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:16px;font-size:11px;flex-wrap:wrap">
+            <span style="color:var(--mission);padding:2px 8px;border:1px solid var(--mission-border);border-radius:12px">"Users need quick access"</span>
+            <span style="color:var(--text-faint)">&#8594;</span>
+            <span style="color:var(--experience);padding:2px 8px;border:1px solid var(--experience-border);border-radius:12px">Login Screen</span>
+            <span style="color:var(--text-faint)">&#8594;</span>
+            <span style="color:var(--architecture);padding:2px 8px;border:1px solid var(--architecture-border);border-radius:12px">AuthService</span>
+            <span style="color:var(--text-faint)">&#8594;</span>
+            <span style="color:var(--implementation);padding:2px 8px;border:1px solid var(--implementation-border);border-radius:12px;font-weight:600">auth.controller.ts</span>
+          </div>
+
+          <!-- Code panel (elevated) -->
+          <div class="code-panel" style="margin-bottom:16px">
+            <div style="font-size:10px;color:var(--text-faint);margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+              <span>src/services/auth/auth.controller.ts</span>
+              <div style="display:flex;gap:6px">
+                <span class="test-badge pass">&#10003; 12 passing</span>
+                <span class="test-badge pass">&#10003; coverage 94%</span>
+              </div>
+            </div>
+            <div><span class="line-num">1</span><span class="code-kw">import</span> { <span class="code-type">Controller</span>, <span class="code-type">Post</span>, <span class="code-type">Body</span> } <span class="code-kw">from</span> <span class="code-str">'@nestjs/common'</span>;</div>
+            <div><span class="line-num">2</span><span class="code-kw">import</span> { <span class="code-type">AuthService</span> } <span class="code-kw">from</span> <span class="code-str">'./auth.service'</span>;</div>
+            <div><span class="line-num">3</span></div>
+            <div><span class="line-num">4</span><span class="code-cm">// Implements: Login Screen (Experience Layer)</span></div>
+            <div><span class="line-num">5</span><span class="code-cm">// Serves: Alex — "quick access to publish"</span></div>
+            <div><span class="line-num">6</span>@<span class="code-fn">Controller</span>(<span class="code-str">'auth'</span>)</div>
+            <div><span class="line-num">7</span><span class="code-kw">export class</span> <span class="code-type">AuthController</span> {</div>
+            <div><span class="line-num">8</span>  <span class="code-kw">constructor</span>(<span class="code-kw">private</span> <span class="code-var">authService</span>: <span class="code-type">AuthService</span>) {}</div>
+            <div><span class="line-num">9</span></div>
+            <div class="code-add"><span class="line-num">10</span>  @<span class="code-fn">Post</span>(<span class="code-str">'magic-link'</span>)</div>
+            <div class="code-add"><span class="line-num">11</span>  <span class="code-kw">async</span> <span class="code-fn">sendMagicLink</span>(@<span class="code-fn">Body</span>() { <span class="code-var">email</span> }: { <span class="code-var">email</span>: <span class="code-type">string</span> }) {</div>
+            <div class="code-add"><span class="line-num">12</span>    <span class="code-kw">return</span> <span class="code-kw">this</span>.<span class="code-var">authService</span>.<span class="code-fn">createMagicLink</span>(<span class="code-var">email</span>);</div>
+            <div class="code-add"><span class="line-num">13</span>  }</div>
+            <div><span class="line-num">14</span></div>
+            <div><span class="line-num">15</span>  @<span class="code-fn">Post</span>(<span class="code-str">'verify'</span>)</div>
+            <div><span class="line-num">16</span>  <span class="code-kw">async</span> <span class="code-fn">verify</span>(@<span class="code-fn">Body</span>() { <span class="code-var">token</span> }: { <span class="code-var">token</span>: <span class="code-type">string</span> }) {</div>
+            <div><span class="line-num">17</span>    <span class="code-kw">return</span> <span class="code-kw">this</span>.<span class="code-var">authService</span>.<span class="code-fn">verifyToken</span>(<span class="code-var">token</span>);</div>
+            <div><span class="line-num">18</span>  }</div>
+            <div class="code-del"><span class="line-num">19</span>  <span class="code-cm">// Removed: password-based login (Decision: OAuth + Magic Link)</span></div>
+            <div><span class="line-num">20</span>}</div>
+          </div>
+
+          <!-- Diff summary -->
+          <div style="display:flex;gap:16px;font-size:11px;color:var(--text-dim);margin-bottom:16px">
+            <span style="color:var(--green)">+4 additions</span>
+            <span style="color:var(--red)">-1 removal</span>
+            <span>Decision trace: OAuth + Magic Link</span>
+          </div>
+
+          <!-- Escalation card -->
+          <div class="escalation" style="bottom:30px;left:40px">
+            &#9888; PaymentFlow: blocked — needs API contract from Architecture layer
+          </div>
+        </div>
+
+        <!-- RIGHT: Activity feed -->
+        <div style="width:260px;border-left:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;background:rgba(0,0,0,0.15)">
+          <div class="sidebar-header">
+            <span class="dot" style="background:var(--implementation)"></span> Activity Feed
+          </div>
+          <div style="flex:1;overflow-y:auto">
+            <div class="activity-item">
+              <div class="time">2 min ago</div>
+              <div style="color:var(--green)">&#10003; AuthService: 12 tests passing</div>
+            </div>
+            <div class="activity-item">
+              <div class="time">5 min ago</div>
+              <div style="color:var(--implementation)">&#9654; UploadService: implementing chunked upload handler</div>
+            </div>
+            <div class="activity-item">
+              <div class="time">8 min ago</div>
+              <div style="color:var(--green)">&#10003; StreamDB: schema migration complete</div>
+            </div>
+            <div class="activity-item">
+              <div class="time">12 min ago</div>
+              <div style="color:var(--implementation)">&#9654; UploadService: writing integration tests</div>
+            </div>
+            <div class="activity-item">
+              <div class="time">15 min ago</div>
+              <div style="color:var(--amber)">&#9888; PaymentGateway: blocked — needs API contract</div>
+              <div style="font-size:10px;color:var(--text-faint);margin-top:2px">Escalated to Architecture layer</div>
+            </div>
+            <div class="activity-item">
+              <div class="time">20 min ago</div>
+              <div style="color:var(--green)">&#10003; AuthService: magic link flow deployed to staging</div>
+            </div>
+            <div class="activity-item">
+              <div class="time">25 min ago</div>
+              <div style="color:var(--implementation)">&#9654; AnalyticsEngine: scaffolding query layer</div>
+            </div>
+            <div class="activity-item">
+              <div class="time">30 min ago</div>
+              <div style="color:var(--green)">&#10003; AuthService: OAuth providers configured</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="context-bar">
+        <div class="context-item"><span class="q-dot green"></span> AuthService: deployed</div>
+        <div class="context-item"><span class="q-dot amber"></span> UploadService: in progress</div>
+        <div class="context-item"><span class="q-dot green"></span> StreamDB: migrated</div>
+        <div class="context-item"><span class="q-dot amber"></span> AnalyticsEngine: scaffolding</div>
+        <div class="context-item"><span class="q-dot red"></span> PaymentGateway: blocked</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================ -->
+<!-- SECTION 6: CONTEXT FLOW SUMMARY              -->
+<!-- ============================================ -->
+<section class="section" style="padding-top:60px">
+  <div class="container">
+    <div class="section-label" style="color:var(--text-dim)">How It Connects</div>
+    <div class="section-title">Context Flow — Down, Up, and Across</div>
+    <div class="section-desc">Intent flows down from mission to code. Reality flows up from implementation to strategy. Within each layer, generative loops refine artifacts.</div>
+
+    <div class="flow-diagram">
+      <!-- Direction labels -->
+      <div style="display:flex;justify-content:space-between;margin-bottom:24px;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-faint)">
+        <span>&#9660; Intent flows down</span>
+        <span>&#8644; Artifacts refined within</span>
+        <span>&#9650; Reality flows up</span>
+      </div>
+
+      <!-- Mission Flow Layer -->
+      <div class="flow-layer" style="background:var(--mission-bg);border:1px solid var(--mission-border)">
+        <div class="fl-label" style="color:var(--mission)">Mission</div>
+        <div class="fl-artifacts">
+          <span class="fl-artifact" style="background:var(--mission-bg);border-color:var(--mission-border);color:var(--mission)">Persona: Alex</span>
+          <span class="fl-artifact" style="background:var(--mission-bg);border-color:var(--mission-border);color:var(--mission)">Persona: Maya</span>
+          <span class="fl-artifact" style="background:var(--mission-bg);border-color:var(--mission-border);color:var(--mission)">Constraint: MVP Budget</span>
+          <span class="fl-artifact" style="background:var(--mission-bg);border-color:var(--mission-border);color:var(--mission)">Constraint: Resilient Upload</span>
+        </div>
+        <span class="q-dot green"></span>
+      </div>
+
+      <!-- Down arrow with example -->
+      <div style="text-align:center;padding:8px 0;position:relative">
+        <div style="font-size:18px;color:var(--text-faint)">&#9660;</div>
+        <div style="position:absolute;right:40px;top:2px;font-size:10px;color:var(--text-faint);font-style:italic">Alex defined at Mission &#8594;</div>
+      </div>
+
+      <!-- Experience Flow Layer -->
+      <div class="flow-layer" style="background:var(--experience-bg);border:1px solid var(--experience-border)">
+        <div class="fl-label" style="color:var(--experience)">Experience</div>
+        <div class="fl-artifacts">
+          <span class="fl-artifact" style="background:var(--experience-bg);border-color:var(--experience-border);color:var(--experience)">Login Flow</span>
+          <span class="fl-artifact" style="background:var(--experience-bg);border-color:var(--experience-border);color:var(--experience)">Upload Flow</span>
+          <span class="fl-artifact" style="background:var(--experience-bg);border-color:var(--experience-border);color:var(--experience)">Dashboard</span>
+          <span class="fl-artifact" style="background:var(--experience-bg);border-color:var(--experience-border);color:var(--experience)">Analytics View</span>
+        </div>
+        <span class="q-dot green"></span>
+      </div>
+
+      <div style="text-align:center;padding:8px 0;position:relative">
+        <div style="font-size:18px;color:var(--text-faint)">&#9660;</div>
+        <div style="position:absolute;right:40px;top:2px;font-size:10px;color:var(--text-faint);font-style:italic">&#8594; referenced in Upload wireframe &#8594;</div>
+      </div>
+
+      <!-- Architecture Flow Layer -->
+      <div class="flow-layer" style="background:var(--architecture-bg);border:1px solid var(--architecture-border)">
+        <div class="fl-label" style="color:var(--architecture)">Architecture</div>
+        <div class="fl-artifacts">
+          <span class="fl-artifact" style="background:var(--architecture-bg);border-color:var(--architecture-border);color:var(--architecture)">AuthService</span>
+          <span class="fl-artifact" style="background:var(--architecture-bg);border-color:var(--architecture-border);color:var(--architecture)">UploadService</span>
+          <span class="fl-artifact" style="background:var(--architecture-bg);border-color:var(--architecture-border);color:var(--architecture)">StreamDB</span>
+          <span class="fl-artifact" style="background:var(--architecture-bg);border-color:var(--architecture-border);color:var(--architecture)">AnalyticsEngine</span>
+        </div>
+        <span class="q-dot amber"></span>
+      </div>
+
+      <div style="text-align:center;padding:8px 0;position:relative">
+        <div style="font-size:18px;color:var(--text-faint)">&#9660;</div>
+        <div style="position:absolute;right:40px;top:2px;font-size:10px;color:var(--text-faint);font-style:italic">&#8594; mapped to AuthService &#8594;</div>
+      </div>
+
+      <!-- Implementation Flow Layer -->
+      <div class="flow-layer" style="background:var(--implementation-bg);border:1px solid var(--implementation-border)">
+        <div class="fl-label" style="color:var(--implementation)">Implementation</div>
+        <div class="fl-artifacts">
+          <span class="fl-artifact" style="background:var(--implementation-bg);border-color:var(--implementation-border);color:var(--implementation)">auth.controller.ts</span>
+          <span class="fl-artifact" style="background:var(--implementation-bg);border-color:var(--implementation-border);color:var(--implementation)">upload.handler.ts</span>
+          <span class="fl-artifact" style="background:var(--implementation-bg);border-color:var(--implementation-border);color:var(--implementation)">migrations/001</span>
+          <span class="fl-artifact" style="background:var(--implementation-bg);border-color:var(--implementation-border);color:var(--implementation)">analytics.query.ts</span>
+        </div>
+        <span class="q-dot amber"></span>
+      </div>
+
+      <!-- Up flow indicator -->
+      <div style="margin-top:24px;padding:16px 20px;background:rgba(255,255,255,0.02);border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,0.04)">
+        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text)">Reality Flows Up</div>
+        <div style="font-size:12px;color:var(--text-dim);line-height:1.8">
+          <span style="color:var(--implementation)">&#9650;</span> Implementation discovers: chunked upload adds 2 days to timeline<br>
+          <span style="color:var(--architecture)">&#9650;</span> Architecture updates: UploadService API contract revised<br>
+          <span style="color:var(--experience)">&#9650;</span> Experience adapts: upload progress bar added to wireframe<br>
+          <span style="color:var(--mission)">&#9650;</span> Mission confirms: timeline constraint updated, still within budget
+        </div>
+      </div>
+
+      <!-- Trace example -->
+      <div style="margin-top:20px;padding:16px 20px;background:rgba(255,255,255,0.02);border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,0.04)">
+        <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text)">Full Trace Example</div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px;flex-wrap:wrap">
+          <span style="color:var(--mission);padding:4px 12px;background:var(--mission-bg);border:1px solid var(--mission-border);border-radius:12px">Persona "Alex"</span>
+          <span style="color:var(--text-faint)">&#8594;</span>
+          <span style="color:var(--experience);padding:4px 12px;background:var(--experience-bg);border:1px solid var(--experience-border);border-radius:12px">Upload Flow wireframe</span>
+          <span style="color:var(--text-faint)">&#8594;</span>
+          <span style="color:var(--architecture);padding:4px 12px;background:var(--architecture-bg);border:1px solid var(--architecture-border);border-radius:12px">UploadService component</span>
+          <span style="color:var(--text-faint)">&#8594;</span>
+          <span style="color:var(--implementation);padding:4px 12px;background:var(--implementation-bg);border:1px solid var(--implementation-border);border-radius:12px">upload.handler.ts tested</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================ -->
+<!-- SECTION 7: ADAPTIVE COLLABORATION            -->
+<!-- ============================================ -->
+<section class="section">
+  <div class="container">
+    <div class="section-label" style="color:var(--text-dim)">Adaptive Behavior</div>
+    <div class="section-title">Collaboration Adapts to Complexity</div>
+    <div class="section-desc">The system shifts between AI-led and human-led modes based on product complexity, confidence level, and domain familiarity.</div>
+
+    <div class="side-by-side">
+      <!-- AI-Led -->
+      <div class="scenario-card">
+        <div class="scenario-header" style="border-bottom-color:rgba(92,184,92,0.2)">
+          <h4 style="color:var(--green)">AI-Led Mode</h4>
+          <p>Simple product, high confidence, familiar domain</p>
+        </div>
+        <div class="scenario-body" style="padding:20px">
+          <div style="display:flex;gap:12px;height:100%">
+            <div style="flex:1">
+              <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">Canvas — Pre-filled</div>
+              <div class="artifact-card" style="margin-bottom:10px;border-color:rgba(92,184,92,0.15)">
+                <div class="card-header"><span class="q-dot green"></span><span class="card-title" style="font-size:12px">Mission Brief</span></div>
+                <div class="card-body">Complete. AI-generated from intake form. 3 personas, 5 constraints, success criteria defined.</div>
+              </div>
+              <div class="artifact-card" style="margin-bottom:10px;border-color:rgba(92,184,92,0.15)">
+                <div class="card-header"><span class="q-dot green"></span><span class="card-title" style="font-size:12px">UX Flows (4/4)</span></div>
+                <div class="card-body">All primary paths wireframed. 2 already at mockup fidelity.</div>
+              </div>
+              <div class="artifact-card" style="margin-bottom:10px;border-color:rgba(92,184,92,0.15)">
+                <div class="card-header"><span class="q-dot green"></span><span class="card-title" style="font-size:12px">Architecture</span></div>
+                <div class="card-body">Standard CRUD stack. No novel decisions needed.</div>
+              </div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:16px;padding:10px;background:rgba(92,184,92,0.05);border-radius:6px;border:1px solid rgba(92,184,92,0.1)">
+                <span style="font-weight:600;color:var(--green)">Human role:</span> Review and approve. Few decision cards.
+              </div>
+            </div>
+            <div style="width:140px;background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+              <div style="font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">System Panel</div>
+              <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;padding:8px;background:rgba(92,184,92,0.05);border-radius:6px">
+                "Everything looks good. Ready for your review."
+              </div>
+              <div style="font-size:10px;color:var(--text-faint);text-align:center;padding:20px 0">
+                Minimal activity<br>
+                <span style="font-size:20px;opacity:0.3">...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Human-Led -->
+      <div class="scenario-card">
+        <div class="scenario-header" style="border-bottom-color:rgba(232,168,56,0.2)">
+          <h4 style="color:var(--amber)">Human-Led Mode</h4>
+          <p>Complex product, low confidence, novel domain</p>
+        </div>
+        <div class="scenario-body" style="padding:20px">
+          <div style="display:flex;gap:12px;height:100%">
+            <div style="flex:1">
+              <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">Canvas — Needs Input</div>
+              <div class="artifact-card" style="margin-bottom:10px;border-style:dashed;border-color:rgba(232,168,56,0.2)">
+                <div class="card-header"><span class="q-dot red"></span><span class="card-title" style="font-size:12px">Mission Brief</span></div>
+                <div class="card-body" style="color:var(--amber)">Incomplete. Key questions about target market unresolved.</div>
+              </div>
+              <div class="artifact-card" style="margin-bottom:10px;border-style:dashed;border-color:rgba(232,168,56,0.2)">
+                <div class="card-header"><span class="q-dot amber"></span><span class="card-title" style="font-size:12px">UX Flows (1/4)</span></div>
+                <div class="card-body">Only login sketched. Upload flow has 3 open decisions.</div>
+              </div>
+              <div class="artifact-card" style="margin-bottom:10px;border-style:dashed;border-color:rgba(217,83,79,0.2)">
+                <div class="card-header"><span class="q-dot red"></span><span class="card-title" style="font-size:12px">Architecture</span></div>
+                <div class="card-body" style="color:var(--red)">Blocked. Novel requirements need human decisions first.</div>
+              </div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:16px;padding:10px;background:rgba(232,168,56,0.05);border-radius:6px;border:1px solid rgba(232,168,56,0.1)">
+                <span style="font-weight:600;color:var(--amber)">Human role:</span> Create, decide, and resolve ambiguity.
+              </div>
+            </div>
+            <div style="width:140px;background:rgba(0,0,0,0.2);border-radius:8px;padding:10px">
+              <div style="font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">System Panel</div>
+              <div style="font-size:11px;color:var(--amber);margin-bottom:6px;padding:6px;background:rgba(232,168,56,0.05);border-radius:6px">
+                "Who is the primary buyer?"
+              </div>
+              <div style="font-size:11px;color:var(--amber);margin-bottom:6px;padding:6px;background:rgba(232,168,56,0.05);border-radius:6px">
+                "What's the pricing model?"
+              </div>
+              <div style="font-size:11px;color:var(--amber);margin-bottom:6px;padding:6px;background:rgba(232,168,56,0.05);border-radius:6px">
+                "Should this be real-time or batch?"
+              </div>
+              <div style="font-size:10px;color:var(--text-faint);text-align:center;padding:8px 0">
+                Active probing<br>
+                <span style="font-size:16px;animation:pulse 1.5s infinite">&#9679;</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================ -->
+<!-- SECTION 8: TEMPLATE STACK CONFIGURATION      -->
+<!-- ============================================ -->
+<section class="section" style="padding-bottom:120px">
+  <div class="container">
+    <div class="section-label" style="color:var(--text-dim)">Configuration</div>
+    <div class="section-title">Template Stack Shapes the Workspace</div>
+    <div class="section-desc">A template stack defines goals, required artifacts, AI initiative level, and quality gates for each layer.</div>
+
+    <!-- Stack Selector -->
+    <div class="stack-selector">
+      <div class="stack-option active">Full Stack</div>
+      <div class="stack-option">API Only</div>
+      <div class="stack-option">Design Sprint</div>
+      <div class="stack-option" style="opacity:0.4;cursor:not-allowed">Custom...</div>
+    </div>
+
+    <!-- Stack Configuration Grid -->
+    <div class="stack-grid">
+      <!-- Mission -->
+      <div class="stack-card" style="border-top:3px solid var(--mission)">
+        <h4><span style="color:var(--mission)">&#9632;</span> Mission</h4>
+        <div class="stack-row"><span class="label">Goal</span><span style="color:var(--text);font-size:11px">Complete product brief</span></div>
+        <div class="stack-row"><span class="label">Artifacts</span><span style="color:var(--text);font-size:11px">Personas, Constraints, Criteria</span></div>
+        <div class="stack-row"><span class="label">AI Initiative</span><span style="color:var(--amber);font-size:11px">Moderate</span></div>
+        <div class="stack-row"><span class="label">Quality Gate</span><span style="color:var(--text);font-size:11px">All artifacts context-ready</span></div>
+        <div class="stack-row"><span class="label">Blocks</span><span style="color:var(--text);font-size:11px">Experience start</span></div>
+      </div>
+      <!-- Experience -->
+      <div class="stack-card" style="border-top:3px solid var(--experience)">
+        <h4><span style="color:var(--experience)">&#9632;</span> Experience</h4>
+        <div class="stack-row"><span class="label">Goal</span><span style="color:var(--text);font-size:11px">Full UX flow, all paths</span></div>
+        <div class="stack-row"><span class="label">Artifacts</span><span style="color:var(--text);font-size:11px">Wireframes, Flows, Prototypes</span></div>
+        <div class="stack-row"><span class="label">AI Initiative</span><span style="color:var(--amber);font-size:11px">Moderate</span></div>
+        <div class="stack-row"><span class="label">Quality Gate</span><span style="color:var(--text);font-size:11px">All paths at wireframe+</span></div>
+        <div class="stack-row"><span class="label">Blocks</span><span style="color:var(--text);font-size:11px">Architecture start</span></div>
+      </div>
+      <!-- Architecture -->
+      <div class="stack-card" style="border-top:3px solid var(--architecture)">
+        <h4><span style="color:var(--architecture)">&#9632;</span> Architecture</h4>
+        <div class="stack-row"><span class="label">Goal</span><span style="color:var(--text);font-size:11px">Component map + APIs</span></div>
+        <div class="stack-row"><span class="label">Artifacts</span><span style="color:var(--text);font-size:11px">Components, Contracts, Decisions</span></div>
+        <div class="stack-row"><span class="label">AI Initiative</span><span style="color:var(--green);font-size:11px">High</span></div>
+        <div class="stack-row"><span class="label">Quality Gate</span><span style="color:var(--text);font-size:11px">All APIs contracted</span></div>
+        <div class="stack-row"><span class="label">Blocks</span><span style="color:var(--text);font-size:11px">Implementation start</span></div>
+      </div>
+      <!-- Implementation -->
+      <div class="stack-card" style="border-top:3px solid var(--implementation)">
+        <h4><span style="color:var(--implementation)">&#9632;</span> Implementation</h4>
+        <div class="stack-row"><span class="label">Goal</span><span style="color:var(--text);font-size:11px">Deployed, tested product</span></div>
+        <div class="stack-row"><span class="label">Artifacts</span><span style="color:var(--text);font-size:11px">Code, Tests, Deploy Config</span></div>
+        <div class="stack-row"><span class="label">AI Initiative</span><span style="color:var(--green);font-size:11px">High</span></div>
+        <div class="stack-row"><span class="label">Quality Gate</span><span style="color:var(--text);font-size:11px">Tests pass, coverage >80%</span></div>
+        <div class="stack-row"><span class="label">Blocks</span><span style="color:var(--text);font-size:11px">Release</span></div>
+      </div>
+    </div>
+
+    <!-- Style Extension (future/locked) -->
+    <div style="margin-top:24px;padding:20px;background:var(--surface);border-radius:var(--radius);border:1px dashed rgba(255,255,255,0.08);opacity:0.5;display:flex;align-items:center;gap:16px">
+      <div style="font-size:20px">&#128274;</div>
+      <div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:2px">Style Extension Layer</div>
+        <div style="font-size:12px;color:var(--text-dim)">Visual design tokens, brand guidelines, component styling rules. Coming in a future version.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

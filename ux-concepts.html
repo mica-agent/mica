@@ -1,0 +1,1460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mica — The Layers Design Language</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --surface2: #1a1a1a;
+    --border: #222;
+    --text: #e8e4de;
+    --text-dim: #887f72;
+    --text-faint: #554f46;
+    --mission: #d4c8a0;
+    --mission-deep: #b4a078;
+    --mission-bg: rgba(212, 200, 160, 0.06);
+    --mission-bg2: rgba(212, 200, 160, 0.12);
+    --experience: #c88c82;
+    --experience-bg: rgba(200, 140, 130, 0.06);
+    --experience-bg2: rgba(200, 140, 130, 0.12);
+    --architecture: #64aaa0;
+    --architecture-bg: rgba(100, 170, 160, 0.06);
+    --architecture-bg2: rgba(100, 170, 160, 0.12);
+    --implementation: #8c78b4;
+    --implementation-bg: rgba(140, 120, 180, 0.06);
+    --implementation-bg2: rgba(140, 120, 180, 0.12);
+    --grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  .page { max-width: 1400px; margin: 0 auto; padding: 0 60px; }
+
+  section {
+    padding: 100px 0;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  section:last-child { border-bottom: none; }
+
+  h1 { font-size: 56px; font-weight: 200; letter-spacing: -1.5px; line-height: 1.1; }
+  h2 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 16px; }
+  h3 { font-size: 20px; font-weight: 500; letter-spacing: 0.3px; margin-bottom: 12px; }
+  h4 { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; }
+
+  .subtitle { font-size: 20px; font-weight: 300; color: var(--text-dim); max-width: 600px; line-height: 1.5; }
+  .section-desc { font-size: 16px; color: var(--text-dim); max-width: 700px; margin-bottom: 48px; line-height: 1.7; }
+
+  .badge {
+    display: inline-block; padding: 4px 14px; border-radius: 100px;
+    font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;
+  }
+  .badge-mission { background: var(--mission-bg2); color: var(--mission); }
+  .badge-experience { background: var(--experience-bg2); color: var(--experience); }
+  .badge-architecture { background: var(--architecture-bg2); color: var(--architecture); }
+  .badge-implementation { background: var(--implementation-bg2); color: var(--implementation); }
+
+  /* Canvas: the visual mockup container */
+  .canvas {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    position: relative;
+    overflow: hidden;
+    min-height: 500px;
+  }
+  .canvas::after {
+    content: '';
+    position: absolute; inset: 0;
+    background-image: var(--grain);
+    background-size: 256px;
+    pointer-events: none;
+    opacity: 0.5;
+    border-radius: 16px;
+  }
+
+  .canvas-label {
+    position: absolute; top: 16px; right: 20px;
+    font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--text-faint); z-index: 10;
+  }
+
+  /* Layer color bar on left edge */
+  .layer-bar {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    border-radius: 16px 0 0 16px; z-index: 10;
+  }
+  .layer-bar-mission { background: var(--mission); }
+  .layer-bar-experience { background: var(--experience); }
+  .layer-bar-architecture { background: var(--architecture); }
+  .layer-bar-implementation { background: var(--implementation); }
+
+  /* Ghost layers */
+  .ghost-layer {
+    position: absolute; left: 20px; right: 20px;
+    border: 1px dashed;
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 12px;
+    font-weight: 400;
+    pointer-events: none;
+  }
+  .ghost-mission {
+    border-color: rgba(212, 200, 160, 0.15);
+    background: rgba(212, 200, 160, 0.03);
+    color: rgba(212, 200, 160, 0.25);
+  }
+  .ghost-experience {
+    border-color: rgba(200, 140, 130, 0.15);
+    background: rgba(200, 140, 130, 0.03);
+    color: rgba(200, 140, 130, 0.25);
+  }
+  .ghost-architecture {
+    border-color: rgba(100, 170, 160, 0.15);
+    background: rgba(100, 170, 160, 0.03);
+    color: rgba(100, 170, 160, 0.25);
+  }
+
+  /* Cards */
+  .card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    position: relative;
+  }
+  .card-elevated {
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.3);
+  }
+
+  /* Goal indicator */
+  .goal-indicator {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.06);
+    font-size: 13px;
+  }
+
+  /* Context quality dots */
+  .ctx-dots { display: flex; gap: 5px; align-items: center; }
+  .ctx-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #333;
+  }
+  .ctx-dot.complete { background: #6abf69; }
+  .ctx-dot.partial { background: #d4a84a; }
+  .ctx-dot.missing { background: #555; }
+
+  /* Connector lines via SVG */
+  .connector-svg {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 1;
+  }
+
+  /* Generative loop */
+  .gen-loop { display: flex; gap: 0; align-items: center; }
+  .gen-step {
+    padding: 10px 18px;
+    font-size: 12px; font-weight: 500;
+    border: 1px solid;
+    position: relative;
+  }
+  .gen-step:first-child { border-radius: 8px 0 0 8px; }
+  .gen-step:last-child { border-radius: 0 8px 8px 0; }
+
+  /* Pulsing activity */
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.7; }
+  }
+  .pulse { animation: pulse 3s ease-in-out infinite; }
+
+  /* Rising card animation */
+  @keyframes rise {
+    0% { transform: translateY(20px); opacity: 0; }
+    60% { transform: translateY(-4px); opacity: 1; }
+    100% { transform: translateY(0); opacity: 1; }
+  }
+  .rising { animation: rise 2s ease-out infinite; }
+
+  /* Glow broadening */
+  @keyframes glow-broaden {
+    0% { box-shadow: 0 0 4px rgba(212, 170, 80, 0.3); }
+    100% { box-shadow: 0 0 20px rgba(212, 170, 80, 0.6); }
+  }
+
+  /* Two-column layout */
+  .split { display: flex; gap: 40px; }
+  .split > * { flex: 1; min-width: 0; }
+
+  .three-col { display: flex; gap: 30px; }
+  .three-col > * { flex: 1; min-width: 0; }
+
+  /* Template row */
+  .template-row {
+    display: flex; align-items: stretch;
+    border-bottom: 1px solid var(--border);
+  }
+  .template-row:last-child { border-bottom: none; }
+  .template-cell {
+    flex: 1; padding: 14px 18px; font-size: 13px;
+    display: flex; align-items: center;
+    border-right: 1px solid var(--border);
+  }
+  .template-cell:last-child { border-right: none; }
+  .template-header {
+    width: 160px; flex-shrink: 0;
+    font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 14px 18px;
+    display: flex; align-items: center;
+    border-right: 1px solid var(--border);
+  }
+
+  /* Facilitation cue pills */
+  .cue-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    line-height: 1.6;
+    white-space: nowrap;
+    margin: 2px 3px;
+  }
+  .cue-pill--mission     { background: rgba(212,200,160,0.12); color: var(--mission); }
+  .cue-pill--experience  { background: rgba(106,167,178,0.12); color: var(--experience); }
+  .cue-pill--architecture{ background: rgba(136,141,162,0.12); color: var(--architecture); }
+  .cue-pill--implementation{ background: rgba(124,112,104,0.12); color: var(--implementation); }
+
+  /* Translucency slider */
+  .slider-container { display: flex; align-items: center; gap: 16px; margin: 24px 0; }
+  input[type="range"] {
+    -webkit-appearance: none;
+    width: 300px; height: 4px;
+    background: #333; border-radius: 2px; outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #e8e4de;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    cursor: pointer;
+  }
+
+  /* Version strata */
+  .strata { display: flex; flex-direction: column; gap: 0; }
+  .stratum {
+    padding: 14px 24px;
+    border-left: 3px solid;
+    position: relative;
+    font-size: 13px;
+  }
+
+  /* Responsive */
+  @media (max-width: 1200px) {
+    .page { padding: 0 30px; }
+    h1 { font-size: 42px; }
+    .split { flex-direction: column; }
+    .three-col { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+<!-- ==================== 1. HERO ==================== -->
+<section style="padding: 140px 0 120px; text-align: center; border-bottom: 1px solid var(--border);">
+  <div style="margin-bottom: 24px;">
+    <span class="badge badge-mission" style="margin-right: 6px;">Mission</span>
+    <span class="badge badge-experience" style="margin-right: 6px;">Experience</span>
+    <span class="badge badge-architecture" style="margin-right: 6px;">Architecture</span>
+    <span class="badge badge-implementation">Implementation</span>
+  </div>
+  <h1 style="margin-bottom: 24px;">Mica</h1>
+  <p style="font-size: 28px; font-weight: 200; color: var(--text-dim); margin-bottom: 16px; letter-spacing: -0.3px;">The Layers Design Language</p>
+  <p class="subtitle" style="margin: 0 auto; text-align: center; max-width: 640px;">
+    A geological, translucent-strata approach to product development. Each layer of work &mdash;
+    Mission, Experience, Architecture, Implementation &mdash; is a distinct surface with its own hue,
+    visible through the layers above and below.
+  </p>
+  <div style="margin-top: 60px; display: flex; justify-content: center; gap: 60px; font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1.5px;">
+    <span>Dark &middot; Matte &middot; Grain</span>
+    <span>Translucent Boundaries</span>
+    <span>Cross-Layer Traceability</span>
+    <span>Adaptive AI Collaboration</span>
+  </div>
+</section>
+
+<!-- ==================== 2. LAYER STACK OVERVIEW ==================== -->
+<section>
+  <h2>The Layer Stack</h2>
+  <p class="section-desc">Four layers of product work, stacked like geological strata. Upper layers are faintly visible from below through translucent boundaries. Cross-layer connections pass through all surfaces.</p>
+
+  <div class="canvas" style="min-height: 700px; padding: 40px;">
+    <div class="canvas-label">Layer Stack &mdash; Visual Overview</div>
+
+    <!-- Connection lines SVG -->
+    <svg class="connector-svg" style="z-index: 2;">
+      <line x1="30%" y1="120" x2="35%" y2="260" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+      <line x1="60%" y1="140" x2="55%" y2="280" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+      <line x1="35%" y1="300" x2="40%" y2="420" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+      <line x1="55%" y1="310" x2="50%" y2="440" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+      <line x1="40%" y1="460" x2="45%" y2="560" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+      <line x1="50%" y1="480" x2="48%" y2="580" stroke="rgba(255,255,255,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+      <!-- Cross-layer line spanning all 4 -->
+      <line x1="75%" y1="100" x2="70%" y2="600" stroke="rgba(255,255,255,0.05)" stroke-width="1.5" stroke-dasharray="6,6"/>
+    </svg>
+
+    <!-- Mission Layer -->
+    <div style="position: relative; z-index: 3; margin-bottom: 20px;">
+      <div style="display: flex; align-items: stretch; border-radius: 14px; overflow: hidden; border: 1px solid rgba(212,200,160,0.2); background: rgba(212,200,160,0.08);">
+        <div style="width: 5px; background: var(--mission); flex-shrink: 0;"></div>
+        <div style="padding: 28px 32px; flex: 1;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="color: var(--mission); margin: 0; font-size: 18px;">Mission</h3>
+            <div class="ctx-dots"><div class="ctx-dot complete"></div><div class="ctx-dot complete"></div><div class="ctx-dot partial"></div></div>
+          </div>
+          <p style="font-size: 13px; color: rgba(212,200,160,0.6); margin-bottom: 12px;">Purpose, personas, constraints, success criteria</p>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="background: rgba(212,200,160,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--mission-deep);">Mission Narrative</div>
+            <div style="background: rgba(212,200,160,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--mission-deep);">Persona Cards</div>
+            <div style="background: rgba(212,200,160,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--mission-deep);">Constraints</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Experience Layer -->
+    <div style="position: relative; z-index: 3; margin-bottom: 20px;">
+      <div style="display: flex; align-items: stretch; border-radius: 14px; overflow: hidden; border: 1px solid rgba(200,140,130,0.2); background: rgba(200,140,130,0.08);">
+        <div style="width: 5px; background: var(--experience); flex-shrink: 0;"></div>
+        <div style="padding: 28px 32px; flex: 1;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="color: var(--experience); margin: 0; font-size: 18px;">Experience</h3>
+            <div class="ctx-dots"><div class="ctx-dot complete"></div><div class="ctx-dot partial"></div><div class="ctx-dot missing"></div></div>
+          </div>
+          <p style="font-size: 13px; color: rgba(200,140,130,0.6); margin-bottom: 12px;">Wireframes, flows, prototypes, design decisions</p>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="background: rgba(200,140,130,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--experience);">Wireframes</div>
+            <div style="background: rgba(200,140,130,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--experience);">Flow Maps</div>
+            <div style="background: rgba(200,140,130,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--experience);">Prototypes</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Architecture Layer -->
+    <div style="position: relative; z-index: 3; margin-bottom: 20px;">
+      <div style="display: flex; align-items: stretch; border-radius: 14px; overflow: hidden; border: 1px solid rgba(100,170,160,0.2); background: rgba(100,170,160,0.08);">
+        <div style="width: 5px; background: var(--architecture); flex-shrink: 0;"></div>
+        <div style="padding: 28px 32px; flex: 1;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="color: var(--architecture); margin: 0; font-size: 18px;">Architecture</h3>
+            <div class="ctx-dots"><div class="ctx-dot complete"></div><div class="ctx-dot partial"></div><div class="ctx-dot partial"></div></div>
+          </div>
+          <p style="font-size: 13px; color: rgba(100,170,160,0.6); margin-bottom: 12px;">Components, data models, decision records, APIs</p>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="background: rgba(100,170,160,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--architecture);">Components</div>
+            <div style="background: rgba(100,170,160,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--architecture);">Data Flow</div>
+            <div style="background: rgba(100,170,160,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--architecture);">ADRs</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Implementation Layer -->
+    <div style="position: relative; z-index: 3;">
+      <div style="display: flex; align-items: stretch; border-radius: 14px; overflow: hidden; border: 1px solid rgba(140,120,180,0.2); background: rgba(140,120,180,0.08);">
+        <div style="width: 5px; background: var(--implementation); flex-shrink: 0;"></div>
+        <div style="padding: 28px 32px; flex: 1;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 style="color: var(--implementation); margin: 0; font-size: 18px;">Implementation</h3>
+            <div class="ctx-dots"><div class="ctx-dot partial"></div><div class="ctx-dot missing"></div><div class="ctx-dot missing"></div></div>
+          </div>
+          <p style="font-size: 13px; color: rgba(140,120,180,0.6); margin-bottom: 12px;">Code, tests, deployments, operations, reviews</p>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="background: rgba(140,120,180,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--implementation);">Active Work</div>
+            <div style="background: rgba(140,120,180,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--implementation);">Code Review</div>
+            <div style="background: rgba(140,120,180,0.1); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: var(--implementation);">Deploy Status</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Translucency indicator -->
+    <div style="position: absolute; right: 30px; top: 70px; bottom: 50px; width: 1px; background: linear-gradient(to bottom, var(--mission), var(--experience), var(--architecture), var(--implementation)); opacity: 0.3;"></div>
+    <div style="position: absolute; right: 22px; top: 60px; font-size: 10px; color: var(--text-faint); writing-mode: vertical-rl; letter-spacing: 2px; text-transform: uppercase;">Translucency Direction</div>
+  </div>
+</section>
+
+<!-- ==================== 3. MISSION LAYER WORKSPACE ==================== -->
+<section>
+  <h2>Mission Layer Workspace</h2>
+  <p class="section-desc">A clean, spacious, meditative surface. The mission narrative takes center stage, surrounded by persona cards and constraints. AI marginalia fades in near artifacts.</p>
+
+  <div class="canvas" style="min-height: 600px; padding: 0;">
+    <div class="layer-bar layer-bar-mission"></div>
+    <div class="canvas-label">Mission Layer &mdash; Active Workspace</div>
+
+    <!-- Goal indicator -->
+    <div style="position: absolute; top: 16px; left: 24px; z-index: 5;">
+      <div class="goal-indicator">
+        <div style="width: 8px; height: 8px; border-radius: 50%; background: var(--mission); flex-shrink: 0;"></div>
+        <span style="color: var(--mission); font-weight: 500;">Layer Goal:</span>
+        <span style="color: var(--text-dim);">Define clear purpose and constraints</span>
+      </div>
+    </div>
+
+    <!-- Template badge -->
+    <div style="position: absolute; top: 56px; left: 24px; z-index: 5;">
+      <span class="badge badge-mission">Full Stack Template</span>
+    </div>
+
+    <!-- Context quality -->
+    <div style="position: absolute; top: 58px; left: 200px; z-index: 5; display: flex; align-items: center; gap: 8px;">
+      <span style="font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Context</span>
+      <div class="ctx-dots">
+        <div class="ctx-dot complete"></div>
+        <div class="ctx-dot complete"></div>
+        <div class="ctx-dot partial"></div>
+      </div>
+    </div>
+
+    <!-- Central mission narrative -->
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 560px; text-align: center; z-index: 4;">
+      <div style="padding: 48px 56px; background: rgba(212,200,160,0.04); border: 1px solid rgba(212,200,160,0.1); border-radius: 16px;">
+        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 2px; color: var(--mission-deep); margin-bottom: 20px;">Mission Narrative</p>
+        <p style="font-size: 22px; font-weight: 300; line-height: 1.6; color: var(--mission);">
+          Build a collaborative design tool that makes the invisible connections between
+          product decisions visible, helping teams maintain coherence from vision to deployment.
+        </p>
+        <p style="font-size: 13px; color: var(--text-dim); margin-top: 20px; font-style: italic;">
+          "Every implementation choice should trace back to a human need."
+        </p>
+      </div>
+    </div>
+
+    <!-- Persona cards -->
+    <div style="position: absolute; top: 110px; left: 30px; z-index: 4;">
+      <div class="card card-elevated" style="width: 180px; border-color: rgba(212,200,160,0.15);">
+        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--mission-deep); margin-bottom: 8px;">Persona</p>
+        <p style="font-size: 15px; font-weight: 500; color: var(--mission); margin-bottom: 4px;">Sarah Chen</p>
+        <p style="font-size: 12px; color: var(--text-dim);">Product Lead, 8 yrs exp. Needs cross-team visibility.</p>
+      </div>
+    </div>
+
+    <div style="position: absolute; top: 280px; left: 40px; z-index: 4;">
+      <div class="card card-elevated" style="width: 170px; border-color: rgba(212,200,160,0.15);">
+        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--mission-deep); margin-bottom: 8px;">Persona</p>
+        <p style="font-size: 15px; font-weight: 500; color: var(--mission); margin-bottom: 4px;">Dev Patel</p>
+        <p style="font-size: 12px; color: var(--text-dim);">Senior Engineer. Wants architectural context.</p>
+      </div>
+    </div>
+
+    <!-- Constraint cards -->
+    <div style="position: absolute; top: 130px; right: 30px; z-index: 4;">
+      <div class="card card-elevated" style="width: 190px; border-color: rgba(212,200,160,0.15);">
+        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--mission-deep); margin-bottom: 8px;">Constraint</p>
+        <p style="font-size: 13px; color: var(--text);">Must work offline with eventual sync</p>
+        <div style="margin-top: 8px; display: flex; gap: 4px; align-items: center;">
+          <div style="width: 5px; height: 5px; border-radius: 50%; background: var(--mission);"></div>
+          <span style="font-size: 10px; color: var(--text-faint);">Hard constraint</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="position: absolute; top: 310px; right: 40px; z-index: 4;">
+      <div class="card card-elevated" style="width: 180px; border-color: rgba(212,200,160,0.15);">
+        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--mission-deep); margin-bottom: 8px;">Constraint</p>
+        <p style="font-size: 13px; color: var(--text);">Sub-second layer transitions</p>
+        <div style="margin-top: 8px; display: flex; gap: 4px; align-items: center;">
+          <div style="width: 5px; height: 5px; border-radius: 50%; background: var(--mission); opacity: 0.5;"></div>
+          <span style="font-size: 10px; color: var(--text-faint);">Soft constraint</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI marginalia -->
+    <div style="position: absolute; bottom: 90px; left: 50px; z-index: 4; max-width: 240px; opacity: 0.4;">
+      <p style="font-size: 12px; color: var(--mission); font-style: italic; line-height: 1.5;">
+        "What happens when Sarah needs to share context with a stakeholder who doesn't use the tool?"
+      </p>
+      <p style="font-size: 10px; color: var(--text-faint); margin-top: 4px;">System &middot; AI Marginalia</p>
+    </div>
+
+    <div style="position: absolute; bottom: 60px; right: 50px; z-index: 4; max-width: 220px; opacity: 0.35;">
+      <p style="font-size: 12px; color: var(--mission); font-style: italic; line-height: 1.5;">
+        "Have you considered accessibility constraints for the translucent layer model?"
+      </p>
+      <p style="font-size: 10px; color: var(--text-faint); margin-top: 4px;">System &middot; AI Marginalia</p>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 4. EXPERIENCE LAYER WORKSPACE ==================== -->
+<section>
+  <h2>Experience Layer Workspace</h2>
+  <p class="section-desc">A rose-tinted design surface with wireframes as clean minimal line drawings. The Mission layer is visible above as a faint translucent overlay. Generative loops progress from sketch to prototype.</p>
+
+  <div class="canvas" style="min-height: 640px; padding: 0;">
+    <div class="layer-bar layer-bar-experience"></div>
+    <div class="canvas-label">Experience Layer &mdash; Active Workspace</div>
+
+    <!-- Ghost of Mission layer -->
+    <div class="ghost-layer ghost-mission" style="top: 14px; height: 56px; z-index: 2;">
+      <span style="font-size: 11px; opacity: 0.7;">Mission: "Build a collaborative design tool that makes invisible connections visible..."</span>
+    </div>
+
+    <!-- Goal indicator -->
+    <div style="position: absolute; top: 84px; left: 24px; z-index: 5;">
+      <div class="goal-indicator">
+        <div style="width: 8px; height: 8px; border-radius: 50%; background: var(--experience); flex-shrink: 0;"></div>
+        <span style="color: var(--experience); font-weight: 500;">Layer Goal:</span>
+        <span style="color: var(--text-dim);">Design coherent user experiences</span>
+      </div>
+    </div>
+
+    <!-- Context from mission -->
+    <div style="position: absolute; top: 86px; right: 24px; z-index: 5; display: flex; align-items: center; gap: 8px;">
+      <span style="font-size: 10px; color: var(--text-faint); letter-spacing: 1px; text-transform: uppercase;">Mission Ctx</span>
+      <div class="ctx-dots">
+        <div class="ctx-dot complete"></div>
+        <div class="ctx-dot complete"></div>
+        <div class="ctx-dot partial"></div>
+      </div>
+    </div>
+
+    <!-- Wireframes area -->
+    <div style="position: absolute; top: 130px; left: 30px; right: 30px; bottom: 110px; z-index: 3; display: flex; gap: 24px;">
+      <!-- Wireframe 1 -->
+      <div style="flex: 1; border: 1px solid rgba(200,140,130,0.25); border-radius: 12px; padding: 20px; background: rgba(200,140,130,0.03); position: relative;">
+        <p style="font-size: 10px; color: var(--experience); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px;">Screen: Layer Navigation</p>
+        <div style="border: 1px solid rgba(200,140,130,0.2); border-radius: 6px; height: 28px; margin-bottom: 10px; background: rgba(200,140,130,0.04);"></div>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+          <div style="flex: 1; border: 1px solid rgba(200,140,130,0.15); border-radius: 6px; height: 120px; background: rgba(200,140,130,0.02);"></div>
+          <div style="flex: 2; border: 1px solid rgba(200,140,130,0.15); border-radius: 6px; height: 120px; background: rgba(200,140,130,0.02);"></div>
+        </div>
+        <div style="border: 1px solid rgba(200,140,130,0.12); border-radius: 6px; height: 50px; background: rgba(200,140,130,0.02);"></div>
+        <!-- AI suggestion -->
+        <div style="position: absolute; bottom: -12px; right: 12px; background: var(--surface2); border: 1px solid rgba(200,140,130,0.2); border-radius: 8px; padding: 6px 12px; font-size: 11px; color: var(--experience); box-shadow: 0 4px 16px rgba(0,0,0,0.3); z-index: 6;">
+          AI: Consider tab navigation here
+        </div>
+      </div>
+
+      <!-- Flow connector -->
+      <div style="display: flex; align-items: center; flex-shrink: 0;">
+        <svg width="40" height="40" viewBox="0 0 40 40">
+          <line x1="0" y1="20" x2="30" y2="20" stroke="rgba(200,140,130,0.4)" stroke-width="1.5"/>
+          <polygon points="30,15 40,20 30,25" fill="rgba(200,140,130,0.4)"/>
+        </svg>
+      </div>
+
+      <!-- Wireframe 2 -->
+      <div style="flex: 1; border: 1px solid rgba(200,140,130,0.25); border-radius: 12px; padding: 20px; background: rgba(200,140,130,0.03); position: relative;">
+        <p style="font-size: 10px; color: var(--experience); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px;">Screen: Artifact Detail</p>
+        <div style="border: 1px solid rgba(200,140,130,0.2); border-radius: 6px; height: 28px; margin-bottom: 10px; width: 60%; background: rgba(200,140,130,0.04);"></div>
+        <div style="border: 1px solid rgba(200,140,130,0.15); border-radius: 6px; height: 80px; margin-bottom: 10px; background: rgba(200,140,130,0.02);"></div>
+        <div style="display: flex; gap: 8px;">
+          <div style="flex: 1; border: 1px solid rgba(200,140,130,0.12); border-radius: 6px; height: 40px; background: rgba(200,140,130,0.02);"></div>
+          <div style="flex: 1; border: 1px solid rgba(200,140,130,0.12); border-radius: 6px; height: 40px; background: rgba(200,140,130,0.02);"></div>
+        </div>
+      </div>
+
+      <!-- Flow connector -->
+      <div style="display: flex; align-items: center; flex-shrink: 0;">
+        <svg width="40" height="40" viewBox="0 0 40 40">
+          <line x1="0" y1="20" x2="30" y2="20" stroke="rgba(200,140,130,0.4)" stroke-width="1.5"/>
+          <polygon points="30,15 40,20 30,25" fill="rgba(200,140,130,0.4)"/>
+        </svg>
+      </div>
+
+      <!-- Wireframe 3 -->
+      <div style="flex: 1; border: 1px solid rgba(200,140,130,0.25); border-radius: 12px; padding: 20px; background: rgba(200,140,130,0.03);">
+        <p style="font-size: 10px; color: var(--experience); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px;">Screen: Cross-Layer View</p>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div style="border: 1px solid rgba(212,200,160,0.15); border-radius: 4px; height: 36px; background: rgba(212,200,160,0.03);"></div>
+          <div style="border: 1px solid rgba(200,140,130,0.2); border-radius: 4px; height: 36px; background: rgba(200,140,130,0.04);"></div>
+          <div style="border: 1px solid rgba(100,170,160,0.15); border-radius: 4px; height: 36px; background: rgba(100,170,160,0.03);"></div>
+          <div style="border: 1px solid rgba(140,120,180,0.15); border-radius: 4px; height: 36px; background: rgba(140,120,180,0.03);"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generative Loop -->
+    <div style="position: absolute; bottom: 24px; left: 30px; right: 30px; z-index: 5; display: flex; align-items: center; gap: 0;">
+      <span style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; margin-right: 16px; flex-shrink: 0;">Gen Loop</span>
+      <div class="gen-loop" style="flex: 1;">
+        <div class="gen-step" style="border-color: rgba(200,140,130,0.2); background: rgba(200,140,130,0.05); color: rgba(200,140,130,0.4); flex: 1; text-align: center;">Sketch</div>
+        <div class="gen-step" style="border-color: rgba(200,140,130,0.3); background: rgba(200,140,130,0.08); color: rgba(200,140,130,0.6); flex: 1; text-align: center;">Wireframe</div>
+        <div class="gen-step" style="border-color: rgba(200,140,130,0.5); background: rgba(200,140,130,0.12); color: rgba(200,140,130,0.8); flex: 1; text-align: center; font-weight: 600;">Mockup</div>
+        <div class="gen-step" style="border-color: var(--experience); background: rgba(200,140,130,0.18); color: var(--experience); flex: 1; text-align: center; font-weight: 600;">Prototype</div>
+      </div>
+      <div style="margin-left: 12px; font-size: 10px; color: var(--text-faint);">Progressive saturation &rarr;</div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 5. ARCHITECTURE LAYER WORKSPACE ==================== -->
+<section>
+  <h2>Architecture Layer Workspace</h2>
+  <p class="section-desc">Refined technical diagrams on a teal-tinted surface. Both Mission and Experience layers are visible above as faint translucent overlays. Components connect via thin data flow lines.</p>
+
+  <div class="canvas" style="min-height: 620px; padding: 0;">
+    <div class="layer-bar layer-bar-architecture"></div>
+    <div class="canvas-label">Architecture Layer &mdash; Active Workspace</div>
+
+    <!-- Ghost layers -->
+    <div class="ghost-layer ghost-mission" style="top: 12px; height: 36px; z-index: 2; font-size: 11px;">
+      <span style="opacity: 0.6;">Mission: "...collaborative design tool...invisible connections visible..."</span>
+    </div>
+    <div class="ghost-layer ghost-experience" style="top: 56px; height: 36px; z-index: 2; font-size: 11px;">
+      <span style="opacity: 0.6;">Experience: Layer Navigation &rarr; Artifact Detail &rarr; Cross-Layer View</span>
+    </div>
+
+    <!-- Goal indicator -->
+    <div style="position: absolute; top: 104px; left: 24px; z-index: 5;">
+      <div class="goal-indicator">
+        <div style="width: 8px; height: 8px; border-radius: 50%; background: var(--architecture); flex-shrink: 0;"></div>
+        <span style="color: var(--architecture); font-weight: 500;">Layer Goal:</span>
+        <span style="color: var(--text-dim);">Define robust, traceable system structure</span>
+      </div>
+    </div>
+
+    <!-- Architecture diagram area -->
+    <div style="position: absolute; top: 150px; left: 40px; right: 40px; bottom: 40px; z-index: 3;">
+      <!-- SVG connectors -->
+      <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1;">
+        <line x1="180" y1="70" x2="420" y2="70" stroke="rgba(100,170,160,0.3)" stroke-width="1" stroke-dasharray="6,3"/>
+        <line x1="420" y1="70" x2="680" y2="70" stroke="rgba(100,170,160,0.3)" stroke-width="1" stroke-dasharray="6,3"/>
+        <line x1="180" y1="85" x2="180" y2="200" stroke="rgba(100,170,160,0.2)" stroke-width="1"/>
+        <line x1="500" y1="85" x2="500" y2="200" stroke="rgba(100,170,160,0.2)" stroke-width="1"/>
+        <line x1="180" y1="200" x2="500" y2="200" stroke="rgba(100,170,160,0.15)" stroke-width="1" stroke-dasharray="4,4"/>
+        <line x1="500" y1="55" x2="480" y2="0" stroke="rgba(100,170,160,0.1)" stroke-width="1.5" stroke-dasharray="3,6"/>
+      </svg>
+
+      <!-- Component boxes -->
+      <div style="position: absolute; top: 30px; left: 40px; z-index: 2;">
+        <div style="width: 200px; padding: 18px 20px; border: 1px solid rgba(100,170,160,0.3); border-radius: 10px; background: rgba(100,170,160,0.06);">
+          <p style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Component</p>
+          <p style="font-size: 14px; color: var(--architecture); font-weight: 500;">Layer Engine</p>
+          <p style="font-size: 11px; color: var(--text-dim); margin-top: 4px;">Manages layer state, transitions, translucency</p>
+        </div>
+      </div>
+
+      <div style="position: absolute; top: 30px; left: 340px; z-index: 2;">
+        <div style="width: 200px; padding: 18px 20px; border: 1px solid rgba(100,170,160,0.3); border-radius: 10px; background: rgba(100,170,160,0.06);">
+          <p style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Component</p>
+          <p style="font-size: 14px; color: var(--architecture); font-weight: 500;">Artifact Store</p>
+          <p style="font-size: 11px; color: var(--text-dim); margin-top: 4px;">CRDT-based document store with versioning</p>
+        </div>
+      </div>
+
+      <div style="position: absolute; top: 30px; left: 620px; z-index: 2;">
+        <div style="width: 200px; padding: 18px 20px; border: 1px solid rgba(100,170,160,0.3); border-radius: 10px; background: rgba(100,170,160,0.06);">
+          <p style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Component</p>
+          <p style="font-size: 14px; color: var(--architecture); font-weight: 500;">AI Collaborator</p>
+          <p style="font-size: 11px; color: var(--text-dim); margin-top: 4px;">Context-aware generative assistance</p>
+        </div>
+      </div>
+
+      <!-- Data store -->
+      <div style="position: absolute; top: 180px; left: 240px; z-index: 2;">
+        <div style="width: 240px; padding: 16px 20px; border: 1px solid rgba(100,170,160,0.2); border-radius: 24px; background: rgba(100,170,160,0.04); text-align: center;">
+          <p style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Data Store</p>
+          <p style="font-size: 13px; color: var(--architecture);">Cross-Layer Context Graph</p>
+        </div>
+      </div>
+
+      <!-- Decision Record card -->
+      <div style="position: absolute; top: 180px; right: 20px; z-index: 2;">
+        <div class="card card-elevated" style="width: 220px; border-color: rgba(100,170,160,0.2);">
+          <p style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--architecture); margin-bottom: 8px;">Decision Record</p>
+          <p style="font-size: 13px; color: var(--text); margin-bottom: 10px;">Storage: CRDT vs OT?</p>
+          <div style="display: flex; gap: 8px;">
+            <div style="flex: 1; padding: 6px 8px; border: 1px solid rgba(100,170,160,0.3); border-radius: 6px; font-size: 11px; color: var(--architecture); text-align: center; background: rgba(100,170,160,0.08);">CRDT &#10003;</div>
+            <div style="flex: 1; padding: 6px 8px; border: 1px solid rgba(100,170,160,0.1); border-radius: 6px; font-size: 11px; color: var(--text-faint); text-align: center;">OT</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cross-layer traceability label -->
+      <div style="position: absolute; top: 0; left: 500px; z-index: 4;">
+        <span style="font-size: 9px; color: rgba(100,170,160,0.4); text-transform: uppercase; letter-spacing: 1px;">&#8593; traces to Experience wireframes</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 6. IMPLEMENTATION LAYER WORKSPACE ==================== -->
+<section>
+  <h2>Implementation Layer Workspace</h2>
+  <p class="section-desc">Operations view on a lavender-tinted surface. All three layers above are visible as ghostly translucent outlines. Active work pulses softly. Code review panels rise above the canvas surface.</p>
+
+  <div class="canvas" style="min-height: 600px; padding: 0;">
+    <div class="layer-bar layer-bar-implementation"></div>
+    <div class="canvas-label">Implementation Layer &mdash; Active Workspace</div>
+
+    <!-- Ghost layers -->
+    <div class="ghost-layer ghost-mission" style="top: 10px; height: 28px; z-index: 2; font-size: 10px;">
+      <span style="opacity: 0.5;">Mission: "...collaborative design tool..."</span>
+    </div>
+    <div class="ghost-layer ghost-experience" style="top: 44px; height: 28px; z-index: 2; font-size: 10px;">
+      <span style="opacity: 0.5;">Experience: Navigation &rarr; Detail &rarr; Cross-Layer</span>
+    </div>
+    <div class="ghost-layer ghost-architecture" style="top: 78px; height: 28px; z-index: 2; font-size: 10px;">
+      <span style="opacity: 0.5;">Architecture: Layer Engine / Artifact Store / AI Collaborator</span>
+    </div>
+
+    <!-- Goal indicator -->
+    <div style="position: absolute; top: 120px; left: 24px; z-index: 5;">
+      <div class="goal-indicator">
+        <div style="width: 8px; height: 8px; border-radius: 50%; background: var(--implementation); flex-shrink: 0;"></div>
+        <span style="color: var(--implementation); font-weight: 500;">Layer Goal:</span>
+        <span style="color: var(--text-dim);">Ship reliable, traceable software</span>
+      </div>
+    </div>
+
+    <!-- Active work regions (pulsing) -->
+    <div style="position: absolute; top: 170px; left: 30px; right: 30px; bottom: 30px; z-index: 3; display: flex; gap: 20px;">
+      <!-- Active work -->
+      <div style="flex: 2; display: flex; flex-direction: column; gap: 16px;">
+        <div class="pulse" style="flex: 1; border: 1px solid rgba(140,120,180,0.3); border-radius: 12px; padding: 18px; background: rgba(140,120,180,0.06); position: relative;">
+          <p style="font-size: 10px; color: var(--implementation); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;">Active Work &mdash; In Progress</p>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <div style="padding: 8px 14px; border-radius: 6px; background: rgba(140,120,180,0.1); border: 1px solid rgba(140,120,180,0.2); font-size: 12px; color: var(--implementation);">layer-engine.ts</div>
+            <div style="padding: 8px 14px; border-radius: 6px; background: rgba(140,120,180,0.1); border: 1px solid rgba(140,120,180,0.2); font-size: 12px; color: var(--implementation);">artifact-store.ts</div>
+            <div style="padding: 8px 14px; border-radius: 6px; background: rgba(140,120,180,0.06); border: 1px solid rgba(140,120,180,0.12); font-size: 12px; color: rgba(140,120,180,0.5);">context-graph.ts</div>
+          </div>
+          <div style="position: absolute; top: 18px; right: 18px; width: 8px; height: 8px; border-radius: 50%; background: var(--implementation);" class="pulse"></div>
+        </div>
+
+        <!-- Test results -->
+        <div style="flex: 0 0 auto; border: 1px solid rgba(140,120,180,0.15); border-radius: 10px; padding: 14px 18px; background: rgba(140,120,180,0.03);">
+          <p style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Test Results</p>
+          <div style="display: flex; gap: 16px; font-size: 12px;">
+            <span style="color: #6abf69;">47 passed</span>
+            <span style="color: #d4a84a;">2 pending</span>
+            <span style="color: #c87070;">1 failed</span>
+            <span style="color: var(--text-faint);">Coverage: 78%</span>
+          </div>
+        </div>
+
+        <!-- Deploy status -->
+        <div style="flex: 0 0 auto; border: 1px solid rgba(140,120,180,0.15); border-radius: 10px; padding: 14px 18px; background: rgba(140,120,180,0.03); display: flex; align-items: center; gap: 12px;">
+          <div style="width: 8px; height: 8px; border-radius: 50%; background: #6abf69;"></div>
+          <span style="font-size: 12px; color: var(--text-dim);">Staging deployed &middot; 3 min ago</span>
+          <div style="margin-left: auto; padding: 4px 12px; border: 1px solid rgba(140,120,180,0.2); border-radius: 6px; font-size: 11px; color: var(--implementation); cursor: pointer;">Promote to Production</div>
+        </div>
+      </div>
+
+      <!-- Code review panel (elevated) -->
+      <div style="flex: 1; position: relative;">
+        <div class="card card-elevated" style="border-color: rgba(140,120,180,0.2); height: 100%; display: flex; flex-direction: column;">
+          <p style="font-size: 10px; color: var(--implementation); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px;">Code Review</p>
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 10px;">
+            <div style="background: rgba(140,120,180,0.05); border-radius: 6px; padding: 10px 12px;">
+              <p style="font-size: 11px; color: var(--text-faint); font-family: 'SF Mono', 'Menlo', monospace;">layer-engine.ts:42</p>
+              <p style="font-size: 12px; color: var(--text-dim); margin-top: 4px;">Consider memoizing layer transition calculations</p>
+            </div>
+            <div style="background: rgba(140,120,180,0.05); border-radius: 6px; padding: 10px 12px;">
+              <p style="font-size: 11px; color: var(--text-faint); font-family: 'SF Mono', 'Menlo', monospace;">context-graph.ts:18</p>
+              <p style="font-size: 12px; color: var(--text-dim); margin-top: 4px;">Missing error boundary for cross-layer queries</p>
+            </div>
+            <div style="background: rgba(140,120,180,0.05); border-radius: 6px; padding: 10px 12px;">
+              <p style="font-size: 11px; color: var(--text-faint); font-family: 'SF Mono', 'Menlo', monospace;">artifact-store.ts:87</p>
+              <p style="font-size: 12px; color: #6abf69; margin-top: 4px;">&#10003; CRDT merge logic looks correct</p>
+            </div>
+          </div>
+          <div style="margin-top: 12px; font-size: 10px; color: var(--text-faint);">Traces to: Architecture &rarr; Artifact Store component</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 7. SIGNAL SYSTEM ==================== -->
+<section>
+  <h2>Signal System</h2>
+  <p class="section-desc">Ambient signals communicate health through saturation and clarity. Explicit escalations rise physically through translucent layers, with edge glow broadening over time.</p>
+
+  <div class="split">
+    <!-- Ambient signals -->
+    <div class="canvas" style="min-height: 420px; padding: 30px;">
+      <div class="canvas-label">Ambient Signals</div>
+      <h4 style="color: var(--text-dim); margin-bottom: 24px;">Health via Saturation &amp; Clarity</h4>
+
+      <div style="display: flex; flex-direction: column; gap: 20px; margin-top: 16px;">
+        <!-- Healthy -->
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="width: 140px; height: 70px; border: 1px solid rgba(100,170,160,0.4); border-radius: 10px; background: rgba(100,170,160,0.12); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+            <span style="font-size: 12px; color: var(--architecture); font-weight: 500;">Component</span>
+          </div>
+          <div>
+            <p style="font-size: 13px; color: var(--text); font-weight: 500;">Healthy</p>
+            <p style="font-size: 12px; color: var(--text-dim);">Crisp edges, full saturation, clear text</p>
+          </div>
+        </div>
+
+        <!-- Troubled -->
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="width: 140px; height: 70px; border: 1px solid rgba(100,170,160,0.15); border-radius: 10px; background: rgba(100,170,160,0.04); display: flex; align-items: center; justify-content: center; filter: blur(0.5px); flex-shrink: 0;">
+            <span style="font-size: 12px; color: rgba(100,170,160,0.4); font-weight: 500;">Component</span>
+          </div>
+          <div>
+            <p style="font-size: 13px; color: var(--text); font-weight: 500;">Troubled</p>
+            <p style="font-size: 12px; color: var(--text-dim);">Blurred edges, desaturated, fading text</p>
+          </div>
+        </div>
+
+        <!-- Orphaned -->
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="width: 140px; height: 70px; border: 1px solid rgba(100,170,160,0.06); border-radius: 10px; background: rgba(100,170,160,0.01); display: flex; align-items: center; justify-content: center; filter: blur(1px); opacity: 0.4; flex-shrink: 0;">
+            <span style="font-size: 12px; color: rgba(100,170,160,0.2); font-weight: 500;">Component</span>
+          </div>
+          <div>
+            <p style="font-size: 13px; color: var(--text); font-weight: 500;">Orphaned</p>
+            <p style="font-size: 12px; color: var(--text-dim);">Nearly invisible, no connections, ghostly</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Explicit escalations -->
+    <div class="canvas" style="min-height: 420px; padding: 30px;">
+      <div class="canvas-label">Escalations</div>
+      <h4 style="color: var(--text-dim); margin-bottom: 24px;">Cards Rising Through Layers</h4>
+
+      <div style="position: relative; height: 300px; margin-top: 16px;">
+        <!-- Layer strata background -->
+        <div style="position: absolute; top: 0; left: 0; right: 0; height: 70px; background: rgba(212,200,160,0.04); border: 1px solid rgba(212,200,160,0.1); border-radius: 8px;">
+          <span style="font-size: 10px; color: rgba(212,200,160,0.3); padding: 8px 12px; display: block;">Mission</span>
+        </div>
+        <div style="position: absolute; top: 78px; left: 0; right: 0; height: 70px; background: rgba(200,140,130,0.04); border: 1px solid rgba(200,140,130,0.1); border-radius: 8px;">
+          <span style="font-size: 10px; color: rgba(200,140,130,0.3); padding: 8px 12px; display: block;">Experience</span>
+        </div>
+        <div style="position: absolute; top: 156px; left: 0; right: 0; height: 70px; background: rgba(100,170,160,0.04); border: 1px solid rgba(100,170,160,0.1); border-radius: 8px;">
+          <span style="font-size: 10px; color: rgba(100,170,160,0.3); padding: 8px 12px; display: block;">Architecture</span>
+        </div>
+        <div style="position: absolute; top: 234px; left: 0; right: 0; height: 70px; background: rgba(140,120,180,0.04); border: 1px solid rgba(140,120,180,0.1); border-radius: 8px;">
+          <span style="font-size: 10px; color: rgba(140,120,180,0.3); padding: 8px 12px; display: block;">Implementation</span>
+        </div>
+
+        <!-- Rising escalation card -->
+        <div class="rising" style="position: absolute; top: 100px; left: 40%; transform: translateX(-50%); z-index: 10;">
+          <div style="width: 180px; padding: 12px 16px; background: var(--surface2); border: 1px solid rgba(200,140,130,0.4); border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); font-size: 12px; color: var(--experience);">
+            <p style="font-size: 9px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Escalation &#8593;</p>
+            UX flow breaks offline constraint
+          </div>
+        </div>
+
+        <!-- Aged escalation with glow -->
+        <div style="position: absolute; top: 20px; left: 65%; z-index: 10; animation: glow-broaden 3s ease-in-out infinite alternate;">
+          <div style="width: 170px; padding: 12px 16px; background: var(--surface2); border: 1px solid rgba(212,170,80,0.4); border-radius: 10px; font-size: 12px; color: var(--mission);">
+            <p style="font-size: 9px; color: rgba(212,170,80,0.6); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Aged Escalation &middot; 3d</p>
+            Personas incomplete
+            <div style="margin-top: 6px; font-size: 10px; color: var(--text-faint);">Edge glow broadens with age</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 8. CROSS-LAYER CONTEXT FLOW ==================== -->
+<section>
+  <h2>Cross-Layer Context Flow</h2>
+  <p class="section-desc">The signature feature of Layers: translucency. All layers visible simultaneously with adjustable opacity. Connection lines create a web of traceability. Context flows in three directions.</p>
+
+  <div class="canvas" style="min-height: 560px; padding: 30px;">
+    <div class="canvas-label">Translucent Context Flow &mdash; Interactive</div>
+
+    <!-- Translucency slider -->
+    <div class="slider-container" style="margin-bottom: 30px; z-index: 10; position: relative;">
+      <span style="font-size: 12px; color: var(--text-dim); font-weight: 500;">Translucency</span>
+      <input type="range" id="translucency" min="0" max="100" value="60">
+      <span id="translucency-val" style="font-size: 12px; color: var(--text-faint); min-width: 36px;">60%</span>
+    </div>
+
+    <!-- All four layers with adjustable opacity -->
+    <div id="layer-stack-interactive" style="position: relative; height: 380px;">
+      <!-- Connection web SVG -->
+      <svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none;">
+        <!-- Down flow: mission to impl -->
+        <line x1="20%" y1="40" x2="22%" y2="130" stroke="rgba(212,200,160,0.2)" stroke-width="1"/>
+        <line x1="22%" y1="130" x2="25%" y2="220" stroke="rgba(200,140,130,0.2)" stroke-width="1"/>
+        <line x1="25%" y1="220" x2="28%" y2="310" stroke="rgba(100,170,160,0.2)" stroke-width="1"/>
+        <!-- Up flow: impl to mission -->
+        <line x1="70%" y1="330" x2="68%" y2="240" stroke="rgba(140,120,180,0.2)" stroke-width="1" stroke-dasharray="4,4"/>
+        <line x1="68%" y1="240" x2="65%" y2="150" stroke="rgba(100,170,160,0.2)" stroke-width="1" stroke-dasharray="4,4"/>
+        <line x1="65%" y1="150" x2="62%" y2="60" stroke="rgba(200,140,130,0.2)" stroke-width="1" stroke-dasharray="4,4"/>
+        <!-- Cross flow within experience -->
+        <line x1="30%" y1="145" x2="60%" y2="145" stroke="rgba(200,140,130,0.15)" stroke-width="1" stroke-dasharray="2,4"/>
+      </svg>
+
+      <!-- Mission -->
+      <div id="tl-mission" style="position: absolute; top: 0; left: 0; right: 0; height: 85px; border: 1px solid rgba(212,200,160,0.25); border-radius: 12px; background: rgba(212,200,160,0.08); padding: 14px 20px; z-index: 4; transition: opacity 0.3s;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 4px; height: 30px; background: var(--mission); border-radius: 2px;"></div>
+            <div>
+              <p style="font-size: 13px; color: var(--mission); font-weight: 500;">Mission Layer</p>
+              <p style="font-size: 11px; color: rgba(212,200,160,0.5);">Purpose &middot; Personas &middot; Constraints</p>
+            </div>
+          </div>
+          <div style="display: flex; gap: 12px;">
+            <div style="padding: 4px 10px; background: rgba(212,200,160,0.08); border-radius: 6px; font-size: 11px; color: var(--mission-deep);">Narrative</div>
+            <div style="padding: 4px 10px; background: rgba(212,200,160,0.08); border-radius: 6px; font-size: 11px; color: var(--mission-deep);">Personas</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Experience -->
+      <div id="tl-experience" style="position: absolute; top: 95px; left: 0; right: 0; height: 85px; border: 1px solid rgba(200,140,130,0.25); border-radius: 12px; background: rgba(200,140,130,0.08); padding: 14px 20px; z-index: 3; transition: opacity 0.3s;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 4px; height: 30px; background: var(--experience); border-radius: 2px;"></div>
+            <div>
+              <p style="font-size: 13px; color: var(--experience); font-weight: 500;">Experience Layer</p>
+              <p style="font-size: 11px; color: rgba(200,140,130,0.5);">Wireframes &middot; Flows &middot; Prototypes</p>
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <span style="font-size: 10px; color: var(--text-faint);">&#8592; gen loop &#8594;</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Architecture -->
+      <div id="tl-architecture" style="position: absolute; top: 190px; left: 0; right: 0; height: 85px; border: 1px solid rgba(100,170,160,0.25); border-radius: 12px; background: rgba(100,170,160,0.08); padding: 14px 20px; z-index: 2; transition: opacity 0.3s;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 4px; height: 30px; background: var(--architecture); border-radius: 2px;"></div>
+            <div>
+              <p style="font-size: 13px; color: var(--architecture); font-weight: 500;">Architecture Layer</p>
+              <p style="font-size: 11px; color: rgba(100,170,160,0.5);">Components &middot; Data Flow &middot; ADRs</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Implementation -->
+      <div id="tl-implementation" style="position: absolute; top: 285px; left: 0; right: 0; height: 85px; border: 1px solid rgba(140,120,180,0.25); border-radius: 12px; background: rgba(140,120,180,0.08); padding: 14px 20px; z-index: 1; transition: opacity 0.3s;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 4px; height: 30px; background: var(--implementation); border-radius: 2px;"></div>
+            <div>
+              <p style="font-size: 13px; color: var(--implementation); font-weight: 500;">Implementation Layer</p>
+              <p style="font-size: 11px; color: rgba(140,120,180,0.5);">Code &middot; Tests &middot; Deploys</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Flow direction legend -->
+    <div style="display: flex; gap: 40px; margin-top: 20px; justify-content: center;">
+      <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim);">
+        <svg width="24" height="16"><line x1="0" y1="8" x2="20" y2="8" stroke="rgba(255,255,255,0.3)" stroke-width="1.5"/><polygon points="18,4 24,8 18,12" fill="rgba(255,255,255,0.3)"/></svg>
+        Down: Mission &rarr; Implementation
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim);">
+        <svg width="24" height="16"><line x1="0" y1="8" x2="20" y2="8" stroke="rgba(255,255,255,0.3)" stroke-width="1.5" stroke-dasharray="4,3"/><polygon points="18,4 24,8 18,12" fill="rgba(255,255,255,0.3)"/></svg>
+        Up: Implementation &rarr; Mission
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim);">
+        <svg width="24" height="16"><line x1="0" y1="8" x2="20" y2="8" stroke="rgba(255,255,255,0.2)" stroke-width="1" stroke-dasharray="2,4"/></svg>
+        Across: Within-layer loops
+      </div>
+    </div>
+
+    <!-- Context quality cascade -->
+    <div style="margin-top: 30px; display: flex; gap: 16px; justify-content: center; align-items: center;">
+      <span style="font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Context Quality Cascade:</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; color: var(--mission);">Mission</span>
+        <div class="ctx-dots"><div class="ctx-dot complete"></div><div class="ctx-dot complete"></div><div class="ctx-dot partial"></div></div>
+      </div>
+      <span style="color: var(--text-faint);">&rarr;</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; color: var(--experience);">Exp</span>
+        <div class="ctx-dots"><div class="ctx-dot complete"></div><div class="ctx-dot partial"></div><div class="ctx-dot missing"></div></div>
+      </div>
+      <span style="color: var(--text-faint);">&rarr;</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; color: var(--architecture);">Arch</span>
+        <div class="ctx-dots"><div class="ctx-dot partial"></div><div class="ctx-dot missing"></div><div class="ctx-dot missing"></div></div>
+      </div>
+      <span style="color: var(--text-faint);">&rarr;</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; color: var(--implementation);">Impl</span>
+        <div class="ctx-dots"><div class="ctx-dot missing"></div><div class="ctx-dot missing"></div><div class="ctx-dot missing"></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 9. ADAPTIVE COLLABORATION ==================== -->
+<section>
+  <h2>Adaptive Collaboration</h2>
+  <p class="section-desc">The same UI adapts based on context quality. Simple products see AI-heavy, confident assistance. Complex products see human-heavy workflows with the system deferring to human judgment.</p>
+
+  <div class="split">
+    <!-- Simple product -->
+    <div class="canvas" style="min-height: 460px; padding: 28px;">
+      <div class="canvas-label">Simple Product</div>
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+        <div style="width: 10px; height: 10px; border-radius: 50%; background: #6abf69;"></div>
+        <h3 style="margin: 0; color: #6abf69; font-size: 16px;">High Confidence</h3>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <!-- Context quality -->
+        <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: rgba(106,191,105,0.06); border-radius: 8px; border: 1px solid rgba(106,191,105,0.12);">
+          <span style="font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; width: 80px;">Context</span>
+          <div class="ctx-dots">
+            <div class="ctx-dot complete"></div><div class="ctx-dot complete"></div><div class="ctx-dot complete"></div>
+          </div>
+          <span style="font-size: 12px; color: #6abf69; margin-left: auto;">Complete</span>
+        </div>
+
+        <!-- AI Initiative -->
+        <div style="padding: 10px 14px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid var(--border);">
+          <span style="font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">AI Initiative</span>
+          <div style="margin-top: 8px; height: 6px; background: #222; border-radius: 3px; overflow: hidden;">
+            <div style="width: 85%; height: 100%; background: linear-gradient(90deg, #6abf69, #8cd48c); border-radius: 3px;"></div>
+          </div>
+          <p style="font-size: 11px; color: var(--text-dim); margin-top: 6px;">System leads &middot; generates drafts, proposes decisions</p>
+        </div>
+
+        <!-- Few decision cards -->
+        <div style="padding: 10px 14px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid var(--border);">
+          <span style="font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Decisions Pending</span>
+          <div style="display: flex; gap: 8px; margin-top: 10px;">
+            <div style="padding: 6px 12px; border: 1px solid rgba(106,191,105,0.2); border-radius: 6px; font-size: 12px; color: var(--text-dim);">Deploy target?</div>
+          </div>
+          <p style="font-size: 11px; color: var(--text-dim); margin-top: 8px;">1 decision &middot; low friction</p>
+        </div>
+
+        <!-- Collaboration ratio -->
+        <div style="display: flex; gap: 0; height: 32px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border);">
+          <div style="flex: 8; background: rgba(140,120,180,0.15); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--implementation);">AI 80%</div>
+          <div style="flex: 2; background: rgba(212,200,160,0.1); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--mission);">Human 20%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Complex product -->
+    <div class="canvas" style="min-height: 460px; padding: 28px;">
+      <div class="canvas-label">Complex Product</div>
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+        <div style="width: 10px; height: 10px; border-radius: 50%; background: #c87070;"></div>
+        <h3 style="margin: 0; color: #d4a84a; font-size: 16px;">Low Confidence</h3>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <!-- Context quality -->
+        <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: rgba(212,168,74,0.06); border-radius: 8px; border: 1px solid rgba(212,168,74,0.12);">
+          <span style="font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; width: 80px;">Context</span>
+          <div class="ctx-dots">
+            <div class="ctx-dot partial"></div><div class="ctx-dot missing"></div><div class="ctx-dot missing"></div>
+          </div>
+          <span style="font-size: 12px; color: #d4a84a; margin-left: auto;">Incomplete</span>
+        </div>
+
+        <!-- AI Initiative (low) -->
+        <div style="padding: 10px 14px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid var(--border);">
+          <span style="font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">AI Initiative</span>
+          <div style="margin-top: 8px; height: 6px; background: #222; border-radius: 3px; overflow: hidden;">
+            <div style="width: 25%; height: 100%; background: linear-gradient(90deg, #d4a84a, #c87070); border-radius: 3px;"></div>
+          </div>
+          <p style="font-size: 11px; color: var(--text-dim); margin-top: 6px;">System defers &middot; asks questions, surfaces risks</p>
+        </div>
+
+        <!-- Many decision cards -->
+        <div style="padding: 10px 14px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid var(--border);">
+          <span style="font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Decisions Pending</span>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;">
+            <div style="padding: 6px 12px; border: 1px solid rgba(200,112,112,0.3); border-radius: 6px; font-size: 12px; color: #c87070;">Auth model?</div>
+            <div style="padding: 6px 12px; border: 1px solid rgba(212,168,74,0.3); border-radius: 6px; font-size: 12px; color: #d4a84a;">Data residency?</div>
+            <div style="padding: 6px 12px; border: 1px solid rgba(212,168,74,0.3); border-radius: 6px; font-size: 12px; color: #d4a84a;">Scale targets?</div>
+            <div style="padding: 6px 12px; border: 1px solid rgba(200,112,112,0.3); border-radius: 6px; font-size: 12px; color: #c87070;">Compliance?</div>
+          </div>
+          <p style="font-size: 11px; color: #d4a84a; margin-top: 8px;">4 decisions &middot; requires human input</p>
+        </div>
+
+        <!-- Collaboration ratio -->
+        <div style="display: flex; gap: 0; height: 32px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border);">
+          <div style="flex: 3; background: rgba(140,120,180,0.1); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--implementation);">AI 30%</div>
+          <div style="flex: 7; background: rgba(212,200,160,0.15); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--mission);">Human 70%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 10. TEMPLATE STACKS ==================== -->
+<section>
+  <h2>Template Stacks</h2>
+  <p class="section-desc">Templates configure each layer's goal, artifacts, AI initiative, and quality gates. The active template shapes the entire workspace.</p>
+
+  <div class="canvas" style="min-height: 500px; padding: 30px;">
+    <div class="canvas-label">Template Configuration</div>
+
+    <!-- Stack selector -->
+    <div style="display: flex; gap: 0; margin-bottom: 32px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;">
+      <div style="padding: 12px 24px; background: rgba(212,200,160,0.1); border-right: 1px solid var(--border); font-size: 13px; color: var(--mission); font-weight: 600;">
+        Full Stack &#10003;
+      </div>
+      <div style="padding: 12px 24px; border-right: 1px solid var(--border); font-size: 13px; color: var(--text-faint);">
+        Rapid Prototype
+      </div>
+      <div style="padding: 12px 24px; border-right: 1px solid var(--border); font-size: 13px; color: var(--text-faint);">
+        Design-Led
+      </div>
+      <div style="padding: 12px 24px; font-size: 13px; color: var(--text-faint);">
+        Engineering-Led
+      </div>
+    </div>
+
+    <!-- Template grid -->
+    <div style="border: 1px solid var(--border); border-radius: 12px; overflow: hidden;">
+      <!-- Header row -->
+      <div class="template-row" style="background: rgba(255,255,255,0.02);">
+        <div class="template-header" style="color: var(--text-faint);">Layer</div>
+        <div class="template-cell" style="font-weight: 600; font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.5px;">Goal</div>
+        <div class="template-cell" style="font-weight: 600; font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.5px;">Key Artifacts</div>
+        <div class="template-cell" style="font-weight: 600; font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.5px;">AI Initiative</div>
+        <div class="template-cell" style="font-weight: 600; font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.5px;">Quality Gate</div>
+        <div class="template-cell" style="font-weight: 600; font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.5px; flex: 2;">Facilitation Cues</div>
+      </div>
+
+      <!-- Mission row -->
+      <div class="template-row">
+        <div class="template-header" style="color: var(--mission); border-left: 3px solid var(--mission);">Mission</div>
+        <div class="template-cell" style="color: var(--text-dim);">Define clear purpose</div>
+        <div class="template-cell" style="color: var(--text-dim);">Narrative, Personas, Constraints</div>
+        <div class="template-cell"><span style="color: #6abf69;">High</span></div>
+        <div class="template-cell" style="color: var(--text-dim);">All personas defined</div>
+        <div class="template-cell" style="flex: 2; flex-wrap: wrap;">
+          <span class="cue-pill cue-pill--mission">? Who is the primary user?</span>
+          <span class="cue-pill cue-pill--mission">&#x270E; One-sentence mission</span>
+          <span class="cue-pill cue-pill--mission">&#x2713; User, problem, outcome, scope</span>
+        </div>
+      </div>
+
+      <!-- Experience row -->
+      <div class="template-row">
+        <div class="template-header" style="color: var(--experience); border-left: 3px solid var(--experience);">Experience</div>
+        <div class="template-cell" style="color: var(--text-dim);">Design coherent UX</div>
+        <div class="template-cell" style="color: var(--text-dim);">Wireframes, Flows, Prototypes</div>
+        <div class="template-cell"><span style="color: #d4a84a;">Medium</span></div>
+        <div class="template-cell" style="color: var(--text-dim);">All flows tested</div>
+        <div class="template-cell" style="flex: 2; flex-wrap: wrap;">
+          <span class="cue-pill cue-pill--experience">? User journey walkthrough</span>
+          <span class="cue-pill cue-pill--experience">&#x270E; Sketch happy path</span>
+        </div>
+      </div>
+
+      <!-- Architecture row -->
+      <div class="template-row">
+        <div class="template-header" style="color: var(--architecture); border-left: 3px solid var(--architecture);">Architecture</div>
+        <div class="template-cell" style="color: var(--text-dim);">Robust structure</div>
+        <div class="template-cell" style="color: var(--text-dim);">Components, Data Flow, ADRs</div>
+        <div class="template-cell"><span style="color: #d4a84a;">Medium</span></div>
+        <div class="template-cell" style="color: var(--text-dim);">All ADRs resolved</div>
+        <div class="template-cell" style="flex: 2; flex-wrap: wrap;">
+          <span class="cue-pill cue-pill--architecture">? Hardest technical bet</span>
+          <span class="cue-pill cue-pill--architecture">&#x270E; 3 critical capabilities</span>
+        </div>
+      </div>
+
+      <!-- Implementation row -->
+      <div class="template-row">
+        <div class="template-header" style="color: var(--implementation); border-left: 3px solid var(--implementation);">Implementation</div>
+        <div class="template-cell" style="color: var(--text-dim);">Ship reliably</div>
+        <div class="template-cell" style="color: var(--text-dim);">Code, Tests, Deploy Config</div>
+        <div class="template-cell"><span style="color: #6abf69;">High</span></div>
+        <div class="template-cell" style="color: var(--text-dim);">Tests pass, review done</div>
+        <div class="template-cell" style="flex: 2; flex-wrap: wrap;">
+          <span class="cue-pill cue-pill--implementation">&#x2713; Input, output, metric per component</span>
+        </div>
+      </div>
+
+      <!-- Style row (locked/coming soon) -->
+      <div class="template-row" style="opacity: 0.35;">
+        <div class="template-header" style="color: var(--text-faint); border-left: 3px solid #444;">Style (locked)</div>
+        <div class="template-cell" style="color: var(--text-faint); font-style: italic;">Visual design language</div>
+        <div class="template-cell" style="color: var(--text-faint); font-style: italic;">Colors, Typography, Motion</div>
+        <div class="template-cell" style="color: var(--text-faint); font-style: italic;">&mdash;</div>
+        <div class="template-cell" style="color: var(--text-faint); font-style: italic;">Coming soon</div>
+        <div class="template-cell" style="flex: 2; color: var(--text-faint); font-style: italic;">&mdash;</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 11. VERSIONING ==================== -->
+<section>
+  <h2>Versioning</h2>
+  <p class="section-desc">Each layer has its own version metaphor, native to its geological character. Versions stack like strata along the edge of the canvas.</p>
+
+  <div class="split">
+    <!-- Version metaphors -->
+    <div class="canvas" style="min-height: 420px; padding: 30px;">
+      <div class="canvas-label">Layer-Native Metaphors</div>
+
+      <div style="display: flex; flex-direction: column; gap: 28px; margin-top: 16px;">
+        <div style="display: flex; align-items: flex-start; gap: 16px;">
+          <div style="width: 4px; min-height: 60px; background: var(--mission); border-radius: 2px; flex-shrink: 0; margin-top: 4px;"></div>
+          <div>
+            <h3 style="color: var(--mission); font-size: 16px; margin-bottom: 4px;">Fossilize</h3>
+            <p style="font-size: 12px; color: var(--text-dim); line-height: 1.5;">Mission versions are preserved as geological records in version strata. Each fossilized mission is an immutable layer of sediment, readable from above.</p>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: flex-start; gap: 16px;">
+          <div style="width: 4px; min-height: 60px; background: var(--experience); border-radius: 2px; flex-shrink: 0; margin-top: 4px;"></div>
+          <div>
+            <h3 style="color: var(--experience); font-size: 16px; margin-bottom: 4px;">Crystallize</h3>
+            <p style="font-size: 12px; color: var(--text-dim); line-height: 1.5;">Experience versions crystallize: edges sharpen, surfaces refine, the design slightly elevates as it solidifies from fluid exploration to fixed form.</p>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: flex-start; gap: 16px;">
+          <div style="width: 4px; min-height: 60px; background: var(--architecture); border-radius: 2px; flex-shrink: 0; margin-top: 4px;"></div>
+          <div>
+            <h3 style="color: var(--architecture); font-size: 16px; margin-bottom: 4px;">Bedrock</h3>
+            <p style="font-size: 12px; color: var(--text-dim); line-height: 1.5;">Architecture versions shift down to become bedrock: foundational, load-bearing, the stable ground upon which implementation is built.</p>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: flex-start; gap: 16px;">
+          <div style="width: 4px; min-height: 60px; background: var(--implementation); border-radius: 2px; flex-shrink: 0; margin-top: 4px;"></div>
+          <div>
+            <h3 style="color: var(--implementation); font-size: 16px; margin-bottom: 4px;">Commit</h3>
+            <p style="font-size: 12px; color: var(--text-dim); line-height: 1.5;">Implementation uses standard git-style commits. Familiar, concrete, immediate. The most granular versioning in the stack.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Version strata timeline -->
+    <div class="canvas" style="min-height: 420px; padding: 30px;">
+      <div class="canvas-label">Version Strata Timeline</div>
+
+      <div style="margin-top: 16px; position: relative;">
+        <!-- Timeline edge -->
+        <div style="position: absolute; left: 12px; top: 0; bottom: 0; width: 2px; background: linear-gradient(to bottom, var(--mission), var(--experience), var(--architecture), var(--implementation)); opacity: 0.3;"></div>
+
+        <!-- Strata layers -->
+        <div class="strata">
+          <div class="stratum" style="border-color: var(--mission); background: rgba(212,200,160,0.06); margin-left: 24px; border-radius: 8px; margin-bottom: 6px; padding: 12px 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Mission v3</span>
+                <p style="font-size: 13px; color: var(--mission); margin-top: 2px;">Refined personas, added offline constraint</p>
+              </div>
+              <span style="font-size: 10px; color: var(--text-faint);">now</span>
+            </div>
+          </div>
+          <div class="stratum" style="border-color: var(--experience); background: rgba(200,140,130,0.06); margin-left: 24px; border-radius: 8px; margin-bottom: 6px; padding: 12px 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Experience v5</span>
+                <p style="font-size: 13px; color: var(--experience); margin-top: 2px;">Cross-layer view wireframes complete</p>
+              </div>
+              <span style="font-size: 10px; color: var(--text-faint);">2h ago</span>
+            </div>
+          </div>
+          <div class="stratum" style="border-color: var(--architecture); background: rgba(100,170,160,0.04); margin-left: 24px; border-radius: 8px; margin-bottom: 6px; padding: 12px 20px; opacity: 0.8;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Architecture v2</span>
+                <p style="font-size: 13px; color: var(--architecture); margin-top: 2px;">CRDT decision finalized</p>
+              </div>
+              <span style="font-size: 10px; color: var(--text-faint);">1d ago</span>
+            </div>
+          </div>
+          <div class="stratum" style="border-color: var(--implementation); background: rgba(140,120,180,0.04); margin-left: 24px; border-radius: 8px; margin-bottom: 6px; padding: 12px 20px; opacity: 0.7;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Implementation v12</span>
+                <p style="font-size: 13px; color: var(--implementation); margin-top: 2px;">Layer engine refactor</p>
+              </div>
+              <span style="font-size: 10px; color: var(--text-faint);">3h ago</span>
+            </div>
+          </div>
+          <!-- Older strata (faded) -->
+          <div class="stratum" style="border-color: var(--mission); background: rgba(212,200,160,0.03); margin-left: 24px; border-radius: 8px; margin-bottom: 6px; padding: 12px 20px; opacity: 0.4;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Mission v2 &middot; Fossilized</span>
+                <p style="font-size: 13px; color: rgba(212,200,160,0.5); margin-top: 2px;">Initial persona definitions</p>
+              </div>
+              <span style="font-size: 10px; color: var(--text-faint);">5d ago</span>
+            </div>
+          </div>
+          <div class="stratum" style="border-color: var(--experience); background: rgba(200,140,130,0.02); margin-left: 24px; border-radius: 8px; margin-bottom: 6px; padding: 12px 20px; opacity: 0.3;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;">Experience v1 &middot; Crystallized</span>
+                <p style="font-size: 13px; color: rgba(200,140,130,0.4); margin-top: 2px;">First wireframe pass</p>
+              </div>
+              <span style="font-size: 10px; color: var(--text-faint);">7d ago</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 12. MULTI-SURFACE ==================== -->
+<section style="border-bottom: none; padding-bottom: 140px;">
+  <h2>Multi-Surface</h2>
+  <p class="section-desc">The Layers design language adapts across form factors. Each surface offers a different way to engage with the strata.</p>
+
+  <div class="three-col">
+    <!-- Tablet -->
+    <div class="canvas" style="min-height: 400px; padding: 24px;">
+      <div class="canvas-label">Tablet</div>
+      <h4 style="color: var(--text-dim); margin-bottom: 20px;">Focused Single Layer</h4>
+
+      <!-- Tablet frame -->
+      <div style="border: 2px solid #333; border-radius: 14px; padding: 16px; background: rgba(0,0,0,0.3); position: relative; height: 280px;">
+        <!-- Ghost context above -->
+        <div style="height: 24px; border: 1px dashed rgba(212,200,160,0.12); border-radius: 6px; margin-bottom: 8px; display: flex; align-items: center; padding: 0 8px;">
+          <span style="font-size: 8px; color: rgba(212,200,160,0.2);">Mission context visible as faint overlay...</span>
+        </div>
+        <!-- Active layer -->
+        <div style="border: 1px solid rgba(200,140,130,0.3); border-radius: 10px; padding: 14px; background: rgba(200,140,130,0.06); height: 185px;">
+          <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;">
+            <div style="width: 3px; height: 16px; background: var(--experience); border-radius: 1px;"></div>
+            <span style="font-size: 10px; color: var(--experience); font-weight: 500;">Experience Layer</span>
+          </div>
+          <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+            <div style="flex: 1; border: 1px solid rgba(200,140,130,0.15); border-radius: 4px; height: 80px;"></div>
+            <div style="flex: 1; border: 1px solid rgba(200,140,130,0.15); border-radius: 4px; height: 80px;"></div>
+          </div>
+          <div style="height: 24px; border: 1px solid rgba(200,140,130,0.1); border-radius: 4px;"></div>
+        </div>
+        <!-- Touch hint -->
+        <div style="position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 40px; height: 4px; background: #444; border-radius: 2px;"></div>
+      </div>
+      <p style="font-size: 11px; color: var(--text-faint); margin-top: 12px; text-align: center;">Swipe between layers. Ghost context from adjacent strata.</p>
+    </div>
+
+    <!-- Large display -->
+    <div class="canvas" style="min-height: 400px; padding: 24px;">
+      <div class="canvas-label">Large Display</div>
+      <h4 style="color: var(--text-dim); margin-bottom: 20px;">Core Sample View</h4>
+
+      <!-- Monitor frame -->
+      <div style="border: 2px solid #333; border-radius: 10px; padding: 12px; background: rgba(0,0,0,0.3); height: 280px; display: flex; gap: 4px;">
+        <!-- All layers side by side (cross-section) -->
+        <div style="flex: 1; border: 1px solid rgba(212,200,160,0.2); border-radius: 6px; background: rgba(212,200,160,0.05); padding: 8px; display: flex; flex-direction: column;">
+          <span style="font-size: 7px; color: var(--mission); text-transform: uppercase; letter-spacing: 0.5px;">Mission</span>
+          <div style="flex: 1; margin-top: 6px; border: 1px solid rgba(212,200,160,0.1); border-radius: 3px;"></div>
+          <div style="flex: 0.5; margin-top: 4px; border: 1px solid rgba(212,200,160,0.06); border-radius: 3px;"></div>
+        </div>
+        <div style="flex: 1; border: 1px solid rgba(200,140,130,0.2); border-radius: 6px; background: rgba(200,140,130,0.05); padding: 8px; display: flex; flex-direction: column;">
+          <span style="font-size: 7px; color: var(--experience); text-transform: uppercase; letter-spacing: 0.5px;">Experience</span>
+          <div style="flex: 1; margin-top: 6px; border: 1px solid rgba(200,140,130,0.1); border-radius: 3px;"></div>
+          <div style="flex: 0.5; margin-top: 4px; border: 1px solid rgba(200,140,130,0.06); border-radius: 3px;"></div>
+        </div>
+        <div style="flex: 1; border: 1px solid rgba(100,170,160,0.2); border-radius: 6px; background: rgba(100,170,160,0.05); padding: 8px; display: flex; flex-direction: column;">
+          <span style="font-size: 7px; color: var(--architecture); text-transform: uppercase; letter-spacing: 0.5px;">Architecture</span>
+          <div style="flex: 1; margin-top: 6px; border: 1px solid rgba(100,170,160,0.1); border-radius: 3px;"></div>
+          <div style="flex: 0.5; margin-top: 4px; border: 1px solid rgba(100,170,160,0.06); border-radius: 3px;"></div>
+        </div>
+        <div style="flex: 1; border: 1px solid rgba(140,120,180,0.2); border-radius: 6px; background: rgba(140,120,180,0.05); padding: 8px; display: flex; flex-direction: column;">
+          <span style="font-size: 7px; color: var(--implementation); text-transform: uppercase; letter-spacing: 0.5px;">Implementation</span>
+          <div style="flex: 1; margin-top: 6px; border: 1px solid rgba(140,120,180,0.1); border-radius: 3px;"></div>
+          <div style="flex: 0.5; margin-top: 4px; border: 1px solid rgba(140,120,180,0.06); border-radius: 3px;"></div>
+        </div>
+      </div>
+      <p style="font-size: 11px; color: var(--text-faint); margin-top: 12px; text-align: center;">Cross-section core sample. All layers side-by-side with connection lines between them.</p>
+    </div>
+
+    <!-- Projection wall -->
+    <div class="canvas" style="min-height: 400px; padding: 24px;">
+      <div class="canvas-label">Projection Wall</div>
+      <h4 style="color: var(--text-dim); margin-bottom: 20px;">Room-Scale Cross-Section</h4>
+
+      <!-- Wall frame -->
+      <div style="border: 2px solid #333; border-radius: 6px; padding: 12px; background: rgba(0,0,0,0.3); height: 280px; position: relative; overflow: hidden;">
+        <!-- Perspective strata -->
+        <div style="position: absolute; inset: 12px; display: flex; flex-direction: column; gap: 3px;">
+          <div style="flex: 1; background: linear-gradient(135deg, rgba(212,200,160,0.12), rgba(212,200,160,0.04)); border-radius: 4px; border: 1px solid rgba(212,200,160,0.15); display: flex; align-items: center; padding: 0 12px;">
+            <span style="font-size: 9px; color: var(--mission);">Mission &mdash; Full narrative and persona wall</span>
+          </div>
+          <div style="flex: 1; background: linear-gradient(135deg, rgba(200,140,130,0.12), rgba(200,140,130,0.04)); border-radius: 4px; border: 1px solid rgba(200,140,130,0.15); display: flex; align-items: center; padding: 0 12px;">
+            <span style="font-size: 9px; color: var(--experience);">Experience &mdash; Full-size wireframes and flows</span>
+          </div>
+          <div style="flex: 1; background: linear-gradient(135deg, rgba(100,170,160,0.12), rgba(100,170,160,0.04)); border-radius: 4px; border: 1px solid rgba(100,170,160,0.15); display: flex; align-items: center; padding: 0 12px;">
+            <span style="font-size: 9px; color: var(--architecture);">Architecture &mdash; System diagrams at scale</span>
+          </div>
+          <div style="flex: 1; background: linear-gradient(135deg, rgba(140,120,180,0.12), rgba(140,120,180,0.04)); border-radius: 4px; border: 1px solid rgba(140,120,180,0.15); display: flex; align-items: center; padding: 0 12px;">
+            <span style="font-size: 9px; color: var(--implementation);">Implementation &mdash; Live ops dashboard</span>
+          </div>
+        </div>
+        <!-- Connection lines across strata -->
+        <svg style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;">
+          <line x1="70%" y1="15%" x2="65%" y2="38%" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+          <line x1="65%" y1="38%" x2="68%" y2="62%" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+          <line x1="68%" y1="62%" x2="66%" y2="85%" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+          <line x1="30%" y1="20%" x2="35%" y2="45%" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+          <line x1="35%" y1="45%" x2="32%" y2="70%" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+          <line x1="32%" y1="70%" x2="34%" y2="90%" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+        </svg>
+      </div>
+      <p style="font-size: 11px; color: var(--text-faint); margin-top: 12px; text-align: center;">Full cross-section at room scale. Walk between layers physically.</p>
+    </div>
+  </div>
+</section>
+
+</div><!-- .page -->
+
+<!-- Minimal JS for translucency slider -->
+<script>
+  (function() {
+    var slider = document.getElementById('translucency');
+    var val = document.getElementById('translucency-val');
+    if (!slider || !val) return;
+
+    slider.addEventListener('input', function() {
+      val.textContent = this.value + '%';
+      var opacity = this.value / 100;
+      var ids = ['tl-mission', 'tl-experience', 'tl-architecture', 'tl-implementation'];
+      for (var i = 0; i < ids.length; i++) {
+        var el = document.getElementById(ids[i]);
+        if (el) {
+          // Experience (index 1) is the "active" layer and stays fully visible
+          // Other layers fade based on slider
+          var base = (i === 1) ? 1 : (0.15 + opacity * 0.85);
+          el.style.opacity = Math.max(0.1, base).toFixed(2);
+        }
+      }
+    });
+  })();
+</script>
+
+</body>
+</html>

@@ -317,6 +317,204 @@ The human communicates through whatever input is natural in the moment:
 
 All input modes are available at all times. The system accepts and integrates them fluidly — a user might voice a description, sketch a layout, type a label, and tap to approve, all in one interaction sequence.
 
+### 5.4 Layer Goals
+
+Each layer has an optional **goal** — a statement of what "done" looks like at that level. The goal governs both human and AI behavior: what artifacts to produce, what quality bar to meet, and when the layer's context is ready for downstream use.
+
+**Purpose:**
+- Gives the AI team a clear target for what to generate, challenge, and verify
+- Gives the human a clear sense of when their input is sufficient
+- Enables the system to track progress and flag gaps against the goal
+- Works identically whether the layer is human-heavy or AI-heavy
+
+**Example goals:**
+
+| Layer | Example Goal |
+|-------|-------------|
+| Mission | "Define the target user, core problem, 3 constraints, and 2 measurable success criteria" |
+| Experience | "Produce wireframes for all primary flows, one mockup for the hero screen, and interaction specs for navigation" |
+| Architecture | "Identify all components, define API contracts between them, and resolve all open technical decisions" |
+| Implementation | "All components implemented, tests passing, deployment config validated" |
+
+**Goal behavior:**
+- The system tracks artifact completeness against the goal and surfaces a **context quality indicator** — showing what's complete, what's partial, and what's missing
+- When all goal criteria are met, the system signals that the layer's context is ready: "Mission context is complete — Experience layer has what it needs to begin"
+- Goals can be set by the human, suggested by the system, or defined by a working style template (see Section 5.5)
+- Goals are not gates — the human can descend to lower layers before a goal is met, but the system will flag what's missing and how it affects downstream work
+
+### 5.5 Adaptive Collaboration and Working Styles
+
+The division of labor between human and AI is not fixed. It adapts based on **project complexity, ambiguity, and the human's working style.**
+
+#### How Adaptation Works
+
+The system continuously assesses its own confidence at each layer:
+
+- **High confidence** (well-understood problem, clear patterns): The system leads — generating artifacts proactively, presenting completed work for approval, advancing generative loops rapidly. The human's role is primarily curation and selection.
+- **Low confidence** (novel problem, ambiguous requirements, conflicting constraints): The system defers — asking questions, presenting options, flagging uncertainties, and waiting for human direction before generating. The human's role is primarily creation and decision-making.
+
+This is not a mode the user selects. It emerges naturally from the quality and completeness of context at each layer. A vague mission produces low system confidence everywhere below it. A precise mission with clear constraints produces high system confidence.
+
+#### UI Indicators of Collaboration Balance
+
+The same UI elements communicate where human attention is needed:
+
+| Indicator | AI-Heavy (Simple Product) | Human-Heavy (Complex Product) |
+|-----------|--------------------------|------------------------------|
+| **Context quality** | Green across the board | Amber/red, gaps flagged |
+| **System panel tone** | "Here's what I've drafted — adjust?" | "I have questions before I can proceed" |
+| **Generative loop speed** | Stages advance rapidly | Lingers, needs human input at each stage |
+| **Artifact placeholders** | Few — system fills them | Visible dashed-border gaps |
+| **Decision cards** | Few, obvious choices | Many, genuine tradeoffs |
+| **Escalation frequency** | Rare | Frequent, some rising across layers |
+| **Time at layer** | Seconds to minutes | Minutes to hours |
+
+#### Working Style Templates
+
+The layer stack (Mission → Experience → Architecture → Implementation) is fixed structure. But **how** you work within each layer is configurable through **working style templates**:
+
+A working style template defines, per layer:
+- **Default goal** — what "done" looks like
+- **Required artifact types** — what must be produced before context is "ready"
+- **AI initiative level** — how proactively the system generates vs. waits
+- **Quality gates** — what checks must pass before the layer signals readiness
+
+**Built-in templates:**
+
+| Template | Description | Who It's For |
+|----------|-------------|-------------|
+| **Full Stack** | Thorough at every layer. Detailed personas, comprehensive wireframes, formal architecture docs, full test coverage. | Complex products, regulated industries, teams that value documentation |
+| **Rapid Prototype** | Minimal at upper layers, fast at lower. Mission = one paragraph. Experience = rough sketches only. Architecture = auto-generated. Implementation = ship fast. | MVPs, hackathons, quick experiments |
+| **Design-Led** | Heavy at Mission and Experience, lighter at Architecture and Implementation. Deep persona work, extensive wireframes and mockups, but the system handles technical details. | Consumer products, UX-focused teams |
+| **Engineering-Led** | Light at Mission and Experience, heavy at Architecture and Implementation. Brief product description, but detailed system design and thorough implementation review. | Infrastructure, APIs, developer tools |
+| **Custom** | Human defines goals and artifact requirements per layer. | Experienced users with their own workflow |
+
+Templates are starting points, not constraints. The human can override any template setting at any time. The system adapts regardless.
+
+#### Template Stacks
+
+A **template stack** is the formal data structure that defines how each layer is instantiated when a project begins. It is the single configuration object that shapes the entire working environment.
+
+**Structure:**
+
+```yaml
+template_stack:
+  name: "Full Stack"
+  version: 1
+  layers:
+    mission:
+      goal: "Complete product brief with target users, constraints, success criteria"
+      artifacts: [product_brief, persona_set, constraint_map]
+      ai_initiative: moderate
+      quality_gates: [brief_complete, personas_validated, constraints_acknowledged]
+      cues:
+        - kind: question
+          text: "Who is the primary user, and what pain are they feeling?"
+        - kind: exercise
+          text: "Write one sentence: [User] needs [capability] so they can [outcome]."
+        - kind: checklist
+          text: "Does the brief cover: target user, core problem, desired outcome, scope?"
+    experience:
+      goal: "Full UX flow with wireframes for all primary paths"
+      artifacts: [user_flows, wireframes, interaction_specs]
+      ai_initiative: moderate
+      quality_gates: [flows_cover_personas, wireframes_reviewed, consistency_check]
+      cues:
+        - kind: question
+          text: "Walk through what the user does from open to satisfied."
+        - kind: exercise
+          text: "Sketch the happy path: 3-5 steps from trigger to outcome."
+        - kind: question
+          text: "What should the user never have to think about?"
+    architecture:
+      goal: "Component architecture with dependency map and API contracts"
+      artifacts: [component_diagram, api_contracts, data_model, dependency_map]
+      ai_initiative: high
+      quality_gates: [components_traced_to_experience, contracts_defined, no_orphans]
+      cues:
+        - kind: question
+          text: "What's the hardest technical bet here?"
+        - kind: exercise
+          text: "Name the 3 critical capabilities — what happens if each fails?"
+    implementation:
+      goal: "Deployed, tested product matching architecture"
+      artifacts: [source_code, test_suite, deployment_config]
+      ai_initiative: high
+      quality_gates: [tests_pass, architecture_match, deployment_verified]
+      cues:
+        - kind: checklist
+          text: "For each component: clear input, clear output, clear success metric?"
+        - kind: question
+          text: "What's the smallest thing we can build to validate the riskiest assumption?"
+  # Future extension points
+  style: null
+```
+
+#### Facilitation Cues — Workspace Furniture
+
+Every layer in a template stack can include **facilitation cues** — lightweight prompts that guide the human and AI through productive work. Cues are **workspace furniture**: visible on the canvas near the layer goal bar, editable by the human, but NOT artifacts. They don't participate in cross-layer context flow, don't have quality indicators, and fade when addressed or when the layer's work is complete.
+
+Think of cues as a facilitator's note cards pinned to the meeting room wall — everyone can see them, anyone can add or remove them, but nobody files them as deliverables.
+
+**Four cue kinds** (lightest → most structured):
+
+| Kind | Purpose | Example |
+|------|---------|---------|
+| **Question** | Socratic probe to deepen thinking | "Who feels the pain most acutely?" |
+| **Prompt** | Suggestion to consider | "Think about offline scenarios" |
+| **Exercise** | Mini-activity that produces an artifact | "Sketch the happy path in 3-5 steps" |
+| **Checklist** | Short validation list | "Does the brief cover: user, problem, outcome, scope?" |
+
+**Example cues per layer (Full Stack template):**
+
+**Mission:**
+- question: "Who is the primary user, and what pain are they feeling right now?"
+- question: "What does success look like in 6 months?"
+- exercise: "Write one sentence: [User] needs [capability] so they can [outcome]."
+- checklist: "Does the brief cover: target user, core problem, desired outcome, what's out of scope?"
+
+**Experience:**
+- question: "Walk me through what the user does from the moment they open the app."
+- exercise: "Sketch the happy path: list 3-5 steps from trigger to satisfied user."
+- question: "What should the user never have to think about?"
+- prompt: "Consider the error states — what happens when things go wrong?"
+
+**Architecture:**
+- question: "What's the hardest technical bet — the thing that could break the whole plan?"
+- prompt: "Where does data live, who owns it, and what happens when it's wrong?"
+- exercise: "Name the 3 most critical capabilities. For each, state what happens if it fails."
+- question: "Are there constraints (privacy, latency, cost) that force a specific approach?"
+
+**Implementation:**
+- question: "What's the smallest thing we can build to validate the riskiest assumption?"
+- checklist: "For each component: clear input, clear output, clear success metric?"
+
+**How the AI uses cues:**
+
+The AI treats cues as behavioral context, not as a script to execute. Three modes:
+
+1. **Initialization** — When entering a layer, the AI reads the layer's cues to understand what the template author considered important. This shapes the AI's conversational tone and focus.
+2. **Opportunistic** — The AI surfaces relevant cues when it detects gaps. If no persona has been defined and there's a cue about identifying the primary user, the AI weaves it into conversation naturally.
+3. **On-demand** — The human asks "what should I think about next?" and the AI selects from remaining unaddressed cues.
+
+Cues are not mandatory, not blocking, and not a wizard. Different templates have different cue density — "Full Stack" might have 4-5 per layer, "Rapid Prototype" might have 1-2, "Custom" starts with none.
+
+**Key properties:**
+
+- **Declarative**: A template stack describes *what* each layer should produce, not *how* to produce it. The system and human figure out the "how" collaboratively.
+- **Swappable**: Switching template stacks mid-project is possible — the system maps existing artifacts to the new stack's expectations and identifies gaps.
+- **Composable**: Template stacks can inherit from a base and override specific layers. A "Rapid Prototype" stack overrides the "Full Stack" defaults with lighter requirements.
+- **Extensible**: The same stack structure will later be augmented to include **stylistic concerns** — visual design language, color schemes, typography, component library preferences, tone of voice, and brand guidelines. These flow down through the layers just as goals do, ensuring the AI team produces work that is stylistically coherent without the human having to repeat design preferences at every layer.
+
+**Lifecycle:**
+
+1. **Project creation** — Human selects or defines a template stack (or accepts the default)
+2. **Layer instantiation** — Each layer is set up with the stack's goals, artifact slots, AI initiative level, and quality gates
+3. **In-flight adjustment** — Human can modify any layer's configuration at any time; changes are tracked as stack overrides
+4. **Stack evolution** — As the project matures, the human can save their modified stack as a new named template for future projects
+
+**The v1 prototype ships with one template stack (Full Stack) as the default, but the architecture must support swappable stacks so others can be added. The style extension point is reserved for post-v1.**
+
 ---
 
 ## 6. Signal System
@@ -757,19 +955,23 @@ If Mica cannot represent its own product development lifecycle, it is not genera
 - Native artifact rendering at each layer
 - Within-layer generative loops (artifact → artifact)
 - Cross-layer context flow (up, down, across)
+- Layer goals with context quality tracking
+- Adaptive collaboration (system confidence → division of labor)
 - Two-tier signal system (ambient + explicit escalations)
 - Multi-modal input (touch, stylus, voice, keyboard)
 - Tablet as primary surface
 - Two-surface coordination (tablet + large display)
-- Hardcoded seed data demonstrating the full layer stack
+- Hardcoded seed data demonstrating the full layer stack (Full Stack working style)
 - Spatial templates for new project initiation
 - Breadcrumb navigation and wayfinding aids
 - GitHub-backed version management with layer-native affordances (snapshot, pin, baseline, commit)
 - Abstract interaction model with tablet and desktop platform bindings
+- Working style template architecture (ships with Full Stack default)
 
 ### Post v1.0
 - Portfolio layer (Layer 0) — multi-project oversight
 - Additional surface types (projection wall, phone, AR/VR)
+- Additional working style templates (Rapid Prototype, Design-Led, Engineering-Led, Custom)
 - Card carry across layers
 - Spatial bookmarks
 - Spatial audio cues
@@ -780,12 +982,15 @@ If Mica cannot represent its own product development lifecycle, it is not genera
 ### Design Language to Lock In for v1.0
 - Semantic operations vocabulary (device-agnostic interaction definitions)
 - Layer-specific visual languages and artifact types
+- Layer goals and context quality indicators
+- Adaptive system behavior (confident → leads; uncertain → asks)
 - Ambient signal visual vocabulary
 - Explicit escalation presentation
 - System voice and collaboration patterns at each layer
 - Layer-native versioning metaphors (snapshot, pin, baseline, commit)
 - Dark theme, layer color identity, glassmorphic UI controls
 - Multi-surface coordination modes (synchronized, split, extended, independent)
+- Working style template structure
 
 ---
 
@@ -793,10 +998,10 @@ If Mica cannot represent its own product development lifecycle, it is not genera
 
 1. **Zoom continuity vs. discrete transitions.** Current proposal: continuous gesture with discrete content snaps. Should certain layer transitions (e.g., Architecture → Implementation) feel more like "entering a room" than "descending smoothly"?
 
-2. **System personality.** How assertive should the AI be? Always propose, or wait to be asked? The spec currently leans toward proactive collaboration — should this be tunable?
+2. **Collaboration history.** Should the canvas show the *history* of human-AI collaboration (what was tried, what was rejected) or only the current state? History adds context but also clutter.
 
-3. **Collaboration history.** Should the canvas show the *history* of human-AI collaboration (what was tried, what was rejected) or only the current state? History adds context but also clutter.
+3. **Multi-human collaboration.** The spec describes a single human or very small team. When two humans are on the canvas, how do they coordinate? Is this in scope?
 
-4. **Multi-human collaboration.** The spec describes a single human or very small team. When two humans are on the canvas, how do they coordinate? Is this in scope?
+4. **Offline capability.** If the AI team requires connectivity, what does the canvas experience look like when offline? Can the human still navigate, annotate, and sketch?
 
-5. **Offline capability.** If the AI team requires connectivity, what does the canvas experience look like when offline? Can the human still navigate, annotate, and sketch?
+5. **Working style ecosystem.** Should working style templates be user-creatable and shareable? Could a community of Mica users develop and publish templates for specific domains (healthcare, fintech, gaming)?
