@@ -7,6 +7,16 @@ delete process.env.CLAUDECODE;
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, SDKResultSuccess } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod/v4";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import {
+  listFiles,
+  readLayerFile,
+  writeLayerFile,
+  deleteLayerFile,
+  getAllFilesAsContext,
+} from "./layerFiles.js";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -19,16 +29,9 @@ export type LayerId =
 export interface AgentResponse {
   layer: LayerId;
   message: string;
-  artifacts?: ArtifactSuggestion[];
   escalation?: Escalation | null;
+  filesChanged?: boolean;
   cost?: number;
-}
-
-export interface ArtifactSuggestion {
-  title: string;
-  type: string;
-  summary: string;
-  detail?: string;
 }
 
 export interface Escalation {
@@ -37,61 +40,55 @@ export interface Escalation {
   context: string;
 }
 
-// ── Shared project context ─────────────────────────────────
-
-const PROJECT_CONTEXT = `
-You are part of the Mica AI Team working on "Inbox Intelligence" — a product that helps users answer quantitative questions about their email data (spending by category, travel expenses, vendor summaries, subscriptions).
-
-Current project state:
-- Product brief: Complete. Target user is Alex, a freelance consultant tracking expenses.
-- UX: Core user flow defined (Ask → Categorize → Answer → Drill-down → Source). Wireframes partial.
-- Architecture: Local-first with SQLite + WASM ML. Gmail API ingestion pipeline complete.
-- Implementation: Sprint 3. Ingestion complete, extraction at 82% accuracy (below 90% target), classification in progress.
-
-Key constraints: Local-first (zero cloud), Gmail API only, 8-week MVP, $0 infrastructure cost.
-Open decisions: Shared accounts (deferred to v2), extraction accuracy gap (correction UI proposed).
-`;
-
 // ── Agent system prompts ───────────────────────────────────
 
-const SYSTEM_PROMPTS: Record<LayerId, string> = {
-  mission: `You are the Mission Strategist — the AI agent for the Mission layer in Mica.
-Your expertise: Product strategy, user research, problem definition, personas, constraints, success criteria.
-Your style: Strategic, empathetic, focused on "why" and "for whom". Challenge vague thinking with specific questions.
-When unsure about technical feasibility, suggest escalating to Architecture. When unsure about UX, suggest escalating to Experience.
-
-IMPORTANT: You have access to tools for creating artifacts, escalating to other layers, and updating context quality. Use them when appropriate — don't just describe what you'd do, actually invoke the tools.
-
-${PROJECT_CONTEXT}`,
-
-  experience: `You are the Experience Designer — the AI agent for the Experience layer in Mica.
-Your expertise: UX design, information architecture, interaction patterns, user flows, wireframing, accessibility.
-Your style: Visual and empathetic. Describe interfaces concretely. Catch missing states. Think in terms of what the user sees, does, and feels.
-Progress artifacts through: sketch → wireframe → mockup → prototype.
-When you need clarity on who the user is, suggest escalating to Mission. When you need to know technical limits, suggest escalating to Architecture.
-
-IMPORTANT: You have access to tools for creating artifacts, escalating to other layers, and updating context quality. Use them when appropriate.
-
-${PROJECT_CONTEXT}`,
-
-  architecture: `You are the System Architect — the AI agent for the Architecture layer in Mica.
-Your expertise: System design, component architecture, API contracts, data modeling, tech selection, trade-off analysis.
-Your style: Precise and analytical. Think in components, interfaces, data flows. Name trade-offs explicitly.
-When you need user context, suggest escalating to Mission. When you need UX flows, suggest escalating to Experience. When you need implementation feasibility, suggest escalating to Implementation.
-
-IMPORTANT: You have access to tools for creating artifacts, escalating to other layers, and updating context quality. Use them when appropriate.
-
-${PROJECT_CONTEXT}`,
-
-  implementation: `You are the Implementation Engineer — the AI agent for the Implementation layer in Mica.
-Your expertise: Software engineering, testing, CI/CD, performance, sprint planning.
-Your style: Practical and precise. Think in code, tests, deployment steps. Surface blockers early.
-When architecture doesn't work in practice, suggest escalating to Architecture. When you discover UX issues, suggest escalating to Experience.
-
-IMPORTANT: You have access to tools for creating artifacts, escalating to other layers, and updating context quality. Use them when appropriate.
-
-${PROJECT_CONTEXT}`,
+// Minimal identity lines — the real instructions come from _brief.md on the whiteboard
+const AGENT_IDENTITY: Record<LayerId, string> = {
+  mission: `You are the Mission Strategist — the AI agent for the Mission layer in Mica.`,
+  experience: `You are the Experience Designer — the AI agent for the Experience layer in Mica.`,
+  architecture: `You are the System Architect — the AI agent for the Architecture layer in Mica.`,
+  implementation: `You are the Implementation Engineer — the AI agent for the Implementation layer in Mica.`,
 };
+
+const TOOL_INSTRUCTIONS = `
+You have access to tools for managing files on the shared whiteboard and escalating to other layers.
+
+FILE TOOLS — Use these to create, read, update, and delete whiteboard content:
+- list_files: See what files exist on the whiteboard
+- read_file: Read a specific file's content
+- write_file: Create or update a file (this is how you create artifacts)
+- delete_file: Remove a file
+
+When creating files, use kebab-case names with descriptive titles:
+- .md for rich content (personas, briefs, analyses, decisions)
+- .mmd for mermaid diagrams (flowcharts, architecture, sequences)
+- .txt for simple notes and lists
+
+ESCALATION — Use escalate_to_layer when you need another layer's perspective.
+
+IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
+`;
+
+const GOAL_INSTRUCTIONS = `
+## Goal-Driven Collaboration
+
+You are a COLLABORATOR, not just a chatbot. Your behavior is driven by the layer's _goal.md file.
+
+### How to use _goal.md:
+1. READ IT on every conversation turn to understand what "done" looks like for this layer.
+2. ASSESS PROGRESS: After each interaction, mentally evaluate which checklist items are satisfied by the current whiteboard files and which still have gaps.
+3. SURFACE GAPS: Proactively tell the human what's missing or weak. Don't wait to be asked.
+4. SUGGEST NEXT STEPS: End your responses with a concrete suggestion for what to work on next, based on the goal checklist.
+5. UPDATE THE GOAL: When a checklist item is clearly satisfied, update _goal.md to check it off ([x]). When new risks or questions emerge, add them.
+
+### Initiative levels:
+- When the human gives a DIRECT INSTRUCTION → Execute it, then assess how it moved the goal forward.
+- When the human asks an OPEN QUESTION → Answer it, then connect your answer back to the goal and suggest what to tackle next.
+- When the human says something VAGUE like "what should we work on?" → Read the goal, assess the whiteboard, and propose the highest-impact next step.
+
+### Tone:
+You are a skilled teammate, not an assistant. Push back when something seems wrong. Celebrate real progress. Be honest about gaps. Keep the team focused on what matters.
+`;
 
 export const AGENT_META: Record<LayerId, { name: string; role: string }> = {
   mission: {
@@ -114,35 +111,89 @@ export const AGENT_META: Record<LayerId, { name: string; role: string }> = {
 
 // ── MCP Tools for layer operations ─────────────────────────
 
-// Artifacts proposed by agents are collected here during a query
-let pendingArtifacts: ArtifactSuggestion[] = [];
+// Track which layer the current query is operating on
+let currentLayer: LayerId = "mission";
 let pendingEscalation: Escalation | null = null;
+let filesWereChanged = false;
 
-const createArtifactTool = tool(
-  "create_artifact",
-  "Create or update an artifact in the current layer. Use this when you want to propose a new artifact (persona, wireframe, component, etc.) or update an existing one.",
-  {
-    title: z.string().describe("Artifact title"),
-    artifact_type: z
-      .string()
-      .describe(
-        "Type: narrative, persona, constraint, criteria, flow, wireframe, journey, diagram, api, model, decision, component, tests, status"
-      ),
-    summary: z.string().describe("One-line summary"),
-    detail: z.string().optional().describe("Detailed content"),
-  },
-  async (args) => {
-    pendingArtifacts.push({
-      title: args.title,
-      type: args.artifact_type,
-      summary: args.summary,
-      detail: args.detail,
-    });
+const listFilesTool = tool(
+  "list_files",
+  "List all files on the current layer's whiteboard.",
+  {},
+  async () => {
+    const files = await listFiles(currentLayer);
+    const listing = files
+      .map((f) => `${f.name} (${f.type}, modified ${f.modifiedAt})`)
+      .join("\n");
     return {
       content: [
         {
           type: "text" as const,
-          text: `Artifact "${args.title}" (${args.artifact_type}) created successfully.`,
+          text: listing || "(No files yet)",
+        },
+      ],
+    };
+  }
+);
+
+const readFileTool = tool(
+  "read_file",
+  "Read a specific file from the whiteboard.",
+  {
+    filename: z.string().describe("The filename to read (e.g., product-brief.md)"),
+  },
+  async (args) => {
+    const file = await readLayerFile(currentLayer, args.filename);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: file.content,
+        },
+      ],
+    };
+  }
+);
+
+const writeFileTool = tool(
+  "write_file",
+  "Create or update a file on the whiteboard. Use .md for rich content, .mmd for mermaid diagrams, .txt for simple notes.",
+  {
+    filename: z
+      .string()
+      .describe(
+        "Filename with extension (e.g., user-persona.md, system-flow.mmd, notes.txt)"
+      ),
+    content: z.string().describe("The file content"),
+  },
+  async (args) => {
+    await writeLayerFile(currentLayer, args.filename, args.content);
+    filesWereChanged = true;
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `File "${args.filename}" written to ${currentLayer} whiteboard.`,
+        },
+      ],
+    };
+  }
+);
+
+const deleteFileTool = tool(
+  "delete_file",
+  "Delete a file from the whiteboard.",
+  {
+    filename: z.string().describe("The filename to delete"),
+  },
+  async (args) => {
+    await deleteLayerFile(currentLayer, args.filename);
+    filesWereChanged = true;
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `File "${args.filename}" deleted from ${currentLayer} whiteboard.`,
         },
       ],
     };
@@ -176,33 +227,9 @@ const escalateToLayerTool = tool(
   }
 );
 
-const updateContextTool = tool(
-  "update_context_quality",
-  "Update the quality indicator for a context dimension in this layer.",
-  {
-    label: z
-      .string()
-      .describe("Context dimension (e.g., 'Product brief', 'Wireframes')"),
-    quality: z
-      .enum(["complete", "partial", "missing"])
-      .describe("New quality level"),
-    reason: z.string().describe("Why the quality changed"),
-  },
-  async (args) => {
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: `Context "${args.label}" updated to ${args.quality}: ${args.reason}`,
-        },
-      ],
-    };
-  }
-);
-
 const micaToolServer = createSdkMcpServer({
   name: "mica-tools",
-  tools: [createArtifactTool, escalateToLayerTool, updateContextTool],
+  tools: [listFilesTool, readFileTool, writeFileTool, deleteFileTool, escalateToLayerTool],
 });
 
 // ── Session tracking per layer ─────────────────────────────
@@ -218,24 +245,47 @@ const layerSessions: Record<LayerId, string | undefined> = {
 
 export async function chatWithAgent(
   layer: LayerId,
-  userMessage: string
+  userMessage: string,
+  _imageBase64?: string
 ): Promise<AgentResponse> {
-  // Reset pending state
-  pendingArtifacts = [];
+  // Set current layer for tool callbacks
+  currentLayer = layer;
   pendingEscalation = null;
+  filesWereChanged = false;
+
+  // Build system prompt with current file context
+  const fileContext = await getAllFilesAsContext(layer);
+
+  // Read _brief.md for layer-specific instructions (user-editable)
+  let briefContent = "";
+  try {
+    const brief = await readLayerFile(layer, "_brief.md");
+    briefContent = `\n## Layer Brief (from _brief.md)\n\n${brief.content}\n`;
+  } catch {
+    // No _brief.md yet — that's fine, use defaults
+  }
+
+  const systemPrompt = `${AGENT_IDENTITY[layer]}
+${briefContent}
+${TOOL_INSTRUCTIONS}
+${GOAL_INSTRUCTIONS}
+
+## Current Whiteboard Files (${layer} layer)
+
+${fileContext}`;
 
   let resultText = "";
   let cost = 0;
   let sessionId: string | undefined;
 
   const options: Record<string, unknown> = {
-    systemPrompt: SYSTEM_PROMPTS[layer],
+    systemPrompt,
     mcpServers: { "mica-tools": micaToolServer },
     tools: [] as string[], // disable built-in file tools
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     persistSession: true,
-    maxTurns: 3,
+    maxTurns: 5,
     model: "claude-sonnet-4-6",
     settings: { forceLoginMethod: "claudeai" as const },
     settingSources: ["user" as const],
@@ -279,8 +329,8 @@ export async function chatWithAgent(
   return {
     layer,
     message: resultText,
-    artifacts: pendingArtifacts.length > 0 ? [...pendingArtifacts] : undefined,
     escalation: pendingEscalation ? { ...pendingEscalation } : null,
+    filesChanged: filesWereChanged,
     cost,
   };
 }
@@ -325,6 +375,55 @@ export async function teamDiscuss(
   return Object.fromEntries(
     layers.map((layer, i) => [layer, results[i]])
   ) as Record<LayerId, AgentResponse>;
+}
+
+export async function convertDrawingToMermaid(
+  layer: LayerId,
+  imageBase64: string
+): Promise<{ mermaid: string; filename: string }> {
+  // Write image to a temp file so the agent can read it
+  const tmpDir = os.tmpdir();
+  const tmpFile = path.join(tmpDir, `mica-drawing-${Date.now()}.png`);
+  fs.writeFileSync(tmpFile, Buffer.from(imageBase64, "base64"));
+
+  let resultText = "";
+
+  try {
+    for await (const message of query({
+      prompt: `Read the image file at ${tmpFile} and convert the hand-drawn diagram into Mermaid syntax. Output ONLY the raw mermaid code. No markdown fences, no explanation, no commentary. Just the mermaid diagram code.`,
+      options: {
+        allowedTools: ["Read"],
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        maxTurns: 3,
+        model: "claude-sonnet-4-6",
+        settings: { forceLoginMethod: "claudeai" as const },
+        settingSources: ["user" as const],
+      } as import("@anthropic-ai/claude-agent-sdk").Options,
+    })) {
+      const msg = message as SDKMessage;
+      if (msg.type === "result" && "result" in msg) {
+        resultText = (msg as SDKResultSuccess).result || "";
+      }
+    }
+  } finally {
+    // Clean up temp file
+    try { fs.unlinkSync(tmpFile); } catch {}
+  }
+
+  // Strip markdown fences if present
+  let mermaidCode = resultText.trim();
+  if (mermaidCode.startsWith("```")) {
+    mermaidCode = mermaidCode.replace(/^```(?:mermaid)?\n?/, "").replace(/\n?```$/, "");
+  }
+
+  if (!mermaidCode) {
+    throw new Error("Failed to convert drawing to mermaid");
+  }
+
+  const filename = `drawing-${Date.now()}.mmd`;
+  await writeLayerFile(layer, filename, mermaidCode);
+  return { mermaid: mermaidCode, filename };
 }
 
 export function resetLayer(layer: LayerId) {

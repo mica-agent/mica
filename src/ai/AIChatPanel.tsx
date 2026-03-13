@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { chat, teamDiscussRequest } from "./client";
-import type { LayerId, AgentResponse, ArtifactSuggestion } from "./client";
+import type { LayerId, AgentResponse } from "./client";
 
 interface ChatMessage {
   id: string;
@@ -8,13 +8,13 @@ interface ChatMessage {
   content: string;
   layer: LayerId;
   agentName?: string;
-  artifacts?: ArtifactSuggestion[];
   isEscalation?: boolean;
 }
 
 interface Props {
   activeLayer: LayerId;
   layerColor: string;
+  onFilesChanged?: () => void;
 }
 
 const AGENT_NAMES: Record<LayerId, string> = {
@@ -38,17 +38,72 @@ const LAYER_COLORS: Record<LayerId, string> = {
   implementation: "#9a7aff",
 };
 
-export default function AIChatPanel({ activeLayer, layerColor }: Props) {
+// ── Voice helpers ────────────────────────────────────────
+const SpeechRecognition =
+  (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+function speak(text: string) {
+  const synth = window.speechSynthesis;
+  synth.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = 1.05;
+  utterance.pitch = 1;
+  synth.speak(utterance);
+}
+
+export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [checkingIn, setCheckingIn] = useState(false);
   const [mode, setMode] = useState<"layer" | "team">("layer");
+  const [listening, setListening] = useState(false);
+  const [voiceOut, setVoiceOut] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const checkedInLayers = useRef<Set<string>>(new Set());
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Auto check-in: when entering a layer for the first time, agent speaks first
+  useEffect(() => {
+    if (checkedInLayers.current.has(activeLayer)) return;
+    checkedInLayers.current.add(activeLayer);
+
+    let cancelled = false;
+    setCheckingIn(true);
+    setLoading(true);
+
+    (async () => {
+      try {
+        const result = await chat(
+          activeLayer,
+          "Briefly assess the whiteboard against _goal.md. What's solid, what's missing, what to work on next? 2-3 sentences max."
+        );
+        if (!cancelled) {
+          handleResponse(result.response);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          addMessage({
+            role: "assistant",
+            content: `Couldn't connect to the ${AGENT_NAMES[activeLayer]}. Send a message to try again.`,
+            layer: activeLayer,
+            agentName: "System",
+          });
+        }
+      } finally {
+        // Always clear loading — even if cancelled (component remounted)
+        setLoading(false);
+        setCheckingIn(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [activeLayer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function addMessage(msg: Omit<ChatMessage, "id">) {
     setMessages((prev) => [
@@ -63,9 +118,52 @@ export default function AIChatPanel({ activeLayer, layerColor }: Props) {
       content: response.message,
       layer: response.layer,
       agentName: AGENT_NAMES[response.layer],
-      artifacts: response.artifacts,
       isEscalation,
     });
+    if (voiceOut && response.message) {
+      speak(response.message);
+    }
+    if (response.filesChanged) {
+      onFilesChanged?.();
+    }
+  }
+
+  // ── Voice input (speech-to-text) ─────────────────────
+  function toggleListening() {
+    if (!SpeechRecognition) return;
+
+    if (listening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setListening(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    let finalTranscript = input; // append to existing input
+
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += (finalTranscript ? " " : "") + transcript;
+        } else {
+          interim = transcript;
+        }
+      }
+      setInput(finalTranscript + (interim ? " " + interim : ""));
+    };
+
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+
+    recognition.start();
+    recognitionRef.current = recognition;
+    setListening(true);
   }
 
   async function sendMessage() {
@@ -151,56 +249,14 @@ export default function AIChatPanel({ activeLayer, layerColor }: Props) {
 
       {/* Messages */}
       <div className="ai-chat-messages">
-        {layerMessages.length === 0 && (
+        {layerMessages.length === 0 && !loading && (
           <div className="ai-chat-empty">
             <div className="ai-chat-empty-icon">{AGENT_ICONS[activeLayer]}</div>
             <p>
               {mode === "team"
                 ? "Ask a question and all 4 agents will respond from their perspective."
-                : `Chat with the ${AGENT_NAMES[activeLayer]} about the ${activeLayer} layer.`}
+                : `The ${AGENT_NAMES[activeLayer]} is reviewing the whiteboard...`}
             </p>
-            <div className="ai-chat-suggestions">
-              {activeLayer === "mission" && (
-                <>
-                  <button onClick={() => setInput("What gaps do you see in our product brief?")}>
-                    Review product brief
-                  </button>
-                  <button onClick={() => setInput("Help me sharpen the success criteria.")}>
-                    Sharpen success criteria
-                  </button>
-                </>
-              )}
-              {activeLayer === "experience" && (
-                <>
-                  <button onClick={() => setInput("What's missing from our core user flow?")}>
-                    Review user flow
-                  </button>
-                  <button onClick={() => setInput("Design the error states for query results.")}>
-                    Design error states
-                  </button>
-                </>
-              )}
-              {activeLayer === "architecture" && (
-                <>
-                  <button onClick={() => setInput("What are the biggest technical risks?")}>
-                    Identify risks
-                  </button>
-                  <button onClick={() => setInput("Review the data model for completeness.")}>
-                    Review data model
-                  </button>
-                </>
-              )}
-              {activeLayer === "implementation" && (
-                <>
-                  <button onClick={() => setInput("What should we tackle in the next sprint?")}>
-                    Plan next sprint
-                  </button>
-                  <button onClick={() => setInput("How can we get extraction accuracy from 82% to 90%?")}>
-                    Fix accuracy gap
-                  </button>
-                </>
-              )}
-            </div>
           </div>
         )}
 
@@ -224,19 +280,6 @@ export default function AIChatPanel({ activeLayer, layerColor }: Props) {
             )}
 
             <div className="ai-chat-msg-body">{msg.content}</div>
-
-            {msg.artifacts && msg.artifacts.length > 0 && (
-              <div className="ai-chat-artifacts">
-                <div className="ai-chat-artifacts-label">Proposed Artifacts:</div>
-                {msg.artifacts.map((a, i) => (
-                  <div key={i} className="ai-chat-artifact-card">
-                    <span className="ai-chat-artifact-type">{a.type}</span>
-                    <strong>{a.title}</strong>
-                    <p>{a.summary}</p>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         ))}
 
@@ -248,9 +291,15 @@ export default function AIChatPanel({ activeLayer, layerColor }: Props) {
                 {mode === "team" ? "AI Team" : AGENT_NAMES[activeLayer]}
               </span>
             </div>
-            <div className="ai-chat-typing">
-              <span /><span /><span />
-            </div>
+            {checkingIn ? (
+              <div className="ai-chat-msg-body" style={{ opacity: 0.5, fontSize: "0.78rem" }}>
+                Reviewing the whiteboard...
+              </div>
+            ) : (
+              <div className="ai-chat-typing">
+                <span /><span /><span />
+              </div>
+            )}
           </div>
         )}
 
@@ -259,13 +308,25 @@ export default function AIChatPanel({ activeLayer, layerColor }: Props) {
 
       {/* Input */}
       <div className="ai-chat-input-area">
+        {SpeechRecognition && (
+          <button
+            className={`ai-chat-voice-btn ${listening ? "ai-chat-voice-btn--active" : ""}`}
+            onClick={toggleListening}
+            title={listening ? "Stop listening" : "Voice input"}
+            disabled={loading}
+          >
+            {listening ? "●" : "🎤"}
+          </button>
+        )}
         <input
           ref={inputRef}
           type="text"
           placeholder={
-            mode === "team"
-              ? "Ask the full team..."
-              : `Ask the ${AGENT_NAMES[activeLayer]}...`
+            listening
+              ? "Listening..."
+              : mode === "team"
+                ? "Ask the full team..."
+                : `Ask the ${AGENT_NAMES[activeLayer]}...`
           }
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -274,6 +335,13 @@ export default function AIChatPanel({ activeLayer, layerColor }: Props) {
         />
         <button onClick={sendMessage} disabled={loading || !input.trim()}>
           ↑
+        </button>
+        <button
+          className={`ai-chat-voice-btn ${voiceOut ? "ai-chat-voice-btn--active" : ""}`}
+          onClick={() => { setVoiceOut(!voiceOut); if (voiceOut) window.speechSynthesis.cancel(); }}
+          title={voiceOut ? "Mute voice output" : "Enable voice output"}
+        >
+          {voiceOut ? "🔊" : "🔇"}
         </button>
       </div>
     </div>

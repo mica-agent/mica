@@ -1,0 +1,499 @@
+/* ── Whiteboard Container ─────────────────────────────── */
+
+.wb-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Toolbar ─────────────────────────────────────────── */
+
+.wb-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.wb-toolbar-left,
+.wb-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wb-file-count {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  padding: 0 8px;
+}
+
+/* ── Buttons ─────────────────────────────────────────── */
+
+.wb-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.wb-btn--tool {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+.wb-btn--tool:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.wb-btn--primary {
+  background: var(--layer-color, #4acaa0);
+  color: #0a0a0e;
+  font-weight: 600;
+}
+
+.wb-btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.wb-btn--primary:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.wb-btn--secondary {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+.wb-btn--secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+/* ── File Grid ───────────────────────────────────────── */
+
+.wb-grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+
+.wb-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--text-dim);
+  text-align: center;
+  gap: 8px;
+}
+
+.wb-empty-icon {
+  font-size: 2rem;
+  opacity: 0.3;
+}
+
+.wb-empty p {
+  font-size: 0.85rem;
+  max-width: 300px;
+  line-height: 1.5;
+}
+
+/* ── File Card ───────────────────────────────────────── */
+
+.wb-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.2s;
+}
+
+.wb-card:hover {
+  border-color: var(--layer-color, var(--border));
+}
+
+/* Goal card — full width, accent border */
+.wb-card--goal {
+  grid-column: 1 / -1;
+  border-color: var(--layer-color, var(--border));
+  border-width: 2px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.wb-card--goal .wb-card-type {
+  background: var(--layer-color, #4acaa0);
+  color: #0a0a0e;
+  font-weight: 800;
+}
+
+.wb-card--goal .wb-card-body {
+  max-height: 400px;
+}
+
+/* Brief card — full width, subtler accent */
+.wb-card--brief {
+  grid-column: 1 / -1;
+  border-color: rgba(255, 255, 255, 0.15);
+  border-style: dashed;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.wb-card--brief .wb-card-type {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-dim);
+  font-weight: 700;
+}
+
+.wb-card-system-hint {
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  opacity: 0.4;
+  margin-left: auto;
+  font-style: italic;
+}
+
+.wb-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+
+.wb-card-type {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--layer-color, var(--text-dim));
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.wb-card-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-card-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.wb-card:hover .wb-card-actions {
+  opacity: 1;
+}
+
+.wb-card-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.wb-card-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.wb-card-btn--danger:hover {
+  color: #f87171;
+}
+
+.wb-card-body {
+  padding: 4px 12px 8px;
+  max-height: 200px;
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+
+.wb-card-body::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(transparent, rgba(10, 10, 14, 0.9));
+  pointer-events: none;
+}
+
+.wb-card-text {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  margin: 0;
+  font-family: inherit;
+}
+
+.wb-card-markdown {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.wb-card-markdown h1 {
+  font-size: 1rem;
+  color: var(--text);
+  margin: 0.5em 0 0.3em;
+}
+
+.wb-card-markdown h2 {
+  font-size: 0.9rem;
+  color: var(--text);
+  margin: 0.4em 0 0.2em;
+}
+
+.wb-card-markdown h3 {
+  font-size: 0.82rem;
+  color: var(--text);
+  margin: 0.3em 0 0.2em;
+}
+
+.wb-card-markdown p {
+  margin: 0.3em 0;
+}
+
+.wb-card-markdown ul,
+.wb-card-markdown ol {
+  padding-left: 1.2em;
+  margin: 0.3em 0;
+}
+
+.wb-card-markdown strong {
+  color: var(--text);
+}
+
+.wb-mermaid-svg {
+  display: flex;
+  justify-content: center;
+}
+
+.wb-mermaid-svg svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.wb-mermaid-error {
+  font-size: 0.7rem;
+  color: #f87171;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.wb-card-footer {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.wb-card-filename {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  opacity: 0.5;
+}
+
+/* ── Editor Modal ────────────────────────────────────── */
+
+.wb-editor-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.wb-editor {
+  background: rgba(20, 20, 28, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(90vw, 800px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wb-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.wb-editor-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.wb-editor-close:hover {
+  color: var(--text);
+}
+
+.wb-editor-filename {
+  margin: 12px 16px 0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.wb-editor-filename:focus {
+  border-color: var(--layer-color, #4acaa0);
+}
+
+.wb-editor-body {
+  flex: 1;
+  padding: 12px 16px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wb-editor-body--split {
+  flex-direction: row;
+  gap: 12px;
+}
+
+.wb-editor-textarea {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: "SF Mono", "Fira Code", monospace;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  min-height: 250px;
+}
+
+.wb-editor-textarea:focus {
+  border-color: var(--layer-color, #4acaa0);
+}
+
+.wb-editor-preview {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  overflow: auto;
+  min-height: 250px;
+}
+
+.wb-editor-preview-error {
+  font-size: 0.75rem;
+  color: #f87171;
+}
+
+.wb-editor-preview-empty {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  opacity: 0.5;
+}
+
+.wb-editor-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Drawing Canvas ──────────────────────────────────── */
+
+.wb-drawing-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.wb-drawing-container {
+  background: rgba(20, 20, 28, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(95vw, 1000px);
+  height: min(85vh, 700px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wb-drawing-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.wb-drawing-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.wb-drawing-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.wb-drawing-canvas {
+  flex: 1;
+  cursor: crosshair;
+  border-radius: 0 0 12px 12px;
+}

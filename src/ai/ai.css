@@ -350,6 +350,37 @@
   cursor: not-allowed;
 }
 
+/* Voice buttons */
+.ai-chat-voice-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 40px;
+  height: 40px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.ai-chat-voice-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.ai-chat-voice-btn--active {
+  background: rgba(255, 60, 60, 0.15);
+  border-color: #f87171;
+  color: #f87171;
+  animation: voicePulse 1.5s infinite;
+}
+
+@keyframes voicePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.3); }
+  50% { box-shadow: 0 0 0 6px rgba(248, 113, 113, 0); }
+}
+
 /* ── Layout: sidebar integration ─────────────────────── */
 
 .app-with-ai {

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { LAYERS, LAYER_DATA, PROJECT_NAME } from './data';
-import type { LayerId } from './data';
-import LayerWorkspace from './LayerWorkspace';
+import { LAYERS, PROJECT_NAME } from './data';
+import WhiteboardView from './whiteboard/WhiteboardView';
+import type { WhiteboardHandle } from './whiteboard/WhiteboardView';
 import AIChatPanel from './ai/AIChatPanel';
 import './App.css';
 import './ai/ai.css';
@@ -185,6 +185,8 @@ export default function App() {
   const layerIdMap: ('mission' | 'experience' | 'architecture' | 'implementation')[] =
     ['mission', 'experience', 'architecture', 'implementation'];
 
+  const whiteboardRef = useRef<WhiteboardHandle>(null);
+
   return (
     <div className="app-with-ai">
       <div className="app-main">
@@ -239,9 +241,10 @@ export default function App() {
                 key={layer.id}
                 className={`layer-container ${layerPosition(layer.index, activeLayer)}`}
               >
-                <LayerWorkspace
-                  layer={layer}
-                  data={LAYER_DATA[layer.id as LayerId]}
+                <WhiteboardView
+                  ref={layer.index === activeLayer ? whiteboardRef : null}
+                  layerId={layer.id}
+                  layerColor={layer.color}
                 />
               </div>
             ))}
@@ -263,6 +266,7 @@ export default function App() {
         <AIChatPanel
           activeLayer={layerIdMap[activeLayer]}
           layerColor={currentLayer.color}
+          onFilesChanged={() => whiteboardRef.current?.refetch()}
         />
       </div>
     </div>
