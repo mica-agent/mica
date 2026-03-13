@@ -84,7 +84,7 @@ export default function FileEditor({
     let finalName = filename.trim();
     if (!finalName) return;
     // Auto-add extension if missing
-    if (!/\.(txt|mmd)$/.test(finalName) && !/(?<!\.m)\.md$/.test(finalName)) {
+    if (!/\.(txt|mmd|md)$/.test(finalName)) {
       if (defaultType === "mermaid") finalName += ".mmd";
       else if (defaultType === "markdown") finalName += ".md";
       else finalName += ".txt";

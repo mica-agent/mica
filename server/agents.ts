@@ -67,6 +67,8 @@ When creating files, use kebab-case names with descriptive titles:
 ESCALATION — Use escalate_to_layer when you need another layer's perspective.
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
+
+ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.md so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
 `;
 
 const GOAL_INSTRUCTIONS = `
@@ -80,6 +82,27 @@ You are a COLLABORATOR, not just a chatbot. Your behavior is driven by the layer
 3. SURFACE GAPS: Proactively tell the human what's missing or weak. Don't wait to be asked.
 4. SUGGEST NEXT STEPS: End your responses with a concrete suggestion for what to work on next, based on the goal checklist.
 5. UPDATE THE GOAL: When a checklist item is clearly satisfied, update _goal.md to check it off ([x]). When new risks or questions emerge, add them.
+
+### How to use _todo.md:
+_todo.md is the shared commitment tracker between you and the human. It has three sections: Active, Blocked, Done.
+
+FORMAT for items:
+- [ ] @agent Draft the API contract — **priority: high**
+- [ ] @human Review persona assumptions — **priority: medium**
+- [x] @agent Write initial product brief — **done: 2026-03-13**
+
+RULES:
+- Prefix every item with @agent or @human to show who owns it.
+- When you spot a gap from _goal.md that needs action, ADD it to _todo.md.
+- When you complete a task, move it to the Done section with [x] and a date.
+- When something is blocked on another layer or a human decision, move it to Blocked with a note about what it's waiting on.
+- Keep it concise — this is a commitment tracker, not a project plan.
+
+### Working style — be a real teammate:
+- **Create cards spontaneously**: When something comes up in conversation that deserves its own artifact — a decision, a question to investigate, a comparison, a risk analysis — just create a file for it. Don't ask permission. A good teammate grabs a marker and writes on the whiteboard mid-discussion.
+- **Think out loud on the board**: If you're working through a complex problem, create a working document (e.g., "options-analysis.md", "open-questions.md") rather than only discussing it in chat. Chat is ephemeral; the whiteboard is the shared memory.
+- **Name files descriptively**: "competitive-landscape.md" not "analysis.md". The filename IS the card title on the whiteboard.
+- **Use diagrams**: When relationships, flows, or hierarchies would be clearer as a visual, create a .mmd mermaid file. Don't default to text for everything.
 
 ### Initiative levels:
 - When the human gives a DIRECT INSTRUCTION → Execute it, then assess how it moved the goal forward.
@@ -108,6 +131,20 @@ export const AGENT_META: Record<LayerId, { name: string; role: string }> = {
     role: "Code, testing, deployment, and sprint execution",
   },
 };
+
+// ── Activity log helper ─────────────────────────────────────
+
+async function appendToLog(layer: LayerId, entry: string) {
+  const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
+  const line = `- **${timestamp}** — ${entry}\n`;
+  try {
+    const existing = await readLayerFile(layer, "_log.md");
+    await writeLayerFile(layer, "_log.md", existing.content + line);
+  } catch {
+    // No log yet — create it
+    await writeLayerFile(layer, "_log.md", `# Activity Log\n\n${line}`);
+  }
+}
 
 // ── MCP Tools for layer operations ─────────────────────────
 
@@ -165,10 +202,15 @@ const writeFileTool = tool(
         "Filename with extension (e.g., user-persona.md, system-flow.mmd, notes.txt)"
       ),
     content: z.string().describe("The file content"),
+    summary: z.string().describe("One-line summary of what you did and why (for the activity log)"),
   },
   async (args) => {
     await writeLayerFile(currentLayer, args.filename, args.content);
     filesWereChanged = true;
+    // Append to activity log (skip if writing the log itself)
+    if (args.filename !== "_log.md") {
+      await appendToLog(currentLayer, `Updated **${args.filename}**: ${args.summary}`);
+    }
     return {
       content: [
         {
@@ -185,10 +227,12 @@ const deleteFileTool = tool(
   "Delete a file from the whiteboard.",
   {
     filename: z.string().describe("The filename to delete"),
+    reason: z.string().describe("Why this file is being deleted (for the activity log)"),
   },
   async (args) => {
     await deleteLayerFile(currentLayer, args.filename);
     filesWereChanged = true;
+    await appendToLog(currentLayer, `Deleted **${args.filename}**: ${args.reason}`);
     return {
       content: [
         {

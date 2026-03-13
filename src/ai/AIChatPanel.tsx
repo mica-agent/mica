@@ -71,7 +71,6 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
   // Auto check-in: when entering a layer for the first time, agent speaks first
   useEffect(() => {
     if (checkedInLayers.current.has(activeLayer)) return;
-    checkedInLayers.current.add(activeLayer);
 
     let cancelled = false;
     setCheckingIn(true);
@@ -81,13 +80,15 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
       try {
         const result = await chat(
           activeLayer,
-          "Briefly assess the whiteboard against _goal.md. What's solid, what's missing, what to work on next? 2-3 sentences max."
+          "Briefly assess the whiteboard against _goal.md and _todo.md. What's solid, what's the top priority to work on next? 2-3 sentences max."
         );
         if (!cancelled) {
+          checkedInLayers.current.add(activeLayer);
           handleResponse(result.response);
         }
       } catch (err) {
         if (!cancelled) {
+          checkedInLayers.current.add(activeLayer);
           addMessage({
             role: "assistant",
             content: `Couldn't connect to the ${AGENT_NAMES[activeLayer]}. Send a message to try again.`,
@@ -96,13 +97,18 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
           });
         }
       } finally {
-        // Always clear loading — even if cancelled (component remounted)
-        setLoading(false);
-        setCheckingIn(false);
+        if (!cancelled) {
+          setLoading(false);
+          setCheckingIn(false);
+        }
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      setLoading(false);
+      setCheckingIn(false);
+    };
   }, [activeLayer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function addMessage(msg: Omit<ChatMessage, "id">) {
@@ -255,7 +261,7 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
             <p>
               {mode === "team"
                 ? "Ask a question and all 4 agents will respond from their perspective."
-                : `The ${AGENT_NAMES[activeLayer]} is reviewing the whiteboard...`}
+                : `Ask the ${AGENT_NAMES[activeLayer]} anything, or wait for the initial review.`}
             </p>
           </div>
         )}

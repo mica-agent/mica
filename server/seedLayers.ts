@@ -44,6 +44,21 @@ When this layer is complete, anyone on the team should be able to answer:
 **"What are we building, for whom, why, and how will we know it's working?"**
 `,
 
+  "_todo.md": `# Layer To-Do
+
+## Active
+- [ ] @human Validate problem statement with real user interviews — **priority: high**
+- [ ] @agent Flesh out persona with demographics, goals, and day-in-the-life — **priority: high**
+- [ ] @agent Sharpen value proposition into a single before/after sentence — **priority: medium**
+- [ ] @human Define what "90% accuracy" means practically — **priority: medium**
+
+## Blocked
+
+## Done (recent)
+- [x] @agent Write initial product brief — **done: 2026-03-13**
+- [x] @human List project constraints — **done: 2026-03-13**
+`,
+
   "product-brief.md": `# Product Brief: Inbox Intelligence
 
 Inbox Intelligence helps users answer quantitative questions about their email data — spending by category, travel expenses, vendor summaries, subscriptions.

@@ -64,14 +64,21 @@ export default function App() {
   useEffect(() => {
     function onWheel(e: WheelEvent) {
       const target = e.target as HTMLElement;
-      const workspace = target.closest('.workspace');
-      if (workspace) {
-        const { scrollTop, scrollHeight, clientHeight } = workspace;
+
+      // Check if we're inside any scrollable container (whiteboard grid, chat messages, etc.)
+      const scrollable = target.closest('.wb-grid, .ai-chat-messages, .workspace');
+      if (scrollable) {
+        const { scrollTop, scrollHeight, clientHeight } = scrollable;
+        const hasScroll = scrollHeight > clientHeight + 5;
         const atTop = scrollTop <= 0;
         const atBottom = scrollTop + clientHeight >= scrollHeight - 2;
 
-        if (e.deltaY < 0 && !atTop) return;
-        if (e.deltaY > 0 && !atBottom) return;
+        // If the container has scrollable content, let it scroll normally
+        // Only pass through to layer navigation if at the very edge
+        if (hasScroll) {
+          if (e.deltaY < 0 && !atTop) return;
+          if (e.deltaY > 0 && !atBottom) return;
+        }
       }
 
       e.preventDefault();
@@ -80,7 +87,7 @@ export default function App() {
       if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
       scrollTimerRef.current = setTimeout(() => { scrollAccRef.current = 0; }, 300);
 
-      const threshold = 120;
+      const threshold = 200; // Higher threshold to avoid accidental navigation
       if (scrollAccRef.current > threshold) {
         scrollAccRef.current = 0;
         descend();

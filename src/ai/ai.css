@@ -80,6 +80,7 @@
 /* Messages area */
 .ai-chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px;
   display: flex;
@@ -197,7 +198,7 @@
 }
 
 .ai-chat-msg-body {
-  color: var(--text-dim);
+  color: var(--text-secondary);
   font-size: 0.83rem;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -397,6 +398,13 @@
 .ai-sidebar {
   height: 100vh;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-chat-panel {
+  min-height: 0;
+  flex: 1;
 }
 
 @media (max-width: 768px) {
