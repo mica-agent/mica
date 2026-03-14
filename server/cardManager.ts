@@ -57,6 +57,7 @@ const EXTENSION_CLASS_MAP: Record<string, string> = {
   ".mmd": "mermaid",
   ".txt": "text",
   ".py": "text", // .py files render as text by default
+  ".html": "html",
 };
 
 // ── Frontmatter parsing ────────────────────────────────────
@@ -148,7 +149,7 @@ export class CardManager {
     let title = (metadata.title as string) || manifestEntry?.defaultTitle || "";
     if (!title) {
       title = filename
-        .replace(/\.(txt|md|mmd|py)$/, "")
+        .replace(/\.(txt|md|mmd|py|html)$/, "")
         .replace(/[-_]/g, " ")
         .replace(/\b\w/g, (c) => c.toUpperCase());
     }
@@ -201,28 +202,41 @@ export class CardManager {
     // For now, always re-render (cache invalidation is handled by file watcher)
     // TODO: Add mtime-based caching
 
-    try {
-      const result = await this.pool.render(
-        cardClass,
-        classPath,
-        strippedContent,
-        { ...metadata, ...(config || {}), layer, filename },
-        { layer, filename }
-      );
+    // Retry renders up to 3 times (workers may be temporarily busy with exports)
+    const maxRetries = 3;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const result = await this.pool.render(
+          cardClass,
+          classPath,
+          strippedContent,
+          { ...metadata, ...(config || {}), layer, filename },
+          { layer, filename }
+        );
 
-      // Cache the result
-      this.cache.set(key, {
-        html: result.html,
-        exports: result.exports,
-        meta,
-        mtime: Date.now(),
-      });
+        // Cache the result
+        this.cache.set(key, {
+          html: result.html,
+          exports: result.exports,
+          meta,
+          mtime: Date.now(),
+        });
 
-      return { html: result.html, exports: result.exports, meta };
-    } catch (err) {
-      const errorHtml = `<pre style="color: #f87171; white-space: pre-wrap;">Render error (${cardClass}):\n${(err as Error).message}</pre>`;
-      return { html: errorHtml, exports: [], meta };
+        return { html: result.html, exports: result.exports, meta };
+      } catch (err) {
+        const msg = (err as Error).message;
+        const isTimeout = msg.includes("timed out") || msg.includes("pool exhausted");
+        if (isTimeout && attempt < maxRetries - 1) {
+          console.warn(`[card-manager] Render retry ${attempt + 1}/${maxRetries} for ${layer}/${filename}: ${msg}`);
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        const errorHtml = `<pre style="color: #f87171; white-space: pre-wrap;">Render error (${cardClass}):\n${msg}</pre>`;
+        return { html: errorHtml, exports: [], meta };
+      }
     }
+    // Should not reach here
+    return { html: "", exports: [], meta };
   }
 
   async callExport(

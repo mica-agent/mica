@@ -23,7 +23,7 @@ export interface ClassChangeEvent {
 const LAYERS_DIR = path.resolve("layers");
 const CARD_CLASSES_DIR = path.resolve("card-classes");
 const DEBOUNCE_MS = 300;
-const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json"];
+const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json", ".html"];
 
 export class FileWatcher extends EventEmitter {
   private watchers: fs.FSWatcher[] = [];

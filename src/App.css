@@ -130,7 +130,7 @@
 /* ── Breadcrumb ─────────────────────────────────── */
 
 .breadcrumb {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 60px;
@@ -186,7 +186,7 @@
 /* ── Depth Indicator ────────────────────────────── */
 
 .depth-indicator {
-  position: fixed;
+  position: absolute;
   top: 52px;
   right: 0;
   width: 56px;
@@ -789,7 +789,7 @@
 /* ── Layer Transition Hint ──────────────────────── */
 
 .nav-hint {
-  position: fixed;
+  position: absolute;
   bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
@@ -938,7 +938,7 @@
 /* ── Left Edge Swipe Hint ───────────────────────── */
 
 .edge-swipe-hint {
-  position: fixed;
+  position: absolute;
   left: 0;
   top: 52px;
   bottom: 0;

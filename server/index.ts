@@ -252,7 +252,7 @@ app.post("/api/layers/:layer/convert-drawing", async (req, res) => {
 
 // ── Widget Card System ──────────────────────────────────────
 
-const workerPool = new WorkerPool({ poolSize: 4, pythonPath: "/usr/bin/python3" });
+const workerPool = new WorkerPool({ poolSize: 8, pythonPath: "/usr/bin/python3" });
 const cardManager = new CardManager(workerPool);
 const fileWatcher = new FileWatcher();
 
@@ -508,7 +508,7 @@ fileWatcher.on("class-change", (event: { className: string }) => {
 ║  WebSocket: ws://localhost:${PORT}/ws/cards                  ║
 ╠══════════════════════════════════════════════════════════╣
 ║  Widget System:                                          ║
-║    Worker Pool: 4 Python workers                         ║
+║    Worker Pool: 8 Python workers                         ║
 ║    Card Classes: card-classes/                           ║
 ║    File Watcher: active                                  ║
 ╠══════════════════════════════════════════════════════════╣

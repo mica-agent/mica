@@ -106,21 +106,34 @@ Freelance consultants and small business owners who track expenses manually and 
 - Zero data leaves the device
 - Setup completes in under 2 minutes
 `,
+
+  "_chat.md": ``,
 };
+
+const ALL_LAYERS = ["mission", "experience", "architecture", "implementation"];
 
 export async function seedMissionLayer(): Promise<void> {
   await ensureLayerDir("mission");
   const existing = await listFiles("mission");
   if (existing.length > 0) {
     console.log("[seed] Mission layer already has files, skipping seed.");
-    return;
+  } else {
+    console.log("[seed] Seeding mission layer with starter files...");
+    for (const [filename, content] of Object.entries(MISSION_SEEDS)) {
+      await writeLayerFile("mission", filename, content);
+    }
+    console.log(
+      `[seed] Created ${Object.keys(MISSION_SEEDS).length} files in layers/mission/`
+    );
   }
 
-  console.log("[seed] Seeding mission layer with starter files...");
-  for (const [filename, content] of Object.entries(MISSION_SEEDS)) {
-    await writeLayerFile("mission", filename, content);
+  // Ensure _chat.md exists on all layers
+  for (const layer of ALL_LAYERS) {
+    await ensureLayerDir(layer);
+    const files = await listFiles(layer);
+    if (!files.some((f) => f.name === "_chat.md")) {
+      await writeLayerFile(layer, "_chat.md", "");
+      console.log(`[seed] Created _chat.md in ${layer} layer`);
+    }
   }
-  console.log(
-    `[seed] Created ${Object.keys(MISSION_SEEDS).length} files in layers/mission/`
-  );
 }

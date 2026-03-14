@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { LAYERS, PROJECT_NAME } from './data';
 import WhiteboardView from './whiteboard/WhiteboardView';
 import type { WhiteboardHandle } from './whiteboard/WhiteboardView';
-import AIChatPanel from './ai/AIChatPanel';
+import ChatSidebar from './whiteboard/ChatSidebar';
 import './App.css';
 import './ai/ai.css';
 
@@ -65,8 +65,11 @@ export default function App() {
     function onWheel(e: WheelEvent) {
       const target = e.target as HTMLElement;
 
+      // Never intercept scroll inside the chat sidebar or expanded card overlay
+      if (target.closest('.ai-sidebar, .wb-expanded-overlay')) return;
+
       // Check if we're inside any scrollable container (whiteboard grid, chat messages, etc.)
-      const scrollable = target.closest('.wb-grid, .ai-chat-messages, .workspace');
+      const scrollable = target.closest('.wb-grid, .ai-chat-messages, .chat-messages, .workspace');
       if (scrollable) {
         const { scrollTop, scrollHeight, clientHeight } = scrollable;
         const hasScroll = scrollHeight > clientHeight + 5;
@@ -268,9 +271,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* AI Sidebar — always available, uses Claude subscription */}
+      {/* Chat Sidebar — widget-based chat per layer */}
       <div className="ai-sidebar">
-        <AIChatPanel
+        <ChatSidebar
           activeLayer={layerIdMap[activeLayer]}
           layerColor={currentLayer.color}
           onFilesChanged={() => whiteboardRef.current?.refetch()}

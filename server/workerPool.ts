@@ -270,13 +270,14 @@ export class WorkerPool extends EventEmitter {
   private poolSize: number;
   private rpcHandler: RpcHandler | null = null;
   private requestCounter = 0;
+  private roundRobinIndex = 0;
 
   constructor(options?: {
     poolSize?: number;
     pythonPath?: string;
   }) {
     super();
-    this.poolSize = options?.poolSize ?? 4;
+    this.poolSize = options?.poolSize ?? 8;
     this.pythonPath = options?.pythonPath ?? "/usr/bin/python3";
     this.workerPath = path.join(__dirname, "mica_sdk", "mica_worker.py");
   }
@@ -315,9 +316,8 @@ export class WorkerPool extends EventEmitter {
     return null;
   }
 
-  private async waitForWorker(): Promise<PythonWorker> {
+  private async waitForWorker(maxWait = 60000): Promise<PythonWorker> {
     // Simple polling for an idle worker
-    const maxWait = 60000;
     const start = Date.now();
     while (Date.now() - start < maxWait) {
       const worker = this.getIdleWorker();
@@ -327,6 +327,19 @@ export class WorkerPool extends EventEmitter {
     throw new Error("No workers available (pool exhausted)");
   }
 
+  private getNextAliveWorker(): PythonWorker {
+    // Round-robin across alive workers, regardless of busy state.
+    // Renders are fast and can queue behind an in-progress export.
+    for (let i = 0; i < this.workers.length; i++) {
+      const idx = (this.roundRobinIndex + i) % this.workers.length;
+      if (this.workers[idx].isAlive) {
+        this.roundRobinIndex = (idx + 1) % this.workers.length;
+        return this.workers[idx];
+      }
+    }
+    throw new Error("No alive workers available");
+  }
+
   async render(
     className: string,
     classPath: string,
@@ -334,7 +347,9 @@ export class WorkerPool extends EventEmitter {
     config: Record<string, unknown>,
     context: { layer: string; filename: string }
   ): Promise<RenderResult> {
-    const worker = this.getIdleWorker() ?? (await this.waitForWorker());
+    // Renders prefer idle workers but never wait — fall back to round-robin
+    // so they don't get stuck behind long-running export calls
+    const worker = this.getIdleWorker() ?? this.getNextAliveWorker();
     const id = this.nextId();
     worker.setRequestContext(id, context);
     return worker.send(

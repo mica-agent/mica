@@ -73,8 +73,8 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
       }
     }, [layerId]);
 
-    // Separate system cards from content cards
-    const systemCards = cards.filter((c) => c.meta.isSystem);
+    // Separate system cards from content cards (_chat.md is in sidebar, not here)
+    const systemCards = cards.filter((c) => c.meta.isSystem && c.filename !== "_chat.md");
     const contentCards = cards.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
 
     // Order system cards: goal, todo, brief, log, chat

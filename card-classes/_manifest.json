@@ -35,5 +35,9 @@
     "badge": "CHAT",
     "system": true,
     "defaultTitle": "Chat"
+  },
+  "html": {
+    "badge": "HTML",
+    "defaultTitle": ""
   }
 }

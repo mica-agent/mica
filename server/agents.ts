@@ -62,6 +62,7 @@ You have access to tools for managing files on the shared whiteboard, reading ot
 When creating files, use kebab-case names with descriptive titles:
 - .md for rich content (personas, briefs, analyses, decisions)
 - .mmd for mermaid diagrams (flowcharts, architecture, sequences)
+- .html for interactive widgets, styled documents, or visual layouts
 - .txt for simple notes and lists
 
 ## Cross-Layer Awareness
