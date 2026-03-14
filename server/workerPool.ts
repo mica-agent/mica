@@ -76,25 +76,55 @@ class PythonWorker {
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
     });
 
+    this.setupProcessHandlers();
+  }
+
+  private setupProcessHandlers() {
     // Read stdout line by line
     this.rl = readline.createInterface({ input: this.proc.stdout! });
     this.rl.on("line", (line) => this.handleMessage(line));
+    this.rl.on("error", (err) => {
+      console.error(`[mica-worker ${this.proc.pid}] readline error:`, err.message);
+    });
 
     // Log stderr
     this.proc.stderr?.on("data", (data) => {
       console.error(`[mica-worker ${this.proc.pid}] ${data.toString().trim()}`);
     });
 
+    this.proc.on("error", (err) => {
+      console.error(`[mica-worker] Failed to spawn:`, err.message);
+      this.rejectAllPending(`Worker spawn failed: ${err.message}`);
+    });
+
     this.proc.on("exit", (code) => {
       console.log(`[mica-worker ${this.proc.pid}] exited with code ${code}`);
-      // Reject all pending requests
-      for (const [, req] of this.pending) {
-        clearTimeout(req.timeout);
-        req.reject(new Error(`Worker exited with code ${code}`));
-      }
-      this.pending.clear();
-      this.ready = false;
+      this.rejectAllPending(`Worker exited with code ${code}`);
+      // Auto-restart after 1s
+      setTimeout(() => this.restart(), 1000);
     });
+  }
+
+  private rejectAllPending(reason: string) {
+    for (const [, req] of this.pending) {
+      clearTimeout(req.timeout);
+      req.reject(new Error(reason));
+    }
+    this.pending.clear();
+    this.ready = false;
+  }
+
+  private restart() {
+    console.log("[mica-worker] Restarting worker...");
+    this.readyPromise = new Promise((resolve) => {
+      this.readyResolve = resolve;
+    });
+    this.proc = spawn(this.pythonPath, ["-u", this.workerPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+    });
+    this.setupProcessHandlers();
+    if (this.rpcHandler) this.setRpcHandler(this.rpcHandler);
   }
 
   setRpcHandler(handler: RpcHandler) {

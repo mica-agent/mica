@@ -13,6 +13,10 @@ export default defineConfig({
         changeOrigin: true,
         timeout: 120000,
       },
+      '/ws': {
+        target: 'ws://localhost:3001',
+        ws: true,
+      },
     },
   },
 })

@@ -29,6 +29,16 @@ import { FileWatcher } from "./fileWatcher.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3001");
 
+// ── Global error handlers — prevent process crashes ─────
+process.on("unhandledRejection", (reason) => {
+  console.error("[UNHANDLED REJECTION]", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[UNCAUGHT EXCEPTION]", err.message);
+  // Give time to flush logs, then exit (restart via process manager)
+  setTimeout(() => process.exit(1), 1000);
+});
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
@@ -323,6 +333,49 @@ app.post("/api/layers/:layer/cards/:filename/call/:fn", async (req, res) => {
   }
 });
 
+// Context stats — estimate token usage for agent calls
+app.get("/api/layers/:layer/context-stats", async (req, res) => {
+  const { layer } = req.params;
+  if (!isValidLayer(layer)) {
+    res.status(400).json({ error: `Invalid layer: ${layer}` });
+    return;
+  }
+  try {
+    const files = await listFiles(layer);
+    let totalChars = 0;
+    const fileStats: { name: string; chars: number }[] = [];
+    for (const f of files) {
+      const chars = f.content.length;
+      totalChars += chars;
+      fileStats.push({ name: f.name, chars });
+    }
+
+    // Chat history size
+    let chatHistoryChars = 0;
+    const chatFile = files.find((f) => f.name === "_chat-history.json");
+    if (chatFile) chatHistoryChars = chatFile.content.length;
+
+    // Fixed system prompt ~2100 chars
+    const systemPromptChars = 2100;
+    const totalContextChars = totalChars + systemPromptChars;
+
+    // Rough token estimate: ~4 chars per token for English text
+    const estimatedTokens = Math.round(totalContextChars / 4);
+
+    res.json({
+      layer,
+      files: fileStats.length,
+      fileContentChars: totalChars,
+      systemPromptChars,
+      chatHistoryChars,
+      totalContextChars,
+      estimatedTokens,
+    });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // ── Start ──────────────────────────────────────────────────
 
 // Seed mission layer on startup
@@ -330,15 +383,37 @@ seedMissionLayer().catch((err) =>
   console.error("Failed to seed mission layer:", err.message)
 );
 
+// Express global error handler
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("[express] Unhandled error:", err.message);
+  res.status(500).json({ error: "Internal server error" });
+});
+
 const server = http.createServer(app);
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`[server] Port ${PORT} is already in use. Kill the other process and retry.`);
+  } else {
+    console.error("[server] HTTP error:", err.message);
+  }
+  process.exit(1);
+});
 
 // WebSocket server for real-time card updates
 const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 
+wss.on("error", (err) => {
+  console.error("[websocket-server] Error:", (err as Error).message);
+});
+
 wss.on("connection", (ws) => {
   wsClients.add(ws);
   ws.on("close", () => wsClients.delete(ws));
+  ws.on("error", (err) => {
+    console.error("[websocket] Connection error:", err.message);
+    wsClients.delete(ws);
+  });
 
   // Handle export calls from browser via WebSocket
   ws.on("message", async (raw) => {
@@ -363,7 +438,11 @@ function broadcast(msg: Record<string, unknown>) {
   const data = JSON.stringify(msg);
   for (const ws of wsClients) {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
+      try {
+        ws.send(data);
+      } catch {
+        wsClients.delete(ws);
+      }
     }
   }
 }

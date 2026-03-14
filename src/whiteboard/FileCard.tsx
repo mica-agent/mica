@@ -20,6 +20,7 @@ export default function FileCard({ filename, html, exports: exportFns, meta, lay
   const [overflows, setOverflows] = useState(false);
 
   const cardClass = meta.isSystem ? `wb-card--${meta.cardClass}` : "";
+  const isInteractive = exportFns.length > 0;
 
   // Detect overflow after render
   useEffect(() => {
@@ -31,11 +32,14 @@ export default function FileCard({ filename, html, exports: exportFns, meta, lay
     return () => clearTimeout(timer);
   }, [html]);
 
+  // For interactive cards, don't expand when clicking the body — only via header/footer
+  const handleCardClick = isInteractive ? undefined : onExpand;
+
   return (
     <div
       className={`wb-card ${cardClass}`}
       style={{ "--layer-color": layerColor } as React.CSSProperties}
-      onClick={onExpand}
+      onClick={handleCardClick}
     >
       <div className="wb-card-header">
         <span className="wb-card-type">{meta.badge}</span>
@@ -44,6 +48,11 @@ export default function FileCard({ filename, html, exports: exportFns, meta, lay
           <span className="wb-card-system-hint">editable by you &amp; the agent</span>
         )}
         <div className="wb-card-actions">
+          {isInteractive && (
+            <button onClick={(e) => { e.stopPropagation(); onExpand(); }} title="Expand" className="wb-card-btn">
+              &#x26F6;
+            </button>
+          )}
           <button onClick={(e) => { e.stopPropagation(); onEdit(); }} title="Edit" className="wb-card-btn">
             &#9998;
           </button>

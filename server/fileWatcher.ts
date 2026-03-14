@@ -88,9 +88,15 @@ export class FileWatcher extends EventEmitter {
           key,
           setTimeout(() => {
             this.debounceTimers.delete(key);
-            this.handleFileChange(layer, filename, dir);
+            this.handleFileChange(layer, filename, dir).catch((err) => {
+              console.error(`[file-watcher] Error handling ${layer}/${filename}:`, (err as Error).message);
+            });
           }, DEBOUNCE_MS)
         );
+      });
+
+      watcher.on("error", (err: Error) => {
+        console.warn(`[file-watcher] Watch error for ${dir}:`, err.message);
       });
 
       this.watchers.push(watcher);
@@ -147,6 +153,10 @@ export class FileWatcher extends EventEmitter {
             this.emit("class-change", { type: "class-changed", className } as ClassChangeEvent);
           }, DEBOUNCE_MS)
         );
+      });
+
+      watcher.on("error", (err: Error) => {
+        console.warn(`[file-watcher] Card-classes watch error:`, err.message);
       });
 
       this.watchers.push(watcher);

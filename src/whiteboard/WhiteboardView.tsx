@@ -1,6 +1,6 @@
-import { useState, useCallback, useImperativeHandle, forwardRef } from "react";
-import { saveFile, deleteFile, convertDrawing } from "../api/layerFiles";
-import type { LayerId, RenderedCard } from "../api/layerFiles";
+import { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from "react";
+import { saveFile, deleteFile, convertDrawing, fetchContextStats } from "../api/layerFiles";
+import type { LayerId, RenderedCard, ContextStats } from "../api/layerFiles";
 import { useLayerSocket } from "./useLayerSocket";
 import FileCard from "./FileCard";
 import FileEditor from "./FileEditor";
@@ -23,6 +23,7 @@ const SYSTEM_FILENAMES = ["_goal.md", "_todo.md", "_brief.md", "_log.md", "_chat
 const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
   function WhiteboardView({ layerId, layerColor }, ref) {
     const { cards, loading, callExport, refetch } = useLayerSocket(layerId);
+    const [contextStats, setContextStats] = useState<ContextStats | null>(null);
     const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
     const [expandedCard, setExpandedCard] = useState<RenderedCard | null>(null);
     const [creatingType, setCreatingType] = useState<"text" | "markdown" | "mermaid" | null>(null);
@@ -30,6 +31,11 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
     const [converting, setConverting] = useState(false);
 
     useImperativeHandle(ref, () => ({ refetch }), [refetch]);
+
+    // Fetch context stats when cards change
+    useEffect(() => {
+      fetchContextStats(layerId).then(setContextStats).catch(() => {});
+    }, [layerId, cards.length]);
 
     const handleSave = useCallback(async (filename: string, content: string) => {
       await saveFile(layerId, filename, content);
@@ -101,6 +107,13 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
             </button>
           </div>
           <div className="wb-toolbar-right">
+            {contextStats && (
+              <span className="wb-context-stats" title={`${contextStats.files} files, ${contextStats.fileContentChars.toLocaleString()} chars content + ${contextStats.systemPromptChars.toLocaleString()} chars prompt`}>
+                ~{contextStats.estimatedTokens < 1000
+                  ? contextStats.estimatedTokens
+                  : `${(contextStats.estimatedTokens / 1000).toFixed(1)}k`} tokens
+              </span>
+            )}
             <span className="wb-file-count">
               {cards.length} card{cards.length !== 1 ? "s" : ""}
             </span>

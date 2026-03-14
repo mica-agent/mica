@@ -92,6 +92,22 @@ export async function fetchCards(layer: LayerId): Promise<RenderedCard[]> {
   return res.json();
 }
 
+export interface ContextStats {
+  layer: string;
+  files: number;
+  fileContentChars: number;
+  systemPromptChars: number;
+  chatHistoryChars: number;
+  totalContextChars: number;
+  estimatedTokens: number;
+}
+
+export async function fetchContextStats(layer: LayerId): Promise<ContextStats> {
+  const res = await fetch(`${API_BASE}/api/layers/${layer}/context-stats`);
+  if (!res.ok) throw new Error(`Failed to fetch context stats: ${res.statusText}`);
+  return res.json();
+}
+
 export async function callCardExport(
   layer: LayerId,
   filename: string,

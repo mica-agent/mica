@@ -26,6 +26,16 @@
   gap: 6px;
 }
 
+.wb-context-stats {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  cursor: default;
+  font-variant-numeric: tabular-nums;
+}
+
 .wb-file-count {
   font-size: 0.7rem;
   color: var(--text-dim);

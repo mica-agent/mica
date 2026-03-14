@@ -271,10 +271,13 @@ const escalateToLayerTool = tool(
   }
 );
 
-const micaToolServer = createSdkMcpServer({
-  name: "mica-tools",
-  tools: [listFilesTool, readFileTool, writeFileTool, deleteFileTool, escalateToLayerTool],
-});
+// Create a fresh MCP server per call to avoid "Already connected to a transport" errors.
+function createMicaToolServer() {
+  return createSdkMcpServer({
+    name: "mica-tools",
+    tools: [listFilesTool, readFileTool, writeFileTool, deleteFileTool, escalateToLayerTool],
+  });
+}
 
 // ── Session tracking per layer ─────────────────────────────
 
@@ -324,7 +327,7 @@ ${fileContext}`;
 
   const options: Record<string, unknown> = {
     systemPrompt,
-    mcpServers: { "mica-tools": micaToolServer },
+    mcpServers: { "mica-tools": createMicaToolServer() },
     tools: [] as string[], // disable built-in file tools
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,

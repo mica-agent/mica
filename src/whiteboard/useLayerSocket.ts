@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { LayerId, RenderedCard, CardMeta } from "../api/layerFiles";
-import { fetchCards } from "../api/layerFiles";
+import { fetchCards, callCardExport as callCardExportRest } from "../api/layerFiles";
 
 const API_BASE = import.meta.env.VITE_MICA_API || "";
 
@@ -40,7 +40,9 @@ export function useLayerSocket(layerId: LayerId): UseLayerSocketResult {
   // Initial fetch
   const loadCards = useCallback(async () => {
     try {
+      console.log("[useLayerSocket] Fetching cards for", layerId);
       const loaded = await fetchCards(layerId);
+      console.log("[useLayerSocket] Got", loaded.length, "cards for", layerId);
       setCards(loaded);
     } catch (err) {
       console.error("[useLayerSocket] Failed to fetch cards:", err);
@@ -157,16 +159,17 @@ export function useLayerSocket(layerId: LayerId): UseLayerSocketResult {
     };
   }, [layerId, loadCards]);
 
-  // Call an @export function via WebSocket
+  // Call an @export function via WebSocket, with REST fallback
   const callExport = useCallback(
     (layer: LayerId, filename: string, fn: string, args: Record<string, unknown> = {}): Promise<unknown> => {
-      return new Promise((resolve, reject) => {
-        const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          reject(new Error("WebSocket not connected"));
-          return;
-        }
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        // Fallback to REST
+        console.log("[useLayerSocket] WebSocket not open, using REST fallback for", fn);
+        return callCardExportRest(layer, filename, fn, args);
+      }
 
+      return new Promise((resolve, reject) => {
         const id = `call-${++callIdCounter}`;
         pendingCalls.current.set(id, { resolve, reject });
 

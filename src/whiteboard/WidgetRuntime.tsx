@@ -31,65 +31,45 @@ export default function WidgetRuntime({ html, exports: exportFns, layer, filenam
       prevHtmlRef.current = html;
     }
 
-    // Inject mica.call() into the widget's scope
+    // Build per-widget mica bridge
     const micaBridge = {
       call: (fn: string, args: Record<string, unknown> = {}) => {
         return callExport(layer, filename, fn, args);
       },
       exports: exportFns || [],
     };
-    (el as unknown as Record<string, unknown>).__mica = micaBridge;
 
-    // Also set on window for inline scripts
-    const w = el.ownerDocument.defaultView;
-    if (w) {
-      (w as unknown as Record<string, unknown>).mica = micaBridge;
-    }
-
-    // Execute any <script> tags in the HTML
+    // Execute <script> tags with the correct mica bridge injected.
+    // Each widget gets its own bridge scoped to its layer/filename,
+    // avoiding the global window.mica collision between multiple cards.
     const scripts = el.querySelectorAll("script");
     scripts.forEach((oldScript) => {
       const newScript = document.createElement("script");
-      // Copy attributes
       Array.from(oldScript.attributes).forEach((attr) => {
         newScript.setAttribute(attr.name, attr.value);
       });
-      newScript.textContent = oldScript.textContent;
-      oldScript.parentNode?.replaceChild(newScript, oldScript);
+      // Inject `mica` and `container` as locals so widget scripts
+      // don't need to rely on globals or document.currentScript
+      newScript.textContent =
+        `(function(mica, container) {${oldScript.textContent}})(` +
+        `document.currentScript.__mica, document.currentScript.parentElement);`;
+      oldScript.remove();
+      // Attach bridge to script element before it executes
+      (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
+      el.appendChild(newScript);
     });
 
-    // Initialize mermaid diagrams
-    const mermaidEls = el.querySelectorAll("pre.mermaid");
+    // Initialize mermaid diagrams using mermaid.run() (v10+ API)
+    const mermaidEls = el.querySelectorAll("pre.mermaid:not(.mermaid-rendered)");
     if (mermaidEls.length > 0) {
-      mermaidEls.forEach((pre, i) => {
-        const id = `mermaid-widget-${filename.replace(/[^a-zA-Z0-9]/g, "_")}-${i}-${Date.now()}`;
-        const content = pre.textContent || "";
-
-        // Create off-screen temp div for mermaid rendering
-        const tempDiv = document.createElement("div");
-        tempDiv.id = id;
-        tempDiv.style.position = "absolute";
-        tempDiv.style.left = "-9999px";
-        document.body.appendChild(tempDiv);
-
-        mermaid.render(id, content).then(({ svg }) => {
-          pre.innerHTML = svg;
-          pre.classList.add("mermaid-rendered");
-        }).catch(() => {
-          pre.classList.add("mermaid-error");
-        }).finally(() => {
-          try { document.body.removeChild(tempDiv); } catch {}
+      mermaid.run({ nodes: mermaidEls as unknown as ArrayLike<HTMLElement> })
+        .then(() => {
+          mermaidEls.forEach((pre) => pre.classList.add("mermaid-rendered"));
+        })
+        .catch((err) => {
+          console.error("[mermaid] render failed:", err);
         });
-      });
     }
-
-    // Cleanup: remove mica from window on unmount
-    return () => {
-      const w2 = el?.ownerDocument?.defaultView;
-      if (w2 && (w2 as unknown as Record<string, unknown>).mica === micaBridge) {
-        delete (w2 as unknown as Record<string, unknown>).mica;
-      }
-    };
   }, [html, layer, filename, callExport, exportFns]);
 
   return <div ref={containerRef} className="widget-runtime" />;
