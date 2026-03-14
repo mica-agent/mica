@@ -89,6 +89,12 @@ These are the connective tissue between layers. They capture:
 
 When you see _decision-*.md files on your whiteboard, READ THEM — they contain agreements with other layers that constrain your work.
 
+## Shell Execution
+- You have access to Bash for running shell commands (install packages, run scripts, execute code, etc.)
+- Use this when tasks require code execution, data processing, or system commands
+- Working directory is the project root
+- Keep commands focused and safe — avoid destructive operations unless explicitly asked
+
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
 ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.md so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
@@ -454,7 +460,7 @@ ${fileContext}`;
   const options: Record<string, unknown> = {
     systemPrompt,
     mcpServers: { "mica-tools": createMicaToolServer() },
-    tools: [] as string[], // disable built-in file tools
+    tools: ["Bash"], // enable shell execution for code generation
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     persistSession: true,

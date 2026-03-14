@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { chat, teamDiscussRequest } from "./client";
 import type { LayerId, AgentResponse } from "./client";
+import { getLayerColor } from "../data";
 
 interface ChatMessage {
   id: string;
@@ -12,31 +13,40 @@ interface ChatMessage {
 }
 
 interface Props {
+  projectId: string;
   activeLayer: LayerId;
+  layers: string[];
   layerColor: string;
   onFilesChanged?: () => void;
 }
 
-const AGENT_NAMES: Record<LayerId, string> = {
-  mission: "Mission Strategist",
-  experience: "Experience Designer",
-  architecture: "System Architect",
-  implementation: "Implementation Engineer",
-};
+function agentName(layer: string): string {
+  const known: Record<string, string> = {
+    mission: "Mission Strategist",
+    experience: "Experience Designer",
+    architecture: "System Architect",
+    implementation: "Implementation Engineer",
+  };
+  if (known[layer]) return known[layer];
+  const label = layer.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return `${label} Agent`;
+}
 
-const AGENT_ICONS: Record<LayerId, string> = {
-  mission: "◆",
-  experience: "◇",
-  architecture: "⬡",
-  implementation: "⬢",
-};
+function agentIcon(layer: string): string {
+  const known: Record<string, string> = {
+    mission: "\u25c6",
+    experience: "\u25c7",
+    architecture: "\u2b21",
+    implementation: "\u2b22",
+  };
+  return known[layer] || "\u25cb";
+}
 
-const LAYER_COLORS: Record<LayerId, string> = {
-  mission: "#4a8aff",
-  experience: "#ff8a6a",
-  architecture: "#4acaa0",
-  implementation: "#9a7aff",
-};
+function layerColorForId(layer: string, layers: string[]): string {
+  const idx = layers.indexOf(layer);
+  if (idx < 0) return "#999";
+  return getLayerColor(idx).color;
+}
 
 // ── Voice helpers ────────────────────────────────────────
 const SpeechRecognition =
@@ -51,7 +61,7 @@ function speak(text: string) {
   synth.speak(utterance);
 }
 
-export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }: Props) {
+export default function AIChatPanel({ projectId, activeLayer, layers, layerColor, onFilesChanged }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -70,7 +80,8 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
 
   // Auto check-in: when entering a layer for the first time, agent speaks first
   useEffect(() => {
-    if (checkedInLayers.current.has(activeLayer)) return;
+    const key = `${projectId}/${activeLayer}`;
+    if (checkedInLayers.current.has(key)) return;
 
     let cancelled = false;
     setCheckingIn(true);
@@ -79,19 +90,20 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
     (async () => {
       try {
         const result = await chat(
+          projectId,
           activeLayer,
           "Briefly assess the whiteboard against _goal.md and _todo.md. What's solid, what's the top priority to work on next? 2-3 sentences max."
         );
         if (!cancelled) {
-          checkedInLayers.current.add(activeLayer);
+          checkedInLayers.current.add(key);
           handleResponse(result.response);
         }
       } catch (err) {
         if (!cancelled) {
-          checkedInLayers.current.add(activeLayer);
+          checkedInLayers.current.add(key);
           addMessage({
             role: "assistant",
-            content: `Couldn't connect to the ${AGENT_NAMES[activeLayer]}. Send a message to try again.`,
+            content: `Couldn't connect to the ${agentName(activeLayer)}. Send a message to try again.`,
             layer: activeLayer,
             agentName: "System",
           });
@@ -109,7 +121,7 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
       setLoading(false);
       setCheckingIn(false);
     };
-  }, [activeLayer]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projectId, activeLayer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function addMessage(msg: Omit<ChatMessage, "id">) {
     setMessages((prev) => [
@@ -123,7 +135,7 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
       role: "assistant",
       content: response.message,
       layer: response.layer,
-      agentName: AGENT_NAMES[response.layer],
+      agentName: agentName(response.layer),
       isEscalation,
     });
     if (voiceOut && response.message) {
@@ -187,12 +199,14 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
 
     try {
       if (mode === "team") {
-        const responses = await teamDiscussRequest(userMsg);
-        for (const layer of ["mission", "experience", "architecture", "implementation"] as LayerId[]) {
-          handleResponse(responses[layer]);
+        const responses = await teamDiscussRequest(projectId, userMsg);
+        for (const layer of layers) {
+          if (responses[layer]) {
+            handleResponse(responses[layer]);
+          }
         }
       } else {
-        const result = await chat(activeLayer, userMsg);
+        const result = await chat(projectId, activeLayer, userMsg);
         handleResponse(result.response);
         if (result.escalationResponse) {
           handleResponse(result.escalationResponse, true);
@@ -228,10 +242,10 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
       <div className="ai-chat-header">
         <div className="ai-chat-agent-info">
           <span className="ai-chat-agent-icon" style={{ color: layerColor }}>
-            {AGENT_ICONS[activeLayer]}
+            {agentIcon(activeLayer)}
           </span>
           <div>
-            <div className="ai-chat-agent-name">{AGENT_NAMES[activeLayer]}</div>
+            <div className="ai-chat-agent-name">{agentName(activeLayer)}</div>
             <div className="ai-chat-agent-role">AI Team Member</div>
           </div>
         </div>
@@ -246,7 +260,7 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
           <button
             className={`ai-chat-mode ${mode === "team" ? "ai-chat-mode--active" : ""}`}
             onClick={() => setMode("team")}
-            title="All 4 agents discuss together"
+            title="All agents discuss together"
           >
             Team
           </button>
@@ -257,11 +271,11 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
       <div className="ai-chat-messages">
         {layerMessages.length === 0 && !loading && (
           <div className="ai-chat-empty">
-            <div className="ai-chat-empty-icon">{AGENT_ICONS[activeLayer]}</div>
+            <div className="ai-chat-empty-icon">{agentIcon(activeLayer)}</div>
             <p>
               {mode === "team"
-                ? "Ask a question and all 4 agents will respond from their perspective."
-                : `Ask the ${AGENT_NAMES[activeLayer]} anything, or wait for the initial review.`}
+                ? "Ask a question and all agents will respond from their perspective."
+                : `Ask the ${agentName(activeLayer)} anything, or wait for the initial review.`}
             </p>
           </div>
         )}
@@ -274,13 +288,13 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
             {msg.role === "assistant" && (
               <div className="ai-chat-msg-header">
                 <span className="ai-chat-msg-icon">
-                  {msg.agentName === "System" ? "⚙" : AGENT_ICONS[msg.layer]}
+                  {msg.agentName === "System" ? "\u2699" : agentIcon(msg.layer)}
                 </span>
-                <span className="ai-chat-msg-name" style={{ color: LAYER_COLORS[msg.layer] }}>
+                <span className="ai-chat-msg-name" style={{ color: layerColorForId(msg.layer, layers) }}>
                   {msg.agentName}
                 </span>
                 {msg.isEscalation && (
-                  <span className="ai-chat-escalation-badge">↗ Escalation</span>
+                  <span className="ai-chat-escalation-badge">&nearr; Escalation</span>
                 )}
               </div>
             )}
@@ -292,9 +306,9 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
         {loading && (
           <div className="ai-chat-msg ai-chat-msg--assistant ai-chat-msg--loading">
             <div className="ai-chat-msg-header">
-              <span className="ai-chat-msg-icon">{mode === "team" ? "⬡" : AGENT_ICONS[activeLayer]}</span>
+              <span className="ai-chat-msg-icon">{mode === "team" ? "\u2b21" : agentIcon(activeLayer)}</span>
               <span className="ai-chat-msg-name" style={{ color: layerColor }}>
-                {mode === "team" ? "AI Team" : AGENT_NAMES[activeLayer]}
+                {mode === "team" ? "AI Team" : agentName(activeLayer)}
               </span>
             </div>
             {checkingIn ? (
@@ -321,7 +335,7 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
             title={listening ? "Stop listening" : "Voice input"}
             disabled={loading}
           >
-            {listening ? "●" : "🎤"}
+            {listening ? "\u25cf" : "\ud83c\udfa4"}
           </button>
         )}
         <input
@@ -332,7 +346,7 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
               ? "Listening..."
               : mode === "team"
                 ? "Ask the full team..."
-                : `Ask the ${AGENT_NAMES[activeLayer]}...`
+                : `Ask the ${agentName(activeLayer)}...`
           }
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -340,14 +354,14 @@ export default function AIChatPanel({ activeLayer, layerColor, onFilesChanged }:
           disabled={loading}
         />
         <button onClick={sendMessage} disabled={loading || !input.trim()}>
-          ↑
+          &uarr;
         </button>
         <button
           className={`ai-chat-voice-btn ${voiceOut ? "ai-chat-voice-btn--active" : ""}`}
           onClick={() => { setVoiceOut(!voiceOut); if (voiceOut) window.speechSynthesis.cancel(); }}
           title={voiceOut ? "Mute voice output" : "Enable voice output"}
         >
-          {voiceOut ? "🔊" : "🔇"}
+          {voiceOut ? "\ud83d\udd0a" : "\ud83d\udd07"}
         </button>
       </div>
     </div>
