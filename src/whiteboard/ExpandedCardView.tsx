@@ -1,47 +1,20 @@
-import { useEffect, useRef } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import mermaid from "mermaid";
-import type { LayerFile } from "../api/layerFiles";
+import { useEffect } from "react";
+import type { LayerId, CardMeta } from "../api/layerFiles";
+import WidgetRuntime from "./WidgetRuntime";
 
 interface Props {
-  file: LayerFile;
+  filename: string;
+  html: string;
+  exports: string[];
+  meta: CardMeta;
+  layerId: LayerId;
   layerColor: string;
   onClose: () => void;
   onEdit: () => void;
-  title: string;
-  badge: string;
+  callExport: (layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
-function MermaidRenderer({ content, id }: { content: string; id: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const renderCountRef = useRef(0);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    let cancelled = false;
-    renderCountRef.current += 1;
-    const uniqueId = `mermaid-expanded-${id.replace(/[^a-zA-Z0-9-]/g, "_")}-${renderCountRef.current}-${Date.now()}`;
-    const tempDiv = document.createElement("div");
-    tempDiv.id = uniqueId;
-    tempDiv.style.position = "absolute";
-    tempDiv.style.left = "-9999px";
-    document.body.appendChild(tempDiv);
-    (async () => {
-      try {
-        const { svg } = await mermaid.render(uniqueId, content);
-        if (!cancelled) container.innerHTML = svg;
-      } catch {}
-      finally { try { document.body.removeChild(tempDiv); } catch {} }
-    })();
-    return () => { cancelled = true; };
-  }, [content, id]);
-
-  return <div ref={containerRef} className="wb-mermaid-svg" />;
-}
-
-export default function ExpandedCardView({ file, layerColor, onClose, onEdit, title, badge }: Props) {
+export default function ExpandedCardView({ filename, html, exports: exportFns, meta, layerId, layerColor, onClose, onEdit, callExport }: Props) {
   // Close on Escape
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -59,13 +32,10 @@ export default function ExpandedCardView({ file, layerColor, onClose, onEdit, ti
         onClick={(e) => e.stopPropagation()}
       >
         <div className="wb-expanded-header">
-          <span className="wb-card-type">{badge}</span>
-          <span className="wb-expanded-title">{title}</span>
+          <span className="wb-card-type">{meta.badge}</span>
+          <span className="wb-expanded-title">{meta.title}</span>
           <div className="wb-expanded-actions">
-            <button
-              className="wb-btn wb-btn--tool"
-              onClick={onEdit}
-            >
+            <button className="wb-btn wb-btn--tool" onClick={onEdit}>
               Edit
             </button>
             <button
@@ -79,21 +49,17 @@ export default function ExpandedCardView({ file, layerColor, onClose, onEdit, ti
         </div>
 
         <div className="wb-expanded-body">
-          {file.type === "text" && (
-            <pre className="wb-card-text">{file.content}</pre>
-          )}
-          {file.type === "markdown" && (
-            <div className="wb-card-markdown">
-              <Markdown remarkPlugins={[remarkGfm]}>{file.content}</Markdown>
-            </div>
-          )}
-          {file.type === "mermaid" && (
-            <MermaidRenderer content={file.content} id={`expanded-${file.name}`} />
-          )}
+          <WidgetRuntime
+            html={html}
+            exports={exportFns}
+            layer={layerId}
+            filename={filename}
+            callExport={callExport}
+          />
         </div>
 
         <div className="wb-expanded-footer">
-          <span className="wb-expanded-filename">{file.name}</span>
+          <span className="wb-expanded-filename">{filename}</span>
         </div>
       </div>
     </div>

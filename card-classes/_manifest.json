@@ -1,0 +1,39 @@
+{
+  "markdown": {
+    "badge": "MD",
+    "defaultTitle": ""
+  },
+  "mermaid": {
+    "badge": "MMD",
+    "defaultTitle": ""
+  },
+  "text": {
+    "badge": "TXT",
+    "defaultTitle": ""
+  },
+  "goal": {
+    "badge": "GOAL",
+    "system": true,
+    "defaultTitle": "Layer Goal"
+  },
+  "todo": {
+    "badge": "TODO",
+    "system": true,
+    "defaultTitle": "To Do"
+  },
+  "brief": {
+    "badge": "BRIEF",
+    "system": true,
+    "defaultTitle": "Agent Brief"
+  },
+  "log": {
+    "badge": "LOG",
+    "system": true,
+    "defaultTitle": "Activity Log"
+  },
+  "chat": {
+    "badge": "CHAT",
+    "system": true,
+    "defaultTitle": "Chat"
+  }
+}

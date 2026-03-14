@@ -9,6 +9,21 @@ export interface LayerFile {
   modifiedAt: string;
 }
 
+export interface CardMeta {
+  cardClass: string;
+  title: string;
+  badge: string;
+  isSystem: boolean;
+  config: Record<string, string>;
+}
+
+export interface RenderedCard {
+  filename: string;
+  html: string;
+  exports: string[];
+  meta: CardMeta;
+}
+
 const API_BASE = import.meta.env.VITE_MICA_API || "";
 
 export async function fetchFiles(layer: LayerId): Promise<LayerFile[]> {
@@ -69,4 +84,29 @@ export async function convertDrawing(
   );
   if (!res.ok) throw new Error(`Failed to convert drawing: ${res.statusText}`);
   return res.json();
+}
+
+export async function fetchCards(layer: LayerId): Promise<RenderedCard[]> {
+  const res = await fetch(`${API_BASE}/api/layers/${layer}/cards`);
+  if (!res.ok) throw new Error(`Failed to fetch cards: ${res.statusText}`);
+  return res.json();
+}
+
+export async function callCardExport(
+  layer: LayerId,
+  filename: string,
+  fn: string,
+  args: Record<string, unknown> = {}
+): Promise<unknown> {
+  const res = await fetch(
+    `${API_BASE}/api/layers/${layer}/cards/${encodeURIComponent(filename)}/call/${encodeURIComponent(fn)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    }
+  );
+  if (!res.ok) throw new Error(`Export call failed: ${res.statusText}`);
+  const data = await res.json();
+  return data.result;
 }

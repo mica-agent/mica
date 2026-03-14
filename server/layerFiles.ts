@@ -16,7 +16,7 @@ const VALID_LAYERS: LayerId[] = [
   "implementation",
 ];
 
-const VALID_EXTENSIONS = [".txt", ".md", ".mmd"];
+const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json"];
 
 const LAYERS_ROOT = join(process.cwd(), "layers");
 
