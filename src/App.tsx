@@ -181,6 +181,10 @@ export default function App() {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      // Don't intercept when user is typing in an input or textarea
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return;
+
       if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); descend(); }
       if (e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); ascend(); }
       const n = parseInt(e.key);
@@ -196,6 +200,7 @@ export default function App() {
     ['mission', 'experience', 'architecture', 'implementation'];
 
   const whiteboardRef = useRef<WhiteboardHandle>(null);
+  const [agentBusyLayer, setAgentBusyLayer] = useState<number | null>(null);
 
   return (
     <div className="app-with-ai">
@@ -216,7 +221,7 @@ export default function App() {
             {LAYERS.map((layer) => (
               <span
                 key={layer.id}
-                className={`breadcrumb-layer ${layer.index === activeLayer ? 'breadcrumb-layer--active' : ''}`}
+                className={`breadcrumb-layer ${layer.index === activeLayer ? 'breadcrumb-layer--active' : ''} ${layer.index === agentBusyLayer ? 'breadcrumb-layer--busy' : ''}`}
                 style={{
                   color: layer.index === activeLayer ? layer.color : undefined,
                   background: layer.index === activeLayer ? `${layer.color}15` : undefined,
@@ -233,7 +238,7 @@ export default function App() {
             {LAYERS.map((layer) => (
               <div
                 key={layer.id}
-                className={`depth-segment ${layer.index === activeLayer ? 'depth-segment--active' : ''}`}
+                className={`depth-segment ${layer.index === activeLayer ? 'depth-segment--active' : ''} ${layer.index === agentBusyLayer ? 'depth-segment--busy' : ''}`}
                 style={{ '--layer-color': layer.color } as React.CSSProperties}
                 onClick={() => navigateTo(layer.index)}
               >
@@ -277,6 +282,7 @@ export default function App() {
           activeLayer={layerIdMap[activeLayer]}
           layerColor={currentLayer.color}
           onFilesChanged={() => whiteboardRef.current?.refetch()}
+          onAgentBusy={(busy) => setAgentBusyLayer(busy ? activeLayer : null)}
         />
       </div>
     </div>

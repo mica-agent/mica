@@ -183,6 +183,15 @@
   border-color: var(--glass-border);
 }
 
+.breadcrumb-layer--busy {
+  animation: breadcrumbBusy 1.5s ease-in-out infinite;
+}
+
+@keyframes breadcrumbBusy {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; box-shadow: 0 0 8px currentColor; }
+}
+
 /* ── Depth Indicator ────────────────────────────── */
 
 .depth-indicator {
@@ -257,6 +266,35 @@
 .depth-segment--active .depth-label {
   color: var(--layer-color);
   font-weight: 600;
+}
+
+/* Agent busy — pulsing glow on the layer indicator */
+.depth-segment--busy .depth-icon {
+  animation: agentPulse 1.5s ease-in-out infinite;
+}
+
+.depth-segment--busy::before {
+  background: var(--layer-color) !important;
+  animation: agentBarPulse 1.5s ease-in-out infinite;
+}
+
+.depth-segment--busy .depth-label {
+  animation: agentLabelPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes agentPulse {
+  0%, 100% { opacity: 0.5; filter: drop-shadow(0 0 4px var(--layer-color)); transform: scale(1); }
+  50% { opacity: 1; filter: drop-shadow(0 0 10px var(--layer-color)); transform: scale(1.15); }
+}
+
+@keyframes agentBarPulse {
+  0%, 100% { opacity: 0.4; box-shadow: 0 0 6px var(--layer-color); }
+  50% { opacity: 1; box-shadow: 0 0 16px var(--layer-color); }
+}
+
+@keyframes agentLabelPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
 }
 
 /* ── Workspace ──────────────────────────────────── */

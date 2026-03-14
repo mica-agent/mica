@@ -1,7 +1,8 @@
 // ChatSidebar — renders the _chat.md widget card in the sidebar.
-// Replaces the old AIChatPanel with the widget-based chat.
+// The input is rendered directly in React to avoid flex layout issues
+// with innerHTML-injected content.
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { LayerId, RenderedCard } from "../api/layerFiles";
 import { fetchCards, callCardExport } from "../api/layerFiles";
 import WidgetRuntime from "./WidgetRuntime";
@@ -10,6 +11,7 @@ interface Props {
   activeLayer: LayerId;
   layerColor: string;
   onFilesChanged?: () => void;
+  onAgentBusy?: (busy: boolean) => void;
 }
 
 const AGENT_NAMES: Record<LayerId, string> = {
@@ -26,9 +28,12 @@ const AGENT_ICONS: Record<LayerId, string> = {
   implementation: "\u2b22",
 };
 
-export default function ChatSidebar({ activeLayer, layerColor, onFilesChanged }: Props) {
+export default function ChatSidebar({ activeLayer, layerColor, onFilesChanged, onAgentBusy }: Props) {
   const [chatCard, setChatCard] = useState<RenderedCard | null>(null);
   const [loading, setLoading] = useState(true);
+  const [inputValue, setInputValue] = useState("");
+  const [sending, setSending] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const loadChat = useCallback(async () => {
     try {
@@ -49,15 +54,39 @@ export default function ChatSidebar({ activeLayer, layerColor, onFilesChanged }:
 
   const handleCallExport = useCallback(
     async (layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => {
-      const result = await callCardExport(layer, filename, fn, args || {});
-      // After export call, refresh the card to pick up new messages
-      // and notify parent that files may have changed
+      onAgentBusy?.(true);
+      try {
+        const result = await callCardExport(layer, filename, fn, args || {});
+        loadChat();
+        onFilesChanged?.();
+        return result;
+      } finally {
+        onAgentBusy?.(false);
+      }
+    },
+    [loadChat, onFilesChanged, onAgentBusy]
+  );
+
+  const handleSend = useCallback(async () => {
+    const text = inputValue.trim();
+    if (!text || sending) return;
+
+    setInputValue("");
+    setSending(true);
+    onAgentBusy?.(true);
+
+    try {
+      await callCardExport(activeLayer, "_chat.md", "send_message", { message: text });
       loadChat();
       onFilesChanged?.();
-      return result;
-    },
-    [loadChat, onFilesChanged]
-  );
+    } catch (err) {
+      console.error("Chat send failed:", err);
+    } finally {
+      setSending(false);
+      onAgentBusy?.(false);
+      inputRef.current?.focus();
+    }
+  }, [inputValue, sending, activeLayer, loadChat, onFilesChanged, onAgentBusy]);
 
   return (
     <div
@@ -90,6 +119,27 @@ export default function ChatSidebar({ activeLayer, layerColor, onFilesChanged }:
             callExport={handleCallExport}
           />
         )}
+      </div>
+
+      {/* Input rendered in React — always visible at bottom */}
+      <div className="chat-sidebar-input">
+        <input
+          ref={inputRef}
+          type="text"
+          placeholder={`Ask ${AGENT_NAMES[activeLayer]}...`}
+          value={inputValue}
+          disabled={sending}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+        />
+        <button onClick={handleSend} disabled={sending || !inputValue.trim()}>
+          &uarr;
+        </button>
       </div>
     </div>
   );

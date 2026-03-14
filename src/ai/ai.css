@@ -388,6 +388,12 @@
   display: grid;
   grid-template-columns: 1fr 360px;
   height: 100vh;
+  width: 100vw;
+  margin: 0;
+  padding: 0;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
 }
 
 .app-main {
@@ -444,44 +450,82 @@
 }
 
 .chat-sidebar-body {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
-  padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
+  padding: 0 16px;
 }
 
-.chat-sidebar-body .widget-runtime {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.chat-sidebar-body .chat-widget {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.chat-sidebar-body .chat-messages {
-  flex: 1;
-  min-height: 0;
-  max-height: none;
+.chat-sidebar-body > .widget-runtime {
+  height: 100%;
   overflow-y: auto;
 }
 
+/* Hide the widget's own input area and header — React renders those */
 .chat-sidebar-body .chat-input-area {
-  flex-shrink: 0;
-  padding-right: 0;
+  display: none !important;
 }
 
 .chat-sidebar-body .chat-header {
-  display: none; /* sidebar already shows agent name */
+  display: none !important;
+}
+
+/* React-rendered input pinned at bottom of sidebar */
+.chat-sidebar-input {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+.chat-sidebar-input input {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #f0f0f5;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.chat-sidebar-input input:focus {
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.chat-sidebar-input input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.chat-sidebar-input input:disabled {
+  opacity: 0.5;
+}
+
+.chat-sidebar-input button {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #e8e8f0;
+  border-radius: 8px;
+  padding: 4px 14px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.chat-sidebar-input button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.chat-sidebar-input button:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .chat-sidebar-loading,

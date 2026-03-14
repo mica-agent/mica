@@ -78,7 +78,7 @@ def render(content, config):
 
     <style>
         .chat-widget {{
-            display: flex; flex-direction: column; height: 100%;
+            display: flex; flex-direction: column;
             min-height: 0; overflow: hidden;
             color: #e8e8f0;
             font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
