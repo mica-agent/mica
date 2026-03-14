@@ -29,12 +29,12 @@ export type LayerId =
 export interface AgentResponse {
   layer: LayerId;
   message: string;
-  escalation?: Escalation | null;
+  consultation?: Consultation | null;
   filesChanged?: boolean;
   cost?: number;
 }
 
-export interface Escalation {
+export interface Consultation {
   targetLayer: LayerId;
   question: string;
   context: string;
@@ -51,10 +51,10 @@ const AGENT_IDENTITY: Record<LayerId, string> = {
 };
 
 const TOOL_INSTRUCTIONS = `
-You have access to tools for managing files on the shared whiteboard and escalating to other layers.
+You have access to tools for managing files on the shared whiteboard, reading other layers, and cross-layer collaboration.
 
-FILE TOOLS — Use these to create, read, update, and delete whiteboard content:
-- list_files: See what files exist on the whiteboard
+## Your Layer's Whiteboard
+- list_files: See what files exist on your whiteboard
 - read_file: Read a specific file's content
 - write_file: Create or update a file (this is how you create artifacts)
 - delete_file: Remove a file
@@ -64,7 +64,35 @@ When creating files, use kebab-case names with descriptive titles:
 - .mmd for mermaid diagrams (flowcharts, architecture, sequences)
 - .txt for simple notes and lists
 
-ESCALATION — Use escalate_to_layer when you need another layer's perspective.
+## Cross-Layer Awareness
+- list_cross_layer: See what files exist on another layer's whiteboard
+- read_cross_layer: Read a specific file from another layer
+
+USE THESE PROACTIVELY. Before making decisions, check what upstream layers have decided:
+- Architecture should read Mission's _goal.md and product brief before designing
+- Experience should read Mission's persona and value prop before designing flows
+- Implementation should read Architecture's technical decisions before coding
+
+## Cross-Layer Collaboration
+- consult_layer: Ask another layer's agent a question. Response comes back immediately.
+  Decision record saved to both whiteboards as _decision-*.md.
+
+Typical flow directions:
+- DOWNWARD (push decisions): Mission → Experience → Architecture → Implementation
+  "Here's what we decided — design/build accordingly"
+- UPWARD (surface constraints): Implementation → Architecture → Experience → Mission
+  "We discovered X — does this change the plan?"
+
+Both directions are normal and expected. Don't wait to be asked — if you discover
+something that affects another layer, consult them proactively.
+
+## Decision Files (_decision-*.md)
+These are the connective tissue between layers. They capture:
+- What was asked and why
+- What the other layer responded
+- The resulting decision
+
+When you see _decision-*.md files on your whiteboard, READ THEM — they contain agreements with other layers that constrain your work.
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
@@ -150,7 +178,7 @@ async function appendToLog(layer: LayerId, entry: string) {
 
 // Track which layer the current query is operating on
 let currentLayer: LayerId = "mission";
-let pendingEscalation: Escalation | null = null;
+let pendingConsultation: Consultation | null = null;
 let filesWereChanged = false;
 
 const listFilesTool = tool(
@@ -244,27 +272,113 @@ const deleteFileTool = tool(
   }
 );
 
-const escalateToLayerTool = tool(
-  "escalate_to_layer",
-  "Escalate a question or decision to another layer's agent. Use when you need input from a different perspective.",
+// ── Cross-layer tools ─────────────────────────────────────
+
+const readCrossLayerTool = tool(
+  "read_cross_layer",
+  "Read a file from another layer's whiteboard. Use this to check what decisions, constraints, or artifacts exist in other layers before making your own decisions.",
   {
-    target_layer: z
+    layer: z
       .enum(["mission", "experience", "architecture", "implementation"])
-      .describe("Which layer agent to escalate to"),
-    question: z.string().describe("The question or decision needed"),
-    context: z.string().describe("Relevant context for the target agent"),
+      .describe("Which layer to read from"),
+    filename: z.string().describe("The filename to read (e.g., _goal.md, product-brief.md)"),
   },
   async (args) => {
-    pendingEscalation = {
-      targetLayer: args.target_layer as LayerId,
-      question: args.question,
-      context: args.context,
-    };
+    try {
+      const file = await readLayerFile(args.layer as LayerId, args.filename);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `[From ${args.layer} layer — ${args.filename}]\n\n${file.content}`,
+          },
+        ],
+      };
+    } catch {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `File "${args.filename}" not found in ${args.layer} layer.`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+const listCrossLayerTool = tool(
+  "list_cross_layer",
+  "List files on another layer's whiteboard. Use this to discover what artifacts and decisions exist in other layers.",
+  {
+    layer: z
+      .enum(["mission", "experience", "architecture", "implementation"])
+      .describe("Which layer to list files from"),
+  },
+  async (args) => {
+    const files = await listFiles(args.layer as LayerId);
+    const listing = files
+      .map((f) => `${f.name} (${f.type}, modified ${f.modifiedAt})`)
+      .join("\n");
     return {
       content: [
         {
           type: "text" as const,
-          text: `Escalation to ${args.target_layer} layer queued: "${args.question}"`,
+          text: `[${args.layer} layer files]\n${listing || "(No files yet)"}`,
+        },
+      ],
+    };
+  }
+);
+
+const consultLayerTool = tool(
+  "consult_layer",
+  "Consult another layer's agent — ask a question and get their response. Use for decisions that need another perspective. The Q&A is saved as a decision record on both whiteboards.",
+  {
+    target_layer: z
+      .enum(["mission", "experience", "architecture", "implementation"])
+      .describe("Which layer agent to ask"),
+    question: z.string().describe("The question or decision needed"),
+    context: z.string().describe("Relevant context for the target agent"),
+  },
+  async (args) => {
+    const targetLayer = args.target_layer as LayerId;
+    const fromName = AGENT_META[currentLayer].name;
+    const toName = AGENT_META[targetLayer].name;
+
+    // Call the target agent directly (synchronous consultation)
+    const response = await chatWithAgent(
+      targetLayer,
+      `[Cross-layer question from ${fromName} (${currentLayer} layer)]\n\nQuestion: ${args.question}\n\nContext: ${args.context}\n\nPlease respond from your perspective as the ${toName}. Be concrete and actionable. If this leads to a decision, state it clearly.`
+    );
+
+    const responseText = response.message || "(No response)";
+
+    // Write decision record to both layers
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const slug = args.question
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .slice(0, 40)
+      .replace(/-$/, "");
+    const decisionFilename = `_decision-${slug}.md`;
+    const decisionContent = `# Cross-Layer Decision\n\n**Date:** ${timestamp}\n**From:** ${fromName} (${currentLayer})\n**To:** ${toName} (${targetLayer})\n\n## Question\n${args.question}\n\n## Context\n${args.context}\n\n## Response from ${toName}\n${responseText}\n`;
+
+    // Save to originating layer
+    await writeLayerFile(currentLayer, decisionFilename, decisionContent);
+    await appendToLog(currentLayer, `Cross-layer decision with ${targetLayer}: "${args.question}" → saved to **${decisionFilename}**`);
+
+    // Save to target layer
+    await writeLayerFile(targetLayer, decisionFilename, decisionContent);
+    await appendToLog(targetLayer, `Responded to ${currentLayer} layer: "${args.question}" → saved to **${decisionFilename}**`);
+
+    filesWereChanged = true;
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `[Response from ${toName} (${targetLayer} layer)]\n\n${responseText}\n\n---\nDecision saved to ${decisionFilename} on both whiteboards.`,
         },
       ],
     };
@@ -275,7 +389,7 @@ const escalateToLayerTool = tool(
 function createMicaToolServer() {
   return createSdkMcpServer({
     name: "mica-tools",
-    tools: [listFilesTool, readFileTool, writeFileTool, deleteFileTool, escalateToLayerTool],
+    tools: [listFilesTool, readFileTool, writeFileTool, deleteFileTool, readCrossLayerTool, listCrossLayerTool, consultLayerTool],
   });
 }
 
@@ -297,7 +411,7 @@ export async function chatWithAgent(
 ): Promise<AgentResponse> {
   // Set current layer for tool callbacks
   currentLayer = layer;
-  pendingEscalation = null;
+  pendingConsultation = null;
   filesWereChanged = false;
 
   // Build system prompt with current file context
@@ -376,26 +490,28 @@ ${fileContext}`;
   return {
     layer,
     message: resultText,
-    escalation: pendingEscalation ? { ...pendingEscalation } : null,
+    consultation: pendingConsultation ? { ...pendingConsultation } : null,
     filesChanged: filesWereChanged,
     cost,
   };
 }
 
-export async function escalateToAgent(
+// consultLayer is now handled inline by the consult_layer tool.
+// Kept as a convenience for the team discuss flow.
+export async function consultLayer(
   fromLayer: LayerId,
   toLayer: LayerId,
   question: string,
   context: string
 ): Promise<AgentResponse> {
   const fromName = AGENT_META[fromLayer].name;
-  const prompt = `[Escalation from ${fromName} (${fromLayer} layer)]
+  const prompt = `[Cross-layer question from ${fromName} (${fromLayer} layer)]
 
 Question: ${question}
 
 Context: ${context}
 
-Please respond to this cross-layer question from your perspective as the ${AGENT_META[toLayer].name}.`;
+Please respond from your perspective as the ${AGENT_META[toLayer].name}. Be concrete and actionable.`;
 
   return chatWithAgent(toLayer, prompt);
 }

@@ -8,7 +8,7 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   chatWithAgent,
-  escalateToAgent,
+  consultLayer,
   teamDiscuss,
   convertDrawingToMermaid,
   resetLayer,
@@ -84,15 +84,15 @@ app.post("/api/chat/:layer", async (req, res) => {
   try {
     const response = await chatWithAgent(layer, message);
 
-    // If there's an escalation, automatically forward it
-    if (response.escalation) {
-      const escalationResponse = await escalateToAgent(
+    // If there's a pending consultation, forward it
+    if (response.consultation) {
+      const consultationResponse = await consultLayer(
         layer,
-        response.escalation.targetLayer,
-        response.escalation.question,
-        response.escalation.context
+        response.consultation.targetLayer,
+        response.consultation.question,
+        response.consultation.context
       );
-      res.json({ response, escalationResponse });
+      res.json({ response, consultationResponse });
       return;
     }
 
@@ -122,12 +122,12 @@ app.post("/api/team/discuss", async (req, res) => {
   }
 });
 
-// Cross-layer escalation
-app.post("/api/escalate", async (req, res) => {
+// Cross-layer consultation
+app.post("/api/consult", async (req, res) => {
   const { fromLayer, toLayer, question, context } = req.body;
 
   try {
-    const response = await escalateToAgent(
+    const response = await consultLayer(
       fromLayer,
       toLayer,
       question,
@@ -136,7 +136,7 @@ app.post("/api/escalate", async (req, res) => {
     res.json({ response });
   } catch (err: unknown) {
     const error = err as Error;
-    console.error("[escalate] Error:", error.message);
+    console.error("[consult] Error:", error.message);
     res.status(500).json({ error: error.message });
   }
 });
