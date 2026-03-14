@@ -7,15 +7,16 @@ interface Props {
   html: string;
   exports: string[];
   meta: CardMeta;
+  projectId: string;
   layerId: LayerId;
   layerColor: string;
   onEdit: () => void;
   onDelete: () => void;
   onExpand: () => void;
-  callExport: (layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
+  callExport: (project: string, layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
-export default function FileCard({ filename, html, exports: exportFns, meta, layerId, layerColor, onEdit, onDelete, onExpand, callExport }: Props) {
+export default function FileCard({ filename, html, exports: exportFns, meta, projectId, layerId, layerColor, onEdit, onDelete, onExpand, callExport }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
 
@@ -70,6 +71,7 @@ export default function FileCard({ filename, html, exports: exportFns, meta, lay
         <WidgetRuntime
           html={html}
           exports={exportFns}
+          project={projectId}
           layer={layerId}
           filename={filename}
           callExport={callExport}

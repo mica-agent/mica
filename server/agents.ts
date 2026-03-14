@@ -16,15 +16,12 @@ import {
   writeLayerFile,
   deleteLayerFile,
   getAllFilesAsContext,
+  getProjectConfig,
 } from "./layerFiles.js";
 
 // ── Types ──────────────────────────────────────────────────
 
-export type LayerId =
-  | "mission"
-  | "experience"
-  | "architecture"
-  | "implementation";
+export type LayerId = string;
 
 export interface AgentResponse {
   layer: LayerId;
@@ -42,13 +39,19 @@ export interface Consultation {
 
 // ── Agent system prompts ───────────────────────────────────
 
-// Minimal identity lines — the real instructions come from _brief.md on the whiteboard
-const AGENT_IDENTITY: Record<LayerId, string> = {
+// Known layer identities (legacy layers get specific identities)
+const KNOWN_IDENTITIES: Record<string, string> = {
   mission: `You are the Mission Strategist — the AI agent for the Mission layer in Mica.`,
   experience: `You are the Experience Designer — the AI agent for the Experience layer in Mica.`,
   architecture: `You are the System Architect — the AI agent for the Architecture layer in Mica.`,
   implementation: `You are the Implementation Engineer — the AI agent for the Implementation layer in Mica.`,
 };
+
+function getAgentIdentity(layer: string): string {
+  if (KNOWN_IDENTITIES[layer]) return KNOWN_IDENTITIES[layer];
+  // Generic identity — reads from _brief.md for specifics
+  return `You are the AI agent for the "${layer}" workspace in Mica.`;
+}
 
 const TOOL_INSTRUCTIONS = `
 You have access to tools for managing files on the shared whiteboard, reading other layers, and cross-layer collaboration.
@@ -69,20 +72,11 @@ When creating files, use kebab-case names with descriptive titles:
 - list_cross_layer: See what files exist on another layer's whiteboard
 - read_cross_layer: Read a specific file from another layer
 
-USE THESE PROACTIVELY. Before making decisions, check what upstream layers have decided:
-- Architecture should read Mission's _goal.md and product brief before designing
-- Experience should read Mission's persona and value prop before designing flows
-- Implementation should read Architecture's technical decisions before coding
+USE THESE PROACTIVELY. Before making decisions, check what other layers have decided.
 
 ## Cross-Layer Collaboration
 - consult_layer: Ask another layer's agent a question. Response comes back immediately.
   Decision record saved to both whiteboards as _decision-*.md.
-
-Typical flow directions:
-- DOWNWARD (push decisions): Mission → Experience → Architecture → Implementation
-  "Here's what we decided — design/build accordingly"
-- UPWARD (surface constraints): Implementation → Architecture → Experience → Mission
-  "We discovered X — does this change the plan?"
 
 Both directions are normal and expected. Don't wait to be asked — if you discover
 something that affects another layer, consult them proactively.
@@ -142,7 +136,8 @@ RULES:
 You are a skilled teammate, not an assistant. Push back when something seems wrong. Celebrate real progress. Be honest about gaps. Keep the team focused on what matters.
 `;
 
-export const AGENT_META: Record<LayerId, { name: string; role: string }> = {
+// Known agent metadata (for legacy layer names)
+const KNOWN_AGENT_META: Record<string, { name: string; role: string }> = {
   mission: {
     name: "Mission Strategist",
     role: "Product strategy, user research, and scope definition",
@@ -161,24 +156,37 @@ export const AGENT_META: Record<LayerId, { name: string; role: string }> = {
   },
 };
 
+export function getAgentMeta(layer: string): { name: string; role: string } {
+  if (KNOWN_AGENT_META[layer]) return KNOWN_AGENT_META[layer];
+  // Generic metadata for custom layers
+  const label = layer
+    .replace(/[-_]/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  return {
+    name: `${label} Agent`,
+    role: `AI collaborator for the ${label} workspace`,
+  };
+}
+
 // ── Activity log helper ─────────────────────────────────────
 
-async function appendToLog(layer: LayerId, entry: string) {
+async function appendToLog(project: string, layer: LayerId, entry: string) {
   const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
   const line = `- **${timestamp}** — ${entry}\n`;
   try {
-    const existing = await readLayerFile(layer, "_log.md");
-    await writeLayerFile(layer, "_log.md", existing.content + line);
+    const existing = await readLayerFile(project, layer, "_log.md");
+    await writeLayerFile(project, layer, "_log.md", existing.content + line);
   } catch {
     // No log yet — create it
-    await writeLayerFile(layer, "_log.md", `# Activity Log\n\n${line}`);
+    await writeLayerFile(project, layer, "_log.md", `# Activity Log\n\n${line}`);
   }
 }
 
 // ── MCP Tools for layer operations ─────────────────────────
 
-// Track which layer the current query is operating on
-let currentLayer: LayerId = "mission";
+// Track which project+layer the current query is operating on
+let currentProject: string = "";
+let currentLayer: LayerId = "workspace";
 let pendingConsultation: Consultation | null = null;
 let filesWereChanged = false;
 
@@ -187,7 +195,7 @@ const listFilesTool = tool(
   "List all files on the current layer's whiteboard.",
   {},
   async () => {
-    const files = await listFiles(currentLayer);
+    const files = await listFiles(currentProject, currentLayer);
     const listing = files
       .map((f) => `${f.name} (${f.type}, modified ${f.modifiedAt})`)
       .join("\n");
@@ -209,7 +217,7 @@ const readFileTool = tool(
     filename: z.string().describe("The filename to read (e.g., product-brief.md)"),
   },
   async (args) => {
-    const file = await readLayerFile(currentLayer, args.filename);
+    const file = await readLayerFile(currentProject, currentLayer, args.filename);
     return {
       content: [
         {
@@ -234,11 +242,11 @@ const writeFileTool = tool(
     summary: z.string().describe("One-line summary of what you did and why (for the activity log)"),
   },
   async (args) => {
-    await writeLayerFile(currentLayer, args.filename, args.content);
+    await writeLayerFile(currentProject, currentLayer, args.filename, args.content);
     filesWereChanged = true;
     // Append to activity log (skip if writing the log itself)
     if (args.filename !== "_log.md") {
-      await appendToLog(currentLayer, `Updated **${args.filename}**: ${args.summary}`);
+      await appendToLog(currentProject, currentLayer, `Updated **${args.filename}**: ${args.summary}`);
     }
     return {
       content: [
@@ -259,9 +267,9 @@ const deleteFileTool = tool(
     reason: z.string().describe("Why this file is being deleted (for the activity log)"),
   },
   async (args) => {
-    await deleteLayerFile(currentLayer, args.filename);
+    await deleteLayerFile(currentProject, currentLayer, args.filename);
     filesWereChanged = true;
-    await appendToLog(currentLayer, `Deleted **${args.filename}**: ${args.reason}`);
+    await appendToLog(currentProject, currentLayer, `Deleted **${args.filename}**: ${args.reason}`);
     return {
       content: [
         {
@@ -280,13 +288,13 @@ const readCrossLayerTool = tool(
   "Read a file from another layer's whiteboard. Use this to check what decisions, constraints, or artifacts exist in other layers before making your own decisions.",
   {
     layer: z
-      .enum(["mission", "experience", "architecture", "implementation"])
-      .describe("Which layer to read from"),
+      .string()
+      .describe("Which layer to read from (e.g., 'workspace', 'mission', etc.)"),
     filename: z.string().describe("The filename to read (e.g., _goal.md, product-brief.md)"),
   },
   async (args) => {
     try {
-      const file = await readLayerFile(args.layer as LayerId, args.filename);
+      const file = await readLayerFile(currentProject, args.layer, args.filename);
       return {
         content: [
           {
@@ -313,11 +321,11 @@ const listCrossLayerTool = tool(
   "List files on another layer's whiteboard. Use this to discover what artifacts and decisions exist in other layers.",
   {
     layer: z
-      .enum(["mission", "experience", "architecture", "implementation"])
-      .describe("Which layer to list files from"),
+      .string()
+      .describe("Which layer to list files from (e.g., 'workspace', 'mission', etc.)"),
   },
   async (args) => {
-    const files = await listFiles(args.layer as LayerId);
+    const files = await listFiles(currentProject, args.layer);
     const listing = files
       .map((f) => `${f.name} (${f.type}, modified ${f.modifiedAt})`)
       .join("\n");
@@ -337,20 +345,21 @@ const consultLayerTool = tool(
   "Consult another layer's agent — ask a question and get their response. Use for decisions that need another perspective. The Q&A is saved as a decision record on both whiteboards.",
   {
     target_layer: z
-      .enum(["mission", "experience", "architecture", "implementation"])
-      .describe("Which layer agent to ask"),
+      .string()
+      .describe("Which layer agent to ask (e.g., 'workspace', 'mission', etc.)"),
     question: z.string().describe("The question or decision needed"),
     context: z.string().describe("Relevant context for the target agent"),
   },
   async (args) => {
-    const targetLayer = args.target_layer as LayerId;
-    const fromName = AGENT_META[currentLayer].name;
-    const toName = AGENT_META[targetLayer].name;
+    const targetLayer = args.target_layer;
+    const fromMeta = getAgentMeta(currentLayer);
+    const toMeta = getAgentMeta(targetLayer);
 
     // Call the target agent directly (synchronous consultation)
     const response = await chatWithAgent(
+      currentProject,
       targetLayer,
-      `[Cross-layer question from ${fromName} (${currentLayer} layer)]\n\nQuestion: ${args.question}\n\nContext: ${args.context}\n\nPlease respond from your perspective as the ${toName}. Be concrete and actionable. If this leads to a decision, state it clearly.`
+      `[Cross-layer question from ${fromMeta.name} (${currentLayer} layer)]\n\nQuestion: ${args.question}\n\nContext: ${args.context}\n\nPlease respond from your perspective as the ${toMeta.name}. Be concrete and actionable. If this leads to a decision, state it clearly.`
     );
 
     const responseText = response.message || "(No response)";
@@ -363,15 +372,15 @@ const consultLayerTool = tool(
       .slice(0, 40)
       .replace(/-$/, "");
     const decisionFilename = `_decision-${slug}.md`;
-    const decisionContent = `# Cross-Layer Decision\n\n**Date:** ${timestamp}\n**From:** ${fromName} (${currentLayer})\n**To:** ${toName} (${targetLayer})\n\n## Question\n${args.question}\n\n## Context\n${args.context}\n\n## Response from ${toName}\n${responseText}\n`;
+    const decisionContent = `# Cross-Layer Decision\n\n**Date:** ${timestamp}\n**From:** ${fromMeta.name} (${currentLayer})\n**To:** ${toMeta.name} (${targetLayer})\n\n## Question\n${args.question}\n\n## Context\n${args.context}\n\n## Response from ${toMeta.name}\n${responseText}\n`;
 
     // Save to originating layer
-    await writeLayerFile(currentLayer, decisionFilename, decisionContent);
-    await appendToLog(currentLayer, `Cross-layer decision with ${targetLayer}: "${args.question}" → saved to **${decisionFilename}**`);
+    await writeLayerFile(currentProject, currentLayer, decisionFilename, decisionContent);
+    await appendToLog(currentProject, currentLayer, `Cross-layer decision with ${targetLayer}: "${args.question}" → saved to **${decisionFilename}**`);
 
     // Save to target layer
-    await writeLayerFile(targetLayer, decisionFilename, decisionContent);
-    await appendToLog(targetLayer, `Responded to ${currentLayer} layer: "${args.question}" → saved to **${decisionFilename}**`);
+    await writeLayerFile(currentProject, targetLayer, decisionFilename, decisionContent);
+    await appendToLog(currentProject, targetLayer, `Responded to ${currentLayer} layer: "${args.question}" → saved to **${decisionFilename}**`);
 
     filesWereChanged = true;
 
@@ -379,7 +388,7 @@ const consultLayerTool = tool(
       content: [
         {
           type: "text" as const,
-          text: `[Response from ${toName} (${targetLayer} layer)]\n\n${responseText}\n\n---\nDecision saved to ${decisionFilename} on both whiteboards.`,
+          text: `[Response from ${toMeta.name} (${targetLayer} layer)]\n\n${responseText}\n\n---\nDecision saved to ${decisionFilename} on both whiteboards.`,
         },
       ],
     };
@@ -394,40 +403,41 @@ function createMicaToolServer() {
   });
 }
 
-// ── Session tracking per layer ─────────────────────────────
+// ── Session tracking per project/layer ─────────────────────
 
-const layerSessions: Record<LayerId, string | undefined> = {
-  mission: undefined,
-  experience: undefined,
-  architecture: undefined,
-  implementation: undefined,
-};
+const layerSessions: Record<string, string | undefined> = {};
+
+function sessionKey(project: string, layer: string): string {
+  return `${project}/${layer}`;
+}
 
 // ── Agent Runner ───────────────────────────────────────────
 
 export async function chatWithAgent(
+  project: string,
   layer: LayerId,
   userMessage: string,
   _imageBase64?: string
 ): Promise<AgentResponse> {
-  // Set current layer for tool callbacks
+  // Set current project+layer for tool callbacks
+  currentProject = project;
   currentLayer = layer;
   pendingConsultation = null;
   filesWereChanged = false;
 
   // Build system prompt with current file context
-  const fileContext = await getAllFilesAsContext(layer);
+  const fileContext = await getAllFilesAsContext(project, layer);
 
   // Read _brief.md for layer-specific instructions (user-editable)
   let briefContent = "";
   try {
-    const brief = await readLayerFile(layer, "_brief.md");
+    const brief = await readLayerFile(project, layer, "_brief.md");
     briefContent = `\n## Layer Brief (from _brief.md)\n\n${brief.content}\n`;
   } catch {
     // No _brief.md yet — that's fine, use defaults
   }
 
-  const systemPrompt = `${AGENT_IDENTITY[layer]}
+  const systemPrompt = `${getAgentIdentity(layer)}
 ${briefContent}
 ${TOOL_INSTRUCTIONS}
 ${GOAL_INSTRUCTIONS}
@@ -439,6 +449,7 @@ ${fileContext}`;
   let resultText = "";
   let cost = 0;
   let sessionId: string | undefined;
+  const sKey = sessionKey(project, layer);
 
   const options: Record<string, unknown> = {
     systemPrompt,
@@ -454,8 +465,8 @@ ${fileContext}`;
   };
 
   // Resume existing session for this layer if we have one
-  if (layerSessions[layer]) {
-    options.resume = layerSessions[layer];
+  if (layerSessions[sKey]) {
+    options.resume = layerSessions[sKey];
   }
 
   for await (const message of query({
@@ -485,7 +496,7 @@ ${fileContext}`;
 
   // Save session for continuity
   if (sessionId) {
-    layerSessions[layer] = sessionId;
+    layerSessions[sKey] = sessionId;
   }
 
   return {
@@ -500,48 +511,53 @@ ${fileContext}`;
 // consultLayer is now handled inline by the consult_layer tool.
 // Kept as a convenience for the team discuss flow.
 export async function consultLayer(
+  project: string,
   fromLayer: LayerId,
   toLayer: LayerId,
   question: string,
   context: string
 ): Promise<AgentResponse> {
-  const fromName = AGENT_META[fromLayer].name;
-  const prompt = `[Cross-layer question from ${fromName} (${fromLayer} layer)]
+  const fromMeta = getAgentMeta(fromLayer);
+  const toMeta = getAgentMeta(toLayer);
+  const prompt = `[Cross-layer question from ${fromMeta.name} (${fromLayer} layer)]
 
 Question: ${question}
 
 Context: ${context}
 
-Please respond from your perspective as the ${AGENT_META[toLayer].name}. Be concrete and actionable.`;
+Please respond from your perspective as the ${toMeta.name}. Be concrete and actionable.`;
 
-  return chatWithAgent(toLayer, prompt);
+  return chatWithAgent(project, toLayer, prompt);
 }
 
 export async function teamDiscuss(
-  topic: string
-): Promise<Record<LayerId, AgentResponse>> {
-  const layers: LayerId[] = [
-    "mission",
-    "experience",
-    "architecture",
-    "implementation",
-  ];
+  project: string,
+  layers: string[]
+): Promise<Record<string, AgentResponse>> {
+  // Note: for projects with custom layers, we discuss across all layers
+  // For legacy compatibility, if no layers provided, use the project's layers
+  if (layers.length === 0) {
+    const config = await getProjectConfig(project);
+    layers = config?.layers || ["workspace"];
+  }
 
   const results = await Promise.all(
     layers.map((layer) =>
       chatWithAgent(
+        project,
         layer,
-        `[Team Discussion] The human wants the team's input on: ${topic}\n\nRespond from your perspective as the ${AGENT_META[layer].name}. Be concise (2-3 paragraphs max).`
+        `[Team Discussion] The human wants the team's input on this topic.\n\nRespond from your perspective as the ${getAgentMeta(layer).name}. Be concise (2-3 paragraphs max).`
       )
     )
   );
 
   return Object.fromEntries(
     layers.map((layer, i) => [layer, results[i]])
-  ) as Record<LayerId, AgentResponse>;
+  );
 }
 
 export async function convertDrawingToMermaid(
+  project: string,
   layer: LayerId,
   imageBase64: string
 ): Promise<{ mermaid: string; filename: string }> {
@@ -586,16 +602,17 @@ export async function convertDrawingToMermaid(
   }
 
   const filename = `drawing-${Date.now()}.mmd`;
-  await writeLayerFile(layer, filename, mermaidCode);
+  await writeLayerFile(project, layer, filename, mermaidCode);
   return { mermaid: mermaidCode, filename };
 }
 
-export function resetLayer(layer: LayerId) {
-  layerSessions[layer] = undefined;
+export function resetLayer(project: string, layer: LayerId) {
+  const sKey = sessionKey(project, layer);
+  layerSessions[sKey] = undefined;
 }
 
 export function resetAll() {
-  for (const layer of Object.keys(layerSessions) as LayerId[]) {
-    layerSessions[layer] = undefined;
+  for (const key of Object.keys(layerSessions)) {
+    layerSessions[key] = undefined;
   }
 }

@@ -145,17 +145,25 @@ def render(content, config):
 
         checked_attr = "checked" if item["checked"] else ""
         checked_class = "todo-item--done" if item["checked"] else ""
-        assignee_tag = f'<span class="todo-assignee">@{item["assignee"]}</span>' if item["assignee"] else ""
         pri_cls = _priority_class(item["priority"])
         pri_lbl = _priority_label(item["priority"])
+
+        assignee_val = item["assignee"] or ""
+        human_active = " todo-assign--active" if assignee_val == "human" else ""
+        agent_active = " todo-assign--active" if assignee_val == "agent" else ""
+        custom_active = " todo-assign--active" if assignee_val and assignee_val not in ("human", "agent") else ""
+        custom_label = f"@{assignee_val}" if custom_active else "\u270e"
 
         items_html += f'''<li class="todo-item {checked_class}" data-index="{item["index"]}">
             <input type="checkbox" class="todo-checkbox" data-index="{item["index"]}" {checked_attr} />
             <button class="todo-pri-btn {pri_cls}" data-index="{item["index"]}" title="Change priority">{pri_lbl}</button>
-            {assignee_tag}
+            <span class="todo-assign-group" data-index="{item["index"]}">
+                <button class="todo-assign-btn todo-assign-human{human_active}" data-index="{item["index"]}" data-assignee="human" title="Assign to human">\U0001f464</button>
+                <button class="todo-assign-btn todo-assign-agent{agent_active}" data-index="{item["index"]}" data-assignee="agent" title="Assign to agent">\U0001f916</button>
+                <button class="todo-assign-btn todo-assign-custom{custom_active}" data-index="{item["index"]}" data-assignee="custom" title="Assign to...">{custom_label}</button>
+            </span>
             <span class="todo-text">{item["text"]}</span>
             <span class="todo-actions">
-                <button class="todo-btn todo-btn-reassign" data-index="{item["index"]}" title="Reassign">&#x1f465;</button>
                 <button class="todo-btn todo-btn-discuss" data-index="{item["index"]}" title="Discuss with agent">&#x1f4ac;</button>
             </span>
         </li>'''
@@ -185,10 +193,19 @@ def render(content, config):
         .card-todo--interactive .todo-checkbox {{ cursor: pointer; accent-color: #4acaa0; flex-shrink: 0; }}
         .card-todo--interactive .todo-text {{ flex: 1; }}
         .card-todo--interactive .todo-item--done .todo-text {{ text-decoration: line-through; opacity: 0.5; }}
-        .card-todo--interactive .todo-assignee {{
-            font-size: 0.75em; background: rgba(255,255,255,0.1); padding: 1px 5px;
-            border-radius: 3px; color: #8af; white-space: nowrap;
+        .card-todo--interactive .todo-assign-group {{
+            display: inline-flex; border-radius: 4px; overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.12); flex-shrink: 0;
         }}
+        .card-todo--interactive .todo-assign-btn {{
+            background: rgba(255,255,255,0.03); border: none; color: rgba(255,255,255,0.35);
+            font-size: 0.7em; padding: 2px 5px; cursor: pointer; transition: all 0.15s;
+            border-right: 1px solid rgba(255,255,255,0.08);
+        }}
+        .card-todo--interactive .todo-assign-btn:last-child {{ border-right: none; }}
+        .card-todo--interactive .todo-assign-btn:hover {{ background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }}
+        .card-todo--interactive .todo-assign--active {{ background: rgba(138,170,255,0.15); color: #8af; }}
+        .card-todo--interactive .todo-assign-agent.todo-assign--active {{ background: rgba(74,202,160,0.15); color: #4acaa0; }}
         .card-todo--interactive .todo-pri-btn {{
             font-size: 0.65em; font-weight: 700; width: 18px; height: 18px;
             display: inline-flex; align-items: center; justify-content: center;
@@ -246,16 +263,30 @@ def render(content, config):
             }});
         }});
 
-        // Reassign button
-        container.querySelectorAll('.todo-btn-reassign').forEach(btn => {{
+        // Assign buttons — human, agent, or custom
+        container.querySelectorAll('.todo-assign-btn').forEach(btn => {{
             btn.addEventListener('click', (e) => {{
                 e.stopPropagation();
-                const current = btn.closest('.todo-item').querySelector('.todo-assignee');
-                const currentVal = current ? current.textContent.replace('@', '') : '';
-                const newAssignee = prompt('Reassign to (@human or @agent):', currentVal);
-                if (newAssignee !== null) {{
-                    mica.call('reassign', {{ index: parseInt(btn.dataset.index), assignee: newAssignee.replace('@', '') }});
+                e.preventDefault();
+                const idx = parseInt(btn.dataset.index);
+                let assignee = btn.dataset.assignee;
+
+                if (assignee === 'custom') {{
+                    const val = prompt('Assign to (name):');
+                    if (!val || !val.trim()) return;
+                    assignee = val.trim().replace('@', '');
                 }}
+
+                // Show working state if assigning to agent
+                const group = btn.closest('.todo-assign-group');
+                if (assignee === 'agent') {{
+                    group.querySelectorAll('.todo-assign-btn').forEach(b => b.disabled = true);
+                    const agentBtn = group.querySelector('.todo-assign-agent');
+                    agentBtn.textContent = '\u231b';
+                    agentBtn.title = 'Agent is evaluating...';
+                }}
+
+                mica.call('reassign', {{ index: idx, assignee: assignee }}).then(() => {{}}).catch(() => {{}});
             }});
         }});
 
@@ -338,16 +369,40 @@ def set_priority(content, args):
 
 @mica.export
 def reassign(content, args):
-    """Reassign a todo item."""
+    """Reassign a todo item. If reassigned to @agent, the agent immediately evaluates it."""
     index = args.get("index", -1)
     assignee = args.get("assignee", "").strip()
     items, other_lines = _parse_items(content)
 
     if 0 <= index < len(items):
         items[index]["assignee"] = assignee
+        new_content = _rebuild_content(items, other_lines)
+        mica.write(new_content)
 
-    new_content = _rebuild_content(items, other_lines)
-    mica.write(new_content)
+        # If reassigned to agent, trigger immediate evaluation
+        if assignee == "agent":
+            item = items[index]
+            response = mica.agent.chat(
+                f'A task has been assigned to you from the to-do list: "{item["text"]}"\n\n'
+                f"Priority: {item['priority'] or 'not set'}\n"
+                f"Section: {item['section']}\n\n"
+                f"Please evaluate this task:\n"
+                f"1. If you can do it now using your tools (write files, create artifacts, etc.), DO IT immediately.\n"
+                f"2. If it's blocked or needs human input, move it to the Blocked section in _todo.md and explain what's needed.\n"
+                f"3. When done, mark it complete in _todo.md.\n\n"
+                f"Take action — don't just discuss."
+            )
+            return {
+                "ok": True,
+                "agentActed": True,
+                "message": response.get("message", ""),
+                "filesChanged": response.get("filesChanged", False),
+            }
+
+    else:
+        new_content = _rebuild_content(items, other_lines)
+        mica.write(new_content)
+
     return {"ok": True}
 
 

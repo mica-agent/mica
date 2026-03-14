@@ -7,14 +7,15 @@ interface Props {
   html: string;
   exports: string[];
   meta: CardMeta;
+  projectId: string;
   layerId: LayerId;
   layerColor: string;
   onClose: () => void;
   onEdit: () => void;
-  callExport: (layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
+  callExport: (project: string, layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
-export default function ExpandedCardView({ filename, html, exports: exportFns, meta, layerId, layerColor, onClose, onEdit, callExport }: Props) {
+export default function ExpandedCardView({ filename, html, exports: exportFns, meta, projectId, layerId, layerColor, onClose, onEdit, callExport }: Props) {
   // Close on Escape
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -52,6 +53,7 @@ export default function ExpandedCardView({ filename, html, exports: exportFns, m
           <WidgetRuntime
             html={html}
             exports={exportFns}
+            project={projectId}
             layer={layerId}
             filename={filename}
             callExport={callExport}

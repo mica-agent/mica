@@ -12,7 +12,6 @@ import {
   readLayerFile,
   writeLayerFile,
   listFiles,
-  type LayerId,
 } from "./layerFiles.js";
 
 // ── Types ──────────────────────────────────────────────────
@@ -175,17 +174,18 @@ export class CardManager {
     return path.join(CARD_CLASSES_DIR, className, "render.py");
   }
 
-  private cacheKey(layer: string, filename: string): string {
-    return `${layer}/${filename}`;
+  private cacheKey(project: string, layer: string, filename: string): string {
+    return `${project}/${layer}/${filename}`;
   }
 
   async renderCard(
-    layer: LayerId,
+    project: string,
+    layer: string,
     filename: string,
     content: string,
     config?: Record<string, unknown>
   ): Promise<{ html: string; exports: string[]; meta: CardMeta }> {
-    const key = this.cacheKey(layer, filename);
+    const key = this.cacheKey(project, layer, filename);
     const { cardClass, strippedContent, metadata } = this.resolveCardClass(filename, content);
     const meta = this.resolveCardMeta(filename, content);
 
@@ -197,11 +197,6 @@ export class CardManager {
       return { html, exports: [], meta };
     }
 
-    // Check cache
-    const cached = this.cache.get(key);
-    // For now, always re-render (cache invalidation is handled by file watcher)
-    // TODO: Add mtime-based caching
-
     // Retry renders up to 3 times (workers may be temporarily busy with exports)
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -210,8 +205,8 @@ export class CardManager {
           cardClass,
           classPath,
           strippedContent,
-          { ...metadata, ...(config || {}), layer, filename },
-          { layer, filename }
+          { ...metadata, ...(config || {}), project, layer, filename },
+          { project, layer, filename }
         );
 
         // Cache the result
@@ -227,7 +222,7 @@ export class CardManager {
         const msg = (err as Error).message;
         const isTimeout = msg.includes("timed out") || msg.includes("pool exhausted");
         if (isTimeout && attempt < maxRetries - 1) {
-          console.warn(`[card-manager] Render retry ${attempt + 1}/${maxRetries} for ${layer}/${filename}: ${msg}`);
+          console.warn(`[card-manager] Render retry ${attempt + 1}/${maxRetries} for ${project}/${layer}/${filename}: ${msg}`);
           await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
           continue;
         }
@@ -240,13 +235,14 @@ export class CardManager {
   }
 
   async callExport(
-    layer: LayerId,
+    project: string,
+    layer: string,
     filename: string,
     fn: string,
     args: Record<string, unknown>
   ): Promise<any> {
     // Read the current file content
-    const file = await readLayerFile(layer, filename);
+    const file = await readLayerFile(project, layer, filename);
     const { cardClass, strippedContent, metadata } = this.resolveCardClass(filename, file.content);
     const classPath = this.getClassPath(cardClass);
 
@@ -260,14 +256,14 @@ export class CardManager {
       fn,
       strippedContent,
       args,
-      { layer, filename }
+      { project, layer, filename }
     );
   }
 
   /**
-   * Render all cards for a layer. Returns an array of rendered cards.
+   * Render all cards for a project layer. Returns an array of rendered cards.
    */
-  async renderAllCards(layer: LayerId): Promise<
+  async renderAllCards(project: string, layer: string): Promise<
     Array<{
       filename: string;
       html: string;
@@ -275,14 +271,14 @@ export class CardManager {
       meta: CardMeta;
     }>
   > {
-    const files = await listFiles(layer);
+    const files = await listFiles(project, layer);
     const results = [];
 
     for (const file of files) {
       // Skip chat history files
       if (file.name === "_chat-history.json") continue;
 
-      const rendered = await this.renderCard(layer, file.name, file.content);
+      const rendered = await this.renderCard(project, layer, file.name, file.content);
       results.push({
         filename: file.name,
         ...rendered,
@@ -294,13 +290,14 @@ export class CardManager {
 
   // ── Cache management ───────────────────────────────────
 
-  invalidateCard(layer: string, filename: string) {
-    this.cache.delete(this.cacheKey(layer, filename));
+  invalidateCard(project: string, layer: string, filename: string) {
+    this.cache.delete(this.cacheKey(project, layer, filename));
   }
 
-  invalidateLayer(layer: string) {
+  invalidateLayer(project: string, layer: string) {
+    const prefix = `${project}/${layer}/`;
     for (const key of this.cache.keys()) {
-      if (key.startsWith(`${layer}/`)) {
+      if (key.startsWith(prefix)) {
         this.cache.delete(key);
       }
     }

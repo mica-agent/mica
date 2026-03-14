@@ -46,7 +46,7 @@ export interface RpcHandler {
   (
     method: string,
     args: Record<string, unknown>,
-    requestContext: { layer: string; filename: string }
+    requestContext: { project: string; layer: string; filename: string }
   ): Promise<any>;
 }
 
@@ -61,7 +61,7 @@ class PythonWorker {
   private readyResolve!: () => void;
   private busy: boolean = false;
   private rpcHandler: RpcHandler | null = null;
-  private requestContexts: Map<string, { layer: string; filename: string }> = new Map();
+  private requestContexts: Map<string, { project: string; layer: string; filename: string }> = new Map();
 
   constructor(
     private workerPath: string,
@@ -195,8 +195,8 @@ class PythonWorker {
 
     // Get the context for this request
     const context = requestId
-      ? this.requestContexts.get(requestId) || { layer: "mission", filename: "" }
-      : { layer: "mission", filename: "" };
+      ? this.requestContexts.get(requestId) || { project: "", layer: "workspace", filename: "" }
+      : { project: "", layer: "workspace", filename: "" };
 
     try {
       const result = await this.rpcHandler(method, args, context);
@@ -248,7 +248,7 @@ class PythonWorker {
     });
   }
 
-  setRequestContext(id: string, context: { layer: string; filename: string }) {
+  setRequestContext(id: string, context: { project: string; layer: string; filename: string }) {
     this.requestContexts.set(id, context);
   }
 
@@ -345,7 +345,7 @@ export class WorkerPool extends EventEmitter {
     classPath: string,
     content: string,
     config: Record<string, unknown>,
-    context: { layer: string; filename: string }
+    context: { project: string; layer: string; filename: string }
   ): Promise<RenderResult> {
     // Renders prefer idle workers but never wait — fall back to round-robin
     // so they don't get stuck behind long-running export calls
@@ -371,7 +371,7 @@ export class WorkerPool extends EventEmitter {
     fn: string,
     content: string,
     args: Record<string, unknown>,
-    context: { layer: string; filename: string }
+    context: { project: string; layer: string; filename: string }
   ): Promise<any> {
     const worker = this.getIdleWorker() ?? (await this.waitForWorker());
     const id = this.nextId();
@@ -386,7 +386,7 @@ export class WorkerPool extends EventEmitter {
         content,
         args,
       },
-      120000 // 2min timeout for exports (agent.chat can be slow)
+      300000 // 5min timeout for exports (agent.chat can be slow)
     );
   }
 

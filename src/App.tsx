@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { LAYERS, PROJECT_NAME } from './data';
+import { buildLayerMeta } from './data';
+import type { LayerMeta } from './data';
+import { fetchProjects } from './api/layerFiles';
+import type { ProjectConfig } from './api/layerFiles';
 import WhiteboardView from './whiteboard/WhiteboardView';
 import type { WhiteboardHandle } from './whiteboard/WhiteboardView';
 import ChatSidebar from './whiteboard/ChatSidebar';
+import ProjectNav from './ProjectNav';
 import './App.css';
 import './ai/ai.css';
 
@@ -20,6 +24,8 @@ function layerPosition(layerIndex: number, activeIndex: number): string {
 // ── App ────────────────────────────────────────────────────
 
 export default function App() {
+  const [projects, setProjects] = useState<ProjectConfig[]>([]);
+  const [activeProjectIndex, setActiveProjectIndex] = useState(0);
   const [activeLayer, setActiveLayer] = useState(0);
   const [navHint, setNavHint] = useState('');
   const [navHintVisible, setNavHintVisible] = useState(false);
@@ -32,7 +38,25 @@ export default function App() {
   const cooldownRef = useRef(false);
   const navHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const currentLayer = LAYERS[activeLayer];
+  // Fetch projects on mount and on demand
+  const loadProjects = useCallback(() => {
+    fetchProjects()
+      .then((p) => {
+        setProjects(p);
+        // Clamp active index if projects were deleted
+        setActiveProjectIndex((prev) => Math.min(prev, Math.max(0, p.length - 1)));
+        if (p.length > 0 && activeLayer >= (p[0]?.layers.length ?? 1)) {
+          setActiveLayer(0);
+        }
+      })
+      .catch((err) => console.error('Failed to fetch projects:', err));
+  }, [activeLayer]);
+
+  useEffect(() => { loadProjects(); }, []);
+
+  const activeProject = projects[activeProjectIndex] || null;
+  const LAYERS: LayerMeta[] = activeProject ? buildLayerMeta(activeProject.layers) : [];
+  const currentLayer = LAYERS[activeLayer] || { color: '#4a8aff', bgTint: 'rgba(74,138,255,0.06)', icon: '\u25c6', label: '...', id: '', index: 0 };
 
   // ── Navigation ─────────────────────────────────────────
 
@@ -47,7 +71,7 @@ export default function App() {
     showNavHint(`${direction} ${target.label}`);
 
     setTimeout(() => { cooldownRef.current = false; }, 600);
-  }, [activeLayer]);
+  }, [activeLayer, LAYERS]);
 
   const descend = useCallback(() => navigateTo(activeLayer + 1), [activeLayer, navigateTo]);
   const ascend = useCallback(() => navigateTo(activeLayer - 1), [activeLayer, navigateTo]);
@@ -188,19 +212,27 @@ export default function App() {
       if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); descend(); }
       if (e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); ascend(); }
       const n = parseInt(e.key);
-      if (n >= 1 && n <= 4) navigateTo(n - 1);
+      if (n >= 1 && n <= LAYERS.length) navigateTo(n - 1);
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [descend, ascend, navigateTo]);
+  }, [descend, ascend, navigateTo, LAYERS.length]);
 
   // ── Render ─────────────────────────────────────────────
 
-  const layerIdMap: ('mission' | 'experience' | 'architecture' | 'implementation')[] =
-    ['mission', 'experience', 'architecture', 'implementation'];
-
   const whiteboardRef = useRef<WhiteboardHandle>(null);
   const [agentBusyLayer, setAgentBusyLayer] = useState<number | null>(null);
+
+  // Loading state
+  if (!activeProject || LAYERS.length === 0) {
+    return (
+      <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#999' }}>
+        Loading project...
+      </div>
+    );
+  }
+
+  const projectId = activeProject.id;
 
   return (
     <div className="app-with-ai">
@@ -216,8 +248,13 @@ export default function App() {
           />
 
           <nav className="breadcrumb">
-            <span className="breadcrumb-project">{PROJECT_NAME}</span>
-            <span className="breadcrumb-sep">›</span>
+            <ProjectNav
+              projects={projects}
+              activeProject={activeProject}
+              onSwitch={(i) => { setActiveProjectIndex(i); setActiveLayer(0); }}
+              onProjectsChanged={loadProjects}
+            />
+            <span className="breadcrumb-sep">&rsaquo;</span>
             {LAYERS.map((layer) => (
               <span
                 key={layer.id}
@@ -258,6 +295,7 @@ export default function App() {
               >
                 <WhiteboardView
                   ref={layer.index === activeLayer ? whiteboardRef : null}
+                  projectId={projectId}
                   layerId={layer.id}
                   layerColor={layer.color}
                 />
@@ -279,7 +317,9 @@ export default function App() {
       {/* Chat Sidebar — widget-based chat per layer */}
       <div className="ai-sidebar">
         <ChatSidebar
-          activeLayer={layerIdMap[activeLayer]}
+          key={`${projectId}/${LAYERS[activeLayer].id}`}
+          projectId={projectId}
+          activeLayer={LAYERS[activeLayer].id}
           layerColor={currentLayer.color}
           onFilesChanged={() => whiteboardRef.current?.refetch()}
           onAgentBusy={(busy) => setAgentBusyLayer(busy ? activeLayer : null)}

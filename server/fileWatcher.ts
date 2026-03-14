@@ -1,5 +1,5 @@
 /**
- * FileWatcher — Watches layer directories and card-classes for changes.
+ * FileWatcher — Watches project layer directories and card-classes for changes.
  *
  * Emits events when files are created, modified, or deleted.
  * Debounces rapid changes (300ms per file).
@@ -8,9 +8,11 @@
 import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
+import { readProjectRegistry } from "./layerFiles.js";
 
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
+  project: string;
   layer: string;
   filename: string;
 }
@@ -28,34 +30,40 @@ const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json", ".html"];
 export class FileWatcher extends EventEmitter {
   private watchers: fs.FSWatcher[] = [];
   private debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  private knownFiles: Map<string, Set<string>> = new Map(); // layer → set of filenames
+  private knownFiles: Map<string, Set<string>> = new Map(); // "project/layer" → set of filenames
 
   async start(): Promise<void> {
-    // Scan existing files
-    await this.scanExisting();
+    // Read project registry to discover directories
+    const registry = await readProjectRegistry();
 
-    // Watch each layer directory
-    const layers = ["mission", "experience", "architecture", "implementation"];
-    for (const layer of layers) {
-      const dir = path.join(LAYERS_DIR, layer);
-      try {
-        await fs.promises.mkdir(dir, { recursive: true });
-        this.watchDirectory(dir, layer);
-      } catch (err) {
-        console.warn(`[file-watcher] Could not watch ${dir}: ${(err as Error).message}`);
+    for (const project of registry.projects) {
+      for (const layer of project.layers) {
+        await this.watchProjectLayer(project.id, layer);
       }
     }
 
     // Watch card-classes directory
     this.watchCardClasses();
 
-    console.log("[file-watcher] Watching layer directories and card-classes.");
+    const totalLayers = registry.projects.reduce((sum, p) => sum + p.layers.length, 0);
+    console.log(`[file-watcher] Watching ${totalLayers} layer(s) across ${registry.projects.length} project(s), and card-classes.`);
   }
 
-  private async scanExisting(): Promise<void> {
-    const layers = ["mission", "experience", "architecture", "implementation"];
+  /** Add a watcher for a newly created project's layers */
+  async addProject(projectId: string, layers: string[]): Promise<void> {
     for (const layer of layers) {
-      const dir = path.join(LAYERS_DIR, layer);
+      await this.watchProjectLayer(projectId, layer);
+    }
+  }
+
+  private async watchProjectLayer(projectId: string, layer: string): Promise<void> {
+    const dir = path.join(LAYERS_DIR, projectId, layer);
+    const key = `${projectId}/${layer}`;
+
+    try {
+      await fs.promises.mkdir(dir, { recursive: true });
+
+      // Scan existing files
       const files = new Set<string>();
       try {
         const entries = await fs.promises.readdir(dir);
@@ -68,11 +76,15 @@ export class FileWatcher extends EventEmitter {
       } catch {
         // Directory doesn't exist yet
       }
-      this.knownFiles.set(layer, files);
+      this.knownFiles.set(key, files);
+
+      this.watchDirectory(dir, projectId, layer);
+    } catch (err) {
+      console.warn(`[file-watcher] Could not watch ${dir}: ${(err as Error).message}`);
     }
   }
 
-  private watchDirectory(dir: string, layer: string): void {
+  private watchDirectory(dir: string, project: string, layer: string): void {
     try {
       const watcher = fs.watch(dir, (eventType, filename) => {
         if (!filename) return;
@@ -80,16 +92,16 @@ export class FileWatcher extends EventEmitter {
         if (!VALID_EXTENSIONS.includes(ext) && filename !== "_chat-history.json") return;
 
         // Debounce
-        const key = `${layer}/${filename}`;
-        const existing = this.debounceTimers.get(key);
+        const debounceKey = `${project}/${layer}/${filename}`;
+        const existing = this.debounceTimers.get(debounceKey);
         if (existing) clearTimeout(existing);
 
         this.debounceTimers.set(
-          key,
+          debounceKey,
           setTimeout(() => {
-            this.debounceTimers.delete(key);
-            this.handleFileChange(layer, filename, dir).catch((err) => {
-              console.error(`[file-watcher] Error handling ${layer}/${filename}:`, (err as Error).message);
+            this.debounceTimers.delete(debounceKey);
+            this.handleFileChange(project, layer, filename, dir).catch((err) => {
+              console.error(`[file-watcher] Error handling ${project}/${layer}/${filename}:`, (err as Error).message);
             });
           }, DEBOUNCE_MS)
         );
@@ -105,26 +117,27 @@ export class FileWatcher extends EventEmitter {
     }
   }
 
-  private async handleFileChange(layer: string, filename: string, dir: string): Promise<void> {
+  private async handleFileChange(project: string, layer: string, filename: string, dir: string): Promise<void> {
     const filePath = path.join(dir, filename);
-    const known = this.knownFiles.get(layer) || new Set();
+    const key = `${project}/${layer}`;
+    const known = this.knownFiles.get(key) || new Set();
 
     try {
       await fs.promises.access(filePath);
       // File exists
       if (known.has(filename)) {
-        this.emit("file-change", { type: "changed", layer, filename } as FileChangeEvent);
+        this.emit("file-change", { type: "changed", project, layer, filename } as FileChangeEvent);
       } else {
         known.add(filename);
-        this.knownFiles.set(layer, known);
-        this.emit("file-change", { type: "created", layer, filename } as FileChangeEvent);
+        this.knownFiles.set(key, known);
+        this.emit("file-change", { type: "created", project, layer, filename } as FileChangeEvent);
       }
     } catch {
       // File was deleted
       if (known.has(filename)) {
         known.delete(filename);
-        this.knownFiles.set(layer, known);
-        this.emit("file-change", { type: "deleted", layer, filename } as FileChangeEvent);
+        this.knownFiles.set(key, known);
+        this.emit("file-change", { type: "deleted", project, layer, filename } as FileChangeEvent);
       }
     }
   }

@@ -313,7 +313,8 @@ def check_in(content, args):
 
 def _get_layer():
     """Get current layer from mica request context."""
-    return mica._request_id.split("-")[0] if mica._request_id else "mission"
+    # The layer is set by the worker pool context; fall back to 'workspace'
+    return getattr(mica, '_current_layer', 'workspace')
 
 
 def _append_history(layer, new_messages):

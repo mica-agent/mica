@@ -27,11 +27,11 @@ let callIdCounter = 0;
 export interface UseLayerSocketResult {
   cards: RenderedCard[];
   loading: boolean;
-  callExport: (layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
+  callExport: (project: string, layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
   refetch: () => void;
 }
 
-export function useLayerSocket(layerId: LayerId): UseLayerSocketResult {
+export function useLayerSocket(projectId: string, layerId: LayerId): UseLayerSocketResult {
   const [cards, setCards] = useState<RenderedCard[]>([]);
   const [loading, setLoading] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
@@ -40,16 +40,16 @@ export function useLayerSocket(layerId: LayerId): UseLayerSocketResult {
   // Initial fetch
   const loadCards = useCallback(async () => {
     try {
-      console.log("[useLayerSocket] Fetching cards for", layerId);
-      const loaded = await fetchCards(layerId);
-      console.log("[useLayerSocket] Got", loaded.length, "cards for", layerId);
+      console.log("[useLayerSocket] Fetching cards for", projectId, layerId);
+      const loaded = await fetchCards(projectId, layerId);
+      console.log("[useLayerSocket] Got", loaded.length, "cards for", projectId, layerId);
       setCards(loaded);
     } catch (err) {
       console.error("[useLayerSocket] Failed to fetch cards:", err);
     } finally {
       setLoading(false);
     }
-  }, [layerId]);
+  }, [projectId, layerId]);
 
   // WebSocket connection
   useEffect(() => {
@@ -87,6 +87,7 @@ export function useLayerSocket(layerId: LayerId): UseLayerSocketResult {
 
     function handleMessage(msg: {
       type: string;
+      project?: string;
       layer?: string;
       filename?: string;
       html?: string;
@@ -96,7 +97,8 @@ export function useLayerSocket(layerId: LayerId): UseLayerSocketResult {
       result?: unknown;
       error?: string;
     }) {
-      // Only handle events for our layer
+      // Only handle events for our project+layer
+      if (msg.project && msg.project !== projectId) return;
       if (msg.layer && msg.layer !== layerId) return;
 
       switch (msg.type) {
@@ -157,16 +159,16 @@ export function useLayerSocket(layerId: LayerId): UseLayerSocketResult {
       ws?.close();
       wsRef.current = null;
     };
-  }, [layerId, loadCards]);
+  }, [projectId, layerId, loadCards]);
 
   // Call an @export function via WebSocket, with REST fallback
   const callExport = useCallback(
-    (layer: LayerId, filename: string, fn: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+    (project: string, layer: LayerId, filename: string, fn: string, args: Record<string, unknown> = {}): Promise<unknown> => {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         // Fallback to REST
         console.log("[useLayerSocket] WebSocket not open, using REST fallback for", fn);
-        return callCardExportRest(layer, filename, fn, args);
+        return callCardExportRest(project, layer, filename, fn, args);
       }
 
       return new Promise((resolve, reject) => {
@@ -176,6 +178,7 @@ export function useLayerSocket(layerId: LayerId): UseLayerSocketResult {
         ws.send(JSON.stringify({
           type: "export_call",
           id,
+          project,
           layer,
           filename,
           fn,

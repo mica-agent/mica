@@ -9,6 +9,7 @@ import DrawingCanvas from "./DrawingCanvas";
 import "./whiteboard.css";
 
 interface Props {
+  projectId: string;
   layerId: LayerId;
   layerColor: string;
 }
@@ -21,8 +22,8 @@ export interface WhiteboardHandle {
 const SYSTEM_FILENAMES = ["_goal.md", "_todo.md", "_brief.md", "_log.md", "_chat.md"];
 
 const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
-  function WhiteboardView({ layerId, layerColor }, ref) {
-    const { cards, loading, callExport, refetch } = useLayerSocket(layerId);
+  function WhiteboardView({ projectId, layerId, layerColor }, ref) {
+    const { cards, loading, callExport, refetch } = useLayerSocket(projectId, layerId);
     const [contextStats, setContextStats] = useState<ContextStats | null>(null);
     const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
     const [expandedCard, setExpandedCard] = useState<RenderedCard | null>(null);
@@ -34,44 +35,44 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
 
     // Fetch context stats when cards change
     useEffect(() => {
-      fetchContextStats(layerId).then(setContextStats).catch(() => {});
-    }, [layerId, cards.length]);
+      fetchContextStats(projectId, layerId).then(setContextStats).catch(() => {});
+    }, [projectId, layerId, cards.length]);
 
     const handleSave = useCallback(async (filename: string, content: string) => {
-      await saveFile(layerId, filename, content);
+      await saveFile(projectId, layerId, filename, content);
       setEditingFile(null);
       setCreatingType(null);
       // WebSocket will push the update
-    }, [layerId]);
+    }, [projectId, layerId]);
 
     const handleDelete = useCallback(async (filename: string) => {
-      await deleteFile(layerId, filename);
+      await deleteFile(projectId, layerId, filename);
       // WebSocket will push the deletion
-    }, [layerId]);
+    }, [projectId, layerId]);
 
     const handleConvertDrawing = useCallback(async (imageBase64: string) => {
       setConverting(true);
       try {
-        await convertDrawing(layerId, imageBase64);
+        await convertDrawing(projectId, layerId, imageBase64);
         setDrawingMode(false);
       } catch (err) {
         console.error("Drawing conversion failed:", err);
       } finally {
         setConverting(false);
       }
-    }, [layerId]);
+    }, [projectId, layerId]);
 
     // For editing, we need to fetch the raw file content
     const handleEdit = useCallback(async (filename: string) => {
       try {
         const { fetchFile } = await import("../api/layerFiles");
-        const file = await fetchFile(layerId, filename);
+        const file = await fetchFile(projectId, layerId, filename);
         setExpandedCard(null);
         setEditingFile({ name: file.name, content: file.content });
       } catch (err) {
         console.error("Failed to fetch file for editing:", err);
       }
-    }, [layerId]);
+    }, [projectId, layerId]);
 
     // Separate system cards from content cards (_chat.md is in sidebar, not here)
     const systemCards = cards.filter((c) => c.meta.isSystem && c.filename !== "_chat.md");
@@ -145,6 +146,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
                   html={card.html}
                   exports={card.exports}
                   meta={card.meta}
+                  projectId={projectId}
                   layerId={layerId}
                   layerColor={layerColor}
                   onEdit={() => handleEdit(card.filename)}
@@ -166,6 +168,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
                   html={card.html}
                   exports={card.exports}
                   meta={card.meta}
+                  projectId={projectId}
                   layerId={layerId}
                   layerColor={layerColor}
                   onEdit={() => handleEdit(card.filename)}
@@ -185,6 +188,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
             html={expandedCard.html}
             exports={expandedCard.exports}
             meta={expandedCard.meta}
+            projectId={projectId}
             layerId={layerId}
             layerColor={layerColor}
             onClose={() => setExpandedCard(null)}

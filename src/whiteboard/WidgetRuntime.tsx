@@ -9,15 +9,16 @@ import type { LayerId } from "../api/layerFiles";
 interface Props {
   html: string;
   exports?: string[];
+  project: string;
   layer: LayerId;
   filename: string;
-  callExport: (layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
+  callExport: (project: string, layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
 // Initialize mermaid once
 mermaid.initialize({ startOnLoad: false, theme: "dark" });
 
-export default function WidgetRuntime({ html, exports: exportFns, layer, filename, callExport }: Props) {
+export default function WidgetRuntime({ html, exports: exportFns, project, layer, filename, callExport }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const prevHtmlRef = useRef<string>("");
 
@@ -34,7 +35,7 @@ export default function WidgetRuntime({ html, exports: exportFns, layer, filenam
     // Build per-widget mica bridge
     const micaBridge = {
       call: (fn: string, args: Record<string, unknown> = {}) => {
-        return callExport(layer, filename, fn, args);
+        return callExport(project, layer, filename, fn, args);
       },
       exports: exportFns || [],
     };
@@ -70,7 +71,7 @@ export default function WidgetRuntime({ html, exports: exportFns, layer, filenam
           console.error("[mermaid] render failed:", err);
         });
     }
-  }, [html, layer, filename, callExport, exportFns]);
+  }, [html, project, layer, filename, callExport, exportFns]);
 
   return <div ref={containerRef} className="widget-runtime" />;
 }
