@@ -7,12 +7,17 @@ Protocol:
   Server → Worker (stdin):
     {"type": "render", "id": "...", "class_name": "...", "class_path": "...", "content": "...", "config": {...}}
     {"type": "export_call", "id": "...", "class_name": "...", "class_path": "...", "function": "...", "content": "...", "args": {...}}
+    {"type": "channel_open", "id": "...", "class_name": "...", "class_path": "...", "function": "...", "content": "...", "args": {...}}
+    {"type": "channel_data", "id": "...", "data": ...}
+    {"type": "channel_close", "id": "..."}
     {"type": "invalidate_class", "class_name": "..."}
     {"type": "rpc_response", "request_id": "...", "result": ..., "error": ...}
 
   Worker → Server (stdout):
-    {"type": "render_result", "id": "...", "html": "..."}
+    {"type": "render_result", "id": "...", "html": "...", "exports": [...]}
     {"type": "export_result", "id": "...", "result": {...}}
+    {"type": "channel_data", "id": "...", "data": ...}
+    {"type": "channel_close", "id": "..."}
     {"type": "error", "id": "...", "error": "..."}
     {"type": "rpc", "request_id": "...", "method": "...", "args": {...}}
     {"type": "ready"}
@@ -68,7 +73,7 @@ def _restricted_import(name, *args, **kwargs):
 
 # ── Class loading ───────────────────────────────────────────
 
-loaded_classes = {}  # class_name → { render_fn, exports, module }
+loaded_classes = {}  # class_name → { render_fn, exports, channels, module }
 
 
 def load_class(class_name, class_path):
@@ -83,18 +88,23 @@ def load_class(class_name, class_path):
     import mica
     mica._render_fn = None
     mica._exports = {}
+    mica._channels = {}
 
     # Load the module
     spec = importlib.util.spec_from_file_location(f"card_class_{class_name}", class_path)
     module = importlib.util.module_from_spec(spec)
 
-    # Apply import restriction for the class module
+    # Apply import restriction for built-in card classes only.
+    # Project-scoped card classes (in _card-classes/) are user code and
+    # get full module access. In PROD mode they run inside Docker anyway.
+    is_project_class = "_card-classes" in class_path
     old_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
     try:
-        if isinstance(__builtins__, dict):
-            __builtins__["__import__"] = _restricted_import
-        else:
-            __builtins__.__import__ = _restricted_import
+        if not is_project_class:
+            if isinstance(__builtins__, dict):
+                __builtins__["__import__"] = _restricted_import
+            else:
+                __builtins__.__import__ = _restricted_import
         spec.loader.exec_module(module)
     finally:
         if isinstance(__builtins__, dict):
@@ -102,9 +112,10 @@ def load_class(class_name, class_path):
         else:
             __builtins__.__import__ = old_import
 
-    # Extract render function and exports
+    # Extract render function, exports, and channels
     render_fn = mica._get_render_fn()
     exports = mica._get_exports()
+    channels = mica._get_channels()
 
     if render_fn is None:
         raise ValueError(f"Card class '{class_name}' has no @mica.render function")
@@ -112,6 +123,7 @@ def load_class(class_name, class_path):
     entry = {
         "render_fn": render_fn,
         "exports": exports,
+        "channels": channels,
         "module": module,
     }
     loaded_classes[class_name] = entry
@@ -120,19 +132,22 @@ def load_class(class_name, class_path):
 
 # ── Communication ───────────────────────────────────────────
 
-# RPC responses from the server come on stdin, interleaved with requests.
-# We use a threading model: the main loop reads stdin; RPC responses are
-# dispatched to waiting threads via a dict of Events.
+# Thread-safe stdout writing (channel threads also write to stdout)
+_stdout_lock = threading.Lock()
 
 _rpc_waiters = {}  # request_id → {"event": Event, "response": None}
 _rpc_lock = threading.Lock()
 _pending_requests = []  # requests that arrived while processing an RPC
 
+# Active bidirectional channels
+_active_channels = {}  # channel_id → mica.Channel
+
 
 def send(msg):
-    """Send a JSON message to the Node.js server."""
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
+    """Send a JSON message to the Node.js server (thread-safe)."""
+    with _stdout_lock:
+        sys.stdout.write(json.dumps(msg) + "\n")
+        sys.stdout.flush()
 
 
 def handle_rpc_in_export(request_id, method, args):
@@ -162,7 +177,7 @@ def handle_rpc_in_export(request_id, method, args):
             _pending_requests.append(msg)
 
 
-# Monkey-patch mica's _send_rpc to use our handler
+# Monkey-patch mica's functions to use our thread-safe handlers
 import mica
 _original_send_rpc = mica._send_rpc
 
@@ -176,7 +191,38 @@ def _patched_send_rpc(method, args=None):
     return response.get("result")
 
 
+def _patched_send_channel_data(channel_id, data):
+    """Thread-safe channel data send."""
+    send({"type": "channel_data", "id": channel_id, "data": data})
+
+
+def _patched_send_channel_close(channel_id):
+    """Thread-safe channel close send."""
+    send({"type": "channel_close", "id": channel_id})
+
+
 mica._send_rpc = _patched_send_rpc
+mica._send_channel_data = _patched_send_channel_data
+mica._send_channel_close = _patched_send_channel_close
+
+
+# ── Channel thread runner ───────────────────────────────────
+
+def _run_channel(fn, content, args, channel):
+    """Run a @mica.channel handler in a thread."""
+    try:
+        fn(content, args, channel)
+    except Exception as e:
+        send({
+            "type": "error",
+            "id": channel.id,
+            "error": f"{type(e).__name__}: {str(e)}",
+            "traceback": traceback.format_exc(),
+        })
+    finally:
+        if not channel._closed:
+            channel.close()
+        _active_channels.pop(channel.id, None)
 
 
 # ── Main loop ───────────────────────────────────────────────
@@ -211,6 +257,32 @@ def process_message(msg):
                 "id": msg_id,
                 "result": result,
             })
+
+        elif msg_type == "channel_open":
+            cls = load_class(msg["class_name"], msg["class_path"])
+            fn_name = msg["function"]
+            if fn_name not in cls.get("channels", {}):
+                raise ValueError(f"Function '{fn_name}' is not a @mica.channel handler in class '{msg['class_name']}'")
+            mica._set_request_id(msg_id)
+            channel = mica.Channel(msg_id)
+            _active_channels[msg_id] = channel
+            t = threading.Thread(
+                target=_run_channel,
+                args=(cls["channels"][fn_name], msg.get("content", ""), msg.get("args", {}), channel),
+                daemon=True,
+            )
+            t.start()
+
+        elif msg_type == "channel_data":
+            ch = _active_channels.get(msg_id)
+            if ch:
+                ch._enqueue(msg.get("data"))
+
+        elif msg_type == "channel_close":
+            ch = _active_channels.get(msg_id)
+            if ch:
+                ch._close_remote()
+                _active_channels.pop(msg_id, None)
 
         elif msg_type == "invalidate_class":
             class_name = msg.get("class_name")

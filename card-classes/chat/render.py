@@ -94,7 +94,19 @@ def render(content, config):
         .chat-status {{
             font-size: 0.65rem; color: rgba(255,255,255,0.5);
             padding: 1px 6px; border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 3px;
+            border-radius: 3px; transition: all 0.3s;
+        }}
+        .chat-status--working {{
+            color: #fbbf24; border-color: rgba(251,191,36,0.4);
+            background: rgba(251,191,36,0.1);
+            animation: chatPulse 1.5s infinite;
+        }}
+        .chat-status--done {{
+            color: #4ade80; border-color: rgba(74,222,128,0.4);
+            background: rgba(74,222,128,0.1);
+        }}
+        @keyframes chatPulse {{
+            0%, 100% {{ opacity: 1; }} 50% {{ opacity: 0.5; }}
         }}
         .chat-messages {{
             flex: 1; overflow-y: auto; padding: 8px 0;
@@ -203,7 +215,8 @@ def render(content, config):
             inputEl.disabled = true;
             sendBtn.disabled = true;
             sending = true;
-            statusEl.textContent = 'thinking...';
+            statusEl.textContent = 'working\u2026';
+            statusEl.className = 'chat-status chat-status--working';
 
             addMsg('user', text);
 
@@ -220,15 +233,19 @@ def render(content, config):
                 addMsg('assistant', result.message, result.agent);
 
                 if (result.filesChanged) {{
-                    statusEl.textContent = 'updated whiteboard';
-                    setTimeout(() => statusEl.textContent = 'ready', 2000);
+                    statusEl.textContent = '\u2714 done \u2014 whiteboard updated';
+                    statusEl.className = 'chat-status chat-status--done';
+                    setTimeout(() => {{ statusEl.textContent = 'ready'; statusEl.className = 'chat-status'; }}, 4000);
                 }} else {{
-                    statusEl.textContent = 'ready';
+                    statusEl.textContent = '\u2714 done';
+                    statusEl.className = 'chat-status chat-status--done';
+                    setTimeout(() => {{ statusEl.textContent = 'ready'; statusEl.className = 'chat-status'; }}, 2000);
                 }}
             }} catch (err) {{
                 typingEl.remove();
                 addMsg('assistant', 'Error: ' + (err.message || err), 'System');
                 statusEl.textContent = 'error';
+                statusEl.className = 'chat-status';
                 setTimeout(() => statusEl.textContent = 'ready', 3000);
             }}
 
@@ -248,7 +265,8 @@ def render(content, config):
         // Auto check-in on first load (only if no history)
         if (messagesEl.children.length === 0) {{
             (async () => {{
-                statusEl.textContent = 'reviewing whiteboard...';
+                statusEl.textContent = 'reviewing whiteboard\u2026';
+                statusEl.className = 'chat-status chat-status--working';
                 try {{
                     const result = await mica.call('check_in', {{}});
                     addMsg('assistant', result.message, result.agent);
@@ -256,6 +274,7 @@ def render(content, config):
                     // Check-in failed, no worries
                 }}
                 statusEl.textContent = 'ready';
+                statusEl.className = 'chat-status';
             }})();
         }}
 

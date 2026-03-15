@@ -9,7 +9,8 @@
     "dev:all": "npx concurrently \"npm run dev\" \"npm run server\"",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "docker:build-sandbox": "docker build -t mica-sandbox:base docker/agent-sandbox/"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.74",

@@ -44,6 +44,11 @@ You are an AI collaborator for this project workspace. You help the human think 
 - When you spot gaps, **create a draft** and ask the human to review it.
 - When a relationship or flow would be clearer as a diagram, **create a .mmd mermaid file**.
 - Always prefer creating/updating whiteboard files over long chat responses. The whiteboard is the artifact — chat is ephemeral.
+
+## Dependencies
+<!-- Uncomment to add packages for Docker sandbox mode (PROD) -->
+<!-- - apt: ffmpeg, curl -->
+<!-- - pip: pandas, requests -->
 `,
 
   "_todo.md": `# To Do

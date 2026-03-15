@@ -10,6 +10,7 @@ import { z } from "zod/v4";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { isDockerEnabled, createDockerSpawner } from "./dockerSpawn.js";
 import {
   listFiles,
   readLayerFile,
@@ -95,6 +96,12 @@ When you see _decision-*.md files on your whiteboard, READ THEM — they contain
 - Working directory is the project root
 - Keep commands focused and safe — avoid destructive operations unless explicitly asked
 
+## Custom Widgets
+- To create a new interactive widget card class, first read the docs: \`cat card-classes/CREATING_WIDGETS.md\`
+- Project-specific card classes go in \`layers/<PROJECT_ID>/_card-classes/<classname>/render.py\` (at the project level, NOT inside a layer)
+- The project ID is available in config["project"] — use that exact value in the path
+- Then create a \`_<classname>.md\` file in the layer to use it
+
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
 ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.md so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
@@ -123,7 +130,7 @@ FORMAT for items:
 RULES:
 - Prefix every item with @agent or @human to show who owns it.
 - When you spot a gap from _goal.md that needs action, ADD it to _todo.md.
-- When you complete a task, move it to the Done section with [x] and a date.
+- **CRITICAL: When you complete a task, IMMEDIATELY update _todo.md** — move the item to the Done section with [x] and a date. Do this in the SAME turn as completing the work, not later. The human sees the todo card on the whiteboard and uses it to track what's done.
 - When something is blocked on another layer or a human decision, move it to Blocked with a note about what it's waiting on.
 - Keep it concise — this is a commitment tracker, not a project plan.
 
@@ -473,6 +480,11 @@ ${fileContext}`;
   // Resume existing session for this layer if we have one
   if (layerSessions[sKey]) {
     options.resume = layerSessions[sKey];
+  }
+
+  // PROD mode: sandbox Bash execution in Docker container
+  if (await isDockerEnabled(project)) {
+    options.spawnClaudeCodeProcess = await createDockerSpawner(project, layer);
   }
 
   for await (const message of query({

@@ -352,6 +352,10 @@ workerPool.setRpcHandler(async (method, args, context) => {
         filesChanged: response.filesChanged,
       };
     }
+    case "emit": {
+      broadcast({ type: args.event as string, ...(args.data as Record<string, unknown> || {}) });
+      return { success: true };
+    }
     default:
       throw new Error(`Unknown RPC method: ${method}`);
   }
@@ -450,6 +454,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 // WebSocket server for real-time card updates
 const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
+const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel IDs
 
 wss.on("error", (err) => {
   console.error("[websocket-server] Error:", (err as Error).message);
@@ -457,27 +462,116 @@ wss.on("error", (err) => {
 
 wss.on("connection", (ws) => {
   wsClients.add(ws);
-  ws.on("close", () => wsClients.delete(ws));
+
+  ws.on("close", () => {
+    wsClients.delete(ws);
+    // Clean up any channels owned by this client
+    const channels = wsChannels.get(ws);
+    if (channels) {
+      for (const channelId of channels) {
+        workerPool.closeChannel(channelId);
+      }
+      wsChannels.delete(ws);
+    }
+  });
+
   ws.on("error", (err) => {
     console.error("[websocket] Connection error:", err.message);
     wsClients.delete(ws);
   });
 
-  // Handle export calls from browser via WebSocket
+  // ── Full WebSocket message router ──
   ws.on("message", async (raw) => {
+    let msg: Record<string, unknown>;
     try {
-      const msg = JSON.parse(raw.toString());
-      if (msg.type === "export_call") {
-        const { id, project, layer, filename, fn, args } = msg;
-        try {
-          const result = await cardManager.callExport(project, layer, filename, fn, args || {});
-          ws.send(JSON.stringify({ type: "export_result", id, result }));
-        } catch (err) {
-          ws.send(JSON.stringify({ type: "export_error", id, error: (err as Error).message }));
-        }
-      }
+      msg = JSON.parse(raw.toString());
     } catch {
-      // Ignore invalid messages
+      return; // Ignore invalid JSON
+    }
+
+    const { type, id, project, layer, filename, fn, args } = msg as {
+      type: string; id?: string; project?: string; layer?: string;
+      filename?: string; fn?: string; args?: Record<string, unknown>;
+      event?: string; data?: unknown;
+    };
+
+    switch (type) {
+      // Pattern 1: Request/Response (call + legacy export_call)
+      case "call":
+      case "export_call": {
+        try {
+          const result = await cardManager.callExport(
+            project as string, layer as string, filename as string,
+            fn as string, (args || {}) as Record<string, unknown>
+          );
+          ws.send(JSON.stringify({ type: "result", id, result }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: "error", id, error: (err as Error).message }));
+        }
+        break;
+      }
+
+      // Pattern 2: Fire-and-forget
+      case "send": {
+        cardManager.callSend(
+          project as string, layer as string, filename as string,
+          fn as string, (args || {}) as Record<string, unknown>
+        );
+        break;
+      }
+
+      // Pattern 4: Widget-to-widget broadcast
+      case "broadcast": {
+        const event = (msg as { event?: string }).event;
+        const data = (msg as { data?: Record<string, unknown> }).data || {};
+        if (event) {
+          broadcast({ type: event, ...data });
+        }
+        break;
+      }
+
+      // Pattern 5: Bidirectional channel — open
+      case "channel_open": {
+        try {
+          await cardManager.openChannel(
+            id as string,
+            project as string, layer as string, filename as string,
+            fn as string, (args || {}) as Record<string, unknown>,
+            // onData: forward Python → this browser client
+            (data) => {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "channel_data", id, data }));
+              }
+            },
+            // onClose: notify browser, clean up tracking
+            () => {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "channel_close", id }));
+              }
+              wsChannels.get(ws)?.delete(id as string);
+            }
+          );
+          // Track this channel for cleanup on disconnect
+          if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
+          wsChannels.get(ws)!.add(id as string);
+        } catch (err) {
+          ws.send(JSON.stringify({ type: "error", id, error: (err as Error).message }));
+        }
+        break;
+      }
+
+      // Pattern 5: Bidirectional channel — data (browser → Python)
+      case "channel_data": {
+        workerPool.sendChannelData(id as string, (msg as { data?: unknown }).data);
+        break;
+      }
+
+      // Pattern 5: Bidirectional channel — close (browser → Python)
+      case "channel_close": {
+        workerPool.closeChannel(id as string);
+        wsChannels.get(ws)?.delete(id as string);
+        break;
+      }
     }
   });
 });

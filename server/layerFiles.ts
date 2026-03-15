@@ -11,6 +11,7 @@ export interface ProjectConfig {
   name: string;
   layers: string[];
   createdAt: string;
+  sandbox?: "local" | "docker";
 }
 
 export interface ProjectRegistry {

@@ -12,10 +12,9 @@ interface Props {
   layerColor: string;
   onClose: () => void;
   onEdit: () => void;
-  callExport: (project: string, layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
-export default function ExpandedCardView({ filename, html, exports: exportFns, meta, projectId, layerId, layerColor, onClose, onEdit, callExport }: Props) {
+export default function ExpandedCardView({ filename, html, exports: exportFns, meta, projectId, layerId, layerColor, onClose, onEdit }: Props) {
   // Close on Escape
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -56,7 +55,6 @@ export default function ExpandedCardView({ filename, html, exports: exportFns, m
             project={projectId}
             layer={layerId}
             filename={filename}
-            callExport={callExport}
           />
         </div>
 

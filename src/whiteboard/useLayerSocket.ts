@@ -1,48 +1,26 @@
 // WebSocket hook for real-time card updates from the server.
-// Replaces 5-second polling with instant push updates.
+// Uses the shared micaSocket connection for export calls;
+// maintains its own listener for file-change broadcasts to update card state.
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { LayerId, RenderedCard, CardMeta } from "../api/layerFiles";
-import { fetchCards, callCardExport as callCardExportRest } from "../api/layerFiles";
-
-const API_BASE = import.meta.env.VITE_MICA_API || "";
-
-function wsUrl(): string {
-  if (API_BASE) {
-    const url = new URL(API_BASE);
-    const protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    return `${protocol}//${url.host}/ws/cards`;
-  }
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/ws/cards`;
-}
-
-interface ExportCall {
-  resolve: (value: unknown) => void;
-  reject: (err: Error) => void;
-}
-
-let callIdCounter = 0;
+import { fetchCards } from "../api/layerFiles";
+import { on } from "../api/micaSocket";
 
 export interface UseLayerSocketResult {
   cards: RenderedCard[];
   loading: boolean;
-  callExport: (project: string, layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
   refetch: () => void;
 }
 
 export function useLayerSocket(projectId: string, layerId: LayerId): UseLayerSocketResult {
   const [cards, setCards] = useState<RenderedCard[]>([]);
   const [loading, setLoading] = useState(true);
-  const wsRef = useRef<WebSocket | null>(null);
-  const pendingCalls = useRef<Map<string, ExportCall>>(new Map());
 
   // Initial fetch
   const loadCards = useCallback(async () => {
     try {
-      console.log("[useLayerSocket] Fetching cards for", projectId, layerId);
       const loaded = await fetchCards(projectId, layerId);
-      console.log("[useLayerSocket] Got", loaded.length, "cards for", projectId, layerId);
       setCards(loaded);
     } catch (err) {
       console.error("[useLayerSocket] Failed to fetch cards:", err);
@@ -51,151 +29,57 @@ export function useLayerSocket(projectId: string, layerId: LayerId): UseLayerSoc
     }
   }, [projectId, layerId]);
 
-  // WebSocket connection
   useEffect(() => {
     setLoading(true);
     loadCards();
+  }, [loadCards]);
 
-    const url = wsUrl();
-    let ws: WebSocket;
-    let reconnectTimer: ReturnType<typeof setTimeout>;
-    let alive = true;
-
-    function connect() {
-      ws = new WebSocket(url);
-      wsRef.current = ws;
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          handleMessage(msg);
-        } catch {
-          // ignore invalid messages
-        }
+  // Subscribe to file-change events via the shared micaSocket
+  useEffect(() => {
+    function handleFileEvent(msg: unknown) {
+      const m = msg as {
+        type: string;
+        project?: string;
+        layer?: string;
+        filename?: string;
+        html?: string;
+        exports?: string[];
+        meta?: CardMeta;
       };
+      if (m.project && m.project !== projectId) return;
+      if (m.layer && m.layer !== layerId) return;
 
-      ws.onclose = () => {
-        if (alive) {
-          reconnectTimer = setTimeout(connect, 2000);
-        }
-      };
-
-      ws.onerror = () => {
-        ws.close();
-      };
-    }
-
-    function handleMessage(msg: {
-      type: string;
-      project?: string;
-      layer?: string;
-      filename?: string;
-      html?: string;
-      exports?: string[];
-      meta?: CardMeta;
-      id?: string;
-      result?: unknown;
-      error?: string;
-    }) {
-      // Only handle events for our project+layer
-      if (msg.project && msg.project !== projectId) return;
-      if (msg.layer && msg.layer !== layerId) return;
-
-      switch (msg.type) {
-        case "file-changed":
-        case "file-created":
-          if (msg.html && msg.filename && msg.meta) {
-            setCards((prev) => {
-              const existing = prev.findIndex((c) => c.filename === msg.filename);
-              const card: RenderedCard = {
-                filename: msg.filename!,
-                html: msg.html!,
-                exports: msg.exports || [],
-                meta: msg.meta!,
-              };
-              if (existing >= 0) {
-                const next = [...prev];
-                next[existing] = card;
-                return next;
-              }
-              return [...prev, card];
-            });
+      if ((m.type === "file-changed" || m.type === "file-created") && m.html && m.filename && m.meta) {
+        setCards((prev) => {
+          const existing = prev.findIndex((c) => c.filename === m.filename);
+          const card: RenderedCard = {
+            filename: m.filename!,
+            html: m.html!,
+            exports: m.exports || [],
+            meta: m.meta!,
+          };
+          if (existing >= 0) {
+            const next = [...prev];
+            next[existing] = card;
+            return next;
           }
-          break;
-
-        case "file-deleted":
-          if (msg.filename) {
-            setCards((prev) => prev.filter((c) => c.filename !== msg.filename));
-          }
-          break;
-
-        case "export_result":
-          if (msg.id) {
-            const pending = pendingCalls.current.get(msg.id);
-            if (pending) {
-              pending.resolve(msg.result);
-              pendingCalls.current.delete(msg.id);
-            }
-          }
-          break;
-
-        case "export_error":
-          if (msg.id) {
-            const pending = pendingCalls.current.get(msg.id);
-            if (pending) {
-              pending.reject(new Error(msg.error || "Export call failed"));
-              pendingCalls.current.delete(msg.id);
-            }
-          }
-          break;
+          return [...prev, card];
+        });
+      } else if (m.type === "file-deleted" && m.filename) {
+        setCards((prev) => prev.filter((c) => c.filename !== m.filename));
       }
     }
 
-    connect();
+    const unsub1 = on("file-changed", handleFileEvent);
+    const unsub2 = on("file-created", handleFileEvent);
+    const unsub3 = on("file-deleted", handleFileEvent);
 
     return () => {
-      alive = false;
-      clearTimeout(reconnectTimer);
-      ws?.close();
-      wsRef.current = null;
+      unsub1();
+      unsub2();
+      unsub3();
     };
-  }, [projectId, layerId, loadCards]);
+  }, [projectId, layerId]);
 
-  // Call an @export function via WebSocket, with REST fallback
-  const callExport = useCallback(
-    (project: string, layer: LayerId, filename: string, fn: string, args: Record<string, unknown> = {}): Promise<unknown> => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        // Fallback to REST
-        console.log("[useLayerSocket] WebSocket not open, using REST fallback for", fn);
-        return callCardExportRest(project, layer, filename, fn, args);
-      }
-
-      return new Promise((resolve, reject) => {
-        const id = `call-${++callIdCounter}`;
-        pendingCalls.current.set(id, { resolve, reject });
-
-        ws.send(JSON.stringify({
-          type: "export_call",
-          id,
-          project,
-          layer,
-          filename,
-          fn,
-          args,
-        }));
-
-        // Timeout after 120s
-        setTimeout(() => {
-          if (pendingCalls.current.has(id)) {
-            pendingCalls.current.delete(id);
-            reject(new Error("Export call timed out"));
-          }
-        }, 120000);
-      });
-    },
-    []
-  );
-
-  return { cards, loading, callExport, refetch: loadCards };
+  return { cards, loading, refetch: loadCards };
 }

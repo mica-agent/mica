@@ -5,7 +5,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { LayerId, RenderedCard } from "../api/layerFiles";
-import { fetchCards, callCardExport } from "../api/layerFiles";
+import { fetchCards } from "../api/layerFiles";
+import { call as micaCall, on } from "../api/micaSocket";
 import WidgetRuntime from "./WidgetRuntime";
 
 interface Props {
@@ -91,25 +92,21 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
     loadChat();
   }, [loadChat]);
 
+  // Listen for file changes to refresh chat card
+  useEffect(() => {
+    const unsub = on("file-changed", (msg) => {
+      const m = msg as { project?: string; layer?: string; filename?: string };
+      if (m.project === projectId && m.layer === activeLayer && m.filename === "_chat.md") {
+        loadChat();
+      }
+    });
+    return unsub;
+  }, [projectId, activeLayer, loadChat]);
+
   // Scroll pending messages into view
   useEffect(() => {
     if (pending) pendingRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [pending]);
-
-  const handleCallExport = useCallback(
-    async (project: string, layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => {
-      onAgentBusy?.(true);
-      try {
-        const result = await callCardExport(project, layer, filename, fn, args || {});
-        loadChat();
-        onFilesChanged?.();
-        return result;
-      } finally {
-        onAgentBusy?.(false);
-      }
-    },
-    [loadChat, onFilesChanged, onAgentBusy]
-  );
 
   const handleSend = useCallback(async () => {
     const text = inputValue.trim();
@@ -121,7 +118,7 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
     onAgentBusy?.(true);
 
     try {
-      await callCardExport(projectId, activeLayer, "_chat.md", "send_message", { message: text });
+      await micaCall(projectId, activeLayer, "_chat.md", "send_message", { message: text });
       setPending(null);
       loadChat();
       onFilesChanged?.();
@@ -164,7 +161,6 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
             project={projectId}
             layer={activeLayer}
             filename="_chat.md"
-            callExport={handleCallExport}
           />
         )}
 

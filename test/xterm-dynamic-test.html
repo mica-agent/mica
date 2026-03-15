@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>xterm.js dynamic loading test (mimics WidgetRuntime)</title>
+  <style>
+    body { margin: 20px; font-family: sans-serif; background: #1e1e1e; color: #ccc; }
+    h1 { font-size: 16px; margin-bottom: 10px; }
+    #widget-container { background: #0d1117; height: 350px; border-radius: 8px; overflow: hidden; }
+    #log { margin-top: 20px; font-size: 12px; font-family: monospace; color: #8b8; }
+  </style>
+</head>
+<body>
+  <h1>xterm.js dynamic loading test (mimics WidgetRuntime)</h1>
+  <div id="widget-container"></div>
+  <div id="log"></div>
+
+  <script>
+    const log = (msg) => {
+      const el = document.getElementById('log');
+      el.innerHTML += msg + '<br>';
+      console.log(msg);
+    };
+
+    // This mimics what WidgetRuntime does:
+    // 1. Set innerHTML with widget HTML (including link, script, and inline script tags)
+    // 2. Hoist <link> to <head>
+    // 3. Load external <script> tags
+    // 4. Wait for CSS + JS to load
+    // 5. Execute inline scripts
+
+    const widgetHtml = `
+      <div id="termContainer" style="height:100%"></div>
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css"/>
+      <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"><\/script>
+      <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"><\/script>
+      <script>
+        // This inline script should run AFTER CSS and JS are loaded
+        var termEl = container.querySelector('#termContainer');
+        var term = new Terminal({ cursorBlink: true, theme: { background: '#0d1117' } });
+        var fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(termEl);
+        fitAddon.fit();
+        term.writeln('Dynamic loading test');
+        term.write('$ ');
+
+        // Check if measurement element is visible
+        var measure = termEl.querySelector('.xterm-char-measure-element');
+        if (measure) {
+          var style = window.getComputedStyle(measure);
+          window._xtermDebug = {
+            visibility: style.visibility,
+            position: style.position,
+            left: style.left,
+            display: style.display,
+            offsetWidth: measure.offsetWidth,
+            offsetHeight: measure.offsetHeight,
+            text: measure.textContent.substring(0, 10),
+          };
+          console.log('MEASURE ELEMENT:', window._xtermDebug);
+        }
+      <\/script>
+    `;
+
+    const el = document.getElementById('widget-container');
+
+    // Step 1: Set innerHTML
+    el.innerHTML = widgetHtml;
+    log('1. innerHTML set');
+
+    // Step 2: Hoist <link> to <head>
+    const cssLoads = [];
+    el.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {
+      const href = link.getAttribute('href');
+      if (href && !document.querySelector(`link[href="${href}"]`)) {
+        const headLink = document.createElement('link');
+        headLink.rel = 'stylesheet';
+        headLink.href = href;
+        cssLoads.push(new Promise((resolve) => {
+          headLink.onload = () => { log('2a. CSS loaded: ' + href); resolve(); };
+          headLink.onerror = () => { log('2a. CSS FAILED: ' + href); resolve(); };
+        }));
+        document.head.appendChild(headLink);
+      }
+      link.remove();
+    });
+    log('2. Links hoisted to head, waiting for ' + cssLoads.length + ' CSS loads');
+
+    // Step 3: Extract and load external scripts
+    const scripts = Array.from(el.querySelectorAll('script'));
+    const externalSrcs = [];
+    const inlineScripts = [];
+    scripts.forEach((s) => {
+      const src = s.getAttribute('src');
+      if (src) { externalSrcs.push(src); s.remove(); }
+      else { inlineScripts.push(s); }
+    });
+
+    const scriptLoads = externalSrcs.map((src) => {
+      if (document.querySelector(`script[src="${src}"]`)) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = () => { log('3a. Script loaded: ' + src.split('/').pop()); resolve(); };
+        s.onerror = () => reject(new Error('Failed: ' + src));
+        document.head.appendChild(s);
+      });
+    });
+    log('3. Scripts hoisted, waiting for ' + scriptLoads.length + ' script loads');
+
+    // Step 4: Wait for ALL resources
+    Promise.all([...scriptLoads, ...cssLoads]).then(() => {
+      log('4. All resources loaded. Executing inline scripts...');
+
+      // Step 5: Execute inline scripts (mimicking WidgetRuntime's IIFE wrapping)
+      inlineScripts.forEach((oldScript) => {
+        const newScript = document.createElement('script');
+        // Wrap in IIFE with mica and container
+        newScript.textContent =
+          `(function(mica, container) {${oldScript.textContent}})(` +
+          `{call:function(){},send:function(){},on:function(){},openChannel:function(){}}, ` +
+          `document.currentScript.parentElement);`;
+        oldScript.remove();
+        el.appendChild(newScript);
+      });
+
+      log('5. Inline scripts executed');
+
+      // Check measure element after execution
+      setTimeout(() => {
+        const measure = el.querySelector('.xterm-char-measure-element');
+        if (measure) {
+          const style = window.getComputedStyle(measure);
+          log('MEASURE: visibility=' + style.visibility + ' position=' + style.position +
+              ' left=' + style.left + ' display=' + style.display +
+              ' offsetW=' + measure.offsetWidth + ' offsetH=' + measure.offsetHeight);
+        } else {
+          log('MEASURE: element not found');
+        }
+      }, 500);
+    });
+  </script>
+</body>
+</html>

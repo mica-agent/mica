@@ -14,15 +14,25 @@ Usage in a card class:
     def do_something(content, args):
         mica.write("updated content")
         return {"ok": True}
+
+    @mica.channel
+    def my_stream(content, args, channel):
+        while True:
+            msg = channel.receive()
+            if msg is None:
+                break
+            channel.send({"echo": msg})
 """
 
 import sys
 import json
+import queue
 
 # ── Internal state ──────────────────────────────────────────
 
 _render_fn = None
 _exports = {}
+_channels = {}
 _request_id = None  # Set by worker before calling handlers
 
 
@@ -47,6 +57,72 @@ def export(fn):
     """
     _exports[fn.__name__] = fn
     return fn
+
+
+def channel(fn):
+    """Mark a function as a bidirectional channel handler.
+
+    The function receives (content: str, args: dict, channel: Channel).
+    Use channel.send(data) to push data to the browser,
+    channel.receive() to block until data arrives, and
+    channel.close() to end the channel.
+    """
+    _channels[fn.__name__] = fn
+    return fn
+
+
+# ── Channel class ────────────────────────────────────────────
+
+class Channel:
+    """Bidirectional channel between Python and browser widget."""
+
+    def __init__(self, channel_id):
+        self.id = channel_id
+        self._closed = False
+        self._queue = queue.Queue()
+
+    def send(self, data):
+        """Push data to the browser widget."""
+        if self._closed:
+            raise RuntimeError("Channel is closed")
+        _send_channel_data(self.id, data)
+
+    def receive(self):
+        """Block until data arrives from the browser. Returns None if channel closed."""
+        if self._closed:
+            return None
+        return self._queue.get()
+
+    def close(self):
+        """Close the channel from the Python side."""
+        if not self._closed:
+            self._closed = True
+            _send_channel_close(self.id)
+
+    def _enqueue(self, data):
+        """Called by worker to deliver incoming data from browser."""
+        self._queue.put(data)
+
+    def _close_remote(self):
+        """Called by worker when the browser closes the channel."""
+        self._closed = True
+        self._queue.put(None)  # Unblock any waiting receive()
+
+
+# ── Channel I/O (monkey-patched by worker for thread safety) ─
+
+def _send_channel_data(channel_id, data):
+    """Send channel data to the server. Overridden by worker."""
+    msg = {"type": "channel_data", "id": channel_id, "data": data}
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+
+def _send_channel_close(channel_id):
+    """Send channel close to the server. Overridden by worker."""
+    msg = {"type": "channel_close", "id": channel_id}
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
 
 
 # ── Server bridge (RPC over stdin/stdout) ───────────────────
@@ -92,6 +168,14 @@ def log(message):
     return _send_rpc("log", {"message": message})
 
 
+def emit(event, data=None):
+    """Broadcast an event to all connected browser widgets.
+
+    Other widgets can receive this with mica.on(event, callback) in JavaScript.
+    """
+    return _send_rpc("emit", {"event": event, "data": data})
+
+
 class _AgentBridge:
     """Bridge to the layer's AI agent (Claude SDK)."""
 
@@ -111,6 +195,10 @@ def _get_render_fn():
 
 def _get_exports():
     return dict(_exports)
+
+
+def _get_channels():
+    return dict(_channels)
 
 
 def _set_request_id(rid):

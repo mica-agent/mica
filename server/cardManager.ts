@@ -40,6 +40,7 @@ interface ClassManifestEntry {
 // ── Constants ──────────────────────────────────────────────
 
 const CARD_CLASSES_DIR = path.resolve("card-classes");
+const LAYERS_ROOT = path.resolve("layers");
 
 // Filename → card class mapping (convention-based)
 const FILENAME_CLASS_MAP: Record<string, string> = {
@@ -109,7 +110,8 @@ export class CardManager {
     this.loadManifest();
   }
 
-  private loadManifest() {
+  private loadManifest(project?: string) {
+    // Load built-in manifest
     const manifestPath = path.join(CARD_CLASSES_DIR, "_manifest.json");
     try {
       const raw = fs.readFileSync(manifestPath, "utf-8");
@@ -117,6 +119,18 @@ export class CardManager {
     } catch {
       console.warn("[card-manager] No _manifest.json found, using defaults");
       this.manifest = {};
+    }
+
+    // Merge project-level manifest on top (if it exists)
+    if (project) {
+      const projectManifestPath = path.join(LAYERS_ROOT, project, "_card-classes", "_manifest.json");
+      try {
+        const raw = fs.readFileSync(projectManifestPath, "utf-8");
+        const projectManifest = JSON.parse(raw);
+        this.manifest = { ...this.manifest, ...projectManifest };
+      } catch {
+        // No project manifest — that's fine
+      }
     }
   }
 
@@ -170,7 +184,15 @@ export class CardManager {
 
   // ── Rendering ──────────────────────────────────────────
 
-  private getClassPath(className: string): string {
+  private getClassPath(className: string, project?: string): string {
+    // Check project-level card classes first
+    if (project) {
+      const projectClassPath = path.join(LAYERS_ROOT, project, "_card-classes", className, "render.py");
+      if (fs.existsSync(projectClassPath)) {
+        return projectClassPath;
+      }
+    }
+    // Fall back to built-in card classes
     return path.join(CARD_CLASSES_DIR, className, "render.py");
   }
 
@@ -186,11 +208,12 @@ export class CardManager {
     config?: Record<string, unknown>
   ): Promise<{ html: string; exports: string[]; meta: CardMeta }> {
     const key = this.cacheKey(project, layer, filename);
+    this.loadManifest(project);
     const { cardClass, strippedContent, metadata } = this.resolveCardClass(filename, content);
     const meta = this.resolveCardMeta(filename, content);
 
-    // Check class file exists
-    const classPath = this.getClassPath(cardClass);
+    // Check class file exists (project-level first, then built-in)
+    const classPath = this.getClassPath(cardClass, project);
     if (!fs.existsSync(classPath)) {
       // Fallback: render as escaped HTML
       const html = `<pre style="color: #f87171;">Card class "${cardClass}" not found.\nFile: ${filename}</pre>`;
@@ -244,7 +267,7 @@ export class CardManager {
     // Read the current file content
     const file = await readLayerFile(project, layer, filename);
     const { cardClass, strippedContent, metadata } = this.resolveCardClass(filename, file.content);
-    const classPath = this.getClassPath(cardClass);
+    const classPath = this.getClassPath(cardClass, project);
 
     if (!fs.existsSync(classPath)) {
       throw new Error(`Card class "${cardClass}" not found`);
@@ -257,6 +280,62 @@ export class CardManager {
       strippedContent,
       args,
       { project, layer, filename }
+    );
+  }
+
+  /** Fire-and-forget: call an export but don't return the result to the caller. */
+  async callSend(
+    project: string,
+    layer: string,
+    filename: string,
+    fn: string,
+    args: Record<string, unknown>
+  ): Promise<void> {
+    const file = await readLayerFile(project, layer, filename);
+    const { cardClass, strippedContent } = this.resolveCardClass(filename, file.content);
+    const classPath = this.getClassPath(cardClass, project);
+
+    if (!fs.existsSync(classPath)) {
+      console.error(`[card-manager] callSend: card class "${cardClass}" not found`);
+      return;
+    }
+
+    this.pool.callExport(cardClass, classPath, fn, strippedContent, args, { project, layer, filename })
+      .catch((err) => console.error(`[card-manager] callSend error:`, (err as Error).message));
+  }
+
+  /**
+   * Open a bidirectional channel to a @mica.channel handler.
+   * Returns the channel ID (same as the caller-provided channelId).
+   */
+  async openChannel(
+    channelId: string,
+    project: string,
+    layer: string,
+    filename: string,
+    fn: string,
+    args: Record<string, unknown>,
+    onData: (data: unknown) => void,
+    onClose: () => void
+  ): Promise<string> {
+    const file = await readLayerFile(project, layer, filename);
+    const { cardClass, strippedContent } = this.resolveCardClass(filename, file.content);
+    const classPath = this.getClassPath(cardClass, project);
+
+    if (!fs.existsSync(classPath)) {
+      throw new Error(`Card class "${cardClass}" not found`);
+    }
+
+    return this.pool.openChannel(
+      channelId,
+      cardClass,
+      classPath,
+      fn,
+      strippedContent,
+      args,
+      { project, layer, filename },
+      onData,
+      onClose
     );
   }
 

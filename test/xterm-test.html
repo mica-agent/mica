@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>xterm.js standalone test</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <style>
+    body { margin: 20px; font-family: sans-serif; background: #1e1e1e; color: #ccc; }
+    h1 { font-size: 16px; margin-bottom: 10px; }
+    #terminal-container { height: 350px; }
+  </style>
+</head>
+<body>
+  <h1>xterm.js standalone render test</h1>
+  <div id="terminal-container"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script>
+    const term = new Terminal({ cursorBlink: true });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal-container'));
+    fitAddon.fit();
+    term.writeln('xterm.js 5.3.0 standalone render test');
+    term.writeln('If you can read this, rendering works.');
+    term.write('\r\n$ ');
+    window.addEventListener('resize', () => fitAddon.fit());
+  </script>
+</body>
+</html>

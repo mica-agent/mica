@@ -13,10 +13,9 @@ interface Props {
   onEdit: () => void;
   onDelete: () => void;
   onExpand: () => void;
-  callExport: (project: string, layer: LayerId, filename: string, fn: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
-export default function FileCard({ filename, html, exports: exportFns, meta, projectId, layerId, layerColor, onEdit, onDelete, onExpand, callExport }: Props) {
+export default function FileCard({ filename, html, exports: exportFns, meta, projectId, layerId, layerColor, onEdit, onDelete, onExpand }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
 
@@ -74,7 +73,6 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
           project={projectId}
           layer={layerId}
           filename={filename}
-          callExport={callExport}
         />
       </div>
       <div className="wb-card-footer">

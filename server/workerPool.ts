@@ -35,6 +35,7 @@ interface WorkerMessage {
   class_name?: string;
   method?: string;
   args?: Record<string, unknown>;
+  data?: unknown;
 }
 
 export interface RenderResult {
@@ -50,6 +51,14 @@ export interface RpcHandler {
   ): Promise<any>;
 }
 
+export interface ChannelDataHandler {
+  (id: string, data: unknown): void;
+}
+
+export interface ChannelCloseHandler {
+  (id: string): void;
+}
+
 // ── PythonWorker ───────────────────────────────────────────
 
 class PythonWorker {
@@ -59,8 +68,10 @@ class PythonWorker {
   private ready: boolean = false;
   private readyPromise: Promise<void>;
   private readyResolve!: () => void;
-  private busy: boolean = false;
+  private _busy: boolean = false;
   private rpcHandler: RpcHandler | null = null;
+  private channelDataHandler: ChannelDataHandler | null = null;
+  private channelCloseHandler: ChannelCloseHandler | null = null;
   private requestContexts: Map<string, { project: string; layer: string; filename: string }> = new Map();
 
   constructor(
@@ -131,6 +142,14 @@ class PythonWorker {
     this.rpcHandler = handler;
   }
 
+  setChannelDataHandler(handler: ChannelDataHandler) {
+    this.channelDataHandler = handler;
+  }
+
+  setChannelCloseHandler(handler: ChannelCloseHandler) {
+    this.channelCloseHandler = handler;
+  }
+
   private handleMessage(line: string) {
     let msg: WorkerMessage;
     try {
@@ -156,6 +175,23 @@ class PythonWorker {
       return;
     }
 
+    // Handle channel data from Python → forward to browser
+    if (msg.type === "channel_data" || msg.type === "stream") {
+      if (msg.id && this.channelDataHandler) {
+        this.channelDataHandler(msg.id, msg.data);
+      }
+      return;
+    }
+
+    // Handle channel close from Python → forward to browser, free worker
+    if (msg.type === "channel_close") {
+      if (msg.id && this.channelCloseHandler) {
+        this.channelCloseHandler(msg.id);
+      }
+      this._busy = false;
+      return;
+    }
+
     // Handle responses to our requests
     const id = msg.id;
     if (!id) return;
@@ -166,7 +202,7 @@ class PythonWorker {
     clearTimeout(pending.timeout);
     this.pending.delete(id);
     this.requestContexts.delete(id);
-    this.busy = false;
+    this._busy = false;
 
     if (msg.type === "error") {
       pending.reject(new Error(msg.error || "Unknown worker error"));
@@ -224,7 +260,7 @@ class PythonWorker {
   }
 
   get isBusy(): boolean {
-    return this.busy;
+    return this._busy;
   }
 
   get isAlive(): boolean {
@@ -234,12 +270,12 @@ class PythonWorker {
   send(msg: Record<string, unknown>, timeoutMs = 30000): Promise<any> {
     return new Promise((resolve, reject) => {
       const id = msg.id as string;
-      this.busy = true;
+      this._busy = true;
 
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         this.requestContexts.delete(id);
-        this.busy = false;
+        this._busy = false;
         reject(new Error(`Worker request timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -250,6 +286,22 @@ class PythonWorker {
 
   setRequestContext(id: string, context: { project: string; layer: string; filename: string }) {
     this.requestContexts.set(id, context);
+  }
+
+  /** Open a bidirectional channel — marks worker as busy for the channel's duration. */
+  openChannel(msg: Record<string, unknown>) {
+    this._busy = true;
+    this.sendToWorker(msg);
+  }
+
+  /** Forward channel data from browser to Python worker. */
+  sendChannelData(id: string, data: unknown) {
+    this.sendToWorker({ type: "channel_data", id, data });
+  }
+
+  /** Request channel close from browser side. */
+  closeChannel(id: string) {
+    this.sendToWorker({ type: "channel_close", id });
   }
 
   invalidateClass(className: string) {
@@ -271,6 +323,7 @@ export class WorkerPool extends EventEmitter {
   private rpcHandler: RpcHandler | null = null;
   private requestCounter = 0;
   private roundRobinIndex = 0;
+  private channelWorkers: Map<string, PythonWorker> = new Map();
 
   constructor(options?: {
     poolSize?: number;
@@ -390,6 +443,66 @@ export class WorkerPool extends EventEmitter {
     );
   }
 
+  /**
+   * Open a bidirectional channel to a @mica.channel handler in Python.
+   * The worker is dedicated to this channel until it closes.
+   * Uses the caller-provided channelId (passthrough from browser).
+   */
+  async openChannel(
+    channelId: string,
+    className: string,
+    classPath: string,
+    fn: string,
+    content: string,
+    args: Record<string, unknown>,
+    context: { project: string; layer: string; filename: string },
+    onData: (data: unknown) => void,
+    onClose: () => void
+  ): Promise<string> {
+    const worker = this.getIdleWorker() ?? (await this.waitForWorker());
+    worker.setRequestContext(channelId, context);
+
+    // Wire up handlers scoped to this channel
+    worker.setChannelDataHandler((id, data) => {
+      if (id === channelId) onData(data);
+    });
+    worker.setChannelCloseHandler((id) => {
+      if (id === channelId) {
+        onClose();
+        this.channelWorkers.delete(channelId);
+      }
+    });
+
+    this.channelWorkers.set(channelId, worker);
+
+    worker.openChannel({
+      type: "channel_open",
+      id: channelId,
+      class_name: className,
+      class_path: classPath,
+      function: fn,
+      content,
+      args,
+    });
+
+    return channelId;
+  }
+
+  /** Forward channel data from browser to the Python worker owning this channel. */
+  sendChannelData(channelId: string, data: unknown) {
+    const worker = this.channelWorkers.get(channelId);
+    if (worker) worker.sendChannelData(channelId, data);
+  }
+
+  /** Close a channel from the browser side. */
+  closeChannel(channelId: string) {
+    const worker = this.channelWorkers.get(channelId);
+    if (worker) {
+      worker.closeChannel(channelId);
+      this.channelWorkers.delete(channelId);
+    }
+  }
+
   invalidateClass(className: string) {
     for (const w of this.workers) {
       w.invalidateClass(className);
@@ -401,5 +514,6 @@ export class WorkerPool extends EventEmitter {
       w.kill();
     }
     this.workers = [];
+    this.channelWorkers.clear();
   }
 }

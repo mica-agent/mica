@@ -3,12 +3,16 @@ import { buildLayerMeta } from './data';
 import type { LayerMeta } from './data';
 import { fetchProjects } from './api/layerFiles';
 import type { ProjectConfig } from './api/layerFiles';
+import { connect as connectMicaSocket } from './api/micaSocket';
 import WhiteboardView from './whiteboard/WhiteboardView';
 import type { WhiteboardHandle } from './whiteboard/WhiteboardView';
 import ChatSidebar from './whiteboard/ChatSidebar';
 import ProjectNav from './ProjectNav';
 import './App.css';
 import './ai/ai.css';
+
+// Connect the shared WebSocket for widget communication
+connectMicaSocket();
 
 // ── Helpers ────────────────────────────────────────────────
 

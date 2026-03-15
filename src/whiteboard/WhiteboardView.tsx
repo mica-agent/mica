@@ -23,7 +23,7 @@ const SYSTEM_FILENAMES = ["_goal.md", "_todo.md", "_brief.md", "_log.md", "_chat
 
 const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
   function WhiteboardView({ projectId, layerId, layerColor }, ref) {
-    const { cards, loading, callExport, refetch } = useLayerSocket(projectId, layerId);
+    const { cards, loading, refetch } = useLayerSocket(projectId, layerId);
     const [contextStats, setContextStats] = useState<ContextStats | null>(null);
     const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
     const [expandedCard, setExpandedCard] = useState<RenderedCard | null>(null);
@@ -152,7 +152,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
                   onEdit={() => handleEdit(card.filename)}
                   onDelete={() => handleDelete(card.filename)}
                   onExpand={() => setExpandedCard(card)}
-                  callExport={callExport}
+
                 />
               ))}
             </div>
@@ -174,7 +174,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
                   onEdit={() => handleEdit(card.filename)}
                   onDelete={() => handleDelete(card.filename)}
                   onExpand={() => setExpandedCard(card)}
-                  callExport={callExport}
+
                 />
               ))}
             </div>
@@ -193,7 +193,6 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
             layerColor={layerColor}
             onClose={() => setExpandedCard(null)}
             onEdit={() => { handleEdit(expandedCard.filename); setExpandedCard(null); }}
-            callExport={callExport}
           />
         )}
 
