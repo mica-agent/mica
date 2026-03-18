@@ -20,6 +20,45 @@ import {
   getProjectConfig,
 } from "./layerFiles.js";
 
+// ── Helpers ────────────────────────────────────────────────
+
+/** Build a human-readable one-liner from a tool_use block. */
+function describeToolUse(name: string, input?: Record<string, unknown>): string {
+  if (!input) return name;
+  switch (name) {
+    case "Bash": {
+      const cmd = String(input.command || "").split("\n")[0].slice(0, 80);
+      return cmd ? `$ ${cmd}` : "Running command";
+    }
+    case "Read": {
+      const fp = String(input.file_path || "");
+      return fp ? `Read ${fp.split("/").pop()}` : "Reading file";
+    }
+    case "Write": {
+      const fp = String(input.file_path || "");
+      return fp ? `Write ${fp.split("/").pop()}` : "Writing file";
+    }
+    case "Edit": {
+      const fp = String(input.file_path || "");
+      return fp ? `Edit ${fp.split("/").pop()}` : "Editing file";
+    }
+    case "Glob":
+      return input.pattern ? `Glob ${input.pattern}` : "Searching files";
+    case "Grep":
+      return input.pattern ? `Grep ${input.pattern}` : "Searching code";
+    default: {
+      // MCP tools come as "server__tool" — show just the tool part
+      if (name.includes("__")) {
+        const toolPart = name.split("__").pop() || name;
+        // Try to extract a meaningful arg
+        const firstArg = Object.values(input).find((v) => typeof v === "string" && v.length > 0);
+        return firstArg ? `${toolPart}: ${String(firstArg).slice(0, 60)}` : toolPart;
+      }
+      return name;
+    }
+  }
+}
+
 // ── Types ──────────────────────────────────────────────────
 
 export type LayerId = string;
@@ -426,11 +465,19 @@ function sessionKey(project: string, layer: string): string {
 
 // ── Agent Runner ───────────────────────────────────────────
 
+export type ProgressCallback = (event: {
+  type: string;
+  tool?: string;
+  elapsed?: number;
+  description?: string;
+}) => void;
+
 export async function chatWithAgent(
   project: string,
   layer: LayerId,
   userMessage: string,
-  _imageBase64?: string
+  _imageBase64?: string,
+  onProgress?: ProgressCallback
 ): Promise<AgentResponse> {
   // Set current project+layer for tool callbacks
   currentProject = project;
@@ -487,6 +534,9 @@ ${fileContext}`;
     options.spawnClaudeCodeProcess = await createDockerSpawner(project, layer);
   }
 
+  // Emit initial "thinking" event so the UI knows we're active immediately
+  onProgress?.({ type: "thinking", description: "Thinking..." });
+
   for await (const message of query({
     prompt: userMessage,
     options: options as import("@anthropic-ai/claude-agent-sdk").Options,
@@ -497,12 +547,28 @@ ${fileContext}`;
       sessionId = msg.session_id;
     }
 
-    if (msg.type === "assistant" && msg.message?.content) {
-      for (const block of msg.message.content) {
-        if ("type" in block && block.type === "text" && "text" in block) {
-          resultText += (block as { text: string }).text;
+    // Emit progress events for tool use
+    if (onProgress) {
+      if (msg.type === "assistant" && msg.message?.content) {
+        for (const block of msg.message.content) {
+          if ("type" in block && block.type === "tool_use" && "name" in block) {
+            const b = block as { name: string; input?: Record<string, unknown> };
+            const detail = describeToolUse(b.name, b.input);
+            onProgress({ type: "tool_start", tool: b.name, description: detail });
+          }
         }
       }
+    }
+
+    // Only keep the last assistant message's text (not intermediate narration)
+    if (msg.type === "assistant" && msg.message?.content) {
+      let turnText = "";
+      for (const block of msg.message.content) {
+        if ("type" in block && block.type === "text" && "text" in block) {
+          turnText += (block as { text: string }).text;
+        }
+      }
+      if (turnText) resultText = turnText;
     }
 
     if (msg.type === "result" && "result" in msg) {

@@ -27,8 +27,8 @@ ENV PATH=/workspace/.venv/bin:$PATH
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# Build llama.cpp with CUDA support
-RUN git clone https://github.com/ggerganov/llama.cpp.git /opt/llama.cpp && \
+# Build llama.cpp with CUDA support (pinned to b8400)
+RUN git clone --branch b8400 --depth 1 https://github.com/ggerganov/llama.cpp.git /opt/llama.cpp && \
     cd /opt/llama.cpp && \
     cmake -B build -DGGML_CUDA=ON && \
     cmake --build build --config Release -j$(nproc) && \

@@ -345,7 +345,17 @@ workerPool.setRpcHandler(async (method, args, context) => {
       return { success: true };
     }
     case "agent.chat": {
-      const response = await chatWithAgent(project, layer, args.message as string);
+      const response = await chatWithAgent(project, layer, args.message as string, undefined, (evt) => {
+        broadcast({
+          type: "agent-progress",
+          project,
+          layer,
+          event: evt.type,
+          tool: evt.tool,
+          elapsed: evt.elapsed,
+          description: evt.description,
+        });
+      });
       return {
         message: response.message,
         agentName: getAgentMeta(layer).name,

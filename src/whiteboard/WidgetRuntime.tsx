@@ -136,14 +136,6 @@ export default function WidgetRuntime({ html, exports: exportFns, project, layer
       executeInlineScripts();
     }
 
-    // Scroll chat messages to bottom
-    requestAnimationFrame(() => {
-      const chatMessages = el.querySelector(".chat-messages");
-      if (chatMessages) {
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-      }
-    });
-
     // Initialize mermaid diagrams
     const mermaidEls = el.querySelectorAll("pre.mermaid:not(.mermaid-rendered)");
     if (mermaidEls.length > 0) {

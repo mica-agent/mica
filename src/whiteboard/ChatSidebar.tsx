@@ -1,11 +1,11 @@
-// ChatSidebar — renders the _chat.md widget card in the sidebar.
-// The input is rendered directly in React to avoid flex layout issues
-// with innerHTML-injected content.
+// ChatSidebar — owns the chat sidebar shell (header, input, pending states).
+// The _chat.md widget (render.py) is a pure message renderer hosted via WidgetRuntime.
 // Optimistic messages show the user's text immediately while the agent processes.
+// Real-time progress events stream from the server via WebSocket.
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { LayerId, RenderedCard } from "../api/layerFiles";
-import { fetchCards } from "../api/layerFiles";
+import type { LayerId, RenderedCard, LayerFile } from "../api/layerFiles";
+import { fetchCards, fetchFiles } from "../api/layerFiles";
 import { call as micaCall, on } from "../api/micaSocket";
 import WidgetRuntime from "./WidgetRuntime";
 
@@ -21,6 +21,12 @@ interface PendingMessage {
   text: string;
   status: "sending" | "error";
   error?: string;
+}
+
+interface ProgressEntry {
+  id: number;
+  text: string;
+  ts: number;
 }
 
 function agentName(layer: string): string {
@@ -45,35 +51,107 @@ function agentIcon(layer: string): string {
   return known[layer] || "\u25cb";
 }
 
+// Human-friendly tool names
+function toolLabel(tool: string): string {
+  const labels: Record<string, string> = {
+    Bash: "Running command",
+    Read: "Reading file",
+    Write: "Writing file",
+    Edit: "Editing file",
+    Glob: "Searching files",
+    Grep: "Searching code",
+    "mica-tools": "Using whiteboard tools",
+  };
+  // MCP tool names come as "server:tool_name"
+  if (tool.startsWith("mica-tools")) return "Using whiteboard tools";
+  return labels[tool] || `Using ${tool}`;
+}
+
+type TurnState = "your-turn" | "agent-working" | "agent-done" | "agent-done-files";
+
 export default function ChatSidebar({ projectId, activeLayer, layerColor, onFilesChanged, onAgentBusy }: Props) {
   const [chatCard, setChatCard] = useState<RenderedCard | null>(null);
   const [loading, setLoading] = useState(true);
   const [inputValue, setInputValue] = useState("");
   const [sending, setSending] = useState(false);
   const [pending, setPending] = useState<PendingMessage | null>(null);
-  const [statusText, setStatusText] = useState("");
+  const [checkingIn, setCheckingIn] = useState(false);
+  const [turn, setTurn] = useState<TurnState>("your-turn");
+  const [currentTool, setCurrentTool] = useState<string | null>(null);
+  const [progressLog, setProgressLog] = useState<ProgressEntry[]>([]);
+  const [logExpanded, setLogExpanded] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [contextFiles, setContextFiles] = useState<LayerFile[]>([]);
+  const [showContext, setShowContext] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const checkedInLayers = useRef<Set<string>>(new Set());
+  const progressIdRef = useRef(0);
+  const logEndRef = useRef<HTMLDivElement>(null);
 
-  // Progressive status updates while agent is working
+  // Elapsed time counter while agent is working
   useEffect(() => {
-    if (pending?.status !== "sending") {
-      setStatusText("");
+    if (turn !== "agent-working") {
+      setElapsed(0);
       return;
     }
-    const start = Date.now();
-    const tick = () => {
-      const elapsed = (Date.now() - start) / 1000;
-      if (elapsed < 10) setStatusText("");
-      else if (elapsed < 30) setStatusText("Thinking...");
-      else if (elapsed < 60) setStatusText("Still working...");
-      else if (elapsed < 120) setStatusText("This is taking a while \u2014 hang tight...");
-      else setStatusText("Almost there \u2014 complex responses take time...");
-    };
-    tick();
-    const id = setInterval(tick, 5000);
-    return () => clearInterval(id);
-  }, [pending?.status]);
+    setElapsed(0);
+    const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [turn]);
+
+  // Scroll chat to bottom when messages change
+  useEffect(() => {
+    if (!chatCard) return;
+    // Wait for WidgetRuntime to inject HTML and browser to lay out
+    requestAnimationFrame(() => {
+      const runtime = bodyRef.current?.querySelector(".widget-runtime");
+      if (runtime) runtime.scrollTop = runtime.scrollHeight;
+    });
+  }, [chatCard]);
+
+  // Fetch context files for the tooltip
+  useEffect(() => {
+    fetchFiles(projectId, activeLayer)
+      .then((files) => setContextFiles(files))
+      .catch(() => setContextFiles([]));
+  }, [projectId, activeLayer]);
+
+  // Refresh context files when agent finishes (it may have created files)
+  useEffect(() => {
+    if (turn === "agent-done" || turn === "agent-done-files") {
+      fetchFiles(projectId, activeLayer)
+        .then((files) => setContextFiles(files))
+        .catch(() => {});
+    }
+  }, [turn, projectId, activeLayer]);
+
+  // Scroll progress log when new entries arrive
+  useEffect(() => {
+    if (logExpanded) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [progressLog, logExpanded]);
+
+  // Listen for agent progress events from the server
+  useEffect(() => {
+    const unsub = on("agent-progress", (msg) => {
+      const m = msg as { project?: string; layer?: string; event?: string; tool?: string; description?: string };
+      if (m.project !== projectId || m.layer !== activeLayer) return;
+
+      if (m.event === "thinking") {
+        setCurrentTool("Thinking...");
+      } else if (m.event === "tool_start" && m.tool) {
+        const summary = toolLabel(m.tool);
+        const detail = m.description || summary;
+        setCurrentTool(summary);
+        setProgressLog((prev) => [
+          ...prev,
+          { id: ++progressIdRef.current, text: detail, ts: Date.now() },
+        ]);
+      }
+    });
+    return unsub;
+  }, [projectId, activeLayer]);
 
   const loadChat = useCallback(async () => {
     try {
@@ -103,6 +181,56 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
     return unsub;
   }, [projectId, activeLayer, loadChat]);
 
+  const showDoneStatus = useCallback((filesChanged: boolean) => {
+    setTurn(filesChanged ? "agent-done-files" : "agent-done");
+    setCurrentTool(null);
+    // Auto-focus the input so the user knows it's their turn
+    setTimeout(() => inputRef.current?.focus(), 100);
+  }, []);
+
+  // Auto check-in: when entering a layer for the first time with no messages
+  useEffect(() => {
+    if (!chatCard || loading) return;
+    const key = `${projectId}/${activeLayer}`;
+    if (checkedInLayers.current.has(key)) return;
+
+    // Check if the widget rendered any messages (data attribute from render.py)
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(chatCard.html, "text/html");
+    const msgs = doc.querySelector(".chat-messages");
+    if (msgs?.getAttribute("data-has-messages") === "true") {
+      checkedInLayers.current.add(key);
+      return;
+    }
+
+    let cancelled = false;
+    checkedInLayers.current.add(key);
+    setCheckingIn(true);
+    setTurn("agent-working");
+    setProgressLog([]);
+    onAgentBusy?.(true);
+
+    (async () => {
+      try {
+        await micaCall(projectId, activeLayer, "_chat.md", "check_in", {});
+        if (!cancelled) {
+          loadChat();
+          showDoneStatus(false);
+          onFilesChanged?.();
+        }
+      } catch {
+        if (!cancelled) setTurn("your-turn");
+      } finally {
+        if (!cancelled) {
+          setCheckingIn(false);
+          onAgentBusy?.(false);
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [chatCard, loading, projectId, activeLayer, loadChat, onFilesChanged, onAgentBusy, showDoneStatus]);
+
   // Scroll pending messages into view
   useEffect(() => {
     if (pending) pendingRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -115,39 +243,79 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
     setInputValue("");
     setSending(true);
     setPending({ text, status: "sending" });
+    setTurn("agent-working");
+    setProgressLog([]);
+    setLogExpanded(false);
+    setCurrentTool(null);
     onAgentBusy?.(true);
 
     try {
-      await micaCall(projectId, activeLayer, "_chat.md", "send_message", { message: text });
+      const result = await micaCall(projectId, activeLayer, "_chat.md", "send_message", { message: text }) as { filesChanged?: boolean } | undefined;
       setPending(null);
       loadChat();
+      showDoneStatus(!!result?.filesChanged);
       onFilesChanged?.();
     } catch (err) {
       console.error("Chat send failed:", err);
       setPending({ text, status: "error", error: (err as Error).message });
+      setTurn("your-turn");
+      setProgressLog([]);
     } finally {
       setSending(false);
       onAgentBusy?.(false);
       inputRef.current?.focus();
     }
-  }, [inputValue, sending, projectId, activeLayer, loadChat, onFilesChanged, onAgentBusy]);
+  }, [inputValue, sending, projectId, activeLayer, loadChat, onFilesChanged, onAgentBusy, showDoneStatus]);
+
+  const isAgentTurn = turn === "agent-working";
+  const isYourTurn = turn === "your-turn" || turn === "agent-done" || turn === "agent-done-files";
+  const stepCount = progressLog.length;
+
+  // Clear "done" badge when user starts typing
+  const handleInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setInputValue(e.target.value);
+    if (turn === "agent-done" || turn === "agent-done-files") {
+      setTurn("your-turn");
+      setProgressLog([]);
+      setLogExpanded(false);
+    }
+  }, [turn]);
 
   return (
     <div
       className="chat-sidebar"
       style={{ "--panel-color": layerColor } as React.CSSProperties}
     >
-      <div className="chat-sidebar-header">
+      <div
+        className="chat-sidebar-header"
+        onMouseEnter={() => setShowContext(true)}
+        onMouseLeave={() => setShowContext(false)}
+      >
         <span className="chat-sidebar-icon" style={{ color: layerColor }}>
           {agentIcon(activeLayer)}
         </span>
         <div className="chat-sidebar-info">
           <div className="chat-sidebar-name">{agentName(activeLayer)}</div>
-          <div className="chat-sidebar-role">AI Team Member</div>
+          <div className="chat-sidebar-role">
+            {contextFiles.length} file{contextFiles.length !== 1 ? "s" : ""} in context
+          </div>
         </div>
+        {showContext && contextFiles.length > 0 && (
+          <div className="chat-context-tooltip">
+            <div className="chat-context-tooltip-title">Files in agent context</div>
+            {contextFiles.map((f) => (
+              <div key={f.name} className="chat-context-tooltip-file">
+                <span className="chat-context-tooltip-icon">
+                  {f.name.endsWith(".md") ? "\u2630" : f.name.endsWith(".json") ? "{ }" : "\u2022"}
+                </span>
+                {f.name}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className="chat-sidebar-body">
+      <div className="chat-sidebar-body" ref={bodyRef}>
         {loading && !chatCard && (
           <div className="chat-sidebar-loading">Loading chat...</div>
         )}
@@ -164,6 +332,16 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
           />
         )}
 
+        {/* Typing indicator during auto check-in */}
+        {checkingIn && (
+          <div className="chat-pending">
+            <div className="chat-pending-typing">
+              <span /><span /><span />
+              <span className="chat-pending-status">Reviewing whiteboard...</span>
+            </div>
+          </div>
+        )}
+
         {/* Optimistic pending messages — shown immediately while agent processes */}
         {pending && (
           <div className="chat-pending" ref={pendingRef}>
@@ -171,7 +349,6 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
             {pending.status === "sending" && (
               <div className="chat-pending-typing">
                 <span /><span /><span />
-                {statusText && <span className="chat-pending-status">{statusText}</span>}
               </div>
             )}
             {pending.status === "error" && (
@@ -187,15 +364,71 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
         )}
       </div>
 
-      {/* Input rendered in React — always visible at bottom */}
-      <div className="chat-sidebar-input">
+      {/* Turn indicator — always visible, shows whose turn it is */}
+      <div className={`chat-turn chat-turn--${turn}`}>
+        {turn === "agent-working" && (
+          <button
+            className="chat-turn-bar"
+            onClick={() => stepCount > 0 && setLogExpanded(!logExpanded)}
+            disabled={stepCount === 0}
+          >
+            <span className="chat-turn-dot chat-turn-dot--working" />
+            <span className="chat-turn-label">
+              {currentTool || "Agent is working..."}
+            </span>
+            <span className="chat-turn-meta">
+              {elapsed > 0 && <span className="chat-turn-elapsed">{elapsed}s</span>}
+              {stepCount > 0 && (
+                <>
+                  {stepCount} {stepCount === 1 ? "step" : "steps"}
+                  <span className="chat-turn-chevron">{logExpanded ? "\u25b4" : "\u25be"}</span>
+                </>
+              )}
+            </span>
+          </button>
+        )}
+        {turn === "agent-done" && (
+          <div className="chat-turn-bar">
+            <span className="chat-turn-dot chat-turn-dot--done" />
+            <span className="chat-turn-label">Done — your turn</span>
+          </div>
+        )}
+        {turn === "agent-done-files" && (
+          <div className="chat-turn-bar">
+            <span className="chat-turn-dot chat-turn-dot--done" />
+            <span className="chat-turn-label">Whiteboard updated — your turn</span>
+          </div>
+        )}
+        {turn === "your-turn" && (
+          <div className="chat-turn-bar">
+            <span className="chat-turn-dot chat-turn-dot--you" />
+            <span className="chat-turn-label">Your turn</span>
+          </div>
+        )}
+
+        {/* Expandable activity log */}
+        {logExpanded && progressLog.length > 0 && (
+          <div className="chat-progress-log">
+            {progressLog.map((entry) => (
+              <div key={entry.id} className="chat-progress-entry">
+                <span className="chat-progress-entry-dot" />
+                {entry.text}
+              </div>
+            ))}
+            <div ref={logEndRef} />
+          </div>
+        )}
+      </div>
+
+      {/* Input — visually activates on your turn */}
+      <div className={`chat-sidebar-input ${isYourTurn ? "chat-sidebar-input--active" : ""}`}>
         <input
           ref={inputRef}
           type="text"
-          placeholder={`Ask ${agentName(activeLayer)}...`}
+          placeholder={isAgentTurn ? `${agentName(activeLayer)} is working...` : "Give direction or ask a question..."}
           value={inputValue}
           disabled={sending}
-          onChange={(e) => setInputValue(e.target.value)}
+          onChange={handleInput}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
