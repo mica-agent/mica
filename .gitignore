@@ -23,3 +23,7 @@ layers/
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+*.pyc
+__pycache__/
