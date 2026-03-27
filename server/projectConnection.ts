@@ -28,6 +28,10 @@ export interface WorkspaceRegistry {
 export interface MicaConfig {
   name: string;
   layers: string[];
+  model?: string; // default model for all agents in this project
+  agents?: Record<string, { // per-layer/agent overrides
+    model?: string;
+  }>;
   runtime?: {
     entrypoint?: string;
     ports?: number[];
@@ -234,6 +238,20 @@ export async function getProjectConfig(
 ): Promise<ConnectedProject | null> {
   const registry = await readWorkspaceRegistry();
   return registry.projects.find((p) => p.id === projectId) || null;
+}
+
+export async function readMicaConfig(
+  projectId: string
+): Promise<MicaConfig | null> {
+  const project = await getProjectConfig(projectId);
+  if (!project) return null;
+  const configPath = join(project.path, MICA_DIR, CONFIG_FILE);
+  try {
+    const raw = await readFile(configPath, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 export async function validateProjectLayer(

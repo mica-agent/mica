@@ -107,6 +107,47 @@ POST /api/projects/:id/disconnect
 
 Removes the project from `workspaces.json`. The `.mica/` directory is **left intact** so the project can reconnect later with all its history preserved.
 
+### 7. Card Class Runtime
+
+Card classes are Python `render.py` files that produce interactive HTML. They live in two locations:
+
+- **Built-in**: `card-classes/{name}/render.py` — ships with Mica
+- **Per-project**: `.mica/_card-classes/{name}/render.py` — project-specific, overrides built-in
+
+A card class uses three decorators:
+
+| Decorator | Purpose |
+|-----------|---------|
+| `@mica.render` | Returns HTML string from `(content, config)` |
+| `@mica.export` | Exposes a server-side function callable from the browser |
+| `@mica.channel` | Opens a persistent bidirectional stream (for terminals, real-time data) |
+
+**Resolution order**: YAML frontmatter `card: name` → filename convention (`_goal.md` → goal) → extension fallback (`.md` → markdown).
+
+#### WebSocket Communication
+
+Rendered cards get a `mica` bridge object with five communication patterns:
+
+| Pattern | Browser API | Use case |
+|---------|-------------|----------|
+| Request/response | `mica.call(fn, args)` → Promise | Toggle a checkbox, submit a form |
+| Fire-and-forget | `mica.send(fn, args)` | Log an event, no response needed |
+| Server push | `mica.on(event, cb)` | React to file changes, agent updates |
+| Bidirectional channel | `mica.openChannel(fn, args)` | Terminal PTY, streaming data |
+| Widget broadcast | `mica.broadcast(event, data)` | Cross-widget coordination |
+
+Server-side export handlers can call back into Mica: `mica.write()`, `mica.read_file()`, `mica.emit()`, `mica.agent.chat()`.
+
+#### Worker Pool
+
+Card classes run in a pool of 8 long-lived Python worker processes. Workers communicate with the server via JSON lines on stdin/stdout. Class modules are cached per-worker and invalidated when the source file changes.
+
+#### Agent-Created Widgets
+
+Agents can create new card classes at runtime. The agent tool instructions point agents to `card-classes/CREATING_WIDGETS.md` for the full API reference. An agent creates a widget by writing a `render.py` file to `.mica/_card-classes/{name}/` in the project, then creating a `.md` file in the layer that references the class. The file watcher picks up the new class and renders it immediately.
+
+See `card-classes/CREATING_WIDGETS.md` for the full guide to writing card classes.
+
 ---
 
 ## File Map

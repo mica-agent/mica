@@ -68,6 +68,8 @@ The base card interface:
 
 A **simple card** (brief, chat, goal) has no children — it renders content. A **canvas card** (layer view, dashboard, portfolio) has children and layout logic — it renders other cards. Both are cards. The distinction is whether `children` is defined.
 
+**Cards are interactive, not just static renders.** A card class can expose server-side functions that the rendered card calls via WebSocket — request/response for actions, fire-and-forget for events, bidirectional channels for streaming (terminals, real-time collaboration). Cards can also broadcast to each other and subscribe to server-pushed events. This means a card is a full mini-application: it renders HTML, runs logic on the server, and communicates in real time. See [ARCHITECTURE.md](ARCHITECTURE.md) for the implementation details.
+
 ### 2.3 Recursive Composition
 
 Cards nest. A project dashboard is a card containing cards. A "layer view" is a card that arranges sub-cards by semantic level. A split-view comparing two architectures is a card containing two canvas-cards side by side.

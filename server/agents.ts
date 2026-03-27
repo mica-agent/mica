@@ -19,6 +19,7 @@ import {
   getAllFilesAsContext,
   getProjectConfig,
 } from "./layerFiles.js";
+import { readMicaConfig } from "./projectConnection.js";
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -79,17 +80,8 @@ export interface Consultation {
 
 // ── Agent system prompts ───────────────────────────────────
 
-// Known layer identities (legacy layers get specific identities)
-const KNOWN_IDENTITIES: Record<string, string> = {
-  mission: `You are the Mission Strategist — the AI agent for the Mission layer in Mica.`,
-  experience: `You are the Experience Designer — the AI agent for the Experience layer in Mica.`,
-  architecture: `You are the System Architect — the AI agent for the Architecture layer in Mica.`,
-  implementation: `You are the Implementation Engineer — the AI agent for the Implementation layer in Mica.`,
-};
-
 function getAgentIdentity(layer: string): string {
-  if (KNOWN_IDENTITIES[layer]) return KNOWN_IDENTITIES[layer];
-  // Generic identity — reads from _brief.md for specifics
+  // Generic identity — layer-specific personality comes from _brief.md
   return `You are the AI agent for the "${layer}" workspace in Mica.`;
 }
 
@@ -188,29 +180,7 @@ RULES:
 You are a skilled teammate, not an assistant. Push back when something seems wrong. Celebrate real progress. Be honest about gaps. Keep the team focused on what matters.
 `;
 
-// Known agent metadata (for legacy layer names)
-const KNOWN_AGENT_META: Record<string, { name: string; role: string }> = {
-  mission: {
-    name: "Mission Strategist",
-    role: "Product strategy, user research, and scope definition",
-  },
-  experience: {
-    name: "Experience Designer",
-    role: "UX flows, wireframes, interaction design, and user journeys",
-  },
-  architecture: {
-    name: "System Architect",
-    role: "Technical design, component architecture, API contracts, and trade-offs",
-  },
-  implementation: {
-    name: "Implementation Engineer",
-    role: "Code, testing, deployment, and sprint execution",
-  },
-};
-
 export function getAgentMeta(layer: string): { name: string; role: string } {
-  if (KNOWN_AGENT_META[layer]) return KNOWN_AGENT_META[layer];
-  // Generic metadata for custom layers
   const label = layer
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -511,6 +481,12 @@ ${fileContext}`;
   let sessionId: string | undefined;
   const sKey = sessionKey(project, layer);
 
+  // Resolve model: per-agent config > project default > fallback
+  const micaConfig = await readMicaConfig(project);
+  const model = micaConfig?.agents?.[layer]?.model
+    || micaConfig?.model
+    || "claude-sonnet-4-6";
+
   const options: Record<string, unknown> = {
     systemPrompt,
     mcpServers: { "mica-tools": createMicaToolServer() },
@@ -519,7 +495,7 @@ ${fileContext}`;
     allowDangerouslySkipPermissions: true,
     persistSession: true,
     maxTurns: 5,
-    model: "claude-sonnet-4-6",
+    model,
     settings: { forceLoginMethod: "claudeai" as const },
     settingSources: ["user" as const],
   };
@@ -650,6 +626,12 @@ export async function convertDrawingToMermaid(
   const tmpFile = path.join(tmpDir, `mica-drawing-${Date.now()}.png`);
   fs.writeFileSync(tmpFile, Buffer.from(imageBase64, "base64"));
 
+  // Resolve model from project config
+  const micaConfig = await readMicaConfig(project);
+  const model = micaConfig?.agents?.[layer]?.model
+    || micaConfig?.model
+    || "claude-sonnet-4-6";
+
   let resultText = "";
 
   try {
@@ -660,7 +642,7 @@ export async function convertDrawingToMermaid(
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         maxTurns: 3,
-        model: "claude-sonnet-4-6",
+        model,
         settings: { forceLoginMethod: "claudeai" as const },
         settingSources: ["user" as const],
       } as import("@anthropic-ai/claude-agent-sdk").Options,

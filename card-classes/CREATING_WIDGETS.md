@@ -12,15 +12,16 @@ card-classes/
   markdown/render.py
 ```
 
-**Project-specific classes** live in `layers/{project}/_card-classes/`:
+**Project-specific classes** live in `.mica/_card-classes/` inside the project repo:
 ```
-layers/my-project/
-  _card-classes/
-    my-widget/
-      render.py          # required
-    _manifest.json       # optional: badge/title metadata
-  workspace/
-    _my-widget.md        # triggers the card class
+my-project/
+  .mica/
+    _card-classes/
+      my-widget/
+        render.py          # required
+      _manifest.json       # optional: badge/title metadata
+    workspace/
+      _my-widget.md        # triggers the card class
 ```
 
 Project classes override built-in classes of the same name. Project classes have full Python module access (no import restrictions).
@@ -448,4 +449,4 @@ Look at existing card classes for more patterns:
 - `card-classes/chat/render.py` — Chat with message history, agent integration
 - `card-classes/todo/render.py` — Todo list with assignments
 - `card-classes/html/render.py` — Raw HTML passthrough
-- `layers/single-test/_card-classes/terminal/render.py` — xterm.js terminal with PTY channel (example of third-party library integration with inlined CSS)
+- `.mica/_card-classes/terminal/render.py` (in any project) — xterm.js terminal with PTY channel (example of third-party library integration with inlined CSS)
