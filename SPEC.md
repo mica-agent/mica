@@ -4,11 +4,19 @@
 
 ### 1.1 What Mica Is
 
-Mica is an extensible environment for building products with AI. It connects to your existing projects — git repos that work fine on their own — and provides a canvas where humans and AI agents collaborate to conceive, design, build, and ship.
+Mica is a shared surface where humans and AI agents collaborate to build products. Think of it like working at a whiteboard together — you express an idea, the agent says "I got it, let me map that out," and comes back with real artifacts: storyboards, architecture diagrams, running code. But it goes both ways: the agent can ask the human "I need you to clarify the auth flow before I proceed" rather than guess and get it wrong. Either side can create artifacts, ask questions, or assign work to the other. The collaboration is peer-like, not one-directional.
 
-Mica is not an IDE, not a project manager, not a whiteboard. It is a **canvas runtime** — an extensible surface that can represent any visualization of your work, composed from a single universal primitive: the **card**.
+**Why not just chat with an AI?** Current AI coding workflows have a fundamental problem: the direction gets lost. You chat with an agent, give it guidance, it writes code. The code gets committed — but the briefs, the decisions, the "make onboarding feel like a conversation not a form" — that all lives in ephemeral chat history. Next session, you start from scratch. Next team member has no idea what shaped the codebase.
 
-Think of it like Emacs: a highly extensible, recursive environment where the fundamental unit (buffer/card) can represent anything, and new capabilities are added by defining new types of that unit. The canvas itself is a card. A dashboard is a card. A chat panel, a code editor, a system diagram — all cards.
+Mica solves this five ways:
+
+1. **Persistent shared surface.** The whiteboard stays up between sessions. Everything discussed, decided, and built is spatially organized and always accessible — not a chat log you scroll through.
+2. **Native multi-modal artifacts.** Diagrams, wireframes, running apps, dashboards — each rendered natively on the canvas. Not markdown in a chat window.
+3. **Multi-project orchestration.** A wall of whiteboards. See which projects have activity, which are stuck, which need you. Manage a portfolio, not a single thread.
+4. **Extensible.** New card classes add new capabilities to the surface. It grows with your needs, like Emacs packages.
+5. **Reproducible agentic workflow.** The briefs, decisions, and context that shape AI work are captured as durable artifacts in `.mica/`, versioned in git. The *recipe* for how a project gets built persists — not just the code output. Any agent or human can pick up with full context.
+
+The collaboration is fluid, not linear. You might be deep in implementation and realize the requirements were wrong — so you're back sketching. Two projects might need completely different conversations simultaneously. Mica adapts because its surface is built from a single composable primitive: the **card**.
 
 ### 1.2 The Primary User
 
@@ -18,9 +26,9 @@ This person may be a solo operator or part of a very small human team. They do n
 
 ### 1.3 The AI Team
 
-The AI team is Mica's execution layer. Agents operate on your project through the canvas — reading project files, writing code, generating artifacts, surfacing decisions. Each agent has a brief that defines its personality and scope, and tools that let it act on the project.
+Agents are cards on the canvas (see Section 2.5). Each agent has a brief that defines its role, a model of your choice (Claude, GPT, Gemini, a local model — whatever fits the task), and tools that let it act on the project. A simple project might have one agent. A complex one might have several, each focused on a different concern, collaborating with each other and with you.
 
-The structure of the AI team is an implementation detail — Mica's UX must work whether the AI side is one agent or fifty. What matters is that agents are active participants, not passive tools waiting for commands.
+There are no hardcoded phases or mandatory agent roles. You configure agents for whatever your project needs — or let them emerge as the work demands.
 
 ### 1.4 The Relationship
 
@@ -29,6 +37,8 @@ The human-AI relationship in Mica is **ongoing and dynamic** — from first idea
 ### 1.5 Projects Are Sovereign
 
 Mica does not own your projects. Projects are independent git repos that exist on their own. Mica **connects** to them and adds value through a `.mica/` directory — like `.vscode/` or `.github/`. Remove `.mica/` and the project is untouched.
+
+The `.mica/` directory is more than metadata — it's the **project recipe**. It captures the briefs, goals, decisions, and context that guide how agents work on the project. Commit it to git and any collaborator — human or AI — picks up with full context. This is what makes agentic work reproducible across sessions, across team members, across tools.
 
 A **workspace** is simply a collection of connected projects. Projects can join and leave freely. There is no lock-in.
 
@@ -76,32 +86,63 @@ Cards need to live somewhere. Where a card persists depends on its scope:
 
 The portfolio/multi-project card spans projects — it can't live inside any single project's `.mica/`. It's workspace-scoped. Its children are project cards, each backed by that project's `.mica/` state.
 
-### 2.5 Default Card Compositions
+### 2.5 Agent Cards
+
+An agent card wraps an LLM-backed agent and renders on the canvas like any other card. It is both a collaborator and a visible participant — you see its conversation, its status, and the artifacts it produces.
+
+**What an agent card does:**
+- Shows the conversation (chat interface)
+- Shows what the agent is working on (status, current task)
+- Links to artifacts the agent has produced (other cards on the canvas)
+- Configurable: brief (instructions), model (any LLM provider), tools, permissions
+
+**Key properties:**
+- **Any model.** An agent card can wrap Claude, GPT, Gemini, a local model via llama-server, or any OpenAI-compatible API. The model is a configuration choice, not an architectural constraint.
+- **Multiple agents.** A project can have many agent cards — one for research, one for coding, one for testing, or however the work naturally divides. A simple project might have one.
+- **Agents collaborate.** Agent cards can message each other directly. An architecture agent can ask the implementation agent about feasibility without the human brokering the exchange. The human sees it happening on the canvas.
+- **Agents create artifacts.** When an agent produces something — a diagram, a code file, a decision document — it appears as a new card on the canvas, linked to the agent that created it.
+- **Agents can organize.** An agent can rearrange cards on the canvas, group related artifacts, create summary views — just like a collaborator might redraw a messy whiteboard.
+
+### 2.6 Artifact Management
+
+As human and agents work together, artifacts accumulate — context documents, decisions, diagrams, code, data. Organization is **organic, not imposed:**
+
+- Start with a flat canvas. Each artifact renders natively (markdown as rich text, diagrams as diagrams, code as code).
+- Things get messy as work progresses — that's natural.
+- Either the human or an agent can reorganize: "clean this up," "group the architecture decisions together," "create a summary card."
+- No required folder structure, no mandatory phases. The organization emerges from the work.
+
+This is like a whiteboard: you scribble, it gets cluttered, then someone says "let's redraw this more clearly" and the group reorganizes. That reorganization is itself a collaborative act.
+
+### 2.7 Default Card Compositions
 
 Mica ships with default compositions that provide immediate value:
 
-- **Layer views** (mission, experience, architecture, implementation) — canvas-cards that organize project work by abstraction level
+- **Agent cards** — pre-configured with briefs for common concerns (project planning, implementation, testing)
 - **Portfolio view** — a workspace-scoped canvas-card showing all connected projects
-- **Agent chat** — a card for conversing with layer-specific AI agents
 - **File browser** — a card for navigating project source files
 - **Terminal** — a card for running commands in the project's container
 
-These are starting points. Users and agents can create, rearrange, and extend card compositions freely.
+These are starting points, not requirements. A simple project might use just one agent card and a few artifact cards on a single canvas. A complex project might have dozens of agents across nested canvases. The structure emerges from the project.
 
 ---
 
 ## 3. Human-AI Collaboration
 
-### 3.1 The System as Active Participant
+### 3.1 Peer Collaboration, Not Command-and-Control
 
-Mica's AI is not a passive tool waiting for commands. It is an **active collaborator** that:
+The human and agent are **peers at the whiteboard**, not master and servant. Either side can:
 
-- **Proposes** — "Based on your mission, here are three experience flows worth considering"
-- **Challenges** — "This architecture decision conflicts with your local-first constraint"
-- **Generates** — produces cards from human input (sketches → wireframes, descriptions → diagrams)
-- **Interprets** — structures unstructured human expression into formal artifacts
-- **Maintains context** — uses all cards across the project as working memory
-- **Asks** — surfaces questions at the right level in the right medium
+- **Create artifacts** — the human sketches a flow, the agent produces a system diagram. Both contribute independently or together.
+- **Ask questions** — the agent says "I need you to define the target user before I can draft wireframes." The human says "explain why you chose this data model." Neither guesses when they can ask.
+- **Assign work** — the human says "map out the onboarding." The agent says "I need you to review these three architecture options and pick one."
+- **Propose** — "Based on your mission, here are three experience flows worth considering"
+- **Challenge** — "This architecture decision conflicts with your local-first constraint"
+- **Maintain context** — both reference the full history of cards, decisions, and artifacts on the shared surface
+
+The agent asks for clarification instead of hallucinating. The human delegates instead of micromanaging. Both work from the same persistent surface, so neither loses track of what the other has done.
+
+This extends to **agent-to-agent** collaboration. Multiple agents on the same canvas can consult each other, delegate subtasks, and build on each other's artifacts. An architecture agent might ask an implementation agent "is this API design feasible given the framework constraints?" — and get an answer without the human having to relay the question. The human sees these exchanges on the canvas and can intervene, but doesn't have to.
 
 ### 3.2 Modality Matching
 
