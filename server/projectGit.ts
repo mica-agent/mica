@@ -116,9 +116,18 @@ export async function gitCommit(
     const hashOutput = await git(projectId, ["rev-parse", "--short", "HEAD"]);
     const hash = hashOutput.trim();
 
-    // Count files changed
-    const diffOutput = await git(projectId, ["diff", "--stat", "HEAD~1..HEAD"]);
-    const filesChanged = (diffOutput.match(/\d+ files? changed/)?.[0]?.match(/\d+/)?.[0]) || "0";
+    // Count files changed (handle first commit where HEAD~1 doesn't exist)
+    let filesChanged = "0";
+    try {
+      const diffOutput = await git(projectId, ["diff", "--stat", "HEAD~1..HEAD"]);
+      filesChanged = (diffOutput.match(/\d+ files? changed/)?.[0]?.match(/\d+/)?.[0]) || "0";
+    } catch {
+      // First commit — count files from the commit itself
+      try {
+        const showOutput = await git(projectId, ["show", "--stat", "--format=", "HEAD"]);
+        filesChanged = (showOutput.match(/\d+ files? changed/)?.[0]?.match(/\d+/)?.[0]) || "0";
+      } catch { /* ignore */ }
+    }
 
     return {
       hash,

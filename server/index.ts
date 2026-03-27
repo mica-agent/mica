@@ -26,7 +26,7 @@ import {
   getProjectConfig,
   validateProjectLayer,
 } from "./layerFiles.js";
-import { connectProject } from "./projectConnection.js";
+import { connectProject, addLayerToProject, migrateLegacyProjects } from "./projectConnection.js";
 import {
   getGitStatus,
   gitCommit,
@@ -170,6 +170,34 @@ app.delete("/api/projects/:project", async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// ── Layer management ──────────────────────────────────────
+
+app.post("/api/projects/:project/layers", async (req, res) => {
+  const { name } = req.body;
+  if (!name) {
+    res.status(400).json({ error: "name required" });
+    return;
+  }
+  try {
+    await addLayerToProject(req.params.project, name);
+    res.json({ success: true, layer: name });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// ── Migration ─────────────────────────────────────────────
+
+app.post("/api/migrate", async (req, res) => {
+  try {
+    const { targetDir } = req.body || {};
+    const migrated = await migrateLegacyProjects(targetDir);
+    res.json({ migrated: migrated.length, projects: migrated });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 
