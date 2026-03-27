@@ -2,10 +2,10 @@
 
 // ── Types ──────────────────────────────────────────────────
 
-export type LayerId = string;
+export type CanvasId = string;
 
-export interface LayerMeta {
-  id: LayerId;
+export interface CanvasMeta {
+  id: CanvasId;
   index: number;
   label: string;
   color: string;       // accent color
@@ -41,7 +41,7 @@ export interface Artifact {
   recommendation?: string;
 }
 
-export interface LayerData {
+export interface CanvasData {
   goal: string;
   aiInitiative: 'low' | 'moderate' | 'high';
   contextIndicators: ContextIndicator[];
@@ -49,10 +49,10 @@ export interface LayerData {
   artifacts: Artifact[];
 }
 
-// ── Color palette for layers ──────────────────────────────
-// Assigns colors by index so any dynamic set of layers gets consistent colors
+// ── Color palette for canvases ────────────────────────────
+// Assigns colors by index so any dynamic set of canvases gets consistent colors
 
-const LAYER_COLORS = [
+const CANVAS_COLORS = [
   { color: '#4a8aff', bgTint: 'rgba(74, 138, 255, 0.06)', icon: '\u25c6' },   // blue diamond
   { color: '#ff8a6a', bgTint: 'rgba(255, 138, 106, 0.06)', icon: '\u25c7' },   // orange diamond outline
   { color: '#4acaa0', bgTint: 'rgba(74, 202, 160, 0.06)', icon: '\u2b21' },     // green hexagon
@@ -63,13 +63,13 @@ const LAYER_COLORS = [
   { color: '#da77f2', bgTint: 'rgba(218, 119, 242, 0.06)', icon: '\u2b20' },    // violet pentagon
 ];
 
-export function getLayerColor(index: number): { color: string; bgTint: string; icon: string } {
-  return LAYER_COLORS[index % LAYER_COLORS.length];
+export function getCanvasColor(index: number): { color: string; bgTint: string; icon: string } {
+  return CANVAS_COLORS[index % CANVAS_COLORS.length];
 }
 
-export function buildLayerMeta(layers: string[]): LayerMeta[] {
-  return layers.map((id, index) => {
-    const palette = getLayerColor(index);
+export function buildCanvasMeta(canvases: string[]): CanvasMeta[] {
+  return canvases.map((id, index) => {
+    const palette = getCanvasColor(index);
     const label = id
       .replace(/[-_]/g, ' ')
       .replace(/\b\w/g, (c) => c.toUpperCase());

@@ -65,7 +65,7 @@
 }
 
 .wb-btn--primary {
-  background: var(--layer-color, #4acaa0);
+  background: var(--canvas-color, #4acaa0);
   color: #0a0a0e;
   font-weight: 600;
 }
@@ -161,7 +161,7 @@
 }
 
 .wb-card:hover {
-  border-color: var(--layer-color, var(--border));
+  border-color: var(--canvas-color, var(--border));
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
 }
 
@@ -169,13 +169,13 @@
 
 /* Goal card — full width, accent border */
 .wb-card--goal {
-  border-color: var(--layer-color, var(--border));
+  border-color: var(--canvas-color, var(--border));
   border-width: 2px;
   background: rgba(255, 255, 255, 0.04);
 }
 
 .wb-card--goal .wb-card-type {
-  background: var(--layer-color, #4acaa0);
+  background: var(--canvas-color, #4acaa0);
   color: #0a0a0e;
   font-weight: 800;
 }
@@ -274,7 +274,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--layer-color, var(--text-dim));
+  color: var(--canvas-color, var(--text-dim));
   background: rgba(255, 255, 255, 0.06);
   padding: 2px 6px;
   border-radius: 3px;
@@ -661,7 +661,7 @@
 }
 
 .wb-editor-filename:focus {
-  border-color: var(--layer-color, #4acaa0);
+  border-color: var(--canvas-color, #4acaa0);
 }
 
 .wb-editor-body {
@@ -693,7 +693,7 @@
 }
 
 .wb-editor-textarea:focus {
-  border-color: var(--layer-color, #4acaa0);
+  border-color: var(--canvas-color, #4acaa0);
 }
 
 .wb-editor-preview {

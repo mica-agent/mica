@@ -1,51 +1,51 @@
 import { useState, useRef, useEffect } from "react";
 import { chat, teamDiscussRequest } from "./client";
-import type { LayerId, AgentResponse } from "./client";
-import { getLayerColor } from "../data";
+import type { CanvasId, AgentResponse } from "./client";
+import { getCanvasColor } from "../data";
 
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  layer: LayerId;
+  canvas: CanvasId;
   agentName?: string;
   isEscalation?: boolean;
 }
 
 interface Props {
   projectId: string;
-  activeLayer: LayerId;
-  layers: string[];
-  layerColor: string;
+  activeCanvas: CanvasId;
+  canvases: string[];
+  canvasColor: string;
   onFilesChanged?: () => void;
 }
 
-function agentName(layer: string): string {
+function agentName(canvas: string): string {
   const known: Record<string, string> = {
     mission: "Mission Strategist",
     experience: "Experience Designer",
     architecture: "System Architect",
     implementation: "Implementation Engineer",
   };
-  if (known[layer]) return known[layer];
-  const label = layer.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  if (known[canvas]) return known[canvas];
+  const label = canvas.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return `${label} Agent`;
 }
 
-function agentIcon(layer: string): string {
+function agentIcon(canvas: string): string {
   const known: Record<string, string> = {
     mission: "\u25c6",
     experience: "\u25c7",
     architecture: "\u2b21",
     implementation: "\u2b22",
   };
-  return known[layer] || "\u25cb";
+  return known[canvas] || "\u25cb";
 }
 
-function layerColorForId(layer: string, layers: string[]): string {
-  const idx = layers.indexOf(layer);
+function canvasColorForId(canvas: string, canvases: string[]): string {
+  const idx = canvases.indexOf(canvas);
   if (idx < 0) return "#999";
-  return getLayerColor(idx).color;
+  return getCanvasColor(idx).color;
 }
 
 // ── Voice helpers ────────────────────────────────────────
@@ -61,27 +61,27 @@ function speak(text: string) {
   synth.speak(utterance);
 }
 
-export default function AIChatPanel({ projectId, activeLayer, layers, layerColor, onFilesChanged }: Props) {
+export default function AIChatPanel({ projectId, activeCanvas, canvases, canvasColor, onFilesChanged }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
-  const [mode, setMode] = useState<"layer" | "team">("layer");
+  const [mode, setMode] = useState<"canvas" | "team">("canvas");
   const [listening, setListening] = useState(false);
   const [voiceOut, setVoiceOut] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const checkedInLayers = useRef<Set<string>>(new Set());
+  const checkedInCanvases = useRef<Set<string>>(new Set());
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Auto check-in: when entering a layer for the first time, agent speaks first
+  // Auto check-in: when entering a canvas for the first time, agent speaks first
   useEffect(() => {
-    const key = `${projectId}/${activeLayer}`;
-    if (checkedInLayers.current.has(key)) return;
+    const key = `${projectId}/${activeCanvas}`;
+    if (checkedInCanvases.current.has(key)) return;
 
     let cancelled = false;
     setCheckingIn(true);
@@ -91,20 +91,20 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
       try {
         const result = await chat(
           projectId,
-          activeLayer,
+          activeCanvas,
           "Briefly assess the whiteboard against _goal.md and _todo.md. What's solid, what's the top priority to work on next? 2-3 sentences max."
         );
         if (!cancelled) {
-          checkedInLayers.current.add(key);
+          checkedInCanvases.current.add(key);
           handleResponse(result.response);
         }
       } catch (err) {
         if (!cancelled) {
-          checkedInLayers.current.add(key);
+          checkedInCanvases.current.add(key);
           addMessage({
             role: "assistant",
-            content: `Couldn't connect to the ${agentName(activeLayer)}. Send a message to try again.`,
-            layer: activeLayer,
+            content: `Couldn't connect to the ${agentName(activeCanvas)}. Send a message to try again.`,
+            canvas: activeCanvas,
             agentName: "System",
           });
         }
@@ -121,7 +121,7 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
       setLoading(false);
       setCheckingIn(false);
     };
-  }, [projectId, activeLayer]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projectId, activeCanvas]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function addMessage(msg: Omit<ChatMessage, "id">) {
     setMessages((prev) => [
@@ -134,8 +134,8 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
     addMessage({
       role: "assistant",
       content: response.message,
-      layer: response.layer,
-      agentName: agentName(response.layer),
+      canvas: response.canvas,
+      agentName: agentName(response.canvas),
       isEscalation,
     });
     if (voiceOut && response.message) {
@@ -194,19 +194,19 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
     addMessage({
       role: "user",
       content: userMsg,
-      layer: activeLayer,
+      canvas: activeCanvas,
     });
 
     try {
       if (mode === "team") {
         const responses = await teamDiscussRequest(projectId, userMsg);
-        for (const layer of layers) {
-          if (responses[layer]) {
-            handleResponse(responses[layer]);
+        for (const canvas of canvases) {
+          if (responses[canvas]) {
+            handleResponse(responses[canvas]);
           }
         }
       } else {
-        const result = await chat(projectId, activeLayer, userMsg);
+        const result = await chat(projectId, activeCanvas, userMsg);
         handleResponse(result.response);
         if (result.escalationResponse) {
           handleResponse(result.escalationResponse, true);
@@ -216,7 +216,7 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
       addMessage({
         role: "assistant",
         content: `Error: ${(err as Error).message}`,
-        layer: activeLayer,
+        canvas: activeCanvas,
         agentName: "System",
       });
     } finally {
@@ -232,28 +232,28 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
     }
   }
 
-  const layerMessages = mode === "layer"
-    ? messages.filter((m) => m.role === "user" || m.layer === activeLayer || m.isEscalation)
+  const canvasMessages = mode === "canvas"
+    ? messages.filter((m) => m.role === "user" || m.canvas === activeCanvas || m.isEscalation)
     : messages;
 
   return (
-    <div className="ai-chat-panel" style={{ "--panel-color": layerColor } as React.CSSProperties}>
+    <div className="ai-chat-panel" style={{ "--panel-color": canvasColor } as React.CSSProperties}>
       {/* Panel header */}
       <div className="ai-chat-header">
         <div className="ai-chat-agent-info">
-          <span className="ai-chat-agent-icon" style={{ color: layerColor }}>
-            {agentIcon(activeLayer)}
+          <span className="ai-chat-agent-icon" style={{ color: canvasColor }}>
+            {agentIcon(activeCanvas)}
           </span>
           <div>
-            <div className="ai-chat-agent-name">{agentName(activeLayer)}</div>
+            <div className="ai-chat-agent-name">{agentName(activeCanvas)}</div>
             <div className="ai-chat-agent-role">AI Team Member</div>
           </div>
         </div>
         <div className="ai-chat-controls">
           <button
-            className={`ai-chat-mode ${mode === "layer" ? "ai-chat-mode--active" : ""}`}
-            onClick={() => setMode("layer")}
-            title="Chat with this layer's agent"
+            className={`ai-chat-mode ${mode === "canvas" ? "ai-chat-mode--active" : ""}`}
+            onClick={() => setMode("canvas")}
+            title="Chat with this canvas's agent"
           >
             Solo
           </button>
@@ -269,18 +269,18 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
 
       {/* Messages */}
       <div className="ai-chat-messages">
-        {layerMessages.length === 0 && !loading && (
+        {canvasMessages.length === 0 && !loading && (
           <div className="ai-chat-empty">
-            <div className="ai-chat-empty-icon">{agentIcon(activeLayer)}</div>
+            <div className="ai-chat-empty-icon">{agentIcon(activeCanvas)}</div>
             <p>
               {mode === "team"
                 ? "Ask a question and all agents will respond from their perspective."
-                : `Ask the ${agentName(activeLayer)} anything, or wait for the initial review.`}
+                : `Ask the ${agentName(activeCanvas)} anything, or wait for the initial review.`}
             </p>
           </div>
         )}
 
-        {layerMessages.map((msg) => (
+        {canvasMessages.map((msg) => (
           <div
             key={msg.id}
             className={`ai-chat-msg ai-chat-msg--${msg.role} ${msg.isEscalation ? "ai-chat-msg--escalation" : ""}`}
@@ -288,9 +288,9 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
             {msg.role === "assistant" && (
               <div className="ai-chat-msg-header">
                 <span className="ai-chat-msg-icon">
-                  {msg.agentName === "System" ? "\u2699" : agentIcon(msg.layer)}
+                  {msg.agentName === "System" ? "\u2699" : agentIcon(msg.canvas)}
                 </span>
-                <span className="ai-chat-msg-name" style={{ color: layerColorForId(msg.layer, layers) }}>
+                <span className="ai-chat-msg-name" style={{ color: canvasColorForId(msg.canvas, canvases) }}>
                   {msg.agentName}
                 </span>
                 {msg.isEscalation && (
@@ -306,9 +306,9 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
         {loading && (
           <div className="ai-chat-msg ai-chat-msg--assistant ai-chat-msg--loading">
             <div className="ai-chat-msg-header">
-              <span className="ai-chat-msg-icon">{mode === "team" ? "\u2b21" : agentIcon(activeLayer)}</span>
-              <span className="ai-chat-msg-name" style={{ color: layerColor }}>
-                {mode === "team" ? "AI Team" : agentName(activeLayer)}
+              <span className="ai-chat-msg-icon">{mode === "team" ? "\u2b21" : agentIcon(activeCanvas)}</span>
+              <span className="ai-chat-msg-name" style={{ color: canvasColor }}>
+                {mode === "team" ? "AI Team" : agentName(activeCanvas)}
               </span>
             </div>
             {checkingIn ? (
@@ -346,7 +346,7 @@ export default function AIChatPanel({ projectId, activeLayer, layers, layerColor
               ? "Listening..."
               : mode === "team"
                 ? "Ask the full team..."
-                : `Ask the ${agentName(activeLayer)}...`
+                : `Ask the ${agentName(activeCanvas)}...`
           }
           value={input}
           onChange={(e) => setInput(e.target.value)}

@@ -54,7 +54,7 @@ curl -X POST http://localhost:3001/api/projects/connect \
 ```
 **Verify:**
 - [ ] Picks up existing `.mica/config.json` (no re-initialization)
-- [ ] Any prior layer metadata preserved
+- [ ] Any prior canvas metadata preserved
 
 ### 1e. Duplicate connection rejected
 ```bash
@@ -67,36 +67,36 @@ curl -X POST http://localhost:3001/api/projects/connect \
 
 ---
 
-## 2. Layer Metadata (via `.mica/`)
+## 2. Canvas Metadata (via `.mica/`)
 
 ### 2a. List project files
 ```bash
-curl http://localhost:3001/api/projects/project-alpha/layers/workspace/files
+curl http://localhost:3001/api/projects/project-alpha/canvases/workspace/files
 ```
 **Verify:**
 - [ ] Returns metadata files from `.mica/workspace/` (e.g., `_brief.md`, `_goal.md`)
 
 ### 2b. Write and read a brief
 ```bash
-curl -X PUT http://localhost:3001/api/projects/project-alpha/layers/workspace/files/_brief.md \
+curl -X PUT http://localhost:3001/api/projects/project-alpha/canvases/workspace/files/_brief.md \
   -H 'Content-Type: application/json' \
   -d '{"content": "You are a test agent."}'
 
-curl http://localhost:3001/api/projects/project-alpha/layers/workspace/files/_brief.md
+curl http://localhost:3001/api/projects/project-alpha/canvases/workspace/files/_brief.md
 ```
 **Verify:**
 - [ ] File written to `/tmp/mica-test/project-alpha/.mica/workspace/_brief.md`
 - [ ] Content returned correctly on read
 
-### 2c. Add a layer
+### 2c. Add a canvas
 ```bash
-curl -X POST http://localhost:3001/api/projects/project-alpha/layers \
+curl -X POST http://localhost:3001/api/projects/project-alpha/canvases \
   -H 'Content-Type: application/json' \
   -d '{"name": "architecture"}'
 ```
 **Verify:**
 - [ ] `.mica/architecture/` directory created
-- [ ] `config.json` updated with new layer
+- [ ] `config.json` updated with new canvas
 - [ ] `workspaces.json` updated
 
 ---
@@ -215,21 +215,21 @@ curl -X POST .../project-beta/container/start
 
 ---
 
-## 5. Migration from Legacy `layers/`
+## 5. Migration from Legacy `canvases/`
 
 ### 5a. Migrate existing projects
 ```bash
-# Ensure layers/_projects.json exists with at least one project
+# Ensure canvases/_projects.json exists with at least one project
 curl -X POST http://localhost:3001/api/migrate
 ```
 **Verify:**
 - [ ] New project directories created at target location
-- [ ] `.mica/config.json` written with correct layer list
-- [ ] Layer metadata files (`_brief.md`, `_goal.md`, etc.) copied to `.mica/{layer}/`
+- [ ] `.mica/config.json` written with correct canvas list
+- [ ] Canvas metadata files (`_brief.md`, `_goal.md`, etc.) copied to `.mica/{canvas}/`
 - [ ] `_card-classes/` copied if present
 - [ ] Each migrated project registered in `workspaces.json`
 - [ ] Each migrated project has `.git/` initialized
-- [ ] Original `layers/` directory preserved
+- [ ] Original `canvases/` directory preserved
 
 ---
 

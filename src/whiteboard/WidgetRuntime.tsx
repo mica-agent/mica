@@ -4,14 +4,14 @@
 
 import { useEffect, useRef } from "react";
 import mermaid from "mermaid";
-import type { LayerId } from "../api/layerFiles";
+import type { CanvasId } from "../api/canvasFiles";
 import { createBridge } from "../api/micaSocket";
 
 interface Props {
   html: string;
   exports?: string[];
   project: string;
-  layer: LayerId;
+  canvas: CanvasId;
   filename: string;
 }
 
@@ -22,7 +22,7 @@ mermaid.initialize({ startOnLoad: false, theme: "dark" });
 const loadedExternalScripts = new Set<string>();
 const loadedExternalStyles = new Set<string>();
 
-export default function WidgetRuntime({ html, exports: exportFns, project, layer, filename }: Props) {
+export default function WidgetRuntime({ html, exports: exportFns, project, canvas, filename }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const prevHtmlRef = useRef<string>("");
 
@@ -72,7 +72,7 @@ export default function WidgetRuntime({ html, exports: exportFns, project, layer
 
     // Build mica bridge — WebSocket-based with all 4 patterns
     const micaBridge = {
-      ...createBridge(project, layer, filename),
+      ...createBridge(project, canvas, filename),
       exports: exportFns || [],
     };
 
@@ -147,7 +147,7 @@ export default function WidgetRuntime({ html, exports: exportFns, project, layer
           console.error("[mermaid] render failed:", err);
         });
     }
-  }, [html, project, layer, filename]);
+  }, [html, project, canvas, filename]);
 
   return <div ref={containerRef} className="widget-runtime" />;
 }

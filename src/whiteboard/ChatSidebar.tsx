@@ -4,15 +4,15 @@
 // Real-time progress events stream from the server via WebSocket.
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { LayerId, RenderedCard, LayerFile } from "../api/layerFiles";
-import { fetchCards, fetchFiles } from "../api/layerFiles";
+import type { CanvasId, RenderedCard, CanvasFile } from "../api/canvasFiles";
+import { fetchCards, fetchFiles } from "../api/canvasFiles";
 import { call as micaCall, on } from "../api/micaSocket";
 import WidgetRuntime from "./WidgetRuntime";
 
 interface Props {
   projectId: string;
-  activeLayer: LayerId;
-  layerColor: string;
+  activeCanvas: CanvasId;
+  canvasColor: string;
   onFilesChanged?: () => void;
   onAgentBusy?: (busy: boolean) => void;
 }
@@ -29,26 +29,26 @@ interface ProgressEntry {
   ts: number;
 }
 
-function agentName(layer: string): string {
+function agentName(canvas: string): string {
   const known: Record<string, string> = {
     mission: "Mission Strategist",
     experience: "Experience Designer",
     architecture: "System Architect",
     implementation: "Implementation Engineer",
   };
-  if (known[layer]) return known[layer];
-  const label = layer.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  if (known[canvas]) return known[canvas];
+  const label = canvas.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return `${label} Agent`;
 }
 
-function agentIcon(layer: string): string {
+function agentIcon(canvas: string): string {
   const known: Record<string, string> = {
     mission: "\u25c6",
     experience: "\u25c7",
     architecture: "\u2b21",
     implementation: "\u2b22",
   };
-  return known[layer] || "\u25cb";
+  return known[canvas] || "\u25cb";
 }
 
 // Human-friendly tool names
@@ -69,7 +69,7 @@ function toolLabel(tool: string): string {
 
 type TurnState = "your-turn" | "agent-working" | "agent-done" | "agent-done-files";
 
-export default function ChatSidebar({ projectId, activeLayer, layerColor, onFilesChanged, onAgentBusy }: Props) {
+export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFilesChanged, onAgentBusy }: Props) {
   const [chatCard, setChatCard] = useState<RenderedCard | null>(null);
   const [loading, setLoading] = useState(true);
   const [inputValue, setInputValue] = useState("");
@@ -81,12 +81,12 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
   const [progressLog, setProgressLog] = useState<ProgressEntry[]>([]);
   const [logExpanded, setLogExpanded] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [contextFiles, setContextFiles] = useState<LayerFile[]>([]);
+  const [contextFiles, setContextFiles] = useState<CanvasFile[]>([]);
   const [showContext, setShowContext] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
-  const checkedInLayers = useRef<Set<string>>(new Set());
+  const checkedInCanvases = useRef<Set<string>>(new Set());
   const progressIdRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -113,19 +113,19 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
 
   // Fetch context files for the tooltip
   useEffect(() => {
-    fetchFiles(projectId, activeLayer)
+    fetchFiles(projectId, activeCanvas)
       .then((files) => setContextFiles(files))
       .catch(() => setContextFiles([]));
-  }, [projectId, activeLayer]);
+  }, [projectId, activeCanvas]);
 
   // Refresh context files when agent finishes (it may have created files)
   useEffect(() => {
     if (turn === "agent-done" || turn === "agent-done-files") {
-      fetchFiles(projectId, activeLayer)
+      fetchFiles(projectId, activeCanvas)
         .then((files) => setContextFiles(files))
         .catch(() => {});
     }
-  }, [turn, projectId, activeLayer]);
+  }, [turn, projectId, activeCanvas]);
 
   // Scroll progress log when new entries arrive
   useEffect(() => {
@@ -135,8 +135,8 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
   // Listen for agent progress events from the server
   useEffect(() => {
     const unsub = on("agent-progress", (msg) => {
-      const m = msg as { project?: string; layer?: string; event?: string; tool?: string; description?: string };
-      if (m.project !== projectId || m.layer !== activeLayer) return;
+      const m = msg as { project?: string; canvas?: string; event?: string; tool?: string; description?: string };
+      if (m.project !== projectId || m.canvas !== activeCanvas) return;
 
       if (m.event === "thinking") {
         setCurrentTool("Thinking...");
@@ -151,11 +151,11 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
       }
     });
     return unsub;
-  }, [projectId, activeLayer]);
+  }, [projectId, activeCanvas]);
 
   const loadChat = useCallback(async () => {
     try {
-      const cards = await fetchCards(projectId, activeLayer);
+      const cards = await fetchCards(projectId, activeCanvas);
       const chat = cards.find((c) => c.filename === "_chat.md");
       setChatCard(chat || null);
     } catch {
@@ -163,7 +163,7 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
     } finally {
       setLoading(false);
     }
-  }, [projectId, activeLayer]);
+  }, [projectId, activeCanvas]);
 
   useEffect(() => {
     setLoading(true);
@@ -173,13 +173,13 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
   // Listen for file changes to refresh chat card
   useEffect(() => {
     const unsub = on("file-changed", (msg) => {
-      const m = msg as { project?: string; layer?: string; filename?: string };
-      if (m.project === projectId && m.layer === activeLayer && m.filename === "_chat.md") {
+      const m = msg as { project?: string; canvas?: string; filename?: string };
+      if (m.project === projectId && m.canvas === activeCanvas && m.filename === "_chat.md") {
         loadChat();
       }
     });
     return unsub;
-  }, [projectId, activeLayer, loadChat]);
+  }, [projectId, activeCanvas, loadChat]);
 
   const showDoneStatus = useCallback((filesChanged: boolean) => {
     setTurn(filesChanged ? "agent-done-files" : "agent-done");
@@ -188,23 +188,23 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
     setTimeout(() => inputRef.current?.focus(), 100);
   }, []);
 
-  // Auto check-in: when entering a layer for the first time with no messages
+  // Auto check-in: when entering a canvas for the first time with no messages
   useEffect(() => {
     if (!chatCard || loading) return;
-    const key = `${projectId}/${activeLayer}`;
-    if (checkedInLayers.current.has(key)) return;
+    const key = `${projectId}/${activeCanvas}`;
+    if (checkedInCanvases.current.has(key)) return;
 
     // Check if the widget rendered any messages (data attribute from render.py)
     const parser = new DOMParser();
     const doc = parser.parseFromString(chatCard.html, "text/html");
     const msgs = doc.querySelector(".chat-messages");
     if (msgs?.getAttribute("data-has-messages") === "true") {
-      checkedInLayers.current.add(key);
+      checkedInCanvases.current.add(key);
       return;
     }
 
     let cancelled = false;
-    checkedInLayers.current.add(key);
+    checkedInCanvases.current.add(key);
     setCheckingIn(true);
     setTurn("agent-working");
     setProgressLog([]);
@@ -212,7 +212,7 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
 
     (async () => {
       try {
-        await micaCall(projectId, activeLayer, "_chat.md", "check_in", {});
+        await micaCall(projectId, activeCanvas, "_chat.md", "check_in", {});
         if (!cancelled) {
           loadChat();
           showDoneStatus(false);
@@ -229,7 +229,7 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
     })();
 
     return () => { cancelled = true; };
-  }, [chatCard, loading, projectId, activeLayer, loadChat, onFilesChanged, onAgentBusy, showDoneStatus]);
+  }, [chatCard, loading, projectId, activeCanvas, loadChat, onFilesChanged, onAgentBusy, showDoneStatus]);
 
   // Scroll pending messages into view
   useEffect(() => {
@@ -250,7 +250,7 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
     onAgentBusy?.(true);
 
     try {
-      const result = await micaCall(projectId, activeLayer, "_chat.md", "send_message", { message: text }) as { filesChanged?: boolean } | undefined;
+      const result = await micaCall(projectId, activeCanvas, "_chat.md", "send_message", { message: text }) as { filesChanged?: boolean } | undefined;
       setPending(null);
       loadChat();
       showDoneStatus(!!result?.filesChanged);
@@ -265,7 +265,7 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
       onAgentBusy?.(false);
       inputRef.current?.focus();
     }
-  }, [inputValue, sending, projectId, activeLayer, loadChat, onFilesChanged, onAgentBusy, showDoneStatus]);
+  }, [inputValue, sending, projectId, activeCanvas, loadChat, onFilesChanged, onAgentBusy, showDoneStatus]);
 
   const isAgentTurn = turn === "agent-working";
   const isYourTurn = turn === "your-turn" || turn === "agent-done" || turn === "agent-done-files";
@@ -284,18 +284,18 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
   return (
     <div
       className="chat-sidebar"
-      style={{ "--panel-color": layerColor } as React.CSSProperties}
+      style={{ "--panel-color": canvasColor } as React.CSSProperties}
     >
       <div
         className="chat-sidebar-header"
         onMouseEnter={() => setShowContext(true)}
         onMouseLeave={() => setShowContext(false)}
       >
-        <span className="chat-sidebar-icon" style={{ color: layerColor }}>
-          {agentIcon(activeLayer)}
+        <span className="chat-sidebar-icon" style={{ color: canvasColor }}>
+          {agentIcon(activeCanvas)}
         </span>
         <div className="chat-sidebar-info">
-          <div className="chat-sidebar-name">{agentName(activeLayer)}</div>
+          <div className="chat-sidebar-name">{agentName(activeCanvas)}</div>
           <div className="chat-sidebar-role">
             {contextFiles.length} file{contextFiles.length !== 1 ? "s" : ""} in context
           </div>
@@ -320,14 +320,14 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
           <div className="chat-sidebar-loading">Loading chat...</div>
         )}
         {!loading && !chatCard && (
-          <div className="chat-sidebar-empty">No chat card found for this layer.</div>
+          <div className="chat-sidebar-empty">No chat card found for this canvas.</div>
         )}
         {chatCard && (
           <WidgetRuntime
             html={chatCard.html}
             exports={chatCard.exports}
             project={projectId}
-            layer={activeLayer}
+            canvas={activeCanvas}
             filename="_chat.md"
           />
         )}
@@ -425,7 +425,7 @@ export default function ChatSidebar({ projectId, activeLayer, layerColor, onFile
         <input
           ref={inputRef}
           type="text"
-          placeholder={isAgentTurn ? `${agentName(activeLayer)} is working...` : "Give direction or ask a question..."}
+          placeholder={isAgentTurn ? `${agentName(activeCanvas)} is working...` : "Give direction or ask a question..."}
           value={inputValue}
           disabled={sending}
           onChange={handleInput}

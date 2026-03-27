@@ -3,31 +3,31 @@
 // maintains its own listener for file-change broadcasts to update card state.
 
 import { useState, useEffect, useCallback } from "react";
-import type { LayerId, RenderedCard, CardMeta } from "../api/layerFiles";
-import { fetchCards } from "../api/layerFiles";
+import type { CanvasId, RenderedCard, CardMeta } from "../api/canvasFiles";
+import { fetchCards } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
 
-export interface UseLayerSocketResult {
+export interface UseCanvasSocketResult {
   cards: RenderedCard[];
   loading: boolean;
   refetch: () => void;
 }
 
-export function useLayerSocket(projectId: string, layerId: LayerId): UseLayerSocketResult {
+export function useCanvasSocket(projectId: string, canvasId: CanvasId): UseCanvasSocketResult {
   const [cards, setCards] = useState<RenderedCard[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Initial fetch
   const loadCards = useCallback(async () => {
     try {
-      const loaded = await fetchCards(projectId, layerId);
+      const loaded = await fetchCards(projectId, canvasId);
       setCards(loaded);
     } catch (err) {
-      console.error("[useLayerSocket] Failed to fetch cards:", err);
+      console.error("[useCanvasSocket] Failed to fetch cards:", err);
     } finally {
       setLoading(false);
     }
-  }, [projectId, layerId]);
+  }, [projectId, canvasId]);
 
   useEffect(() => {
     setLoading(true);
@@ -40,14 +40,14 @@ export function useLayerSocket(projectId: string, layerId: LayerId): UseLayerSoc
       const m = msg as {
         type: string;
         project?: string;
-        layer?: string;
+        canvas?: string;
         filename?: string;
         html?: string;
         exports?: string[];
         meta?: CardMeta;
       };
       if (m.project && m.project !== projectId) return;
-      if (m.layer && m.layer !== layerId) return;
+      if (m.canvas && m.canvas !== canvasId) return;
 
       if ((m.type === "file-changed" || m.type === "file-created") && m.html && m.filename && m.meta) {
         setCards((prev) => {
@@ -79,7 +79,7 @@ export function useLayerSocket(projectId: string, layerId: LayerId): UseLayerSoc
       unsub2();
       unsub3();
     };
-  }, [projectId, layerId]);
+  }, [projectId, canvasId]);
 
   return { cards, loading, refetch: loadCards };
 }

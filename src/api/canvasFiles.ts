@@ -1,16 +1,16 @@
-// Frontend API client for layer file operations
+// Frontend API client for canvas file operations
 
-export type LayerId = string;
+export type CanvasId = string;
 
 export interface ProjectConfig {
   id: string;
   name: string;
   path: string;
-  layers: string[];
+  canvases: string[];
   connectedAt: string;
 }
 
-export interface LayerFile {
+export interface CanvasFile {
   name: string;
   type: "text" | "markdown" | "mermaid";
   content: string;
@@ -84,23 +84,23 @@ export async function deleteProjectApi(projectId: string): Promise<void> {
 
 // ── File API (project-scoped) ────────────────────────────
 
-function projectLayerUrl(project: string, layer: string): string {
-  return `${API_BASE}/api/projects/${encodeURIComponent(project)}/layers/${encodeURIComponent(layer)}`;
+function projectCanvasUrl(project: string, canvas: string): string {
+  return `${API_BASE}/api/projects/${encodeURIComponent(project)}/canvases/${encodeURIComponent(canvas)}`;
 }
 
-export async function fetchFiles(project: string, layer: LayerId): Promise<LayerFile[]> {
-  const res = await fetch(`${projectLayerUrl(project, layer)}/files`);
+export async function fetchFiles(project: string, canvas: CanvasId): Promise<CanvasFile[]> {
+  const res = await fetch(`${projectCanvasUrl(project, canvas)}/files`);
   if (!res.ok) throw new Error(`Failed to fetch files: ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchFile(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   filename: string
-): Promise<LayerFile> {
+): Promise<CanvasFile> {
   const res = await fetch(
-    `${projectLayerUrl(project, layer)}/files/${encodeURIComponent(filename)}`
+    `${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`
   );
   if (!res.ok) throw new Error(`Failed to fetch file: ${res.statusText}`);
   return res.json();
@@ -108,12 +108,12 @@ export async function fetchFile(
 
 export async function saveFile(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   filename: string,
   content: string
 ): Promise<void> {
   const res = await fetch(
-    `${projectLayerUrl(project, layer)}/files/${encodeURIComponent(filename)}`,
+    `${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -125,11 +125,11 @@ export async function saveFile(
 
 export async function deleteFile(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   filename: string
 ): Promise<void> {
   const res = await fetch(
-    `${projectLayerUrl(project, layer)}/files/${encodeURIComponent(filename)}`,
+    `${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`,
     { method: "DELETE" }
   );
   if (!res.ok) throw new Error(`Failed to delete file: ${res.statusText}`);
@@ -137,11 +137,11 @@ export async function deleteFile(
 
 export async function convertDrawing(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   imageBase64: string
 ): Promise<{ mermaid: string; filename: string }> {
   const res = await fetch(
-    `${projectLayerUrl(project, layer)}/convert-drawing`,
+    `${projectCanvasUrl(project, canvas)}/convert-drawing`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -152,15 +152,15 @@ export async function convertDrawing(
   return res.json();
 }
 
-export async function fetchCards(project: string, layer: LayerId): Promise<RenderedCard[]> {
-  const res = await fetch(`${projectLayerUrl(project, layer)}/cards`);
+export async function fetchCards(project: string, canvas: CanvasId): Promise<RenderedCard[]> {
+  const res = await fetch(`${projectCanvasUrl(project, canvas)}/cards`);
   if (!res.ok) throw new Error(`Failed to fetch cards: ${res.statusText}`);
   return res.json();
 }
 
 export interface ContextStats {
   project: string;
-  layer: string;
+  canvas: string;
   files: number;
   fileContentChars: number;
   systemPromptChars: number;
@@ -169,21 +169,21 @@ export interface ContextStats {
   estimatedTokens: number;
 }
 
-export async function fetchContextStats(project: string, layer: LayerId): Promise<ContextStats> {
-  const res = await fetch(`${projectLayerUrl(project, layer)}/context-stats`);
+export async function fetchContextStats(project: string, canvas: CanvasId): Promise<ContextStats> {
+  const res = await fetch(`${projectCanvasUrl(project, canvas)}/context-stats`);
   if (!res.ok) throw new Error(`Failed to fetch context stats: ${res.statusText}`);
   return res.json();
 }
 
 export async function callCardExport(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   filename: string,
   fn: string,
   args: Record<string, unknown> = {}
 ): Promise<unknown> {
   const res = await fetch(
-    `${projectLayerUrl(project, layer)}/cards/${encodeURIComponent(filename)}/call/${encodeURIComponent(fn)}`,
+    `${projectCanvasUrl(project, canvas)}/cards/${encodeURIComponent(filename)}/call/${encodeURIComponent(fn)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

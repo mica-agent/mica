@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from "react";
-import { saveFile, deleteFile, convertDrawing, fetchContextStats } from "../api/layerFiles";
-import type { LayerId, RenderedCard, ContextStats } from "../api/layerFiles";
-import { useLayerSocket } from "./useLayerSocket";
+import { saveFile, deleteFile, convertDrawing, fetchContextStats } from "../api/canvasFiles";
+import type { CanvasId, RenderedCard, ContextStats } from "../api/canvasFiles";
+import { useCanvasSocket } from "./useCanvasSocket";
 import FileCard from "./FileCard";
 import FileEditor from "./FileEditor";
 import ExpandedCardView from "./ExpandedCardView";
@@ -10,8 +10,8 @@ import "./whiteboard.css";
 
 interface Props {
   projectId: string;
-  layerId: LayerId;
-  layerColor: string;
+  canvasId: CanvasId;
+  canvasColor: string;
 }
 
 export interface WhiteboardHandle {
@@ -22,8 +22,8 @@ export interface WhiteboardHandle {
 const SYSTEM_FILENAMES = ["_goal.md", "_todo.md", "_brief.md", "_log.md", "_chat.md"];
 
 const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
-  function WhiteboardView({ projectId, layerId, layerColor }, ref) {
-    const { cards, loading, refetch } = useLayerSocket(projectId, layerId);
+  function WhiteboardView({ projectId, canvasId, canvasColor }, ref) {
+    const { cards, loading, refetch } = useCanvasSocket(projectId, canvasId);
     const [contextStats, setContextStats] = useState<ContextStats | null>(null);
     const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
     const [expandedCard, setExpandedCard] = useState<RenderedCard | null>(null);
@@ -35,44 +35,44 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
 
     // Fetch context stats when cards change
     useEffect(() => {
-      fetchContextStats(projectId, layerId).then(setContextStats).catch(() => {});
-    }, [projectId, layerId, cards.length]);
+      fetchContextStats(projectId, canvasId).then(setContextStats).catch(() => {});
+    }, [projectId, canvasId, cards.length]);
 
     const handleSave = useCallback(async (filename: string, content: string) => {
-      await saveFile(projectId, layerId, filename, content);
+      await saveFile(projectId, canvasId, filename, content);
       setEditingFile(null);
       setCreatingType(null);
       // WebSocket will push the update
-    }, [projectId, layerId]);
+    }, [projectId, canvasId]);
 
     const handleDelete = useCallback(async (filename: string) => {
-      await deleteFile(projectId, layerId, filename);
+      await deleteFile(projectId, canvasId, filename);
       // WebSocket will push the deletion
-    }, [projectId, layerId]);
+    }, [projectId, canvasId]);
 
     const handleConvertDrawing = useCallback(async (imageBase64: string) => {
       setConverting(true);
       try {
-        await convertDrawing(projectId, layerId, imageBase64);
+        await convertDrawing(projectId, canvasId, imageBase64);
         setDrawingMode(false);
       } catch (err) {
         console.error("Drawing conversion failed:", err);
       } finally {
         setConverting(false);
       }
-    }, [projectId, layerId]);
+    }, [projectId, canvasId]);
 
     // For editing, we need to fetch the raw file content
     const handleEdit = useCallback(async (filename: string) => {
       try {
-        const { fetchFile } = await import("../api/layerFiles");
-        const file = await fetchFile(projectId, layerId, filename);
+        const { fetchFile } = await import("../api/canvasFiles");
+        const file = await fetchFile(projectId, canvasId, filename);
         setExpandedCard(null);
         setEditingFile({ name: file.name, content: file.content });
       } catch (err) {
         console.error("Failed to fetch file for editing:", err);
       }
-    }, [projectId, layerId]);
+    }, [projectId, canvasId]);
 
     // Separate system cards from content cards (_chat.md is in sidebar, not here)
     const systemCards = cards.filter((c) => c.meta.isSystem && c.filename !== "_chat.md");
@@ -91,7 +91,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
         {/* Toolbar */}
         <div
           className="wb-toolbar"
-          style={{ "--layer-color": layerColor } as React.CSSProperties}
+          style={{ "--canvas-color": canvasColor } as React.CSSProperties}
         >
           <div className="wb-toolbar-left">
             <button className="wb-btn wb-btn--tool" onClick={() => setCreatingType("text")}>
@@ -147,8 +147,8 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
                   exports={card.exports}
                   meta={card.meta}
                   projectId={projectId}
-                  layerId={layerId}
-                  layerColor={layerColor}
+                  canvasId={canvasId}
+                  canvasColor={canvasColor}
                   onEdit={() => handleEdit(card.filename)}
                   onDelete={() => handleDelete(card.filename)}
                   onExpand={() => setExpandedCard(card)}
@@ -169,8 +169,8 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
                   exports={card.exports}
                   meta={card.meta}
                   projectId={projectId}
-                  layerId={layerId}
-                  layerColor={layerColor}
+                  canvasId={canvasId}
+                  canvasColor={canvasColor}
                   onEdit={() => handleEdit(card.filename)}
                   onDelete={() => handleDelete(card.filename)}
                   onExpand={() => setExpandedCard(card)}
@@ -189,8 +189,8 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
             exports={expandedCard.exports}
             meta={expandedCard.meta}
             projectId={projectId}
-            layerId={layerId}
-            layerColor={layerColor}
+            canvasId={canvasId}
+            canvasColor={canvasColor}
             onClose={() => setExpandedCard(null)}
             onEdit={() => { handleEdit(expandedCard.filename); setExpandedCard(null); }}
           />
@@ -201,7 +201,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
           <FileEditor
             file={editingFile ? { name: editingFile.name, type: "markdown" as const, content: editingFile.content, modifiedAt: "" } : null}
             defaultType={creatingType ?? undefined}
-            layerColor={layerColor}
+            canvasColor={canvasColor}
             onSave={handleSave}
             onCancel={() => {
               setEditingFile(null);
@@ -213,7 +213,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
         {/* Drawing canvas */}
         {drawingMode && (
           <DrawingCanvas
-            layerColor={layerColor}
+            canvasColor={canvasColor}
             onConvert={handleConvertDrawing}
             onCancel={() => setDrawingMode(false)}
             converting={converting}

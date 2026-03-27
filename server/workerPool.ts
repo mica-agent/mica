@@ -47,7 +47,7 @@ export interface RpcHandler {
   (
     method: string,
     args: Record<string, unknown>,
-    requestContext: { project: string; layer: string; filename: string }
+    requestContext: { project: string; canvas: string; filename: string }
   ): Promise<any>;
 }
 
@@ -72,7 +72,7 @@ class PythonWorker {
   private rpcHandler: RpcHandler | null = null;
   private channelDataHandler: ChannelDataHandler | null = null;
   private channelCloseHandler: ChannelCloseHandler | null = null;
-  private requestContexts: Map<string, { project: string; layer: string; filename: string }> = new Map();
+  private requestContexts: Map<string, { project: string; canvas: string; filename: string }> = new Map();
 
   constructor(
     private workerPath: string,
@@ -231,8 +231,8 @@ class PythonWorker {
 
     // Get the context for this request
     const context = requestId
-      ? this.requestContexts.get(requestId) || { project: "", layer: "workspace", filename: "" }
-      : { project: "", layer: "workspace", filename: "" };
+      ? this.requestContexts.get(requestId) || { project: "", canvas: "workspace", filename: "" }
+      : { project: "", canvas: "workspace", filename: "" };
 
     try {
       const result = await this.rpcHandler(method, args, context);
@@ -284,7 +284,7 @@ class PythonWorker {
     });
   }
 
-  setRequestContext(id: string, context: { project: string; layer: string; filename: string }) {
+  setRequestContext(id: string, context: { project: string; canvas: string; filename: string }) {
     this.requestContexts.set(id, context);
   }
 
@@ -398,7 +398,7 @@ export class WorkerPool extends EventEmitter {
     classPath: string,
     content: string,
     config: Record<string, unknown>,
-    context: { project: string; layer: string; filename: string }
+    context: { project: string; canvas: string; filename: string }
   ): Promise<RenderResult> {
     // Renders prefer idle workers but never wait — fall back to round-robin
     // so they don't get stuck behind long-running export calls
@@ -424,7 +424,7 @@ export class WorkerPool extends EventEmitter {
     fn: string,
     content: string,
     args: Record<string, unknown>,
-    context: { project: string; layer: string; filename: string }
+    context: { project: string; canvas: string; filename: string }
   ): Promise<any> {
     const worker = this.getIdleWorker() ?? (await this.waitForWorker());
     const id = this.nextId();
@@ -455,7 +455,7 @@ export class WorkerPool extends EventEmitter {
     fn: string,
     content: string,
     args: Record<string, unknown>,
-    context: { project: string; layer: string; filename: string },
+    context: { project: string; canvas: string; filename: string },
     onData: (data: unknown) => void,
     onClose: () => void
   ): Promise<string> {

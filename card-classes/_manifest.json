@@ -14,7 +14,7 @@
   "goal": {
     "badge": "GOAL",
     "system": true,
-    "defaultTitle": "Layer Goal"
+    "defaultTitle": "Canvas Goal"
   },
   "todo": {
     "badge": "TODO",

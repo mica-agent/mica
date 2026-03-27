@@ -1,4 +1,4 @@
-// Mica AI Team — Layer-Specialized Agents (Claude Agent SDK)
+// Mica AI Team — Canvas-Specialized Agents (Claude Agent SDK)
 // Uses Claude Code subscription auth — no API key needed.
 
 // Allow nested Claude Code sessions (we're running inside Claude Code's terminal)
@@ -13,12 +13,12 @@ import os from "os";
 import { isDockerEnabled, createDockerSpawner } from "./dockerSpawn.js";
 import {
   listFiles,
-  readLayerFile,
-  writeLayerFile,
-  deleteLayerFile,
+  readCanvasFile,
+  writeCanvasFile,
+  deleteCanvasFile,
   getAllFilesAsContext,
   getProjectConfig,
-} from "./layerFiles.js";
+} from "./canvasFiles.js";
 import { readMicaConfig } from "./projectConnection.js";
 
 // ── Helpers ────────────────────────────────────────────────
@@ -62,10 +62,10 @@ function describeToolUse(name: string, input?: Record<string, unknown>): string 
 
 // ── Types ──────────────────────────────────────────────────
 
-export type LayerId = string;
+export type CanvasId = string;
 
 export interface AgentResponse {
-  layer: LayerId;
+  canvas: CanvasId;
   message: string;
   consultation?: Consultation | null;
   filesChanged?: boolean;
@@ -73,22 +73,22 @@ export interface AgentResponse {
 }
 
 export interface Consultation {
-  targetLayer: LayerId;
+  targetCanvas: CanvasId;
   question: string;
   context: string;
 }
 
 // ── Agent system prompts ───────────────────────────────────
 
-function getAgentIdentity(layer: string): string {
-  // Generic identity — layer-specific personality comes from _brief.md
-  return `You are the AI agent for the "${layer}" workspace in Mica.`;
+function getAgentIdentity(canvas: string): string {
+  // Generic identity — canvas-specific personality comes from _brief.md
+  return `You are the AI agent for the "${canvas}" workspace in Mica.`;
 }
 
 const TOOL_INSTRUCTIONS = `
-You have access to tools for managing files on the shared whiteboard, reading other layers, and cross-layer collaboration.
+You have access to tools for managing files on the shared whiteboard, reading other canvases, and cross-canvas collaboration.
 
-## Your Layer's Whiteboard
+## Your Canvas's Whiteboard
 - list_files: See what files exist on your whiteboard
 - read_file: Read a specific file's content
 - write_file: Create or update a file (this is how you create artifacts)
@@ -100,26 +100,26 @@ When creating files, use kebab-case names with descriptive titles:
 - .html for interactive widgets, styled documents, or visual layouts
 - .txt for simple notes and lists
 
-## Cross-Layer Awareness
-- list_cross_layer: See what files exist on another layer's whiteboard
-- read_cross_layer: Read a specific file from another layer
+## Cross-Canvas Awareness
+- list_cross_canvas: See what files exist on another canvas's whiteboard
+- read_cross_canvas: Read a specific file from another canvas
 
-USE THESE PROACTIVELY. Before making decisions, check what other layers have decided.
+USE THESE PROACTIVELY. Before making decisions, check what other canvases have decided.
 
-## Cross-Layer Collaboration
-- consult_layer: Ask another layer's agent a question. Response comes back immediately.
+## Cross-Canvas Collaboration
+- consult_canvas: Ask another canvas's agent a question. Response comes back immediately.
   Decision record saved to both whiteboards as _decision-*.md.
 
 Both directions are normal and expected. Don't wait to be asked — if you discover
-something that affects another layer, consult them proactively.
+something that affects another canvas, consult them proactively.
 
 ## Decision Files (_decision-*.md)
-These are the connective tissue between layers. They capture:
+These are the connective tissue between canvases. They capture:
 - What was asked and why
-- What the other layer responded
+- What the other canvas responded
 - The resulting decision
 
-When you see _decision-*.md files on your whiteboard, READ THEM — they contain agreements with other layers that constrain your work.
+When you see _decision-*.md files on your whiteboard, READ THEM — they contain agreements with other canvases that constrain your work.
 
 ## Shell Execution
 - You have access to Bash for running shell commands (install packages, run scripts, execute code, etc.)
@@ -129,9 +129,9 @@ When you see _decision-*.md files on your whiteboard, READ THEM — they contain
 
 ## Custom Widgets
 - To create a new interactive widget card class, first read the docs: \`cat card-classes/CREATING_WIDGETS.md\`
-- Project-specific card classes go in \`.mica/_card-classes/<classname>/render.py\` (inside the project's .mica directory, NOT inside a layer)
+- Project-specific card classes go in \`.mica/_card-classes/<classname>/render.py\` (inside the project's .mica directory, NOT inside a canvas)
 - The project root is your working directory — card classes live at .mica/_card-classes/
-- Then create a \`_<classname>.md\` file in the layer to use it
+- Then create a \`_<classname>.md\` file in the canvas to use it
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
@@ -141,10 +141,10 @@ ACTIVITY LOG: When you write or delete files, provide a clear summary/reason —
 const GOAL_INSTRUCTIONS = `
 ## Goal-Driven Collaboration
 
-You are a COLLABORATOR, not just a chatbot. Your behavior is driven by the layer's _goal.md file.
+You are a COLLABORATOR, not just a chatbot. Your behavior is driven by the canvas's _goal.md file.
 
 ### How to use _goal.md:
-1. READ IT on every conversation turn to understand what "done" looks like for this layer.
+1. READ IT on every conversation turn to understand what "done" looks like for this canvas.
 2. ASSESS PROGRESS: After each interaction, mentally evaluate which checklist items are satisfied by the current whiteboard files and which still have gaps.
 3. SURFACE GAPS: Proactively tell the human what's missing or weak. Don't wait to be asked.
 4. SUGGEST NEXT STEPS: End your responses with a concrete suggestion for what to work on next, based on the goal checklist.
@@ -162,7 +162,7 @@ RULES:
 - Prefix every item with @agent or @human to show who owns it.
 - When you spot a gap from _goal.md that needs action, ADD it to _todo.md.
 - **CRITICAL: When you complete a task, IMMEDIATELY update _todo.md** — move the item to the Done section with [x] and a date. Do this in the SAME turn as completing the work, not later. The human sees the todo card on the whiteboard and uses it to track what's done.
-- When something is blocked on another layer or a human decision, move it to Blocked with a note about what it's waiting on.
+- When something is blocked on another canvas or a human decision, move it to Blocked with a note about what it's waiting on.
 - Keep it concise — this is a commitment tracker, not a project plan.
 
 ### Working style — be a real teammate:
@@ -180,8 +180,8 @@ RULES:
 You are a skilled teammate, not an assistant. Push back when something seems wrong. Celebrate real progress. Be honest about gaps. Keep the team focused on what matters.
 `;
 
-export function getAgentMeta(layer: string): { name: string; role: string } {
-  const label = layer
+export function getAgentMeta(canvas: string): { name: string; role: string } {
+  const label = canvas
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
   return {
@@ -192,32 +192,32 @@ export function getAgentMeta(layer: string): { name: string; role: string } {
 
 // ── Activity log helper ─────────────────────────────────────
 
-async function appendToLog(project: string, layer: LayerId, entry: string) {
+async function appendToLog(project: string, canvas: CanvasId, entry: string) {
   const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
   const line = `- **${timestamp}** — ${entry}\n`;
   try {
-    const existing = await readLayerFile(project, layer, "_log.md");
-    await writeLayerFile(project, layer, "_log.md", existing.content + line);
+    const existing = await readCanvasFile(project, canvas, "_log.md");
+    await writeCanvasFile(project, canvas, "_log.md", existing.content + line);
   } catch {
     // No log yet — create it
-    await writeLayerFile(project, layer, "_log.md", `# Activity Log\n\n${line}`);
+    await writeCanvasFile(project, canvas, "_log.md", `# Activity Log\n\n${line}`);
   }
 }
 
-// ── MCP Tools for layer operations ─────────────────────────
+// ── MCP Tools for canvas operations ─────────────────────────
 
-// Track which project+layer the current query is operating on
+// Track which project+canvas the current query is operating on
 let currentProject: string = "";
-let currentLayer: LayerId = "workspace";
+let currentCanvas: CanvasId = "workspace";
 let pendingConsultation: Consultation | null = null;
 let filesWereChanged = false;
 
 const listFilesTool = tool(
   "list_files",
-  "List all files on the current layer's whiteboard.",
+  "List all files on the current canvas's whiteboard.",
   {},
   async () => {
-    const files = await listFiles(currentProject, currentLayer);
+    const files = await listFiles(currentProject, currentCanvas);
     const listing = files
       .map((f) => `${f.name} (${f.type}, modified ${f.modifiedAt})`)
       .join("\n");
@@ -239,7 +239,7 @@ const readFileTool = tool(
     filename: z.string().describe("The filename to read (e.g., product-brief.md)"),
   },
   async (args) => {
-    const file = await readLayerFile(currentProject, currentLayer, args.filename);
+    const file = await readCanvasFile(currentProject, currentCanvas, args.filename);
     return {
       content: [
         {
@@ -264,17 +264,17 @@ const writeFileTool = tool(
     summary: z.string().describe("One-line summary of what you did and why (for the activity log)"),
   },
   async (args) => {
-    await writeLayerFile(currentProject, currentLayer, args.filename, args.content);
+    await writeCanvasFile(currentProject, currentCanvas, args.filename, args.content);
     filesWereChanged = true;
     // Append to activity log (skip if writing the log itself)
     if (args.filename !== "_log.md") {
-      await appendToLog(currentProject, currentLayer, `Updated **${args.filename}**: ${args.summary}`);
+      await appendToLog(currentProject, currentCanvas, `Updated **${args.filename}**: ${args.summary}`);
     }
     return {
       content: [
         {
           type: "text" as const,
-          text: `File "${args.filename}" written to ${currentLayer} whiteboard.`,
+          text: `File "${args.filename}" written to ${currentCanvas} whiteboard.`,
         },
       ],
     };
@@ -289,39 +289,39 @@ const deleteFileTool = tool(
     reason: z.string().describe("Why this file is being deleted (for the activity log)"),
   },
   async (args) => {
-    await deleteLayerFile(currentProject, currentLayer, args.filename);
+    await deleteCanvasFile(currentProject, currentCanvas, args.filename);
     filesWereChanged = true;
-    await appendToLog(currentProject, currentLayer, `Deleted **${args.filename}**: ${args.reason}`);
+    await appendToLog(currentProject, currentCanvas, `Deleted **${args.filename}**: ${args.reason}`);
     return {
       content: [
         {
           type: "text" as const,
-          text: `File "${args.filename}" deleted from ${currentLayer} whiteboard.`,
+          text: `File "${args.filename}" deleted from ${currentCanvas} whiteboard.`,
         },
       ],
     };
   }
 );
 
-// ── Cross-layer tools ─────────────────────────────────────
+// ── Cross-canvas tools ─────────────────────────────────────
 
-const readCrossLayerTool = tool(
-  "read_cross_layer",
-  "Read a file from another layer's whiteboard. Use this to check what decisions, constraints, or artifacts exist in other layers before making your own decisions.",
+const readCrossCanvasTool = tool(
+  "read_cross_canvas",
+  "Read a file from another canvas's whiteboard. Use this to check what decisions, constraints, or artifacts exist in other canvases before making your own decisions.",
   {
-    layer: z
+    canvas: z
       .string()
-      .describe("Which layer to read from (e.g., 'workspace', 'mission', etc.)"),
+      .describe("Which canvas to read from (e.g., 'workspace', 'mission', etc.)"),
     filename: z.string().describe("The filename to read (e.g., _goal.md, product-brief.md)"),
   },
   async (args) => {
     try {
-      const file = await readLayerFile(currentProject, args.layer, args.filename);
+      const file = await readCanvasFile(currentProject, args.canvas, args.filename);
       return {
         content: [
           {
             type: "text" as const,
-            text: `[From ${args.layer} layer — ${args.filename}]\n\n${file.content}`,
+            text: `[From ${args.canvas} canvas — ${args.filename}]\n\n${file.content}`,
           },
         ],
       };
@@ -330,7 +330,7 @@ const readCrossLayerTool = tool(
         content: [
           {
             type: "text" as const,
-            text: `File "${args.filename}" not found in ${args.layer} layer.`,
+            text: `File "${args.filename}" not found in ${args.canvas} canvas.`,
           },
         ],
       };
@@ -338,16 +338,16 @@ const readCrossLayerTool = tool(
   }
 );
 
-const listCrossLayerTool = tool(
-  "list_cross_layer",
-  "List files on another layer's whiteboard. Use this to discover what artifacts and decisions exist in other layers.",
+const listCrossCanvasTool = tool(
+  "list_cross_canvas",
+  "List files on another canvas's whiteboard. Use this to discover what artifacts and decisions exist in other canvases.",
   {
-    layer: z
+    canvas: z
       .string()
-      .describe("Which layer to list files from (e.g., 'workspace', 'mission', etc.)"),
+      .describe("Which canvas to list files from (e.g., 'workspace', 'mission', etc.)"),
   },
   async (args) => {
-    const files = await listFiles(currentProject, args.layer);
+    const files = await listFiles(currentProject, args.canvas);
     const listing = files
       .map((f) => `${f.name} (${f.type}, modified ${f.modifiedAt})`)
       .join("\n");
@@ -355,38 +355,38 @@ const listCrossLayerTool = tool(
       content: [
         {
           type: "text" as const,
-          text: `[${args.layer} layer files]\n${listing || "(No files yet)"}`,
+          text: `[${args.canvas} canvas files]\n${listing || "(No files yet)"}`,
         },
       ],
     };
   }
 );
 
-const consultLayerTool = tool(
-  "consult_layer",
-  "Consult another layer's agent — ask a question and get their response. Use for decisions that need another perspective. The Q&A is saved as a decision record on both whiteboards.",
+const consultCanvasTool = tool(
+  "consult_canvas",
+  "Consult another canvas's agent — ask a question and get their response. Use for decisions that need another perspective. The Q&A is saved as a decision record on both whiteboards.",
   {
-    target_layer: z
+    target_canvas: z
       .string()
-      .describe("Which layer agent to ask (e.g., 'workspace', 'mission', etc.)"),
+      .describe("Which canvas agent to ask (e.g., 'workspace', 'mission', etc.)"),
     question: z.string().describe("The question or decision needed"),
     context: z.string().describe("Relevant context for the target agent"),
   },
   async (args) => {
-    const targetLayer = args.target_layer;
-    const fromMeta = getAgentMeta(currentLayer);
-    const toMeta = getAgentMeta(targetLayer);
+    const targetCanvas = args.target_canvas;
+    const fromMeta = getAgentMeta(currentCanvas);
+    const toMeta = getAgentMeta(targetCanvas);
 
     // Call the target agent directly (synchronous consultation)
     const response = await chatWithAgent(
       currentProject,
-      targetLayer,
-      `[Cross-layer question from ${fromMeta.name} (${currentLayer} layer)]\n\nQuestion: ${args.question}\n\nContext: ${args.context}\n\nPlease respond from your perspective as the ${toMeta.name}. Be concrete and actionable. If this leads to a decision, state it clearly.`
+      targetCanvas,
+      `[Cross-canvas question from ${fromMeta.name} (${currentCanvas} canvas)]\n\nQuestion: ${args.question}\n\nContext: ${args.context}\n\nPlease respond from your perspective as the ${toMeta.name}. Be concrete and actionable. If this leads to a decision, state it clearly.`
     );
 
     const responseText = response.message || "(No response)";
 
-    // Write decision record to both layers
+    // Write decision record to both canvases
     const timestamp = new Date().toISOString().slice(0, 10);
     const slug = args.question
       .toLowerCase()
@@ -394,15 +394,15 @@ const consultLayerTool = tool(
       .slice(0, 40)
       .replace(/-$/, "");
     const decisionFilename = `_decision-${slug}.md`;
-    const decisionContent = `# Cross-Layer Decision\n\n**Date:** ${timestamp}\n**From:** ${fromMeta.name} (${currentLayer})\n**To:** ${toMeta.name} (${targetLayer})\n\n## Question\n${args.question}\n\n## Context\n${args.context}\n\n## Response from ${toMeta.name}\n${responseText}\n`;
+    const decisionContent = `# Cross-Canvas Decision\n\n**Date:** ${timestamp}\n**From:** ${fromMeta.name} (${currentCanvas})\n**To:** ${toMeta.name} (${targetCanvas})\n\n## Question\n${args.question}\n\n## Context\n${args.context}\n\n## Response from ${toMeta.name}\n${responseText}\n`;
 
-    // Save to originating layer
-    await writeLayerFile(currentProject, currentLayer, decisionFilename, decisionContent);
-    await appendToLog(currentProject, currentLayer, `Cross-layer decision with ${targetLayer}: "${args.question}" → saved to **${decisionFilename}**`);
+    // Save to originating canvas
+    await writeCanvasFile(currentProject, currentCanvas, decisionFilename, decisionContent);
+    await appendToLog(currentProject, currentCanvas, `Cross-canvas decision with ${targetCanvas}: "${args.question}" → saved to **${decisionFilename}**`);
 
-    // Save to target layer
-    await writeLayerFile(currentProject, targetLayer, decisionFilename, decisionContent);
-    await appendToLog(currentProject, targetLayer, `Responded to ${currentLayer} layer: "${args.question}" → saved to **${decisionFilename}**`);
+    // Save to target canvas
+    await writeCanvasFile(currentProject, targetCanvas, decisionFilename, decisionContent);
+    await appendToLog(currentProject, targetCanvas, `Responded to ${currentCanvas} canvas: "${args.question}" → saved to **${decisionFilename}**`);
 
     filesWereChanged = true;
 
@@ -410,7 +410,7 @@ const consultLayerTool = tool(
       content: [
         {
           type: "text" as const,
-          text: `[Response from ${toMeta.name} (${targetLayer} layer)]\n\n${responseText}\n\n---\nDecision saved to ${decisionFilename} on both whiteboards.`,
+          text: `[Response from ${toMeta.name} (${targetCanvas} canvas)]\n\n${responseText}\n\n---\nDecision saved to ${decisionFilename} on both whiteboards.`,
         },
       ],
     };
@@ -421,16 +421,16 @@ const consultLayerTool = tool(
 function createMicaToolServer() {
   return createSdkMcpServer({
     name: "mica-tools",
-    tools: [listFilesTool, readFileTool, writeFileTool, deleteFileTool, readCrossLayerTool, listCrossLayerTool, consultLayerTool],
+    tools: [listFilesTool, readFileTool, writeFileTool, deleteFileTool, readCrossCanvasTool, listCrossCanvasTool, consultCanvasTool],
   });
 }
 
-// ── Session tracking per project/layer ─────────────────────
+// ── Session tracking per project/canvas ─────────────────────
 
-const layerSessions: Record<string, string | undefined> = {};
+const canvasSessions: Record<string, string | undefined> = {};
 
-function sessionKey(project: string, layer: string): string {
-  return `${project}/${layer}`;
+function sessionKey(project: string, canvas: string): string {
+  return `${project}/${canvas}`;
 }
 
 // ── Agent Runner ───────────────────────────────────────────
@@ -444,46 +444,46 @@ export type ProgressCallback = (event: {
 
 export async function chatWithAgent(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   userMessage: string,
   _imageBase64?: string,
   onProgress?: ProgressCallback
 ): Promise<AgentResponse> {
-  // Set current project+layer for tool callbacks
+  // Set current project+canvas for tool callbacks
   currentProject = project;
-  currentLayer = layer;
+  currentCanvas = canvas;
   pendingConsultation = null;
   filesWereChanged = false;
 
   // Build system prompt with current file context
-  const fileContext = await getAllFilesAsContext(project, layer);
+  const fileContext = await getAllFilesAsContext(project, canvas);
 
-  // Read _brief.md for layer-specific instructions (user-editable)
+  // Read _brief.md for canvas-specific instructions (user-editable)
   let briefContent = "";
   try {
-    const brief = await readLayerFile(project, layer, "_brief.md");
-    briefContent = `\n## Layer Brief (from _brief.md)\n\n${brief.content}\n`;
+    const brief = await readCanvasFile(project, canvas, "_brief.md");
+    briefContent = `\n## Canvas Brief (from _brief.md)\n\n${brief.content}\n`;
   } catch {
     // No _brief.md yet — that's fine, use defaults
   }
 
-  const systemPrompt = `${getAgentIdentity(layer)}
+  const systemPrompt = `${getAgentIdentity(canvas)}
 ${briefContent}
 ${TOOL_INSTRUCTIONS}
 ${GOAL_INSTRUCTIONS}
 
-## Current Whiteboard Files (${layer} layer)
+## Current Whiteboard Files (${canvas} canvas)
 
 ${fileContext}`;
 
   let resultText = "";
   let cost = 0;
   let sessionId: string | undefined;
-  const sKey = sessionKey(project, layer);
+  const sKey = sessionKey(project, canvas);
 
   // Resolve model: per-agent config > project default > fallback
   const micaConfig = await readMicaConfig(project);
-  const model = micaConfig?.agents?.[layer]?.model
+  const model = micaConfig?.agents?.[canvas]?.model
     || micaConfig?.model
     || "claude-sonnet-4-6";
 
@@ -500,14 +500,14 @@ ${fileContext}`;
     settingSources: ["user" as const],
   };
 
-  // Resume existing session for this layer if we have one
-  if (layerSessions[sKey]) {
-    options.resume = layerSessions[sKey];
+  // Resume existing session for this canvas if we have one
+  if (canvasSessions[sKey]) {
+    options.resume = canvasSessions[sKey];
   }
 
   // PROD mode: sandbox Bash execution in Docker container
   if (await isDockerEnabled(project)) {
-    options.spawnClaudeCodeProcess = await createDockerSpawner(project, layer);
+    options.spawnClaudeCodeProcess = await createDockerSpawner(project, canvas);
   }
 
   // Emit initial "thinking" event so the UI knows we're active immediately
@@ -556,11 +556,11 @@ ${fileContext}`;
 
   // Save session for continuity
   if (sessionId) {
-    layerSessions[sKey] = sessionId;
+    canvasSessions[sKey] = sessionId;
   }
 
   return {
-    layer,
+    canvas,
     message: resultText,
     consultation: pendingConsultation ? { ...pendingConsultation } : null,
     filesChanged: filesWereChanged,
@@ -568,18 +568,18 @@ ${fileContext}`;
   };
 }
 
-// consultLayer is now handled inline by the consult_layer tool.
+// consultCanvas is now handled inline by the consult_canvas tool.
 // Kept as a convenience for the team discuss flow.
-export async function consultLayer(
+export async function consultCanvas(
   project: string,
-  fromLayer: LayerId,
-  toLayer: LayerId,
+  fromCanvas: CanvasId,
+  toCanvas: CanvasId,
   question: string,
   context: string
 ): Promise<AgentResponse> {
-  const fromMeta = getAgentMeta(fromLayer);
-  const toMeta = getAgentMeta(toLayer);
-  const prompt = `[Cross-layer question from ${fromMeta.name} (${fromLayer} layer)]
+  const fromMeta = getAgentMeta(fromCanvas);
+  const toMeta = getAgentMeta(toCanvas);
+  const prompt = `[Cross-canvas question from ${fromMeta.name} (${fromCanvas} canvas)]
 
 Question: ${question}
 
@@ -587,38 +587,38 @@ Context: ${context}
 
 Please respond from your perspective as the ${toMeta.name}. Be concrete and actionable.`;
 
-  return chatWithAgent(project, toLayer, prompt);
+  return chatWithAgent(project, toCanvas, prompt);
 }
 
 export async function teamDiscuss(
   project: string,
-  layers: string[]
+  canvases: string[]
 ): Promise<Record<string, AgentResponse>> {
-  // Note: for projects with custom layers, we discuss across all layers
-  // For legacy compatibility, if no layers provided, use the project's layers
-  if (layers.length === 0) {
+  // Note: for projects with custom canvases, we discuss across all canvases
+  // For legacy compatibility, if no canvases provided, use the project's canvases
+  if (canvases.length === 0) {
     const config = await getProjectConfig(project);
-    layers = config?.layers || ["workspace"];
+    canvases = config?.canvases || ["workspace"];
   }
 
   const results = await Promise.all(
-    layers.map((layer) =>
+    canvases.map((canvas) =>
       chatWithAgent(
         project,
-        layer,
-        `[Team Discussion] The human wants the team's input on this topic.\n\nRespond from your perspective as the ${getAgentMeta(layer).name}. Be concise (2-3 paragraphs max).`
+        canvas,
+        `[Team Discussion] The human wants the team's input on this topic.\n\nRespond from your perspective as the ${getAgentMeta(canvas).name}. Be concise (2-3 paragraphs max).`
       )
     )
   );
 
   return Object.fromEntries(
-    layers.map((layer, i) => [layer, results[i]])
+    canvases.map((canvas, i) => [canvas, results[i]])
   );
 }
 
 export async function convertDrawingToMermaid(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   imageBase64: string
 ): Promise<{ mermaid: string; filename: string }> {
   // Write image to a temp file so the agent can read it
@@ -628,7 +628,7 @@ export async function convertDrawingToMermaid(
 
   // Resolve model from project config
   const micaConfig = await readMicaConfig(project);
-  const model = micaConfig?.agents?.[layer]?.model
+  const model = micaConfig?.agents?.[canvas]?.model
     || micaConfig?.model
     || "claude-sonnet-4-6";
 
@@ -668,17 +668,17 @@ export async function convertDrawingToMermaid(
   }
 
   const filename = `drawing-${Date.now()}.mmd`;
-  await writeLayerFile(project, layer, filename, mermaidCode);
+  await writeCanvasFile(project, canvas, filename, mermaidCode);
   return { mermaid: mermaidCode, filename };
 }
 
-export function resetLayer(project: string, layer: LayerId) {
-  const sKey = sessionKey(project, layer);
-  layerSessions[sKey] = undefined;
+export function resetCanvas(project: string, canvas: CanvasId) {
+  const sKey = sessionKey(project, canvas);
+  canvasSessions[sKey] = undefined;
 }
 
 export function resetAll() {
-  for (const key of Object.keys(layerSessions)) {
-    layerSessions[key] = undefined;
+  for (const key of Object.keys(canvasSessions)) {
+    canvasSessions[key] = undefined;
   }
 }

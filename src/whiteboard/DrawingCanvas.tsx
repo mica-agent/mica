@@ -5,14 +5,14 @@ interface Stroke {
 }
 
 interface Props {
-  layerColor: string;
+  canvasColor: string;
   onConvert: (imageBase64: string) => void;
   onCancel: () => void;
   converting?: boolean;
 }
 
 export default function DrawingCanvas({
-  layerColor,
+  canvasColor,
   onConvert,
   onCancel,
   converting,
@@ -134,7 +134,7 @@ export default function DrawingCanvas({
 
   return (
     <div className="wb-drawing-overlay">
-      <div className="wb-drawing-container" style={{ "--layer-color": layerColor } as React.CSSProperties}>
+      <div className="wb-drawing-container" style={{ "--canvas-color": canvasColor } as React.CSSProperties}>
         <div className="wb-drawing-toolbar">
           <span className="wb-drawing-title">Draw a diagram</span>
           <div className="wb-drawing-actions">

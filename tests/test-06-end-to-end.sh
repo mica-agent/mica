@@ -24,9 +24,9 @@ check "Project connected" "$CONN_ID" "$PROJ_ID"
 # ── Step 2: Write agent brief ────────────────────────────
 echo ""
 echo "2. Configure agent brief..."
-api_put "/projects/$PROJ_ID/layers/workspace/files/_brief.md" \
+api_put "/projects/$PROJ_ID/canvases/workspace/files/_brief.md" \
   '{"content":"You are a test agent for e2e validation."}' >/dev/null
-BRIEF=$(api_get "/projects/$PROJ_ID/layers/workspace/files/_brief.md" | json_get "['content']")
+BRIEF=$(api_get "/projects/$PROJ_ID/canvases/workspace/files/_brief.md" | json_get "['content']")
 check "Brief written" "$BRIEF" "You are a test agent for e2e validation."
 
 # ── Step 3: Create app file ──────────────────────────────
@@ -126,7 +126,7 @@ check "Reconnected" "$CONN_ID" "$PROJ_ID"
 # ── Step 11: Verify metadata preserved ───────────────────
 echo ""
 echo "11. Verify metadata preserved..."
-BRIEF=$(api_get "/projects/$PROJ_ID/layers/workspace/files/_brief.md" | json_get "['content']")
+BRIEF=$(api_get "/projects/$PROJ_ID/canvases/workspace/files/_brief.md" | json_get "['content']")
 check "Brief preserved after reconnect" "$BRIEF" "You are a test agent for e2e validation."
 
 LOG=$(api_get "/projects/$PROJ_ID/git/log?limit=5")

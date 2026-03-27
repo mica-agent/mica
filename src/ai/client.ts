@@ -1,7 +1,7 @@
 // Mica AI Team Client — connects frontend to the agent server
 // Auth is handled server-side via Claude Code subscription.
 
-export type LayerId = string;
+export type CanvasId = string;
 
 export interface AgentMeta {
   name: string;
@@ -9,13 +9,13 @@ export interface AgentMeta {
 }
 
 export interface Escalation {
-  targetLayer: LayerId;
+  targetCanvas: CanvasId;
   question: string;
   context: string;
 }
 
 export interface AgentResponse {
-  layer: LayerId;
+  canvas: CanvasId;
   message: string;
   escalation?: Escalation | null;
   filesChanged?: boolean;
@@ -50,24 +50,24 @@ export async function healthCheck(): Promise<{
 
 export async function getAgentMeta(
   project: string,
-  layer: LayerId
+  canvas: CanvasId
 ): Promise<AgentMeta> {
   const res = await fetch(
-    `${API_BASE}/api/projects/${encodeURIComponent(project)}/layers/${encodeURIComponent(layer)}/agent`
+    `${API_BASE}/api/projects/${encodeURIComponent(project)}/canvases/${encodeURIComponent(canvas)}/agent`
   );
   return res.json();
 }
 
 export async function chat(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   message: string
 ): Promise<ChatResult> {
   const t0 = performance.now();
-  log("chat", `→ ${project}/${layer}`, message.length > 80 ? message.slice(0, 80) + "..." : message);
+  log("chat", `→ ${project}/${canvas}`, message.length > 80 ? message.slice(0, 80) + "..." : message);
 
   const res = await fetch(
-    `${API_BASE}/api/projects/${encodeURIComponent(project)}/layers/${encodeURIComponent(layer)}/chat`,
+    `${API_BASE}/api/projects/${encodeURIComponent(project)}/canvases/${encodeURIComponent(canvas)}/chat`,
     {
       method: "POST",
       headers,
@@ -79,14 +79,14 @@ export async function chat(
 
   if (!res.ok) {
     const text = await res.text();
-    logError("chat", `x ${project}/${layer} [${res.status}] ${elapsed}s`, text);
+    logError("chat", `x ${project}/${canvas} [${res.status}] ${elapsed}s`, text);
     let errMsg = "Request failed";
     try { errMsg = JSON.parse(text).error || errMsg; } catch {}
     throw new Error(errMsg);
   }
 
   const data: ChatResult = await res.json();
-  log("chat", `ok ${project}/${layer} [${res.status}] ${elapsed}s`, {
+  log("chat", `ok ${project}/${canvas} [${res.status}] ${elapsed}s`, {
     msg: data.response.message.slice(0, 120),
     filesChanged: data.response.filesChanged,
     cost: data.response.cost,
@@ -98,7 +98,7 @@ export async function chat(
 export async function teamDiscussRequest(
   project: string,
   topic: string
-): Promise<Record<LayerId, AgentResponse>> {
+): Promise<Record<CanvasId, AgentResponse>> {
   const t0 = performance.now();
   log("team", "→", topic);
 
@@ -128,20 +128,20 @@ export async function teamDiscussRequest(
 
 export async function escalate(
   project: string,
-  fromLayer: LayerId,
-  toLayer: LayerId,
+  fromCanvas: CanvasId,
+  toCanvas: CanvasId,
   question: string,
   context: string
 ): Promise<AgentResponse> {
   const t0 = performance.now();
-  log("escalate", `→ ${fromLayer} → ${toLayer}`, question);
+  log("escalate", `→ ${fromCanvas} → ${toCanvas}`, question);
 
   const res = await fetch(
     `${API_BASE}/api/projects/${encodeURIComponent(project)}/consult`,
     {
       method: "POST",
       headers,
-      body: JSON.stringify({ fromLayer, toLayer, question, context }),
+      body: JSON.stringify({ fromCanvas, toCanvas, question, context }),
     }
   );
 
@@ -160,14 +160,14 @@ export async function escalate(
   return response;
 }
 
-export async function reset(project: string, layer?: LayerId): Promise<void> {
-  log("reset", layer || "all");
+export async function reset(project: string, canvas?: CanvasId): Promise<void> {
+  log("reset", canvas || "all");
   await fetch(
     `${API_BASE}/api/projects/${encodeURIComponent(project)}/reset`,
     {
       method: "POST",
       headers,
-      body: JSON.stringify({ layer }),
+      body: JSON.stringify({ canvas }),
     }
   );
 }

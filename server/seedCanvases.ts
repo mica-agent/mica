@@ -6,10 +6,10 @@ import { readFile, mkdir } from "fs/promises";
 import { join } from "path";
 import {
   listFiles,
-  writeLayerFile,
-  ensureLayerDir,
+  writeCanvasFile,
+  ensureCanvasDir,
   listProjects,
-} from "./layerFiles.js";
+} from "./canvasFiles.js";
 import {
   connectProject,
   initMicaDir,
@@ -87,12 +87,12 @@ export async function seedNewProject(
   // Connect the project (this creates .mica/ and git init)
   const config = await connectProject(projectDir, projectName);
 
-  // Seed the workspace layer with starter files
+  // Seed the workspace canvas with starter files
   const existing = await listFiles(projectId, "workspace");
   if (existing.length === 0) {
     console.log(`[seed] Seeding project "${projectId}" with starter files...`);
     for (const [filename, content] of Object.entries(NEW_PROJECT_SEEDS)) {
-      await writeLayerFile(projectId, "workspace", filename, content);
+      await writeCanvasFile(projectId, "workspace", filename, content);
     }
     console.log(
       `[seed] Created ${Object.keys(NEW_PROJECT_SEEDS).length} files in ${projectDir}/.mica/workspace/`

@@ -5,7 +5,7 @@
  * a Docker container instead of locally. MCP tools still run server-side —
  * only Bash tool execution is sandboxed.
  *
- * The container mounts only the relevant project/layer directory and has
+ * The container mounts only the relevant project/canvas directory and has
  * outbound HTTP access (for pip install, API calls, etc.).
  */
 
@@ -15,8 +15,8 @@ import { writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
-import { readLayerFile, getProjectConfig } from "./layerFiles.js";
-import { getProjectPath, getLayerDir } from "./projectConnection.js";
+import { readCanvasFile, getProjectConfig } from "./canvasFiles.js";
+import { getProjectPath, getCanvasDir } from "./projectConnection.js";
 
 const SESSIONS_ROOT = join(process.cwd(), ".sessions");
 const BASE_IMAGE = "mica-sandbox:base";
@@ -141,26 +141,26 @@ export async function isDockerEnabled(project: string): Promise<boolean> {
 
 export async function createDockerSpawner(
   project: string,
-  layer: string
+  canvas: string
 ): Promise<(options: SpawnOptions) => SpawnedProcess> {
   // Read _brief.md for dependency declarations
   let deps: SandboxDeps = { apt: [], pip: [] };
   try {
-    const brief = await readLayerFile(project, layer, "_brief.md");
+    const brief = await readCanvasFile(project, canvas, "_brief.md");
     deps = parseDependencies(brief.content);
   } catch {
     // No _brief.md — use base image
   }
 
   const imageTag = await getOrBuildImage(deps);
-  const layerDir = await getLayerDir(project, layer);
-  const sessionDir = join(SESSIONS_ROOT, project, layer);
+  const canvasDir = await getCanvasDir(project, canvas);
+  const sessionDir = join(SESSIONS_ROOT, project, canvas);
 
   // Ensure session directory exists
   mkdirSync(sessionDir, { recursive: true });
 
   return (spawnOpts: SpawnOptions): SpawnedProcess => {
-    const containerName = `mica-sandbox-${project}-${layer}-${Date.now()}`;
+    const containerName = `mica-sandbox-${project}-${canvas}-${Date.now()}`;
 
     const dockerArgs = [
       "run", "--rm", "-i",
@@ -168,7 +168,7 @@ export async function createDockerSpawner(
       "--network", "bridge",
       "--memory", "512m",
       "--cpus", "1.0",
-      "-v", `${layerDir}:/workspace:rw`,
+      "-v", `${canvasDir}:/workspace:rw`,
       "-v", `${sessionDir}:/home/sandbox/.claude:rw`,
       "-w", "/workspace",
     ];
@@ -204,7 +204,7 @@ export async function createDockerSpawner(
 
     // Log stderr for debugging
     proc.stderr?.on("data", (data: Buffer) => {
-      console.error(`[sandbox:${project}/${layer}] ${data.toString().trim()}`);
+      console.error(`[sandbox:${project}/${canvas}] ${data.toString().trim()}`);
     });
 
     return proc as unknown as SpawnedProcess;

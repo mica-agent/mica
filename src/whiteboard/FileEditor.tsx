@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import mermaid from "mermaid";
-import type { LayerFile } from "../api/layerFiles";
+import type { CanvasFile } from "../api/canvasFiles";
 
 interface Props {
-  file: LayerFile | null; // null = new file
+  file: CanvasFile | null; // null = new file
   defaultType?: "text" | "markdown" | "mermaid";
-  layerColor: string;
+  canvasColor: string;
   onSave: (filename: string, content: string) => void;
   onCancel: () => void;
 }
@@ -63,7 +63,7 @@ function MermaidPreview({ content }: { content: string }) {
 export default function FileEditor({
   file,
   defaultType,
-  layerColor,
+  canvasColor,
   onSave,
   onCancel,
 }: Props) {
@@ -100,7 +100,7 @@ export default function FileEditor({
     <div className="wb-editor-overlay" onClick={onCancel}>
       <div
         className="wb-editor"
-        style={{ "--layer-color": layerColor } as React.CSSProperties}
+        style={{ "--canvas-color": canvasColor } as React.CSSProperties}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="wb-editor-header">

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test 5: Migration from Legacy layers/
+# Test 5: Migration from Legacy migration
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -31,7 +31,7 @@ cat > "$LEGACY_REGISTRY" << 'EOF'
     {
       "id": "test-legacy",
       "name": "Test Legacy Project",
-      "layers": ["workspace"],
+      "canvases": ["workspace"],
       "createdAt": "2025-01-01T00:00:00Z"
     }
   ]
@@ -55,7 +55,7 @@ if [ "$MIGRATED_COUNT" -gt 0 ]; then
   check ".mica/ exists" "$(test -d $MIGRATE_TARGET/test-legacy/.mica && echo yes || echo no)" "yes"
   check "config.json exists" "$(test -f $MIGRATE_TARGET/test-legacy/.mica/config.json && echo yes || echo no)" "yes"
 
-  # Verify layer files copied
+  # Verify canvas files copied
   check "workspace/ copied" "$(test -d $MIGRATE_TARGET/test-legacy/.mica/workspace && echo yes || echo no)" "yes"
   check "_brief.md migrated" "$(test -f $MIGRATE_TARGET/test-legacy/.mica/workspace/_brief.md && echo yes || echo no)" "yes"
 

@@ -1,4 +1,4 @@
-// Layer file management — filesystem CRUD scoped to {project}/.mica/{layer}/
+// Canvas file management — filesystem CRUD scoped to {project}/.mica/{canvas}/
 // Projects are sovereign repos; Mica metadata lives in .mica/ inside each project.
 
 import { readdir, readFile, writeFile, unlink, mkdir, stat } from "fs/promises";
@@ -6,28 +6,28 @@ import { join, basename, extname } from "path";
 
 import {
   getProjectPath,
-  getLayerDir,
+  getCanvasDir,
   listProjects as listConnectedProjects,
   getProjectConfig as getConnectedConfig,
-  validateProjectLayer as validateConnected,
-  addLayerToProject as addConnectedLayer,
+  validateProjectCanvas as validateConnected,
+  addCanvasToProject as addConnectedCanvas,
   disconnectProject as disconnectConnected,
   type ConnectedProject,
 } from "./projectConnection.js";
 
-// Re-export for backward compatibility — consumers import from layerFiles
+// Re-export for backward compatibility — consumers import from canvasFiles
 export type ProjectConfig = ConnectedProject;
-export type LayerId = string;
+export type CanvasId = string;
 
 export const listProjects = listConnectedProjects;
 export const getProjectConfig = getConnectedConfig;
-export const validateProjectLayer = validateConnected;
-export const addLayerToProject = addConnectedLayer;
+export const validateProjectCanvas = validateConnected;
+export const addCanvasToProject = addConnectedCanvas;
 export const deleteProject = disconnectConnected;
 
 const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json", ".html"];
 
-export interface LayerFile {
+export interface CanvasFile {
   name: string;
   type: "text" | "markdown" | "mermaid";
   content: string;
@@ -57,14 +57,14 @@ function validateFilename(filename: string): void {
 
 // ── File operations (project-scoped, resolves via .mica/) ───
 
-export async function ensureLayerDir(project: string, layer: string): Promise<string> {
-  const dir = await getLayerDir(project, layer);
+export async function ensureCanvasDir(project: string, canvas: string): Promise<string> {
+  const dir = await getCanvasDir(project, canvas);
   await mkdir(dir, { recursive: true });
   return dir;
 }
 
-export async function listFiles(project: string, layer: string): Promise<LayerFile[]> {
-  const dir = await ensureLayerDir(project, layer);
+export async function listFiles(project: string, canvas: string): Promise<CanvasFile[]> {
+  const dir = await ensureCanvasDir(project, canvas);
   let entries: string[];
   try {
     entries = await readdir(dir);
@@ -72,7 +72,7 @@ export async function listFiles(project: string, layer: string): Promise<LayerFi
     return [];
   }
 
-  const files: LayerFile[] = [];
+  const files: CanvasFile[] = [];
   for (const name of entries) {
     const ext = extname(name);
     if (!VALID_EXTENSIONS.includes(ext)) continue;
@@ -94,13 +94,13 @@ export async function listFiles(project: string, layer: string): Promise<LayerFi
   );
 }
 
-export async function readLayerFile(
+export async function readCanvasFile(
   project: string,
-  layer: string,
+  canvas: string,
   filename: string
-): Promise<LayerFile> {
+): Promise<CanvasFile> {
   validateFilename(filename);
-  const dir = await getLayerDir(project, layer);
+  const dir = await getCanvasDir(project, canvas);
   const filepath = join(dir, filename);
   const content = await readFile(filepath, "utf-8");
   const stats = await stat(filepath);
@@ -112,31 +112,31 @@ export async function readLayerFile(
   };
 }
 
-export async function writeLayerFile(
+export async function writeCanvasFile(
   project: string,
-  layer: string,
+  canvas: string,
   filename: string,
   content: string
 ): Promise<void> {
   validateFilename(filename);
-  const dir = await ensureLayerDir(project, layer);
+  const dir = await ensureCanvasDir(project, canvas);
   await writeFile(join(dir, filename), content, "utf-8");
 }
 
-export async function deleteLayerFile(
+export async function deleteCanvasFile(
   project: string,
-  layer: string,
+  canvas: string,
   filename: string
 ): Promise<void> {
   validateFilename(filename);
-  const dir = await getLayerDir(project, layer);
+  const dir = await getCanvasDir(project, canvas);
   await unlink(join(dir, filename));
 }
 
-export async function getAllFilesAsContext(project: string, layer: string): Promise<string> {
-  const files = await listFiles(project, layer);
+export async function getAllFilesAsContext(project: string, canvas: string): Promise<string> {
+  const files = await listFiles(project, canvas);
   if (files.length === 0) {
-    return "(No files yet in this layer.)";
+    return "(No files yet in this canvas.)";
   }
 
   return files

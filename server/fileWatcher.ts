@@ -13,7 +13,7 @@ import { readWorkspaceRegistry, getProjectPath } from "./projectConnection.js";
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
   project: string;
-  layer: string;
+  canvas: string;
   filename: string;
 }
 
@@ -29,36 +29,36 @@ const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json", ".html"];
 export class FileWatcher extends EventEmitter {
   private watchers: fs.FSWatcher[] = [];
   private debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  private knownFiles: Map<string, Set<string>> = new Map(); // "project/layer" → set of filenames
+  private knownFiles: Map<string, Set<string>> = new Map(); // "project/canvas" → set of filenames
 
   async start(): Promise<void> {
     // Read workspace registry to discover connected projects
     const registry = await readWorkspaceRegistry();
 
     for (const project of registry.projects) {
-      for (const layer of project.layers) {
-        await this.watchProjectLayer(project.id, project.path, layer);
+      for (const canvas of project.canvases) {
+        await this.watchProjectCanvas(project.id, project.path, canvas);
       }
     }
 
     // Watch card-classes directory
     this.watchCardClasses();
 
-    const totalLayers = registry.projects.reduce((sum, p) => sum + p.layers.length, 0);
-    console.log(`[file-watcher] Watching ${totalLayers} layer(s) across ${registry.projects.length} project(s), and card-classes.`);
+    const totalCanvases = registry.projects.reduce((sum, p) => sum + p.canvases.length, 0);
+    console.log(`[file-watcher] Watching ${totalCanvases} canvas(es) across ${registry.projects.length} project(s), and card-classes.`);
   }
 
-  /** Add a watcher for a newly connected project's layers */
-  async addProject(projectId: string, layers: string[]): Promise<void> {
+  /** Add a watcher for a newly connected project's canvases */
+  async addProject(projectId: string, canvases: string[]): Promise<void> {
     const projectPath = await getProjectPath(projectId);
-    for (const layer of layers) {
-      await this.watchProjectLayer(projectId, projectPath, layer);
+    for (const canvas of canvases) {
+      await this.watchProjectCanvas(projectId, projectPath, canvas);
     }
   }
 
-  private async watchProjectLayer(projectId: string, projectPath: string, layer: string): Promise<void> {
-    const dir = path.join(projectPath, ".mica", layer);
-    const key = `${projectId}/${layer}`;
+  private async watchProjectCanvas(projectId: string, projectPath: string, canvas: string): Promise<void> {
+    const dir = path.join(projectPath, ".mica", canvas);
+    const key = `${projectId}/${canvas}`;
 
     try {
       await fs.promises.mkdir(dir, { recursive: true });
@@ -78,13 +78,13 @@ export class FileWatcher extends EventEmitter {
       }
       this.knownFiles.set(key, files);
 
-      this.watchDirectory(dir, projectId, layer);
+      this.watchDirectory(dir, projectId, canvas);
     } catch (err) {
       console.warn(`[file-watcher] Could not watch ${dir}: ${(err as Error).message}`);
     }
   }
 
-  private watchDirectory(dir: string, project: string, layer: string): void {
+  private watchDirectory(dir: string, project: string, canvas: string): void {
     try {
       const watcher = fs.watch(dir, (eventType, filename) => {
         if (!filename) return;
@@ -94,7 +94,7 @@ export class FileWatcher extends EventEmitter {
         if (!VALID_EXTENSIONS.includes(ext) && filename !== "_chat-history.json") return;
 
         // Debounce
-        const debounceKey = `${project}/${layer}/${filename}`;
+        const debounceKey = `${project}/${canvas}/${filename}`;
         const existing = this.debounceTimers.get(debounceKey);
         if (existing) clearTimeout(existing);
 
@@ -102,8 +102,8 @@ export class FileWatcher extends EventEmitter {
           debounceKey,
           setTimeout(() => {
             this.debounceTimers.delete(debounceKey);
-            this.handleFileChange(project, layer, filename, dir).catch((err) => {
-              console.error(`[file-watcher] Error handling ${project}/${layer}/${filename}:`, (err as Error).message);
+            this.handleFileChange(project, canvas, filename, dir).catch((err) => {
+              console.error(`[file-watcher] Error handling ${project}/${canvas}/${filename}:`, (err as Error).message);
             });
           }, DEBOUNCE_MS)
         );
@@ -119,27 +119,27 @@ export class FileWatcher extends EventEmitter {
     }
   }
 
-  private async handleFileChange(project: string, layer: string, filename: string, dir: string): Promise<void> {
+  private async handleFileChange(project: string, canvas: string, filename: string, dir: string): Promise<void> {
     const filePath = path.join(dir, filename);
-    const key = `${project}/${layer}`;
+    const key = `${project}/${canvas}`;
     const known = this.knownFiles.get(key) || new Set();
 
     try {
       await fs.promises.access(filePath);
       // File exists
       if (known.has(filename)) {
-        this.emit("file-change", { type: "changed", project, layer, filename } as FileChangeEvent);
+        this.emit("file-change", { type: "changed", project, canvas, filename } as FileChangeEvent);
       } else {
         known.add(filename);
         this.knownFiles.set(key, known);
-        this.emit("file-change", { type: "created", project, layer, filename } as FileChangeEvent);
+        this.emit("file-change", { type: "created", project, canvas, filename } as FileChangeEvent);
       }
     } catch {
       // File was deleted
       if (known.has(filename)) {
         known.delete(filename);
         this.knownFiles.set(key, known);
-        this.emit("file-change", { type: "deleted", project, layer, filename } as FileChangeEvent);
+        this.emit("file-change", { type: "deleted", project, canvas, filename } as FileChangeEvent);
       }
     }
   }

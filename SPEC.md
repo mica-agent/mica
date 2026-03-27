@@ -66,13 +66,13 @@ The base card interface:
 | `serialize()` | How this card persists its state |
 | `deserialize()` | How this card restores from persisted state |
 
-A **simple card** (brief, chat, goal) has no children — it renders content. A **canvas card** (layer view, dashboard, portfolio) has children and layout logic — it renders other cards. Both are cards. The distinction is whether `children` is defined.
+A **simple card** (brief, chat, goal) has no children — it renders content. A **canvas card** (canvas view, dashboard, portfolio) has children and layout logic — it renders other cards. Both are cards. The distinction is whether `children` is defined.
 
 **Cards are interactive, not just static renders.** A card class can expose server-side functions that the rendered card calls via WebSocket — request/response for actions, fire-and-forget for events, bidirectional channels for streaming (terminals, real-time collaboration). Cards can also broadcast to each other and subscribe to server-pushed events. This means a card is a full mini-application: it renders HTML, runs logic on the server, and communicates in real time. See [ARCHITECTURE.md](ARCHITECTURE.md) for the implementation details.
 
 ### 2.3 Recursive Composition
 
-Cards nest. A project dashboard is a card containing cards. A "layer view" is a card that arranges sub-cards by semantic level. A split-view comparing two architectures is a card containing two canvas-cards side by side.
+Cards nest. A project dashboard is a card containing cards. A "canvas view" is a card that arranges sub-cards by semantic level. A split-view comparing two architectures is a card containing two canvas-cards side by side.
 
 Navigation is entering and leaving nested cards. "Zooming in" on a canvas-card means entering it and seeing its children. There is no separate navigation system — it falls out naturally from the card tree.
 
@@ -82,7 +82,7 @@ Cards need to live somewhere. Where a card persists depends on its scope:
 
 | Tier | Location | What lives here |
 |------|----------|----------------|
-| **Project** | `.mica/` inside the project repo | Briefs, goals, layer views, agent chat, project-specific card classes. Committed to git — team members share this context. |
+| **Project** | `.mica/` inside the project repo | Briefs, goals, canvas views, agent chat, project-specific card classes. Committed to git — team members share this context. |
 | **Workspace** | `workspaces.json` + Mica's own directory | The portfolio card (shows all connected projects), workspace-level layout, cross-project views. Local to this Mica instance. |
 | **User** | `~/.mica/` or equivalent | Preferences, custom card classes shared across workspaces, personal bookmarks. |
 
@@ -228,4 +228,4 @@ If Mica cannot represent its own product development lifecycle, it is not genera
 
 ## Archived Material
 
-Detailed UX specifications (multi-surface architecture, platform-specific interaction bindings, visual design principles, layer-specific artifact types, working style templates, version management mechanics) have been moved to `old_thoughts/` for reference. These represent valuable earlier thinking that informed the current direction but are not part of the active specification.
+Detailed UX specifications (multi-surface architecture, platform-specific interaction bindings, visual design principles, canvas-specific artifact types, working style templates, version management mechanics) have been moved to `old_thoughts/` for reference. These represent valuable earlier thinking that informed the current direction but are not part of the active specification.

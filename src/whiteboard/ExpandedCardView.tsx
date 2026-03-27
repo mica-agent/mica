@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { LayerId, CardMeta } from "../api/layerFiles";
+import type { CanvasId, CardMeta } from "../api/canvasFiles";
 import WidgetRuntime from "./WidgetRuntime";
 
 interface Props {
@@ -8,13 +8,13 @@ interface Props {
   exports: string[];
   meta: CardMeta;
   projectId: string;
-  layerId: LayerId;
-  layerColor: string;
+  canvasId: CanvasId;
+  canvasColor: string;
   onClose: () => void;
   onEdit: () => void;
 }
 
-export default function ExpandedCardView({ filename, html, exports: exportFns, meta, projectId, layerId, layerColor, onClose, onEdit }: Props) {
+export default function ExpandedCardView({ filename, html, exports: exportFns, meta, projectId, canvasId, canvasColor, onClose, onEdit }: Props) {
   // Close on Escape
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -28,7 +28,7 @@ export default function ExpandedCardView({ filename, html, exports: exportFns, m
     <div className="wb-expanded-overlay" onClick={onClose}>
       <div
         className="wb-expanded-card"
-        style={{ "--layer-color": layerColor } as React.CSSProperties}
+        style={{ "--canvas-color": canvasColor } as React.CSSProperties}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="wb-expanded-header">
@@ -53,7 +53,7 @@ export default function ExpandedCardView({ filename, html, exports: exportFns, m
             html={html}
             exports={exportFns}
             project={projectId}
-            layer={layerId}
+            canvas={canvasId}
             filename={filename}
           />
         </div>

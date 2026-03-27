@@ -8,7 +8,7 @@
  *   4. openChannel(fn, args) → Channel          Bidirectional stream
  */
 
-export type LayerId = string;
+export type CanvasId = string;
 
 interface PendingCall {
   resolve: (value: unknown) => void;
@@ -164,7 +164,7 @@ function sendMsg(msg: Record<string, unknown>): void {
  */
 export function call(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   filename: string,
   fn: string,
   args: Record<string, unknown> = {},
@@ -178,7 +178,7 @@ export function call(
     }, timeoutMs);
 
     pendingCalls.set(id, { resolve, reject, timeout });
-    sendMsg({ type: "call", id, project, layer, filename, fn, args });
+    sendMsg({ type: "call", id, project, canvas, filename, fn, args });
   });
 }
 
@@ -188,12 +188,12 @@ export function call(
  */
 export function send(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   filename: string,
   fn: string,
   args: Record<string, unknown> = {}
 ): void {
-  sendMsg({ type: "send", project, layer, filename, fn, args });
+  sendMsg({ type: "send", project, canvas, filename, fn, args });
 }
 
 /**
@@ -224,7 +224,7 @@ export interface Channel {
 
 export function openChannel(
   project: string,
-  layer: LayerId,
+  canvas: CanvasId,
   filename: string,
   fn: string,
   args: Record<string, unknown> = {}
@@ -237,7 +237,7 @@ export function openChannel(
   };
 
   activeChannels.set(id, handle);
-  sendMsg({ type: "channel_open", id, project, layer, filename, fn, args });
+  sendMsg({ type: "channel_open", id, project, canvas, filename, fn, args });
 
   return {
     id,
@@ -266,16 +266,16 @@ export function broadcast(event: string, data: Record<string, unknown> = {}): vo
  * Create a scoped mica bridge for a specific widget instance.
  * This is what WidgetRuntime injects into widget scripts.
  */
-export function createBridge(project: string, layer: LayerId, filename: string) {
+export function createBridge(project: string, canvas: CanvasId, filename: string) {
   return {
     call: (fn: string, args: Record<string, unknown> = {}) =>
-      call(project, layer, filename, fn, args),
+      call(project, canvas, filename, fn, args),
     send: (fn: string, args: Record<string, unknown> = {}) =>
-      send(project, layer, filename, fn, args),
+      send(project, canvas, filename, fn, args),
     on: (event: string, cb: (data: unknown) => void) =>
       on(event, cb),
     openChannel: (fn: string, args: Record<string, unknown> = {}) =>
-      openChannel(project, layer, filename, fn, args),
+      openChannel(project, canvas, filename, fn, args),
     broadcast: (event: string, data: Record<string, unknown> = {}) =>
       broadcast(event, data),
   };

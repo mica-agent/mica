@@ -1,6 +1,6 @@
 import { Editor, createShapeId } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
-import type { LayerNode } from '../data/seedData'
+import type { CanvasNode } from '../data/seedData'
 import { findNode, getMissionLevelNodes } from '../data/seedData'
 import type { SemanticLevel } from '../logic/semanticLevels'
 import { SemanticLevel as SL } from '../logic/semanticLevels'
@@ -105,14 +105,14 @@ export class SemanticNavigator {
     }
   }
 
-  private loadNodes(nodes: LayerNode[]) {
+  private loadNodes(nodes: CanvasNode[]) {
     const shapes = nodes.map((node) => this.nodeToShape(node))
     this.editor.createShapes(shapes)
     this.activeShapeIds = shapes.map((s) => s.id)
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private nodeToShape(node: LayerNode): any {
+  private nodeToShape(node: CanvasNode): any {
     const id = createShapeId(node.id)
     const hasChildren = (node.children?.length ?? 0) > 0
 

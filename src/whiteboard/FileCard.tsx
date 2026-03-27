@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LayerId, CardMeta } from "../api/layerFiles";
+import type { CanvasId, CardMeta } from "../api/canvasFiles";
 import WidgetRuntime from "./WidgetRuntime";
 
 interface Props {
@@ -8,14 +8,14 @@ interface Props {
   exports: string[];
   meta: CardMeta;
   projectId: string;
-  layerId: LayerId;
-  layerColor: string;
+  canvasId: CanvasId;
+  canvasColor: string;
   onEdit: () => void;
   onDelete: () => void;
   onExpand: () => void;
 }
 
-export default function FileCard({ filename, html, exports: exportFns, meta, projectId, layerId, layerColor, onEdit, onDelete, onExpand }: Props) {
+export default function FileCard({ filename, html, exports: exportFns, meta, projectId, canvasId, canvasColor, onEdit, onDelete, onExpand }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
 
@@ -38,7 +38,7 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
   return (
     <div
       className={`wb-card ${cardClass}`}
-      style={{ "--layer-color": layerColor } as React.CSSProperties}
+      style={{ "--canvas-color": canvasColor } as React.CSSProperties}
       onClick={handleCardClick}
     >
       <div className="wb-card-header">
@@ -71,7 +71,7 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
           html={html}
           exports={exportFns}
           project={projectId}
-          layer={layerId}
+          canvas={canvasId}
           filename={filename}
         />
       </div>

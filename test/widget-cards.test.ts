@@ -47,7 +47,7 @@ function waitForWs(
   });
 }
 
-const CTX = { layer: "mission", filename: "test.md" };
+const CTX = { canvas: "mission", filename: "test.md" };
 
 // ── Worker Pool Tests ───────────────────────────────────────
 
@@ -121,7 +121,7 @@ describe("Worker Pool", () => {
 
   it("renders chat class with exports", async () => {
     const classPath = join(process.cwd(), "card-classes/chat/render.py");
-    const result = await pool.render("chat", classPath, "", { layer: "mission" }, CTX);
+    const result = await pool.render("chat", classPath, "", { canvas: "mission" }, CTX);
     expect(result.html).toContain("chat-widget");
     expect(result.exports).toContain("send_message");
     expect(result.exports).toContain("check_in");
@@ -186,7 +186,7 @@ describe("Card Manager", () => {
     const result = await manager.renderCard("mission", "_goal.md", "- [x] Done\n- [ ] Pending");
     expect(result.meta.cardClass).toBe("goal");
     expect(result.meta.badge).toBe("GOAL");
-    expect(result.meta.title).toBe("Layer Goal");
+    expect(result.meta.title).toBe("Canvas Goal");
     expect(result.meta.isSystem).toBe(true);
     expect(result.html).toContain("card-goal");
   });
@@ -237,7 +237,7 @@ describe("Card Manager", () => {
     expect(r3.html).toContain("Changed");
   });
 
-  it("renders all cards in a layer", async () => {
+  it("renders all cards in a canvas", async () => {
     const cards = await manager.renderAllCards("mission");
     expect(cards.length).toBeGreaterThan(0);
     for (const card of cards) {
@@ -252,10 +252,10 @@ describe("Card Manager", () => {
 
 describe("File Watcher", () => {
   let watcher: FileWatcher;
-  const layerDir = join(process.cwd(), "layers", "experience");
+  const canvasDir = join(process.cwd(), "layers", "experience");
 
   beforeAll(async () => {
-    await mkdir(layerDir, { recursive: true });
+    await mkdir(canvasDir, { recursive: true });
     watcher = new FileWatcher();
     await watcher.start();
     await new Promise((r) => setTimeout(r, 500));
@@ -263,15 +263,15 @@ describe("File Watcher", () => {
 
   afterAll(async () => {
     watcher?.stop();
-    await rm(join(layerDir, "detect-create.md"), { force: true });
-    await rm(join(layerDir, "detect-modify.md"), { force: true });
+    await rm(join(canvasDir, "detect-create.md"), { force: true });
+    await rm(join(canvasDir, "detect-modify.md"), { force: true });
   });
 
   it("detects file creation", async () => {
-    const filePath = join(layerDir, "detect-create.md");
+    const filePath = join(canvasDir, "detect-create.md");
 
-    const eventPromise = new Promise<{ type: string; layer: string; filename: string }>((resolve) => {
-      watcher.on("file-change", (event: { type: string; layer: string; filename: string }) => {
+    const eventPromise = new Promise<{ type: string; canvas: string; filename: string }>((resolve) => {
+      watcher.on("file-change", (event: { type: string; canvas: string; filename: string }) => {
         if (event.filename === "detect-create.md") resolve(event);
       });
     });
@@ -283,13 +283,13 @@ describe("File Watcher", () => {
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Watcher timeout")), 5000)),
     ]);
 
-    expect(event.layer).toBe("experience");
+    expect(event.canvas).toBe("experience");
     expect(event.filename).toBe("detect-create.md");
     expect(["created", "changed"]).toContain(event.type);
   }, 10000);
 
   it("detects file modification", async () => {
-    const filePath = join(layerDir, "detect-modify.md");
+    const filePath = join(canvasDir, "detect-modify.md");
     await writeFile(filePath, "v1\n");
     await new Promise((r) => setTimeout(r, 600));
 
@@ -311,7 +311,7 @@ describe("File Watcher", () => {
   }, 10000);
 
   it("detects file deletion", async () => {
-    const filePath = join(layerDir, "detect-delete.md");
+    const filePath = join(canvasDir, "detect-delete.md");
     await writeFile(filePath, "will be deleted\n");
     await new Promise((r) => setTimeout(r, 600));
 
@@ -386,8 +386,8 @@ describe("Server Integration", () => {
     expect(data.agents).toContain("mission");
   });
 
-  it("GET /api/layers/mission/cards returns rendered cards", async () => {
-    const res = await fetch_("/api/layers/mission/cards");
+  it("GET /api/canvases/mission/cards returns rendered cards", async () => {
+    const res = await fetch_("/api/canvases/mission/cards");
     expect(res.ok).toBe(true);
     const cards = (await res.json()) as Array<{
       filename: string; html: string; exports: string[];
@@ -429,7 +429,7 @@ describe("Server Integration", () => {
     await writeFile(testFile, "# WebSocket Test\nTimestamp: " + Date.now());
     const msg = await msgPromise;
 
-    expect(msg.layer).toBe("mission");
+    expect(msg.canvas).toBe("mission");
     expect(typeof msg.html).toBe("string");
     expect((msg.html as string)).toContain("WebSocket Test");
 
@@ -460,7 +460,7 @@ describe("Server Integration", () => {
   }, 15000);
 
   it("returns error for non-existent export call", async () => {
-    const res = await fetch_("/api/layers/mission/cards/_goal.md/call/nonexistent", {
+    const res = await fetch_("/api/canvases/mission/cards/_goal.md/call/nonexistent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
@@ -470,8 +470,8 @@ describe("Server Integration", () => {
     expect(data.error).toBeTruthy();
   });
 
-  it("returns 400 for invalid layer", async () => {
-    const res = await fetch_("/api/layers/invalid/cards");
+  it("returns 400 for invalid canvas", async () => {
+    const res = await fetch_("/api/canvases/invalid/cards");
     expect(res.status).toBe(400);
   });
 });

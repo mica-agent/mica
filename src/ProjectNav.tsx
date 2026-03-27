@@ -3,8 +3,8 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import type { ProjectConfig } from "./api/layerFiles";
-import { createProject, deleteProjectApi } from "./api/layerFiles";
+import type { ProjectConfig } from "./api/canvasFiles";
+import { createProject, deleteProjectApi } from "./api/canvasFiles";
 
 interface Props {
   projects: ProjectConfig[];
@@ -96,8 +96,8 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
                   onClick={() => { onSwitch(i); setOpen(false); }}
                 >
                   <span className="project-nav-item-name">{p.name}</span>
-                  <span className="project-nav-item-layers">
-                    {p.layers.length} layer{p.layers.length !== 1 ? "s" : ""}
+                  <span className="project-nav-item-canvases">
+                    {p.canvases.length} canvas{p.canvases.length !== 1 ? "es" : ""}
                   </span>
                 </button>
 

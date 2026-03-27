@@ -75,11 +75,11 @@ check "Alpha config name" "$ALPHA_NAME" "Hello Alpha"
 BETA_NAME=$(python3 -c "import json; print(json.load(open('$HOME/mica-projects/hello-beta/.mica/config.json'))['name'])")
 check "Beta config name" "$BETA_NAME" "Hello Beta"
 
-# ── 5. Verify layer files via API ────────────────────────────
+# ── 5. Verify canvas files via API ────────────────────────────
 echo ""
-echo "5. Reading layer files via API..."
+echo "5. Reading canvas files via API..."
 
-ALPHA_FILES=$(curl -s "$API/projects/hello-alpha/layers/workspace/files" | python3 -c "
+ALPHA_FILES=$(curl -s "$API/projects/hello-alpha/canvases/workspace/files" | python3 -c "
 import sys, json
 files = json.load(sys.stdin)
 print(','.join(sorted(f['name'] for f in files)))
@@ -93,19 +93,19 @@ check "Alpha has _goal.md" "$(echo $ALPHA_FILES | grep -c _goal.md)" "1"
 echo ""
 echo "6. Writing project-specific files (isolation test)..."
 
-curl -s -X PUT "$API/projects/hello-alpha/layers/workspace/files/hello.md" \
+curl -s -X PUT "$API/projects/hello-alpha/canvases/workspace/files/hello.md" \
   -H "Content-Type: application/json" \
   -d '{"content":"# Hello from Alpha\n\nThis is project Alpha."}' >/dev/null
 ok "Wrote hello.md to Alpha"
 
-curl -s -X PUT "$API/projects/hello-beta/layers/workspace/files/hello.md" \
+curl -s -X PUT "$API/projects/hello-beta/canvases/workspace/files/hello.md" \
   -H "Content-Type: application/json" \
   -d '{"content":"# Hello from Beta\n\nThis is project Beta."}' >/dev/null
 ok "Wrote hello.md to Beta"
 
 # Read back and verify isolation
-ALPHA_HELLO=$(curl -s "$API/projects/hello-alpha/layers/workspace/files/hello.md" | python3 -c "import sys,json; print(json.load(sys.stdin)['content'])")
-BETA_HELLO=$(curl -s "$API/projects/hello-beta/layers/workspace/files/hello.md" | python3 -c "import sys,json; print(json.load(sys.stdin)['content'])")
+ALPHA_HELLO=$(curl -s "$API/projects/hello-alpha/canvases/workspace/files/hello.md" | python3 -c "import sys,json; print(json.load(sys.stdin)['content'])")
+BETA_HELLO=$(curl -s "$API/projects/hello-beta/canvases/workspace/files/hello.md" | python3 -c "import sys,json; print(json.load(sys.stdin)['content'])")
 
 check "Alpha hello.md has Alpha content" "$(echo "$ALPHA_HELLO" | grep -q 'Alpha' && echo yes || echo no)" "yes"
 check "Beta hello.md has Beta content" "$(echo "$BETA_HELLO" | grep -q 'Beta' && echo yes || echo no)" "yes"
@@ -116,7 +116,7 @@ check "Beta hello.md does NOT have Alpha content" "$(echo "$BETA_HELLO" | grep -
 echo ""
 echo "7. Rendering cards..."
 
-ALPHA_CARDS=$(curl -s "$API/projects/hello-alpha/layers/workspace/cards")
+ALPHA_CARDS=$(curl -s "$API/projects/hello-alpha/canvases/workspace/cards")
 ALPHA_CARD_COUNT=$(echo "$ALPHA_CARDS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
 echo "  Alpha rendered $ALPHA_CARD_COUNT cards"
 check "Alpha has rendered cards" "$([ "$ALPHA_CARD_COUNT" -gt 0 ] && echo yes || echo no)" "yes"

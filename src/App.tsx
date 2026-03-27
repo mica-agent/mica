@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { buildLayerMeta } from './data';
-import type { LayerMeta } from './data';
-import { fetchProjects } from './api/layerFiles';
-import type { ProjectConfig } from './api/layerFiles';
+import { buildCanvasMeta } from './data';
+import type { CanvasMeta } from './data';
+import { fetchProjects } from './api/canvasFiles';
+import type { ProjectConfig } from './api/canvasFiles';
 import { connect as connectMicaSocket } from './api/micaSocket';
 import WhiteboardView from './whiteboard/WhiteboardView';
 import type { WhiteboardHandle } from './whiteboard/WhiteboardView';
@@ -16,13 +16,13 @@ connectMicaSocket();
 
 // ── Helpers ────────────────────────────────────────────────
 
-function layerPosition(layerIndex: number, activeIndex: number): string {
-  const diff = layerIndex - activeIndex;
-  if (diff === 0) return 'layer-active';
-  if (diff === -1) return 'layer-ghost-above';
-  if (diff === 1) return 'layer-ghost-below';
-  if (diff < -1) return 'layer-hidden-above';
-  return 'layer-hidden-below';
+function canvasPosition(canvasIndex: number, activeIndex: number): string {
+  const diff = canvasIndex - activeIndex;
+  if (diff === 0) return 'canvas-active';
+  if (diff === -1) return 'canvas-ghost-above';
+  if (diff === 1) return 'canvas-ghost-below';
+  if (diff < -1) return 'canvas-hidden-above';
+  return 'canvas-hidden-below';
 }
 
 // ── App ────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ function layerPosition(layerIndex: number, activeIndex: number): string {
 export default function App() {
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
   const [activeProjectIndex, setActiveProjectIndex] = useState(0);
-  const [activeLayer, setActiveLayer] = useState(0);
+  const [activeCanvas, setActiveCanvas] = useState(0);
   const [navHint, setNavHint] = useState('');
   const [navHintVisible, setNavHintVisible] = useState(false);
 
@@ -49,36 +49,36 @@ export default function App() {
         setProjects(p);
         // Clamp active index if projects were deleted
         setActiveProjectIndex((prev) => Math.min(prev, Math.max(0, p.length - 1)));
-        if (p.length > 0 && activeLayer >= (p[0]?.layers.length ?? 1)) {
-          setActiveLayer(0);
+        if (p.length > 0 && activeCanvas >= (p[0]?.canvases.length ?? 1)) {
+          setActiveCanvas(0);
         }
       })
       .catch((err) => console.error('Failed to fetch projects:', err));
-  }, [activeLayer]);
+  }, [activeCanvas]);
 
   useEffect(() => { loadProjects(); }, []);
 
   const activeProject = projects[activeProjectIndex] || null;
-  const LAYERS: LayerMeta[] = activeProject ? buildLayerMeta(activeProject.layers) : [];
-  const currentLayer = LAYERS[activeLayer] || { color: '#4a8aff', bgTint: 'rgba(74,138,255,0.06)', icon: '\u25c6', label: '...', id: '', index: 0 };
+  const CANVASES: CanvasMeta[] = activeProject ? buildCanvasMeta(activeProject.canvases) : [];
+  const currentCanvas = CANVASES[activeCanvas] || { color: '#4a8aff', bgTint: 'rgba(74,138,255,0.06)', icon: '\u25c6', label: '...', id: '', index: 0 };
 
   // ── Navigation ─────────────────────────────────────────
 
   const navigateTo = useCallback((index: number) => {
-    if (index < 0 || index >= LAYERS.length || index === activeLayer || cooldownRef.current) return;
+    if (index < 0 || index >= CANVASES.length || index === activeCanvas || cooldownRef.current) return;
     cooldownRef.current = true;
-    setActiveLayer(index);
+    setActiveCanvas(index);
 
     // Show nav hint
-    const target = LAYERS[index];
-    const direction = index > activeLayer ? 'Descending to' : 'Ascending to';
+    const target = CANVASES[index];
+    const direction = index > activeCanvas ? 'Descending to' : 'Ascending to';
     showNavHint(`${direction} ${target.label}`);
 
     setTimeout(() => { cooldownRef.current = false; }, 600);
-  }, [activeLayer, LAYERS]);
+  }, [activeCanvas, CANVASES]);
 
-  const descend = useCallback(() => navigateTo(activeLayer + 1), [activeLayer, navigateTo]);
-  const ascend = useCallback(() => navigateTo(activeLayer - 1), [activeLayer, navigateTo]);
+  const descend = useCallback(() => navigateTo(activeCanvas + 1), [activeCanvas, navigateTo]);
+  const ascend = useCallback(() => navigateTo(activeCanvas - 1), [activeCanvas, navigateTo]);
 
   function showNavHint(text: string) {
     setNavHint(text);
@@ -87,7 +87,7 @@ export default function App() {
     navHintTimerRef.current = setTimeout(() => setNavHintVisible(false), 1500);
   }
 
-  // ── Scroll wheel → layer navigation ───────────────────
+  // ── Scroll wheel → canvas navigation ─────────────────
 
   useEffect(() => {
     function onWheel(e: WheelEvent) {
@@ -105,7 +105,7 @@ export default function App() {
         const atBottom = scrollTop + clientHeight >= scrollHeight - 2;
 
         // If the container has scrollable content, let it scroll normally
-        // Only pass through to layer navigation if at the very edge
+        // Only pass through to canvas navigation if at the very edge
         if (hasScroll) {
           if (e.deltaY < 0 && !atTop) return;
           if (e.deltaY > 0 && !atBottom) return;
@@ -132,7 +132,7 @@ export default function App() {
     return () => window.removeEventListener('wheel', onWheel);
   }, [descend, ascend]);
 
-  // ── Touch → pinch for layer navigation ────────────────
+  // ── Touch → pinch for canvas navigation ───────────────
 
   useEffect(() => {
     function onTouchStart(e: TouchEvent) {
@@ -216,19 +216,19 @@ export default function App() {
       if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); descend(); }
       if (e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); ascend(); }
       const n = parseInt(e.key);
-      if (n >= 1 && n <= LAYERS.length) navigateTo(n - 1);
+      if (n >= 1 && n <= CANVASES.length) navigateTo(n - 1);
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [descend, ascend, navigateTo, LAYERS.length]);
+  }, [descend, ascend, navigateTo, CANVASES.length]);
 
   // ── Render ─────────────────────────────────────────────
 
   const whiteboardRef = useRef<WhiteboardHandle>(null);
-  const [agentBusyLayer, setAgentBusyLayer] = useState<number | null>(null);
+  const [agentBusyCanvas, setAgentBusyCanvas] = useState<number | null>(null);
 
   // Loading state
-  if (!activeProject || LAYERS.length === 0) {
+  if (!activeProject || CANVASES.length === 0) {
     return (
       <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#999' }}>
         Loading project...
@@ -244,72 +244,72 @@ export default function App() {
         <div className="app">
           <div
             className="app-bg-tint"
-            style={{ background: currentLayer.bgTint }}
+            style={{ background: currentCanvas.bgTint }}
           />
           <div
             className="app-bg-glow"
-            style={{ background: currentLayer.color }}
+            style={{ background: currentCanvas.color }}
           />
 
           <nav className="breadcrumb">
             <ProjectNav
               projects={projects}
               activeProject={activeProject}
-              onSwitch={(i) => { setActiveProjectIndex(i); setActiveLayer(0); }}
+              onSwitch={(i) => { setActiveProjectIndex(i); setActiveCanvas(0); }}
               onProjectsChanged={loadProjects}
             />
             <span className="breadcrumb-sep">&rsaquo;</span>
-            {LAYERS.map((layer) => (
+            {CANVASES.map((canvas) => (
               <span
-                key={layer.id}
-                className={`breadcrumb-layer ${layer.index === activeLayer ? 'breadcrumb-layer--active' : ''} ${layer.index === agentBusyLayer ? 'breadcrumb-layer--busy' : ''}`}
+                key={canvas.id}
+                className={`breadcrumb-canvas ${canvas.index === activeCanvas ? 'breadcrumb-canvas--active' : ''} ${canvas.index === agentBusyCanvas ? 'breadcrumb-canvas--busy' : ''}`}
                 style={{
-                  color: layer.index === activeLayer ? layer.color : undefined,
-                  background: layer.index === activeLayer ? `${layer.color}15` : undefined,
-                  borderColor: layer.index === activeLayer ? `${layer.color}30` : undefined,
+                  color: canvas.index === activeCanvas ? canvas.color : undefined,
+                  background: canvas.index === activeCanvas ? `${canvas.color}15` : undefined,
+                  borderColor: canvas.index === activeCanvas ? `${canvas.color}30` : undefined,
                 }}
-                onClick={() => navigateTo(layer.index)}
+                onClick={() => navigateTo(canvas.index)}
               >
-                {layer.icon} {layer.label}
+                {canvas.icon} {canvas.label}
               </span>
             ))}
           </nav>
 
           <div className="depth-indicator">
-            {LAYERS.map((layer) => (
+            {CANVASES.map((canvas) => (
               <div
-                key={layer.id}
-                className={`depth-segment ${layer.index === activeLayer ? 'depth-segment--active' : ''} ${layer.index === agentBusyLayer ? 'depth-segment--busy' : ''}`}
-                style={{ '--layer-color': layer.color } as React.CSSProperties}
-                onClick={() => navigateTo(layer.index)}
+                key={canvas.id}
+                className={`depth-segment ${canvas.index === activeCanvas ? 'depth-segment--active' : ''} ${canvas.index === agentBusyCanvas ? 'depth-segment--busy' : ''}`}
+                style={{ '--canvas-color': canvas.color } as React.CSSProperties}
+                onClick={() => navigateTo(canvas.index)}
               >
-                <span className="depth-icon" style={{ color: layer.color }}>
-                  {layer.icon}
+                <span className="depth-icon" style={{ color: canvas.color }}>
+                  {canvas.icon}
                 </span>
-                <span className="depth-label">{layer.label}</span>
+                <span className="depth-label">{canvas.label}</span>
               </div>
             ))}
           </div>
 
-          <div className="layer-stack">
-            {LAYERS.map((layer) => (
+          <div className="canvas-stack">
+            {CANVASES.map((canvas) => (
               <div
-                key={layer.id}
-                className={`layer-container ${layerPosition(layer.index, activeLayer)}`}
+                key={canvas.id}
+                className={`canvas-container ${canvasPosition(canvas.index, activeCanvas)}`}
               >
                 <WhiteboardView
-                  ref={layer.index === activeLayer ? whiteboardRef : null}
+                  ref={canvas.index === activeCanvas ? whiteboardRef : null}
                   projectId={projectId}
-                  layerId={layer.id}
-                  layerColor={layer.color}
+                  canvasId={canvas.id}
+                  canvasColor={canvas.color}
                 />
               </div>
             ))}
           </div>
 
           <div
-            className={`edge-swipe-hint ${activeLayer > 0 ? 'edge-swipe-hint--visible' : ''}`}
-            style={{ '--layer-color': currentLayer.color } as React.CSSProperties}
+            className={`edge-swipe-hint ${activeCanvas > 0 ? 'edge-swipe-hint--visible' : ''}`}
+            style={{ '--canvas-color': currentCanvas.color } as React.CSSProperties}
           />
 
           <div className={`nav-hint ${navHintVisible ? 'nav-hint--visible' : ''}`}>
@@ -318,15 +318,15 @@ export default function App() {
         </div>
       </div>
 
-      {/* Chat Sidebar — widget-based chat per layer */}
+      {/* Chat Sidebar — widget-based chat per canvas */}
       <div className="ai-sidebar">
         <ChatSidebar
-          key={`${projectId}/${LAYERS[activeLayer].id}`}
+          key={`${projectId}/${CANVASES[activeCanvas].id}`}
           projectId={projectId}
-          activeLayer={LAYERS[activeLayer].id}
-          layerColor={currentLayer.color}
+          activeCanvas={CANVASES[activeCanvas].id}
+          canvasColor={currentCanvas.color}
           onFilesChanged={() => whiteboardRef.current?.refetch()}
-          onAgentBusy={(busy) => setAgentBusyLayer(busy ? activeLayer : null)}
+          onAgentBusy={(busy) => setAgentBusyCanvas(busy ? activeCanvas : null)}
         />
       </div>
     </div>

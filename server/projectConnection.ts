@@ -16,7 +16,7 @@ export interface ConnectedProject {
   id: string;
   name: string;
   path: string; // absolute path to the project repo
-  layers: string[];
+  canvases: string[];
   connectedAt: string;
   sandbox?: "local" | "docker";
 }
@@ -27,9 +27,9 @@ export interface WorkspaceRegistry {
 
 export interface MicaConfig {
   name: string;
-  layers: string[];
+  canvases: string[];
   model?: string; // default model for all agents in this project
-  agents?: Record<string, { // per-layer/agent overrides
+  agents?: Record<string, { // per-canvas/agent overrides
     model?: string;
   }>;
   runtime?: {
@@ -48,8 +48,8 @@ const CONFIG_FILE = "config.json";
 const WORKSPACE_FILE = join(process.cwd(), "workspaces.json");
 
 // Legacy path for backward compatibility during migration
-const LEGACY_LAYERS_ROOT = join(process.cwd(), "layers");
-const LEGACY_PROJECTS_FILE = join(LEGACY_LAYERS_ROOT, "_projects.json");
+const LEGACY_CANVASES_ROOT = join(process.cwd(), "layers");
+const LEGACY_PROJECTS_FILE = join(LEGACY_CANVASES_ROOT, "_projects.json");
 
 // ── Workspace Registry ─────────────────────────────────────
 
@@ -84,10 +84,10 @@ export async function getMicaDir(projectId: string): Promise<string> {
   return join(projectPath, MICA_DIR);
 }
 
-/** Get the layer directory inside .mica/ */
-export async function getLayerDir(projectId: string, layer: string): Promise<string> {
+/** Get the canvas directory inside .mica/ */
+export async function getCanvasDir(projectId: string, canvas: string): Promise<string> {
   const micaDir = await getMicaDir(projectId);
-  return join(micaDir, layer);
+  return join(micaDir, canvas);
 }
 
 // ── Project Connection ─────────────────────────────────────
@@ -132,7 +132,7 @@ export async function connectProject(
     // First connection — initialize .mica/
     config = {
       name: name || dirName,
-      layers: ["workspace"],
+      canvases: ["workspace"],
     };
     await initMicaDir(absPath, config);
   }
@@ -148,7 +148,7 @@ export async function connectProject(
     id,
     name: config.name,
     path: absPath,
-    layers: config.layers,
+    canvases: config.canvases,
     connectedAt: new Date().toISOString(),
   };
 
@@ -178,9 +178,9 @@ export async function initMicaDir(
 ): Promise<void> {
   const micaDir = join(projectPath, MICA_DIR);
 
-  // Create .mica/ and layer subdirectories
-  for (const layer of config.layers) {
-    await mkdir(join(micaDir, layer), { recursive: true });
+  // Create .mica/ and canvas subdirectories
+  for (const canvas of config.canvases) {
+    await mkdir(join(micaDir, canvas), { recursive: true });
   }
 
   // Write config.json
@@ -193,35 +193,35 @@ export async function initMicaDir(
   console.log(`[connect] Initialized .mica/ at ${projectPath}`);
 }
 
-/** Add a layer to a connected project */
-export async function addLayerToProject(
+/** Add a canvas to a connected project */
+export async function addCanvasToProject(
   projectId: string,
-  layerName: string
+  canvasName: string
 ): Promise<void> {
   const registry = await readWorkspaceRegistry();
   const project = registry.projects.find((p) => p.id === projectId);
   if (!project) throw new Error(`Project not found: ${projectId}`);
-  if (project.layers.includes(layerName)) {
-    throw new Error(`Layer already exists: ${layerName}`);
+  if (project.canvases.includes(canvasName)) {
+    throw new Error(`Canvas already exists: ${canvasName}`);
   }
 
-  project.layers.push(layerName);
+  project.canvases.push(canvasName);
   await writeWorkspaceRegistry(registry);
 
-  // Create the layer directory in .mica/
-  const layerDir = join(project.path, MICA_DIR, layerName);
-  await mkdir(layerDir, { recursive: true });
+  // Create the canvas directory in .mica/
+  const canvasDir = join(project.path, MICA_DIR, canvasName);
+  await mkdir(canvasDir, { recursive: true });
 
   // Update .mica/config.json
   const configPath = join(project.path, MICA_DIR, CONFIG_FILE);
   try {
     const raw = await readFile(configPath, "utf-8");
     const config: MicaConfig = JSON.parse(raw);
-    config.layers.push(layerName);
+    config.canvases.push(canvasName);
     await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
   } catch {
     // Config file missing — create it
-    const config: MicaConfig = { name: project.name, layers: project.layers };
+    const config: MicaConfig = { name: project.name, canvases: project.canvases };
     await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
   }
 }
@@ -254,14 +254,14 @@ export async function readMicaConfig(
   }
 }
 
-export async function validateProjectLayer(
+export async function validateProjectCanvas(
   project: string,
-  layer: string
+  canvas: string
 ): Promise<void> {
   const config = await getProjectConfig(project);
   if (!config) throw new Error(`Invalid project: ${project}`);
-  if (!config.layers.includes(layer)) {
-    throw new Error(`Invalid layer "${layer}" in project "${project}"`);
+  if (!config.canvases.includes(canvas)) {
+    throw new Error(`Invalid canvas "${canvas}" in project "${project}"`);
   }
 }
 
@@ -270,7 +270,7 @@ export async function validateProjectLayer(
 interface LegacyProjectConfig {
   id: string;
   name: string;
-  layers: string[];
+  canvases: string[];
   createdAt: string;
   sandbox?: "local" | "docker";
 }
@@ -295,29 +295,29 @@ export async function migrateLegacyProjects(
   const baseDir = targetDir || process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-projects");
 
   for (const legacy of legacyProjects) {
-    const legacyDir = join(LEGACY_LAYERS_ROOT, legacy.id);
+    const legacyDir = join(LEGACY_CANVASES_ROOT, legacy.id);
     if (!existsSync(legacyDir)) continue;
 
     // Create project directory
     const projectDir = join(baseDir, legacy.id);
     await mkdir(projectDir, { recursive: true });
 
-    // Move layer files to .mica/ in the new location
+    // Move canvas files to .mica/ in the new location
     const micaDir = join(projectDir, MICA_DIR);
-    for (const layer of legacy.layers) {
-      const srcLayer = join(legacyDir, layer);
-      const dstLayer = join(micaDir, layer);
-      await mkdir(dstLayer, { recursive: true });
+    for (const canvas of legacy.canvases) {
+      const srcCanvas = join(legacyDir, canvas);
+      const dstCanvas = join(micaDir, canvas);
+      await mkdir(dstCanvas, { recursive: true });
 
-      if (existsSync(srcLayer)) {
+      if (existsSync(srcCanvas)) {
         // Copy files (not move, to be safe during migration)
-        const files = await readdir(srcLayer);
+        const files = await readdir(srcCanvas);
         for (const file of files) {
-          const srcFile = join(srcLayer, file);
+          const srcFile = join(srcCanvas, file);
           const fileStat = await stat(srcFile);
           if (fileStat.isFile()) {
             const content = await readFile(srcFile, "utf-8");
-            await writeFile(join(dstLayer, file), content, "utf-8");
+            await writeFile(join(dstCanvas, file), content, "utf-8");
           }
         }
       }
@@ -342,7 +342,7 @@ export async function migrateLegacyProjects(
     // Write .mica/config.json
     const config: MicaConfig = {
       name: legacy.name,
-      layers: legacy.layers,
+      canvases: legacy.canvases,
     };
     await writeFile(
       join(micaDir, CONFIG_FILE),

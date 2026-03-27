@@ -1,5 +1,5 @@
 // Mica AI Team Server
-// Express server bridging the frontend to Claude Agent SDK-powered layer agents.
+// Express server bridging the frontend to Claude Agent SDK-powered canvas agents.
 // Auth: Uses Claude Code subscription (Pro/Max) — no API key needed.
 
 import express from "express";
@@ -8,25 +8,25 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   chatWithAgent,
-  consultLayer,
+  consultCanvas,
   teamDiscuss,
   convertDrawingToMermaid,
-  resetLayer,
+  resetCanvas,
   resetAll,
   getAgentMeta,
 } from "./agents.js";
-import type { LayerId } from "./agents.js";
+import type { CanvasId } from "./agents.js";
 import {
   listFiles,
-  readLayerFile,
-  writeLayerFile,
-  deleteLayerFile,
+  readCanvasFile,
+  writeCanvasFile,
+  deleteCanvasFile,
   listProjects,
   deleteProject,
   getProjectConfig,
-  validateProjectLayer,
-} from "./layerFiles.js";
-import { connectProject, addLayerToProject, migrateLegacyProjects } from "./projectConnection.js";
+  validateProjectCanvas,
+} from "./canvasFiles.js";
+import { connectProject, addCanvasToProject, migrateLegacyProjects } from "./projectConnection.js";
 import {
   getGitStatus,
   gitCommit,
@@ -41,7 +41,7 @@ import {
   getContainerStatus,
   getContainerLogs,
 } from "./projectContainer.js";
-import { initializeProjects, seedNewProject } from "./seedLayers.js";
+import { initializeProjects, seedNewProject } from "./seedCanvases.js";
 import { WorkerPool } from "./workerPool.js";
 import { CardManager } from "./cardManager.js";
 import { FileWatcher } from "./fileWatcher.js";
@@ -62,14 +62,14 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 
-// ── Helper: validate project+layer from route params ────
+// ── Helper: validate project+canvas from route params ────
 async function validateParams(
   res: express.Response,
   project: string,
-  layer: string
+  canvas: string
 ): Promise<boolean> {
   try {
-    await validateProjectLayer(project, layer);
+    await validateProjectCanvas(project, canvas);
     return true;
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -126,7 +126,7 @@ app.post("/api/projects", async (req, res) => {
     const config = await seedNewProject(id, name);
 
     // Add watchers for the new project
-    await fileWatcher.addProject(id, config.layers);
+    await fileWatcher.addProject(id, config.canvases);
 
     res.json(config);
   } catch (err) {
@@ -145,7 +145,7 @@ app.post("/api/projects/connect", async (req, res) => {
     const config = await connectProject(projectPath, name);
 
     // Add watchers for the connected project
-    await fileWatcher.addProject(config.id, config.layers);
+    await fileWatcher.addProject(config.id, config.canvases);
 
     res.json(config);
   } catch (err) {
@@ -173,17 +173,17 @@ app.delete("/api/projects/:project", async (req, res) => {
   }
 });
 
-// ── Layer management ──────────────────────────────────────
+// ── Canvas management ──────────────────────────────────────
 
-app.post("/api/projects/:project/layers", async (req, res) => {
+app.post("/api/projects/:project/canvases", async (req, res) => {
   const { name } = req.body;
   if (!name) {
     res.status(400).json({ error: "name required" });
     return;
   }
   try {
-    await addLayerToProject(req.params.project, name);
-    res.json({ success: true, layer: name });
+    await addCanvasToProject(req.params.project, name);
+    res.json({ success: true, canvas: name });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
@@ -310,19 +310,19 @@ app.get("/api/projects/:project/container/logs", async (req, res) => {
 
 // ── Agent endpoints (project-scoped) ──────────────────────
 
-// Agent metadata for a layer
-app.get("/api/projects/:project/layers/:layer/agent", async (req, res) => {
-  const { project, layer } = req.params;
-  if (!(await validateParams(res, project, layer))) return;
-  res.json(getAgentMeta(layer));
+// Agent metadata for a canvas
+app.get("/api/projects/:project/canvases/:canvas/agent", async (req, res) => {
+  const { project, canvas } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
+  res.json(getAgentMeta(canvas));
 });
 
-// Chat with a specific layer agent
-app.post("/api/projects/:project/layers/:layer/chat", async (req, res) => {
+// Chat with a specific canvas agent
+app.post("/api/projects/:project/canvases/:canvas/chat", async (req, res) => {
   req.setTimeout(120000);
   res.setTimeout(120000);
-  const { project, layer } = req.params;
-  if (!(await validateParams(res, project, layer))) return;
+  const { project, canvas } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
 
   const { message } = req.body;
   if (!message) {
@@ -331,14 +331,14 @@ app.post("/api/projects/:project/layers/:layer/chat", async (req, res) => {
   }
 
   try {
-    const response = await chatWithAgent(project, layer, message);
+    const response = await chatWithAgent(project, canvas, message);
 
     // If there's a pending consultation, forward it
     if (response.consultation) {
-      const consultationResponse = await consultLayer(
+      const consultationResponse = await consultCanvas(
         project,
-        layer,
-        response.consultation.targetLayer,
+        canvas,
+        response.consultation.targetCanvas,
         response.consultation.question,
         response.consultation.context
       );
@@ -349,7 +349,7 @@ app.post("/api/projects/:project/layers/:layer/chat", async (req, res) => {
     res.json({ response });
   } catch (err: unknown) {
     const error = err as Error;
-    console.error(`[${project}/${layer}] Error:`, error.message);
+    console.error(`[${project}/${canvas}] Error:`, error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -369,7 +369,7 @@ app.post("/api/projects/:project/team/discuss", async (req, res) => {
       res.status(404).json({ error: `Project not found: ${project}` });
       return;
     }
-    const responses = await teamDiscuss(project, config.layers);
+    const responses = await teamDiscuss(project, config.canvases);
     res.json({ responses });
   } catch (err: unknown) {
     const error = err as Error;
@@ -378,16 +378,16 @@ app.post("/api/projects/:project/team/discuss", async (req, res) => {
   }
 });
 
-// Cross-layer consultation
+// Cross-canvas consultation
 app.post("/api/projects/:project/consult", async (req, res) => {
   const { project } = req.params;
-  const { fromLayer, toLayer, question, context } = req.body;
+  const { fromCanvas, toCanvas, question, context } = req.body;
 
   try {
-    const response = await consultLayer(
+    const response = await consultCanvas(
       project,
-      fromLayer,
-      toLayer,
+      fromCanvas,
+      toCanvas,
       question,
       context
     );
@@ -402,23 +402,23 @@ app.post("/api/projects/:project/consult", async (req, res) => {
 // Reset conversations
 app.post("/api/projects/:project/reset", (req, res) => {
   const { project } = req.params;
-  const { layer } = req.body;
-  if (layer) {
-    resetLayer(project, layer);
+  const { canvas } = req.body;
+  if (canvas) {
+    resetCanvas(project, canvas);
   } else {
     resetAll();
   }
   res.json({ success: true });
 });
 
-// ── Layer File Endpoints (project-scoped) ─────────────────
+// ── Canvas File Endpoints (project-scoped) ─────────────────
 
-// List all files in a layer
-app.get("/api/projects/:project/layers/:layer/files", async (req, res) => {
-  const { project, layer } = req.params;
-  if (!(await validateParams(res, project, layer))) return;
+// List all files in a canvas
+app.get("/api/projects/:project/canvases/:canvas/files", async (req, res) => {
+  const { project, canvas } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
   try {
-    const files = await listFiles(project, layer);
+    const files = await listFiles(project, canvas);
     res.json(files);
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
@@ -426,11 +426,11 @@ app.get("/api/projects/:project/layers/:layer/files", async (req, res) => {
 });
 
 // Read a single file
-app.get("/api/projects/:project/layers/:layer/files/:filename", async (req, res) => {
-  const { project, layer, filename } = req.params;
-  if (!(await validateParams(res, project, layer))) return;
+app.get("/api/projects/:project/canvases/:canvas/files/:filename", async (req, res) => {
+  const { project, canvas, filename } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
   try {
-    const file = await readLayerFile(project, layer, filename);
+    const file = await readCanvasFile(project, canvas, filename);
     res.json(file);
   } catch (err: unknown) {
     res.status(404).json({ error: (err as Error).message });
@@ -438,16 +438,16 @@ app.get("/api/projects/:project/layers/:layer/files/:filename", async (req, res)
 });
 
 // Create or update a file
-app.put("/api/projects/:project/layers/:layer/files/:filename", async (req, res) => {
-  const { project, layer, filename } = req.params;
+app.put("/api/projects/:project/canvases/:canvas/files/:filename", async (req, res) => {
+  const { project, canvas, filename } = req.params;
   const { content } = req.body;
-  if (!(await validateParams(res, project, layer))) return;
+  if (!(await validateParams(res, project, canvas))) return;
   if (typeof content !== "string") {
     res.status(400).json({ error: "content (string) required" });
     return;
   }
   try {
-    await writeLayerFile(project, layer, filename, content);
+    await writeCanvasFile(project, canvas, filename, content);
     res.json({ success: true });
   } catch (err: unknown) {
     res.status(400).json({ error: (err as Error).message });
@@ -455,11 +455,11 @@ app.put("/api/projects/:project/layers/:layer/files/:filename", async (req, res)
 });
 
 // Delete a file
-app.delete("/api/projects/:project/layers/:layer/files/:filename", async (req, res) => {
-  const { project, layer, filename } = req.params;
-  if (!(await validateParams(res, project, layer))) return;
+app.delete("/api/projects/:project/canvases/:canvas/files/:filename", async (req, res) => {
+  const { project, canvas, filename } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
   try {
-    await deleteLayerFile(project, layer, filename);
+    await deleteCanvasFile(project, canvas, filename);
     res.json({ success: true });
   } catch (err: unknown) {
     res.status(404).json({ error: (err as Error).message });
@@ -467,16 +467,16 @@ app.delete("/api/projects/:project/layers/:layer/files/:filename", async (req, r
 });
 
 // Convert a drawing to mermaid via Claude Vision
-app.post("/api/projects/:project/layers/:layer/convert-drawing", async (req, res) => {
-  const { project, layer } = req.params;
+app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, res) => {
+  const { project, canvas } = req.params;
   const { imageBase64 } = req.body;
-  if (!(await validateParams(res, project, layer))) return;
+  if (!(await validateParams(res, project, canvas))) return;
   if (!imageBase64) {
     res.status(400).json({ error: "imageBase64 required" });
     return;
   }
   try {
-    const result = await convertDrawingToMermaid(project, layer, imageBase64);
+    const result = await convertDrawingToMermaid(project, canvas, imageBase64);
     res.json(result);
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
@@ -492,20 +492,20 @@ const fileWatcher = new FileWatcher();
 // RPC handler: Python card classes can call mica.write(), mica.agent.chat(), etc.
 workerPool.setRpcHandler(async (method, args, context) => {
   const project = context.project as string;
-  const layer = context.layer as string;
+  const canvas = context.canvas as string;
 
   switch (method) {
     case "write": {
-      await writeLayerFile(project, layer, context.filename, args.content as string);
+      await writeCanvasFile(project, canvas, context.filename, args.content as string);
       return { success: true };
     }
     case "write_file": {
-      await writeLayerFile(project, layer, args.filename as string, args.content as string);
+      await writeCanvasFile(project, canvas, args.filename as string, args.content as string);
       return { success: true };
     }
     case "read_file": {
       try {
-        const file = await readLayerFile(project, layer, args.filename as string);
+        const file = await readCanvasFile(project, canvas, args.filename as string);
         return file.content;
       } catch {
         return null;
@@ -515,19 +515,19 @@ workerPool.setRpcHandler(async (method, args, context) => {
       const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
       const line = `- **${timestamp}** — ${args.message}\n`;
       try {
-        const existing = await readLayerFile(project, layer, "_log.md");
-        await writeLayerFile(project, layer, "_log.md", existing.content + line);
+        const existing = await readCanvasFile(project, canvas, "_log.md");
+        await writeCanvasFile(project, canvas, "_log.md", existing.content + line);
       } catch {
-        await writeLayerFile(project, layer, "_log.md", `# Activity Log\n\n${line}`);
+        await writeCanvasFile(project, canvas, "_log.md", `# Activity Log\n\n${line}`);
       }
       return { success: true };
     }
     case "agent.chat": {
-      const response = await chatWithAgent(project, layer, args.message as string, undefined, (evt) => {
+      const response = await chatWithAgent(project, canvas, args.message as string, undefined, (evt) => {
         broadcast({
           type: "agent-progress",
           project,
-          layer,
+          canvas,
           event: evt.type,
           tool: evt.tool,
           elapsed: evt.elapsed,
@@ -536,7 +536,7 @@ workerPool.setRpcHandler(async (method, args, context) => {
       });
       return {
         message: response.message,
-        agentName: getAgentMeta(layer).name,
+        agentName: getAgentMeta(canvas).name,
         filesChanged: response.filesChanged,
       };
     }
@@ -549,12 +549,12 @@ workerPool.setRpcHandler(async (method, args, context) => {
   }
 });
 
-// Get all rendered cards for a layer
-app.get("/api/projects/:project/layers/:layer/cards", async (req, res) => {
-  const { project, layer } = req.params;
-  if (!(await validateParams(res, project, layer))) return;
+// Get all rendered cards for a canvas
+app.get("/api/projects/:project/canvases/:canvas/cards", async (req, res) => {
+  const { project, canvas } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
   try {
-    const cards = await cardManager.renderAllCards(project, layer);
+    const cards = await cardManager.renderAllCards(project, canvas);
     res.json(cards);
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
@@ -562,13 +562,13 @@ app.get("/api/projects/:project/layers/:layer/cards", async (req, res) => {
 });
 
 // Call an export function on a card
-app.post("/api/projects/:project/layers/:layer/cards/:filename/call/:fn", async (req, res) => {
+app.post("/api/projects/:project/canvases/:canvas/cards/:filename/call/:fn", async (req, res) => {
   req.setTimeout(300000);
   res.setTimeout(300000);
-  const { project, layer, filename, fn } = req.params;
-  if (!(await validateParams(res, project, layer))) return;
+  const { project, canvas, filename, fn } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
   try {
-    const result = await cardManager.callExport(project, layer, filename, fn, req.body || {});
+    const result = await cardManager.callExport(project, canvas, filename, fn, req.body || {});
     res.json({ result });
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
@@ -576,11 +576,11 @@ app.post("/api/projects/:project/layers/:layer/cards/:filename/call/:fn", async 
 });
 
 // Context stats — estimate token usage for agent calls
-app.get("/api/projects/:project/layers/:layer/context-stats", async (req, res) => {
-  const { project, layer } = req.params;
-  if (!(await validateParams(res, project, layer))) return;
+app.get("/api/projects/:project/canvases/:canvas/context-stats", async (req, res) => {
+  const { project, canvas } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
   try {
-    const files = await listFiles(project, layer);
+    const files = await listFiles(project, canvas);
     let totalChars = 0;
     const fileStats: { name: string; chars: number }[] = [];
     for (const f of files) {
@@ -603,7 +603,7 @@ app.get("/api/projects/:project/layers/:layer/context-stats", async (req, res) =
 
     res.json({
       project,
-      layer,
+      canvas,
       files: fileStats.length,
       fileContentChars: totalChars,
       systemPromptChars,
@@ -677,8 +677,8 @@ wss.on("connection", (ws) => {
       return; // Ignore invalid JSON
     }
 
-    const { type, id, project, layer, filename, fn, args } = msg as {
-      type: string; id?: string; project?: string; layer?: string;
+    const { type, id, project, canvas, filename, fn, args } = msg as {
+      type: string; id?: string; project?: string; canvas?: string;
       filename?: string; fn?: string; args?: Record<string, unknown>;
       event?: string; data?: unknown;
     };
@@ -689,7 +689,7 @@ wss.on("connection", (ws) => {
       case "export_call": {
         try {
           const result = await cardManager.callExport(
-            project as string, layer as string, filename as string,
+            project as string, canvas as string, filename as string,
             fn as string, (args || {}) as Record<string, unknown>
           );
           ws.send(JSON.stringify({ type: "result", id, result }));
@@ -702,7 +702,7 @@ wss.on("connection", (ws) => {
       // Pattern 2: Fire-and-forget
       case "send": {
         cardManager.callSend(
-          project as string, layer as string, filename as string,
+          project as string, canvas as string, filename as string,
           fn as string, (args || {}) as Record<string, unknown>
         );
         break;
@@ -723,7 +723,7 @@ wss.on("connection", (ws) => {
         try {
           await cardManager.openChannel(
             id as string,
-            project as string, layer as string, filename as string,
+            project as string, canvas as string, filename as string,
             fn as string, (args || {}) as Record<string, unknown>,
             // onData: forward Python → this browser client
             (data) => {
@@ -778,12 +778,12 @@ function broadcast(msg: Record<string, unknown>) {
 }
 
 // File watcher → re-render + broadcast
-fileWatcher.on("file-change", async (event: { type: string; project: string; layer: string; filename: string }) => {
-  console.log(`[file-watcher] ${event.type}: ${event.project}/${event.layer}/${event.filename}`);
+fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {
+  console.log(`[file-watcher] ${event.type}: ${event.project}/${event.canvas}/${event.filename}`);
 
   if (event.type === "deleted") {
-    cardManager.invalidateCard(event.project, event.layer, event.filename);
-    broadcast({ type: "file-deleted", project: event.project, layer: event.layer, filename: event.filename });
+    cardManager.invalidateCard(event.project, event.canvas, event.filename);
+    broadcast({ type: "file-deleted", project: event.project, canvas: event.canvas, filename: event.filename });
     return;
   }
 
@@ -791,26 +791,26 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; lay
   if (event.filename === "_chat-history.json") return;
 
   // Re-render the changed card
-  cardManager.invalidateCard(event.project, event.layer, event.filename);
+  cardManager.invalidateCard(event.project, event.canvas, event.filename);
   try {
-    const file = await readLayerFile(event.project, event.layer, event.filename);
+    const file = await readCanvasFile(event.project, event.canvas, event.filename);
     const rendered = await cardManager.renderCard(
       event.project,
-      event.layer,
+      event.canvas,
       event.filename,
       file.content
     );
     broadcast({
       type: event.type === "created" ? "file-created" : "file-changed",
       project: event.project,
-      layer: event.layer,
+      canvas: event.canvas,
       filename: event.filename,
       html: rendered.html,
       exports: rendered.exports,
       meta: rendered.meta,
     });
   } catch (err) {
-    console.error(`[file-watcher] Re-render failed for ${event.project}/${event.layer}/${event.filename}:`, (err as Error).message);
+    console.error(`[file-watcher] Re-render failed for ${event.project}/${event.canvas}/${event.filename}:`, (err as Error).message);
   }
 });
 

@@ -192,7 +192,7 @@ def render(content, config):
 
     Args:
         content: The .md file body (str)
-        config:  Dict with project, layer, filename keys
+        config:  Dict with project, canvas, filename keys
     """
     return "<div>Hello</div>"
 
@@ -232,11 +232,11 @@ These functions let your Python code interact with the Mica server during `@mica
 | Function | Description |
 |----------|-------------|
 | `mica.write(content)` | Overwrite this card's `.md` file content |
-| `mica.write_file(filename, content)` | Write to any file in the current layer |
-| `mica.read_file(filename)` | Read a file from the current layer (returns `str` or `None`) |
-| `mica.log(message)` | Append a message to the layer's `_log.md` |
+| `mica.write_file(filename, content)` | Write to any file in the current canvas |
+| `mica.read_file(filename)` | Read a file from the current canvas (returns `str` or `None`) |
+| `mica.log(message)` | Append a message to the canvas's `_log.md` |
 | `mica.emit(event, data)` | Broadcast an event to all connected browser widgets |
-| `mica.agent.chat(message)` | Send a message to the layer's AI agent (returns response dict) |
+| `mica.agent.chat(message)` | Send a message to the canvas's AI agent (returns response dict) |
 
 ### Context Available in Config
 
@@ -244,7 +244,7 @@ These functions let your Python code interact with the Mica server during `@mica
 @mica.render
 def render(content, config):
     project  = config["project"]   # e.g. "my-project"
-    layer    = config["layer"]     # e.g. "workspace"
+    canvas   = config["canvas"]    # e.g. "workspace"
     filename = config["filename"]  # e.g. "_my-widget.md"
 ```
 

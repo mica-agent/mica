@@ -16,7 +16,7 @@ export type ArtifactType =
 
 export type HealthStatus = 'healthy' | 'degraded' | 'critical'
 
-export interface LayerNode {
+export interface CanvasNode {
   id: string
   type: ArtifactType
   title: string
@@ -25,10 +25,10 @@ export interface LayerNode {
   position: { x: number; y: number }
   size: { w: number; h: number }
   props?: Record<string, unknown>
-  children?: LayerNode[]
+  children?: CanvasNode[]
 }
 
-export const missionTree: LayerNode = {
+export const missionTree: CanvasNode = {
   id: 'root',
   type: 'mission',
   title: 'Inbox Intelligence',
@@ -339,7 +339,7 @@ export const missionTree: LayerNode = {
 }
 
 /** Flatten the tree to find a node by ID */
-export function findNode(id: string, node: LayerNode = missionTree): LayerNode | undefined {
+export function findNode(id: string, node: CanvasNode = missionTree): CanvasNode | undefined {
   if (node.id === id) return node
   for (const child of node.children ?? []) {
     const found = findNode(id, child)
@@ -349,6 +349,6 @@ export function findNode(id: string, node: LayerNode = missionTree): LayerNode |
 }
 
 /** Get the root-level shapes to show initially (mission card + top clusters) */
-export function getMissionLevelNodes(): LayerNode[] {
+export function getMissionLevelNodes(): CanvasNode[] {
   return [missionTree, ...(missionTree.children ?? [])]
 }

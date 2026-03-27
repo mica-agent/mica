@@ -1,14 +1,14 @@
 import { useState } from 'react';
-import type { LayerMeta, LayerData, Artifact, Cue } from './data';
+import type { CanvasMeta, CanvasData, Artifact, Cue } from './data';
 
 interface Props {
-  layer: LayerMeta;
-  data: LayerData;
+  canvas: CanvasMeta;
+  data: CanvasData;
 }
 
 // ── Cue Pill ───────────────────────────────────────────────
 
-function CuePill({ cue, layerColor }: { cue: Cue; layerColor: string }) {
+function CuePill({ cue, canvasColor }: { cue: Cue; canvasColor: string }) {
   const [expanded, setExpanded] = useState(false);
 
   const classes = [
@@ -21,7 +21,7 @@ function CuePill({ cue, layerColor }: { cue: Cue; layerColor: string }) {
     <div
       className={classes}
       onClick={() => setExpanded(!expanded)}
-      style={{ '--layer-color': layerColor } as React.CSSProperties}
+      style={{ '--canvas-color': canvasColor } as React.CSSProperties}
     >
       <span className={`cue-kind cue-kind--${cue.kind}`}>
         {cue.kind === 'question' ? 'Q' : cue.kind === 'prompt' ? 'P' : cue.kind === 'exercise' ? 'E' : '✓'}
@@ -79,7 +79,7 @@ function ArchPreview({ components }: { components: string[] }) {
 
 // ── Artifact Card ──────────────────────────────────────────
 
-function ArtifactCard({ artifact, layer }: { artifact: Artifact; layer: LayerMeta }) {
+function ArtifactCard({ artifact, canvas }: { artifact: Artifact; canvas: CanvasMeta }) {
   const [showDetail, setShowDetail] = useState(false);
   const isEscalation = artifact.isEscalation;
   const isDecision = artifact.type === 'decision';
@@ -93,7 +93,7 @@ function ArtifactCard({ artifact, layer }: { artifact: Artifact; layer: LayerMet
   return (
     <div
       className={classes}
-      style={{ '--layer-color': layer.color } as React.CSSProperties}
+      style={{ '--canvas-color': canvas.color } as React.CSSProperties}
       onClick={() => artifact.detail && setShowDetail(!showDetail)}
     >
       <div className="artifact-card-header">
@@ -106,7 +106,7 @@ function ArtifactCard({ artifact, layer }: { artifact: Artifact; layer: LayerMet
       </div>
       <div className="artifact-summary">{artifact.summary}</div>
 
-      {/* Layer-specific visual treatments */}
+      {/* Canvas-specific visual treatments */}
       {artifact.type === 'flow' && (
         <FlowPreview steps={artifact.summary.split(' → ')} />
       )}
@@ -178,7 +178,7 @@ function ArtifactCard({ artifact, layer }: { artifact: Artifact; layer: LayerMet
   );
 }
 
-// ── Layer Workspace ────────────────────────────────────────
+// ── Canvas Workspace ────────────────────────────────────────
 
 const VERSION_METAPHORS: Record<string, { label: string; action: string }> = {
   mission: { label: 'Snapshot', action: 'Fossilize' },
@@ -187,13 +187,13 @@ const VERSION_METAPHORS: Record<string, { label: string; action: string }> = {
   implementation: { label: 'Commit', action: 'Commit' },
 };
 
-export default function LayerWorkspace({ layer, data }: Props) {
+export default function CanvasWorkspace({ canvas, data }: Props) {
   const initiativeLabel =
     data.aiInitiative === 'high' ? 'AI leads' :
     data.aiInitiative === 'moderate' ? 'Collaborative' :
     'Human leads';
 
-  const version = VERSION_METAPHORS[layer.id];
+  const version = VERSION_METAPHORS[canvas.id];
 
   return (
     <div className="workspace">
@@ -206,9 +206,9 @@ export default function LayerWorkspace({ layer, data }: Props) {
         <button
           className="version-btn"
           style={{
-            background: `${layer.color}10`,
-            borderColor: `${layer.color}25`,
-            color: layer.color,
+            background: `${canvas.color}10`,
+            borderColor: `${canvas.color}25`,
+            color: canvas.color,
           }}
         >
           {version.action}
@@ -219,13 +219,13 @@ export default function LayerWorkspace({ layer, data }: Props) {
       <div className="goal-bar">
         <div className="goal-bar-header">
           <span
-            className="goal-layer-badge"
+            className="goal-canvas-badge"
             style={{
-              background: `${layer.color}20`,
-              color: layer.color,
+              background: `${canvas.color}20`,
+              color: canvas.color,
             }}
           >
-            {layer.icon} {layer.label}
+            {canvas.icon} {canvas.label}
           </span>
           <span className="goal-text">{data.goal}</span>
         </div>
@@ -245,14 +245,14 @@ export default function LayerWorkspace({ layer, data }: Props) {
       {/* Cue pills */}
       <div className="cue-pills">
         {data.cues.map((cue, i) => (
-          <CuePill key={i} cue={cue} layerColor={layer.color} />
+          <CuePill key={i} cue={cue} canvasColor={canvas.color} />
         ))}
       </div>
 
       {/* Artifact grid */}
       <div className="artifact-grid">
         {data.artifacts.map((artifact) => (
-          <ArtifactCard key={artifact.id} artifact={artifact} layer={layer} />
+          <ArtifactCard key={artifact.id} artifact={artifact} canvas={canvas} />
         ))}
       </div>
     </div>
