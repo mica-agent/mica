@@ -22,11 +22,25 @@ import {
   writeLayerFile,
   deleteLayerFile,
   listProjects,
-  createProject,
   deleteProject,
   getProjectConfig,
   validateProjectLayer,
 } from "./layerFiles.js";
+import { connectProject } from "./projectConnection.js";
+import {
+  getGitStatus,
+  gitCommit,
+  gitLog,
+  gitDiff,
+  gitBranch,
+  gitCheckout,
+} from "./projectGit.js";
+import {
+  startProjectContainer,
+  stopProjectContainer,
+  getContainerStatus,
+  getContainerLogs,
+} from "./projectContainer.js";
 import { initializeProjects, seedNewProject } from "./seedLayers.js";
 import { WorkerPool } from "./workerPool.js";
 import { CardManager } from "./cardManager.js";
@@ -101,7 +115,7 @@ app.get("/api/projects/:project", async (req, res) => {
   }
 });
 
-// Create a project
+// Create a new project (seeds a fresh directory)
 app.post("/api/projects", async (req, res) => {
   const { id, name } = req.body;
   if (!id || !name) {
@@ -120,13 +134,149 @@ app.post("/api/projects", async (req, res) => {
   }
 });
 
-// Delete a project
+// Connect an existing directory/repo to Mica
+app.post("/api/projects/connect", async (req, res) => {
+  const { path: projectPath, name } = req.body;
+  if (!projectPath) {
+    res.status(400).json({ error: "path required" });
+    return;
+  }
+  try {
+    const config = await connectProject(projectPath, name);
+
+    // Add watchers for the connected project
+    await fileWatcher.addProject(config.id, config.layers);
+
+    res.json(config);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// Disconnect a project (leaves .mica/ intact)
+app.post("/api/projects/:project/disconnect", async (req, res) => {
+  try {
+    await deleteProject(req.params.project);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// Delete a project (backward compat — same as disconnect)
 app.delete("/api/projects/:project", async (req, res) => {
   try {
     await deleteProject(req.params.project);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// ── Git endpoints (project-scoped) ────────────────────────
+
+app.get("/api/projects/:project/git/status", async (req, res) => {
+  try {
+    const status = await getGitStatus(req.params.project);
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/projects/:project/git/commit", async (req, res) => {
+  const { message } = req.body;
+  if (!message) {
+    res.status(400).json({ error: "message required" });
+    return;
+  }
+  try {
+    const result = await gitCommit(req.params.project, message);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/projects/:project/git/log", async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const log = await gitLog(req.params.project, limit);
+    res.json(log);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/projects/:project/git/diff", async (req, res) => {
+  try {
+    const ref = req.query.ref as string | undefined;
+    const diff = await gitDiff(req.params.project, ref);
+    res.json({ diff });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/projects/:project/git/branches", async (req, res) => {
+  try {
+    const info = await gitBranch(req.params.project);
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/projects/:project/git/checkout", async (req, res) => {
+  const { branch, create } = req.body;
+  if (!branch) {
+    res.status(400).json({ error: "branch required" });
+    return;
+  }
+  try {
+    await gitCheckout(req.params.project, branch, create);
+    res.json({ success: true, branch });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── Container endpoints (project-scoped) ──────────────────
+
+app.post("/api/projects/:project/container/start", async (req, res) => {
+  try {
+    const info = await startProjectContainer(req.params.project);
+    res.json(info);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/projects/:project/container/stop", async (req, res) => {
+  try {
+    await stopProjectContainer(req.params.project);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/projects/:project/container/status", async (req, res) => {
+  try {
+    const status = await getContainerStatus(req.params.project);
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/projects/:project/container/logs", async (req, res) => {
+  try {
+    const tail = parseInt(req.query.tail as string) || 100;
+    const logs = await getContainerLogs(req.params.project, tail);
+    res.json({ logs });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 

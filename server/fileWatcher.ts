@@ -1,5 +1,5 @@
 /**
- * FileWatcher — Watches project layer directories and card-classes for changes.
+ * FileWatcher — Watches project .mica/ directories and card-classes for changes.
  *
  * Emits events when files are created, modified, or deleted.
  * Debounces rapid changes (300ms per file).
@@ -8,7 +8,7 @@
 import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
-import { readProjectRegistry } from "./layerFiles.js";
+import { readWorkspaceRegistry, getProjectPath } from "./projectConnection.js";
 
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
@@ -22,7 +22,6 @@ export interface ClassChangeEvent {
   className: string;
 }
 
-const LAYERS_DIR = path.resolve("layers");
 const CARD_CLASSES_DIR = path.resolve("card-classes");
 const DEBOUNCE_MS = 300;
 const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json", ".html"];
@@ -33,12 +32,12 @@ export class FileWatcher extends EventEmitter {
   private knownFiles: Map<string, Set<string>> = new Map(); // "project/layer" → set of filenames
 
   async start(): Promise<void> {
-    // Read project registry to discover directories
-    const registry = await readProjectRegistry();
+    // Read workspace registry to discover connected projects
+    const registry = await readWorkspaceRegistry();
 
     for (const project of registry.projects) {
       for (const layer of project.layers) {
-        await this.watchProjectLayer(project.id, layer);
+        await this.watchProjectLayer(project.id, project.path, layer);
       }
     }
 
@@ -49,15 +48,16 @@ export class FileWatcher extends EventEmitter {
     console.log(`[file-watcher] Watching ${totalLayers} layer(s) across ${registry.projects.length} project(s), and card-classes.`);
   }
 
-  /** Add a watcher for a newly created project's layers */
+  /** Add a watcher for a newly connected project's layers */
   async addProject(projectId: string, layers: string[]): Promise<void> {
+    const projectPath = await getProjectPath(projectId);
     for (const layer of layers) {
-      await this.watchProjectLayer(projectId, layer);
+      await this.watchProjectLayer(projectId, projectPath, layer);
     }
   }
 
-  private async watchProjectLayer(projectId: string, layer: string): Promise<void> {
-    const dir = path.join(LAYERS_DIR, projectId, layer);
+  private async watchProjectLayer(projectId: string, projectPath: string, layer: string): Promise<void> {
+    const dir = path.join(projectPath, ".mica", layer);
     const key = `${projectId}/${layer}`;
 
     try {
@@ -88,6 +88,8 @@ export class FileWatcher extends EventEmitter {
     try {
       const watcher = fs.watch(dir, (eventType, filename) => {
         if (!filename) return;
+        // Skip .git internals and hidden files
+        if (filename.startsWith(".")) return;
         const ext = path.extname(filename);
         if (!VALID_EXTENSIONS.includes(ext) && filename !== "_chat-history.json") return;
 

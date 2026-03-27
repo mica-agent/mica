@@ -27,3 +27,7 @@ layers/
 # Python
 *.pyc
 __pycache__/
+
+# Project data (projects are external repos, not part of Mica)
+projects/
+workspaces.json

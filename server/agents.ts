@@ -137,8 +137,8 @@ When you see _decision-*.md files on your whiteboard, READ THEM — they contain
 
 ## Custom Widgets
 - To create a new interactive widget card class, first read the docs: \`cat card-classes/CREATING_WIDGETS.md\`
-- Project-specific card classes go in \`layers/<PROJECT_ID>/_card-classes/<classname>/render.py\` (at the project level, NOT inside a layer)
-- The project ID is available in config["project"] — use that exact value in the path
+- Project-specific card classes go in \`.mica/_card-classes/<classname>/render.py\` (inside the project's .mica directory, NOT inside a layer)
+- The project root is your working directory — card classes live at .mica/_card-classes/
 - Then create a \`_<classname>.md\` file in the layer to use it
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.

@@ -5,8 +5,9 @@ export type LayerId = string;
 export interface ProjectConfig {
   id: string;
   name: string;
+  path: string;
   layers: string[];
-  createdAt: string;
+  connectedAt: string;
 }
 
 export interface LayerFile {
@@ -55,6 +56,23 @@ export async function createProject(id: string, name: string): Promise<ProjectCo
   });
   if (!res.ok) throw new Error(`Failed to create project: ${res.statusText}`);
   return res.json();
+}
+
+export async function connectProjectApi(path: string, name?: string): Promise<ProjectConfig> {
+  const res = await fetch(`${API_BASE}/api/projects/connect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, name }),
+  });
+  if (!res.ok) throw new Error(`Failed to connect project: ${res.statusText}`);
+  return res.json();
+}
+
+export async function disconnectProjectApi(projectId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}/disconnect`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Failed to disconnect project: ${res.statusText}`);
 }
 
 export async function deleteProjectApi(projectId: string): Promise<void> {

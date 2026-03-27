@@ -1,22 +1,29 @@
-// Seed starter files for new projects and handle migration from legacy layout
+// Seed starter files for new projects and handle initialization.
+// In the project-first model, seeding creates .mica/ inside a project directory.
 
 import { existsSync } from "fs";
-import { readdir, rename, mkdir } from "fs/promises";
+import { readFile, mkdir } from "fs/promises";
 import { join } from "path";
 import {
   listFiles,
   writeLayerFile,
   ensureLayerDir,
-  createProject,
-  readProjectRegistry,
   listProjects,
-  type ProjectConfig,
 } from "./layerFiles.js";
+import {
+  connectProject,
+  initMicaDir,
+  readWorkspaceRegistry,
+  migrateLegacyProjects,
+  type ConnectedProject,
+  type MicaConfig,
+} from "./projectConnection.js";
 
-const LAYERS_ROOT = join(process.cwd(), "layers");
+import os from "os";
 
-// Legacy layer names from the pre-project era
-const LEGACY_LAYERS = ["mission", "experience", "architecture", "implementation"];
+// Projects live outside the Mica repo to avoid tsx/bundler scanning issues.
+// Default: ~/mica-projects/ (overridable via MICA_PROJECTS_DIR)
+const PROJECTS_DIR = process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-projects");
 
 // ── Seed content for a new project ──────────────────────────
 
@@ -68,8 +75,17 @@ You are an AI collaborator for this project workspace. You help the human think 
 
 // ── Seed a new project ──────────────────────────────────────
 
-export async function seedNewProject(projectId: string, projectName: string): Promise<ProjectConfig> {
-  const config = await createProject(projectId, projectName, ["workspace"]);
+/** Create a new project directory, connect it to Mica, and seed starter files */
+export async function seedNewProject(
+  projectId: string,
+  projectName: string
+): Promise<ConnectedProject> {
+  // Create project directory
+  const projectDir = join(PROJECTS_DIR, projectId);
+  await mkdir(projectDir, { recursive: true });
+
+  // Connect the project (this creates .mica/ and git init)
+  const config = await connectProject(projectDir, projectName);
 
   // Seed the workspace layer with starter files
   const existing = await listFiles(projectId, "workspace");
@@ -79,71 +95,38 @@ export async function seedNewProject(projectId: string, projectName: string): Pr
       await writeLayerFile(projectId, "workspace", filename, content);
     }
     console.log(
-      `[seed] Created ${Object.keys(NEW_PROJECT_SEEDS).length} files in layers/${projectId}/workspace/`
+      `[seed] Created ${Object.keys(NEW_PROJECT_SEEDS).length} files in ${projectDir}/.mica/workspace/`
     );
   }
 
   return config;
 }
 
-// ── Migration from legacy flat layout ───────────────────────
-
-async function migrateLegacyLayers(): Promise<boolean> {
-  // Check if any legacy layer dirs exist at the top level of layers/
-  const legacyDirs: string[] = [];
-  for (const layer of LEGACY_LAYERS) {
-    const dir = join(LAYERS_ROOT, layer);
-    if (existsSync(dir)) {
-      legacyDirs.push(layer);
-    }
-  }
-
-  if (legacyDirs.length === 0) return false;
-
-  console.log(`[seed] Found legacy layer directories: ${legacyDirs.join(", ")}`);
-  console.log(`[seed] Migrating to project structure: layers/default-project/...`);
-
-  const projectId = "default-project";
-  const projectDir = join(LAYERS_ROOT, projectId);
-  await mkdir(projectDir, { recursive: true });
-
-  // Move each legacy layer dir into the project dir
-  for (const layer of legacyDirs) {
-    const src = join(LAYERS_ROOT, layer);
-    const dest = join(projectDir, layer);
-    try {
-      await rename(src, dest);
-      console.log(`[seed] Moved layers/${layer}/ → layers/${projectId}/${layer}/`);
-    } catch (err) {
-      console.error(`[seed] Failed to move ${layer}:`, (err as Error).message);
-    }
-  }
-
-  // Create the project in the registry
-  const config = await createProject(projectId, "Default Project", legacyDirs);
-  console.log(`[seed] Created project "${projectId}" with layers: ${legacyDirs.join(", ")}`);
-
-  return true;
-}
-
 // ── Startup initialization ──────────────────────────────────
 
 export async function initializeProjects(): Promise<void> {
-  await mkdir(LAYERS_ROOT, { recursive: true });
+  await mkdir(PROJECTS_DIR, { recursive: true });
 
-  const registry = await readProjectRegistry();
+  const registry = await readWorkspaceRegistry();
 
-  // If we already have projects, nothing to do
+  // If we already have connected projects, nothing to do
   if (registry.projects.length > 0) {
-    console.log(`[seed] Found ${registry.projects.length} project(s) in registry.`);
+    console.log(`[seed] Found ${registry.projects.length} connected project(s).`);
     return;
   }
 
-  // Try migration first
-  const migrated = await migrateLegacyLayers();
-  if (migrated) return;
+  // Try migrating legacy layers/ projects
+  const legacyFile = join(process.cwd(), "layers", "_projects.json");
+  if (existsSync(legacyFile)) {
+    console.log("[seed] Found legacy layers/ structure. Migrating...");
+    const migrated = await migrateLegacyProjects(PROJECTS_DIR);
+    if (migrated.length > 0) {
+      console.log(`[seed] Migrated ${migrated.length} project(s) to projects/.`);
+      return;
+    }
+  }
 
-  // No projects and no legacy dirs — create a starter project
+  // No projects — create a starter project
   console.log("[seed] No projects found. Creating starter project...");
   await seedNewProject("my-project", "My Project");
 }

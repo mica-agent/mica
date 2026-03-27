@@ -16,9 +16,9 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { readLayerFile, getProjectConfig } from "./layerFiles.js";
+import { getProjectPath, getLayerDir } from "./projectConnection.js";
 
-const LAYERS_ROOT = join(process.cwd(), "layers");
-const SESSIONS_ROOT = join(LAYERS_ROOT, ".sessions");
+const SESSIONS_ROOT = join(process.cwd(), ".sessions");
 const BASE_IMAGE = "mica-sandbox:base";
 
 // Cache of already-verified image tags
@@ -153,7 +153,7 @@ export async function createDockerSpawner(
   }
 
   const imageTag = await getOrBuildImage(deps);
-  const layerDir = join(LAYERS_ROOT, project, layer);
+  const layerDir = await getLayerDir(project, layer);
   const sessionDir = join(SESSIONS_ROOT, project, layer);
 
   // Ensure session directory exists

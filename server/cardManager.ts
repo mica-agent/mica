@@ -13,6 +13,7 @@ import {
   writeLayerFile,
   listFiles,
 } from "./layerFiles.js";
+import { getProjectPath } from "./projectConnection.js";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -40,7 +41,6 @@ interface ClassManifestEntry {
 // ── Constants ──────────────────────────────────────────────
 
 const CARD_CLASSES_DIR = path.resolve("card-classes");
-const LAYERS_ROOT = path.resolve("layers");
 
 // Filename → card class mapping (convention-based)
 const FILENAME_CLASS_MAP: Record<string, string> = {
@@ -110,7 +110,7 @@ export class CardManager {
     this.loadManifest();
   }
 
-  private loadManifest(project?: string) {
+  private loadManifest(projectPath?: string) {
     // Load built-in manifest
     const manifestPath = path.join(CARD_CLASSES_DIR, "_manifest.json");
     try {
@@ -122,8 +122,8 @@ export class CardManager {
     }
 
     // Merge project-level manifest on top (if it exists)
-    if (project) {
-      const projectManifestPath = path.join(LAYERS_ROOT, project, "_card-classes", "_manifest.json");
+    if (projectPath) {
+      const projectManifestPath = path.join(projectPath, ".mica", "_card-classes", "_manifest.json");
       try {
         const raw = fs.readFileSync(projectManifestPath, "utf-8");
         const projectManifest = JSON.parse(raw);
@@ -184,10 +184,10 @@ export class CardManager {
 
   // ── Rendering ──────────────────────────────────────────
 
-  private getClassPath(className: string, project?: string): string {
+  private getClassPath(className: string, projectPath?: string): string {
     // Check project-level card classes first
-    if (project) {
-      const projectClassPath = path.join(LAYERS_ROOT, project, "_card-classes", className, "render.py");
+    if (projectPath) {
+      const projectClassPath = path.join(projectPath, ".mica", "_card-classes", className, "render.py");
       if (fs.existsSync(projectClassPath)) {
         return projectClassPath;
       }
@@ -208,12 +208,14 @@ export class CardManager {
     config?: Record<string, unknown>
   ): Promise<{ html: string; exports: string[]; meta: CardMeta }> {
     const key = this.cacheKey(project, layer, filename);
-    this.loadManifest(project);
+    let projectPath: string | undefined;
+    try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
+    this.loadManifest(projectPath);
     const { cardClass, strippedContent, metadata } = this.resolveCardClass(filename, content);
     const meta = this.resolveCardMeta(filename, content);
 
     // Check class file exists (project-level first, then built-in)
-    const classPath = this.getClassPath(cardClass, project);
+    const classPath = this.getClassPath(cardClass, projectPath);
     if (!fs.existsSync(classPath)) {
       // Fallback: render as escaped HTML
       const html = `<pre style="color: #f87171;">Card class "${cardClass}" not found.\nFile: ${filename}</pre>`;
@@ -267,7 +269,9 @@ export class CardManager {
     // Read the current file content
     const file = await readLayerFile(project, layer, filename);
     const { cardClass, strippedContent, metadata } = this.resolveCardClass(filename, file.content);
-    const classPath = this.getClassPath(cardClass, project);
+    let projectPath: string | undefined;
+    try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
+    const classPath = this.getClassPath(cardClass, projectPath);
 
     if (!fs.existsSync(classPath)) {
       throw new Error(`Card class "${cardClass}" not found`);
@@ -293,7 +297,9 @@ export class CardManager {
   ): Promise<void> {
     const file = await readLayerFile(project, layer, filename);
     const { cardClass, strippedContent } = this.resolveCardClass(filename, file.content);
-    const classPath = this.getClassPath(cardClass, project);
+    let projectPath: string | undefined;
+    try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
+    const classPath = this.getClassPath(cardClass, projectPath);
 
     if (!fs.existsSync(classPath)) {
       console.error(`[card-manager] callSend: card class "${cardClass}" not found`);
@@ -320,7 +326,9 @@ export class CardManager {
   ): Promise<string> {
     const file = await readLayerFile(project, layer, filename);
     const { cardClass, strippedContent } = this.resolveCardClass(filename, file.content);
-    const classPath = this.getClassPath(cardClass, project);
+    let projectPath: string | undefined;
+    try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
+    const classPath = this.getClassPath(cardClass, projectPath);
 
     if (!fs.existsSync(classPath)) {
       throw new Error(`Card class "${cardClass}" not found`);
