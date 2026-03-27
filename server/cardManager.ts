@@ -49,6 +49,8 @@ const FILENAME_CLASS_MAP: Record<string, string> = {
   "_brief.md": "brief",
   "_log.md": "log",
   "_chat.md": "chat",
+  "_agent.md": "agent",
+  "_project.md": "simple-project",
 };
 
 // Extension → card class fallback

@@ -30,25 +30,14 @@ interface ProgressEntry {
 }
 
 function agentName(canvas: string): string {
-  const known: Record<string, string> = {
-    mission: "Mission Strategist",
-    experience: "Experience Designer",
-    architecture: "System Architect",
-    implementation: "Implementation Engineer",
-  };
-  if (known[canvas]) return known[canvas];
+  if (canvas === "_root") return "Project Agent";
   const label = canvas.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   return `${label} Agent`;
 }
 
 function agentIcon(canvas: string): string {
-  const known: Record<string, string> = {
-    mission: "\u25c6",
-    experience: "\u25c7",
-    architecture: "\u2b21",
-    implementation: "\u2b22",
-  };
-  return known[canvas] || "\u25cb";
+  if (canvas === "_root") return "\u25c6";
+  return "\u25cb";
 }
 
 // Human-friendly tool names

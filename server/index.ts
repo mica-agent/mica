@@ -411,6 +411,74 @@ app.post("/api/projects/:project/reset", (req, res) => {
   res.json({ success: true });
 });
 
+// ── Project Card (top-level canvas card) ─────────────────────
+
+// Get rendered project card (the layout shell)
+app.get("/api/projects/:project/card", async (req, res) => {
+  const { project } = req.params;
+  try {
+    const config = await getProjectConfig(project);
+    if (!config) {
+      res.status(404).json({ error: `Project not found: ${project}` });
+      return;
+    }
+
+    // Read _project.md from .mica/ root (canvas = "_root")
+    let projectContent = "";
+    try {
+      const f = await readCanvasFile(project, "_root", "_project.md");
+      projectContent = f.content;
+    } catch {
+      // No _project.md yet — that's OK
+    }
+
+    // Get child card metadata (not rendered HTML)
+    const files = await listFiles(project, "_root");
+    const childMetas = [];
+    for (const file of files) {
+      if (file.name === "_project.md") continue; // Skip the project card itself
+      if (file.name === "_chat-history.json") continue;
+      if (file.name === "config.json") continue;
+      const meta = cardManager.resolveCardMeta(file.name, file.content);
+      childMetas.push({
+        filename: file.name,
+        cardClass: meta.cardClass,
+        title: meta.title,
+        badge: meta.badge,
+        isSystem: meta.isSystem,
+      });
+    }
+
+    // Render the project card with children metadata in config
+    const rendered = await cardManager.renderCard(
+      project, "_root", "_project.md", projectContent,
+      { projectName: config.name, children: childMetas }
+    );
+    res.json(rendered);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Get rendered child cards for a project (individually rendered)
+app.get("/api/projects/:project/children", async (req, res) => {
+  const { project } = req.params;
+  try {
+    const files = await listFiles(project, "_root");
+    const results = [];
+    for (const file of files) {
+      if (file.name === "_project.md") continue;
+      if (file.name === "_chat-history.json") continue;
+      if (file.name === "config.json") continue;
+      const rendered = await cardManager.renderCard(project, "_root", file.name, file.content);
+      results.push({ filename: file.name, ...rendered });
+    }
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // ── Canvas File Endpoints (project-scoped) ─────────────────
 
 // List all files in a canvas

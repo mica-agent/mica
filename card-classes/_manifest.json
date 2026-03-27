@@ -11,10 +11,14 @@
     "badge": "TXT",
     "defaultTitle": ""
   },
+  "html": {
+    "badge": "HTML",
+    "defaultTitle": ""
+  },
   "goal": {
     "badge": "GOAL",
     "system": true,
-    "defaultTitle": "Canvas Goal"
+    "defaultTitle": "Project Goal"
   },
   "todo": {
     "badge": "TODO",
@@ -36,8 +40,19 @@
     "system": true,
     "defaultTitle": "Chat"
   },
-  "html": {
-    "badge": "HTML",
-    "defaultTitle": ""
+  "agent": {
+    "badge": "AGENT",
+    "system": true,
+    "defaultTitle": "Agent"
+  },
+  "canvas": {
+    "badge": "CANVAS",
+    "system": true,
+    "defaultTitle": "Canvas"
+  },
+  "simple-project": {
+    "badge": "PROJECT",
+    "system": true,
+    "defaultTitle": "Project"
   }
 }

@@ -158,6 +158,22 @@ export async function fetchCards(project: string, canvas: CanvasId): Promise<Ren
   return res.json();
 }
 
+// ── Project Card API ──────────────────────────────────────
+
+/** Fetch the rendered project card (layout shell with child metadata) */
+export async function fetchProjectCard(project: string): Promise<RenderedCard> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card`);
+  if (!res.ok) throw new Error(`Failed to fetch project card: ${res.statusText}`);
+  return res.json();
+}
+
+/** Fetch all rendered child cards for a project's _root canvas */
+export async function fetchProjectChildren(project: string): Promise<RenderedCard[]> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/children`);
+  if (!res.ok) throw new Error(`Failed to fetch project children: ${res.statusText}`);
+  return res.json();
+}
+
 export interface ContextStats {
   project: string;
   canvas: string;

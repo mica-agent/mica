@@ -36,6 +36,8 @@ export class FileWatcher extends EventEmitter {
     const registry = await readWorkspaceRegistry();
 
     for (const project of registry.projects) {
+      // Watch .mica/ root for project-level cards
+      await this.watchProjectCanvas(project.id, project.path, "_root");
       for (const canvas of project.canvases) {
         await this.watchProjectCanvas(project.id, project.path, canvas);
       }
@@ -51,13 +53,17 @@ export class FileWatcher extends EventEmitter {
   /** Add a watcher for a newly connected project's canvases */
   async addProject(projectId: string, canvases: string[]): Promise<void> {
     const projectPath = await getProjectPath(projectId);
+    // Watch .mica/ root for project-level cards
+    await this.watchProjectCanvas(projectId, projectPath, "_root");
     for (const canvas of canvases) {
       await this.watchProjectCanvas(projectId, projectPath, canvas);
     }
   }
 
   private async watchProjectCanvas(projectId: string, projectPath: string, canvas: string): Promise<void> {
-    const dir = path.join(projectPath, ".mica", canvas);
+    const dir = canvas === "_root"
+      ? path.join(projectPath, ".mica")
+      : path.join(projectPath, ".mica", canvas);
     const key = `${projectId}/${canvas}`;
 
     try {
@@ -90,6 +96,8 @@ export class FileWatcher extends EventEmitter {
         if (!filename) return;
         // Skip .git internals and hidden files
         if (filename.startsWith(".")) return;
+        // For _root canvas, skip subdirectories (canvas dirs, _card-classes)
+        if (canvas === "_root" && !filename.includes(".")) return;
         const ext = path.extname(filename);
         if (!VALID_EXTENSIONS.includes(ext) && filename !== "_chat-history.json") return;
 

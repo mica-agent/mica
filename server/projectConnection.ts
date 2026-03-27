@@ -84,9 +84,11 @@ export async function getMicaDir(projectId: string): Promise<string> {
   return join(projectPath, MICA_DIR);
 }
 
-/** Get the canvas directory inside .mica/ */
+/** Get the canvas directory inside .mica/.
+ *  Special case: canvas "_root" returns .mica/ itself (for project-level cards). */
 export async function getCanvasDir(projectId: string, canvas: string): Promise<string> {
   const micaDir = await getMicaDir(projectId);
+  if (canvas === "_root") return micaDir;
   return join(micaDir, canvas);
 }
 
@@ -260,6 +262,8 @@ export async function validateProjectCanvas(
 ): Promise<void> {
   const config = await getProjectConfig(project);
   if (!config) throw new Error(`Invalid project: ${project}`);
+  // "_root" is always valid — it refers to .mica/ itself (project-level cards)
+  if (canvas === "_root") return;
   if (!config.canvases.includes(canvas)) {
     throw new Error(`Invalid canvas "${canvas}" in project "${project}"`);
   }

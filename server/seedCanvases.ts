@@ -26,8 +26,11 @@ import os from "os";
 const PROJECTS_DIR = process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-projects");
 
 // ── Seed content for a new project ──────────────────────────
+// Files are written to .mica/ root (canvas = "_root") — the project card's children.
 
 const NEW_PROJECT_SEEDS: Record<string, string> = {
+  "_project.md": "", // Content will be generated with project name
+
   "_goal.md": `# Project Goal
 
 Define what this project aims to achieve.
@@ -43,14 +46,14 @@ Define what this project aims to achieve.
   "_brief.md": `# Agent Brief
 
 ## Who You Are
-You are an AI collaborator for this project workspace. You help the human think through problems, create artifacts, and make progress toward the project goal.
+You are an AI collaborator for this project. You help the human think through problems, create artifacts, and make progress toward the project goal.
 
 ## How to Work
-- When the human shares ideas or notes, **refine them** into structured documents on the whiteboard. Don't just discuss — write files.
-- When information is scattered across chat, **synthesize it** into a whiteboard file so nothing gets lost.
+- When the human shares ideas or notes, **refine them** into structured documents. Don't just discuss — write files.
+- When information is scattered across chat, **synthesize it** into a file so nothing gets lost.
 - When you spot gaps, **create a draft** and ask the human to review it.
 - When a relationship or flow would be clearer as a diagram, **create a .mmd mermaid file**.
-- Always prefer creating/updating whiteboard files over long chat responses. The whiteboard is the artifact — chat is ephemeral.
+- Always prefer creating/updating files over long chat responses. The whiteboard is the artifact — chat is ephemeral.
 
 ## Dependencies
 <!-- Uncomment to add packages for Docker sandbox mode (PROD) -->
@@ -71,6 +74,35 @@ You are an AI collaborator for this project workspace. You help the human think 
 `,
 
   "_chat.md": ``,
+
+  // Sample content cards to demonstrate different card types
+  "welcome.md": `# Welcome to Mica
+
+This is a **markdown** card. You can use it for documentation, notes, or any rich text content.
+
+## Features
+- Full markdown support with tables, code blocks, and more
+- Rendered as a card on your project whiteboard
+- Editable by you and the agent
+
+## Getting Started
+1. Edit the **Goal** card to define what you're building
+2. Chat with the agent to brainstorm and create artifacts
+3. Use the toolbar to add notes, docs, and diagrams
+`,
+
+  "architecture.mmd": `graph TD
+    A[User Interface] --> B[Project Card]
+    B --> C[System Cards]
+    B --> D[Content Cards]
+    C --> E[Goal]
+    C --> F[Todo]
+    C --> G[Brief]
+    D --> H[Documents]
+    D --> I[Diagrams]
+    D --> J[Notes]
+    B --> K[Agent Chat]
+`,
 };
 
 // ── Seed a new project ──────────────────────────────────────
@@ -87,15 +119,18 @@ export async function seedNewProject(
   // Connect the project (this creates .mica/ and git init)
   const config = await connectProject(projectDir, projectName);
 
-  // Seed the workspace canvas with starter files
-  const existing = await listFiles(projectId, "workspace");
-  if (existing.length === 0) {
+  // Seed the _root canvas with starter files
+  const existing = await listFiles(projectId, "_root");
+  // Filter out config.json from the count — it's always present
+  const userFiles = existing.filter((f) => f.name !== "config.json");
+  if (userFiles.length === 0) {
     console.log(`[seed] Seeding project "${projectId}" with starter files...`);
     for (const [filename, content] of Object.entries(NEW_PROJECT_SEEDS)) {
-      await writeCanvasFile(projectId, "workspace", filename, content);
+      const fileContent = filename === "_project.md" ? `# ${projectName}\n` : content;
+      await writeCanvasFile(projectId, "_root", filename, fileContent);
     }
     console.log(
-      `[seed] Created ${Object.keys(NEW_PROJECT_SEEDS).length} files in ${projectDir}/.mica/workspace/`
+      `[seed] Created ${Object.keys(NEW_PROJECT_SEEDS).length} files in ${projectDir}/.mica/`
     );
   }
 

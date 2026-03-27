@@ -1,0 +1,280 @@
+// CanvasCardRuntime — renders a canvas card (parent) with isolated child cards in slots.
+//
+// The parent card's HTML contains data-slot elements ("system-cards", "content-cards").
+// This component fills those slots with individually isolated WidgetRuntime instances,
+// one per child card. Each child gets its own container, bridge, and script scope.
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing } from "../api/canvasFiles";
+import type { RenderedCard } from "../api/canvasFiles";
+import { on } from "../api/micaSocket";
+import WidgetRuntime from "./WidgetRuntime";
+import FileCard from "./FileCard";
+import FileEditor from "./FileEditor";
+import ExpandedCardView from "./ExpandedCardView";
+import DrawingCanvas from "./DrawingCanvas";
+
+interface Props {
+  projectId: string;
+}
+
+// System files ordering
+const SYSTEM_ORDER = ["_goal.md", "_todo.md", "_brief.md", "_log.md"];
+
+export default function CanvasCardRuntime({ projectId }: Props) {
+  const [parentCard, setParentCard] = useState<RenderedCard | null>(null);
+  const [children, setChildren] = useState<RenderedCard[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Editor/expanded state
+  const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
+  const [expandedCard, setExpandedCard] = useState<RenderedCard | null>(null);
+  const [creatingType, setCreatingType] = useState<"text" | "markdown" | "mermaid" | null>(null);
+  const [drawingMode, setDrawingMode] = useState(false);
+  const [converting, setConverting] = useState(false);
+
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  // ── Data loading ────────────────────────────────────────
+
+  const loadProjectCard = useCallback(async () => {
+    try {
+      const [card, childCards] = await Promise.all([
+        fetchProjectCard(projectId),
+        fetchProjectChildren(projectId),
+      ]);
+      setParentCard(card);
+      setChildren(childCards);
+    } catch (err) {
+      console.error("[CanvasCardRuntime] Failed to load project card:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    setLoading(true);
+    loadProjectCard();
+  }, [loadProjectCard]);
+
+  // ── Real-time updates via WebSocket ─────────────────────
+
+  useEffect(() => {
+    function handleFileEvent(msg: unknown) {
+      const m = msg as {
+        type: string;
+        project?: string;
+        canvas?: string;
+        filename?: string;
+        html?: string;
+        exports?: string[];
+        meta?: RenderedCard["meta"];
+      };
+      if (m.project !== projectId || m.canvas !== "_root") return;
+
+      // Skip files that aren't child cards
+      if (m.filename === "_project.md" || m.filename === "_chat-history.json" || m.filename === "config.json") {
+        // If _project.md changed, refetch the parent card
+        if (m.filename === "_project.md") loadProjectCard();
+        return;
+      }
+
+      if ((m.type === "file-changed" || m.type === "file-created") && m.html && m.filename && m.meta) {
+        setChildren((prev) => {
+          const card: RenderedCard = {
+            filename: m.filename!,
+            html: m.html!,
+            exports: m.exports || [],
+            meta: m.meta!,
+          };
+          const idx = prev.findIndex((c) => c.filename === m.filename);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = card;
+            return next;
+          }
+          return [...prev, card];
+        });
+      } else if (m.type === "file-deleted" && m.filename) {
+        setChildren((prev) => prev.filter((c) => c.filename !== m.filename));
+      }
+    }
+
+    const unsub1 = on("file-changed", handleFileEvent);
+    const unsub2 = on("file-created", handleFileEvent);
+    const unsub3 = on("file-deleted", handleFileEvent);
+    return () => { unsub1(); unsub2(); unsub3(); };
+  }, [projectId, loadProjectCard]);
+
+  // ── Listen for toolbar-action broadcasts from the parent card's scripts ──
+
+  useEffect(() => {
+    const unsub = on("toolbar-action", (msg) => {
+      const m = msg as { data?: { action?: string } };
+      const action = m.data?.action;
+      if (action === "new-note") setCreatingType("text");
+      else if (action === "new-doc") setCreatingType("markdown");
+      else if (action === "new-diagram") setCreatingType("mermaid");
+    });
+    return unsub;
+  }, []);
+
+  // ── File operations ─────────────────────────────────────
+
+  const handleSave = useCallback(async (filename: string, content: string) => {
+    await saveFile(projectId, "_root", filename, content);
+    setEditingFile(null);
+    setCreatingType(null);
+  }, [projectId]);
+
+  const handleDelete = useCallback(async (filename: string) => {
+    await deleteFile(projectId, "_root", filename);
+  }, [projectId]);
+
+  const handleEdit = useCallback(async (filename: string) => {
+    try {
+      const file = await fetchFile(projectId, "_root", filename);
+      setExpandedCard(null);
+      setEditingFile({ name: file.name, content: file.content });
+    } catch (err) {
+      console.error("Failed to fetch file for editing:", err);
+    }
+  }, [projectId]);
+
+  const handleConvertDrawing = useCallback(async (imageBase64: string) => {
+    setConverting(true);
+    try {
+      await convertDrawing(projectId, "_root", imageBase64);
+      setDrawingMode(false);
+    } catch (err) {
+      console.error("Drawing conversion failed:", err);
+    } finally {
+      setConverting(false);
+    }
+  }, [projectId]);
+
+  // ── Partition children into system vs content ───────────
+
+  const systemCards = children.filter((c) => c.meta.isSystem && c.filename !== "_chat.md" && c.filename !== "_agent.md");
+  const contentCards = children.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
+
+  // Order system cards
+  const orderedSystem = SYSTEM_ORDER
+    .map((name) => systemCards.find((c) => c.filename === name))
+    .filter((c): c is RenderedCard => c != null);
+  const extraSystem = systemCards.filter((c) => !SYSTEM_ORDER.includes(c.filename));
+  const allSystem = [...orderedSystem, ...extraSystem];
+
+  // ── Render ──────────────────────────────────────────────
+
+  if (loading && !parentCard) {
+    return <div className="wb-container"><div className="wb-empty">Loading project...</div></div>;
+  }
+
+  const canvasColor = "#4a8aff";
+
+  return (
+    <div className="wb-container">
+      {/* Parent card chrome — rendered by simple-project render.py */}
+      {parentCard && (
+        <div ref={parentRef} className="canvas-card-parent">
+          <WidgetRuntime
+            html={parentCard.html}
+            exports={parentCard.exports}
+            project={projectId}
+            canvas="_root"
+            filename="_project.md"
+          />
+        </div>
+      )}
+
+      {/* System cards — fill the system-cards slot area */}
+      {allSystem.length > 0 && (
+        <div className="wb-system-cards">
+          {allSystem.map((card) => (
+            <FileCard
+              key={card.filename}
+              filename={card.filename}
+              html={card.html}
+              exports={card.exports}
+              meta={card.meta}
+              projectId={projectId}
+              canvasId="_root"
+              canvasColor={canvasColor}
+              onEdit={() => handleEdit(card.filename)}
+              onDelete={() => handleDelete(card.filename)}
+              onExpand={() => setExpandedCard(card)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Content cards — fill the content-cards slot area */}
+      {contentCards.length > 0 && (
+        <div className="wb-masonry">
+          {contentCards.map((card) => (
+            <FileCard
+              key={card.filename}
+              filename={card.filename}
+              html={card.html}
+              exports={card.exports}
+              meta={card.meta}
+              projectId={projectId}
+              canvasId="_root"
+              canvasColor={canvasColor}
+              onEdit={() => handleEdit(card.filename)}
+              onDelete={() => handleDelete(card.filename)}
+              onExpand={() => setExpandedCard(card)}
+            />
+          ))}
+        </div>
+      )}
+
+      {!loading && children.length === 0 && !parentCard && (
+        <div className="wb-empty">
+          <div className="wb-empty-icon">&#9744;</div>
+          <p>No files yet. Create a note, document, or diagram to get started.</p>
+        </div>
+      )}
+
+      {/* Expanded card reader */}
+      {expandedCard && (
+        <ExpandedCardView
+          filename={expandedCard.filename}
+          html={expandedCard.html}
+          exports={expandedCard.exports}
+          meta={expandedCard.meta}
+          projectId={projectId}
+          canvasId="_root"
+          canvasColor={canvasColor}
+          onClose={() => setExpandedCard(null)}
+          onEdit={() => { handleEdit(expandedCard.filename); setExpandedCard(null); }}
+        />
+      )}
+
+      {/* Editor modal */}
+      {(editingFile || creatingType) && (
+        <FileEditor
+          file={editingFile ? { name: editingFile.name, type: "markdown" as const, content: editingFile.content, modifiedAt: "" } : null}
+          defaultType={creatingType ?? undefined}
+          canvasColor={canvasColor}
+          onSave={handleSave}
+          onCancel={() => {
+            setEditingFile(null);
+            setCreatingType(null);
+          }}
+        />
+      )}
+
+      {/* Drawing canvas */}
+      {drawingMode && (
+        <DrawingCanvas
+          canvasColor={canvasColor}
+          onConvert={handleConvertDrawing}
+          onCancel={() => setDrawingMode(false)}
+          converting={converting}
+        />
+      )}
+    </div>
+  );
+}
