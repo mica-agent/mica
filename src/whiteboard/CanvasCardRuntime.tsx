@@ -20,6 +20,20 @@ interface Props {
   onReloadRef?: MutableRefObject<(() => void) | null>;
 }
 
+type LayoutMode = "masonry" | "freeform";
+
+interface CardLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const DEFAULT_CARD_W = 320;
+const DEFAULT_CARD_H = 280;
+const GRID_GAP = 16;
+const FREEFORM_COLS = 3;
+
 // System files ordering
 const SYSTEM_ORDER = ["_goal.md", "_todo.md", "_brief.md", "_log.md"];
 
@@ -36,6 +50,9 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [converting, setConverting] = useState(false);
   const [renderingFiles, setRenderingFiles] = useState<Set<string>>(new Set());
   const [flashFiles, setFlashFiles] = useState<Set<string>>(new Set());
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("masonry");
+  const [cardLayouts, setCardLayouts] = useState<Map<string, CardLayout>>(new Map());
+  const layoutInitialized = useRef(false);
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -181,6 +198,54 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     }
   }, [projectId]);
 
+  // ── Freeform layout management ─────────────────────────
+
+  const allNonChat = children.filter((c) => c.filename !== "_chat.md" && c.filename !== "_agent.md");
+
+  useEffect(() => {
+    if (layoutMode !== "freeform") {
+      layoutInitialized.current = false;
+      return;
+    }
+    if (!layoutInitialized.current || allNonChat.length !== cardLayouts.size) {
+      const existing = new Map(cardLayouts);
+      let nextIndex = existing.size;
+      for (const card of allNonChat) {
+        if (!existing.has(card.filename)) {
+          const col = nextIndex % FREEFORM_COLS;
+          const row = Math.floor(nextIndex / FREEFORM_COLS);
+          existing.set(card.filename, {
+            x: col * (DEFAULT_CARD_W + GRID_GAP),
+            y: row * (DEFAULT_CARD_H + GRID_GAP),
+            w: DEFAULT_CARD_W,
+            h: DEFAULT_CARD_H,
+          });
+          nextIndex++;
+        }
+      }
+      setCardLayouts(existing);
+      layoutInitialized.current = true;
+    }
+  }, [layoutMode, allNonChat.length]);
+
+  const handleCardDragEnd = useCallback((filename: string, x: number, y: number) => {
+    setCardLayouts((prev) => {
+      const next = new Map(prev);
+      const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
+      next.set(filename, { ...layout, x, y });
+      return next;
+    });
+  }, []);
+
+  const handleCardResize = useCallback((filename: string, w: number, h: number) => {
+    setCardLayouts((prev) => {
+      const next = new Map(prev);
+      const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
+      next.set(filename, { ...layout, w, h });
+      return next;
+    });
+  }, []);
+
   // ── Partition children into system vs content ───────────
 
   const systemCards = children.filter((c) => c.meta.isSystem && c.filename !== "_chat.md" && c.filename !== "_agent.md");
@@ -220,10 +285,49 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           </div>
         )}
 
-        {/* System cards */}
-        {allSystem.length > 0 && (
-          <div className="wb-system-cards">
-            {allSystem.map((card) => (
+        {/* Layout toggle */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          <button
+            className={`wb-btn wb-btn--tool ${layoutMode === "masonry" ? "wb-btn--active" : ""}`}
+            onClick={() => setLayoutMode("masonry")}
+          >
+            Grid
+          </button>
+          <button
+            className={`wb-btn wb-btn--tool ${layoutMode === "freeform" ? "wb-btn--active" : ""}`}
+            onClick={() => setLayoutMode("freeform")}
+          >
+            Free
+          </button>
+        </div>
+
+        {layoutMode === "masonry" ? (
+          <>
+            {/* System cards */}
+            {allSystem.length > 0 && (
+              <div className="wb-system-cards">
+                {allSystem.map((card) => (
+                  <FileCard
+                    key={card.filename}
+                    filename={card.filename}
+                    html={card.html}
+                    exports={card.exports}
+                    meta={card.meta}
+                    projectId={projectId}
+                    canvasId="_root"
+                    canvasColor={canvasColor}
+                    rendering={renderingFiles.has(card.filename)}
+                    flash={flashFiles.has(card.filename)}
+                    onEdit={() => handleEdit(card.filename)}
+                    onDelete={() => handleDelete(card.filename)}
+                    onExpand={() => setExpandedCard(card)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Diagram cards — full width, outside masonry */}
+            {diagramCards.map((card) => (
               <FileCard
                 key={card.filename}
                 filename={card.filename}
@@ -240,48 +344,63 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
                 onExpand={() => setExpandedCard(card)}
               />
             ))}
-          </div>
-        )}
 
-        {/* Diagram cards — full width, outside masonry */}
-        {diagramCards.map((card) => (
-          <FileCard
-            key={card.filename}
-            filename={card.filename}
-            html={card.html}
-            exports={card.exports}
-            meta={card.meta}
-            projectId={projectId}
-            canvasId="_root"
-            canvasColor={canvasColor}
-            rendering={renderingFiles.has(card.filename)}
-            flash={flashFiles.has(card.filename)}
-            onEdit={() => handleEdit(card.filename)}
-            onDelete={() => handleDelete(card.filename)}
-            onExpand={() => setExpandedCard(card)}
-          />
-        ))}
-
-        {/* Content cards — masonry layout */}
-        {contentCards.length > 0 && (
-          <div className="wb-masonry">
-            {contentCards.map((card) => (
-              <FileCard
-                key={card.filename}
-                filename={card.filename}
-                html={card.html}
-                exports={card.exports}
-                meta={card.meta}
-                projectId={projectId}
-                canvasId="_root"
-                canvasColor={canvasColor}
-                rendering={renderingFiles.has(card.filename)}
-                flash={flashFiles.has(card.filename)}
-                onEdit={() => handleEdit(card.filename)}
-                onDelete={() => handleDelete(card.filename)}
-                onExpand={() => setExpandedCard(card)}
-              />
-            ))}
+            {/* Content cards — masonry layout */}
+            {contentCards.length > 0 && (
+              <div className="wb-masonry">
+                {contentCards.map((card) => (
+                  <FileCard
+                    key={card.filename}
+                    filename={card.filename}
+                    html={card.html}
+                    exports={card.exports}
+                    meta={card.meta}
+                    projectId={projectId}
+                    canvasId="_root"
+                    canvasColor={canvasColor}
+                    rendering={renderingFiles.has(card.filename)}
+                    flash={flashFiles.has(card.filename)}
+                    onEdit={() => handleEdit(card.filename)}
+                    onDelete={() => handleDelete(card.filename)}
+                    onExpand={() => setExpandedCard(card)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          /* Freeform layout — all cards absolutely positioned */
+          <div className="wb-freeform">
+            {allNonChat.map((card) => {
+              const layout = cardLayouts.get(card.filename);
+              if (!layout) return null;
+              return (
+                <FileCard
+                  key={card.filename}
+                  filename={card.filename}
+                  html={card.html}
+                  exports={card.exports}
+                  meta={card.meta}
+                  projectId={projectId}
+                  canvasId="_root"
+                  canvasColor={canvasColor}
+                  resizable
+                  cardStyle={{
+                    left: layout.x,
+                    top: layout.y,
+                    width: layout.w,
+                    height: layout.h,
+                  }}
+                  rendering={renderingFiles.has(card.filename)}
+                  flash={flashFiles.has(card.filename)}
+                  onEdit={() => handleEdit(card.filename)}
+                  onDelete={() => handleDelete(card.filename)}
+                  onExpand={() => setExpandedCard(card)}
+                  onDragEnd={(x, y) => handleCardDragEnd(card.filename, x, y)}
+                  onResize={(w, h) => handleCardResize(card.filename, w, h)}
+                />
+              );
+            })}
           </div>
         )}
 

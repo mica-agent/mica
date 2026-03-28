@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from "react";
+import { useState, useEffect, useCallback, useImperativeHandle, forwardRef, useRef } from "react";
 import { saveFile, deleteFile, convertDrawing, fetchContextStats } from "../api/canvasFiles";
 import type { CanvasId, RenderedCard, ContextStats } from "../api/canvasFiles";
 import { useCanvasSocket } from "./useCanvasSocket";
@@ -18,6 +18,36 @@ export interface WhiteboardHandle {
   refetch: () => void;
 }
 
+type LayoutMode = "masonry" | "freeform";
+
+interface CardLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const DEFAULT_CARD_W = 320;
+const DEFAULT_CARD_H = 280;
+const GRID_GAP = 16;
+const COLS = 3;
+
+/** Compute initial grid positions for all cards */
+function autoLayout(cards: RenderedCard[]): Map<string, CardLayout> {
+  const layouts = new Map<string, CardLayout>();
+  cards.forEach((card, i) => {
+    const col = i % COLS;
+    const row = Math.floor(i / COLS);
+    layouts.set(card.filename, {
+      x: col * (DEFAULT_CARD_W + GRID_GAP),
+      y: row * (DEFAULT_CARD_H + GRID_GAP),
+      w: DEFAULT_CARD_W,
+      h: DEFAULT_CARD_H,
+    });
+  });
+  return layouts;
+}
+
 // System files are identified by server metadata
 const SYSTEM_FILENAMES = ["_goal.md", "_todo.md", "_brief.md", "_log.md", "_chat.md"];
 
@@ -30,6 +60,9 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
     const [creatingType, setCreatingType] = useState<"text" | "markdown" | "mermaid" | null>(null);
     const [drawingMode, setDrawingMode] = useState(false);
     const [converting, setConverting] = useState(false);
+    const [layoutMode, setLayoutMode] = useState<LayoutMode>("masonry");
+    const [cardLayouts, setCardLayouts] = useState<Map<string, CardLayout>>(new Map());
+    const layoutInitialized = useRef(false);
 
     useImperativeHandle(ref, () => ({ refetch }), [refetch]);
 
@@ -61,6 +94,53 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
         setConverting(false);
       }
     }, [projectId, canvasId]);
+
+    // Initialize card layouts when switching to freeform or when cards change
+    useEffect(() => {
+      if (layoutMode !== "freeform") {
+        layoutInitialized.current = false;
+        return;
+      }
+      if (!layoutInitialized.current || cards.length !== cardLayouts.size) {
+        const allCards = cards.filter((c) => c.filename !== "_chat.md");
+        const existing = new Map(cardLayouts);
+        // Keep existing positions, add new cards
+        let nextIndex = existing.size;
+        for (const card of allCards) {
+          if (!existing.has(card.filename)) {
+            const col = nextIndex % COLS;
+            const row = Math.floor(nextIndex / COLS);
+            existing.set(card.filename, {
+              x: col * (DEFAULT_CARD_W + GRID_GAP),
+              y: row * (DEFAULT_CARD_H + GRID_GAP),
+              w: DEFAULT_CARD_W,
+              h: DEFAULT_CARD_H,
+            });
+            nextIndex++;
+          }
+        }
+        setCardLayouts(existing);
+        layoutInitialized.current = true;
+      }
+    }, [layoutMode, cards]);
+
+    const handleCardDragEnd = useCallback((filename: string, x: number, y: number) => {
+      setCardLayouts((prev) => {
+        const next = new Map(prev);
+        const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
+        next.set(filename, { ...layout, x, y });
+        return next;
+      });
+    }, []);
+
+    const handleCardResize = useCallback((filename: string, w: number, h: number) => {
+      setCardLayouts((prev) => {
+        const next = new Map(prev);
+        const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
+        next.set(filename, { ...layout, w, h });
+        return next;
+      });
+    }, []);
 
     // For editing, we need to fetch the raw file content
     const handleEdit = useCallback(async (filename: string) => {
@@ -118,6 +198,20 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
             <span className="wb-file-count">
               {cards.length} card{cards.length !== 1 ? "s" : ""}
             </span>
+            <button
+              className={`wb-btn wb-btn--tool ${layoutMode === "masonry" ? "wb-btn--active" : ""}`}
+              onClick={() => setLayoutMode("masonry")}
+              title="Grid layout"
+            >
+              Grid
+            </button>
+            <button
+              className={`wb-btn wb-btn--tool ${layoutMode === "freeform" ? "wb-btn--active" : ""}`}
+              onClick={() => setLayoutMode("freeform")}
+              title="Freeform layout"
+            >
+              Free
+            </button>
             <button className="wb-btn wb-btn--tool" onClick={refetch}>
               Refresh
             </button>
@@ -136,47 +230,81 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
             </div>
           )}
 
-          {/* System cards — full-width section above masonry */}
-          {allSystem.length > 0 && (
-            <div className="wb-system-cards">
-              {allSystem.map((card) => (
-                <FileCard
-                  key={card.filename}
-                  filename={card.filename}
-                  html={card.html}
-                  exports={card.exports}
-                  meta={card.meta}
-                  projectId={projectId}
-                  canvasId={canvasId}
-                  canvasColor={canvasColor}
-                  onEdit={() => handleEdit(card.filename)}
-                  onDelete={() => handleDelete(card.filename)}
-                  onExpand={() => setExpandedCard(card)}
+          {layoutMode === "masonry" ? (
+            <>
+              {/* System cards — full-width section above masonry */}
+              {allSystem.length > 0 && (
+                <div className="wb-system-cards">
+                  {allSystem.map((card) => (
+                    <FileCard
+                      key={card.filename}
+                      filename={card.filename}
+                      html={card.html}
+                      exports={card.exports}
+                      meta={card.meta}
+                      projectId={projectId}
+                      canvasId={canvasId}
+                      canvasColor={canvasColor}
+                      onEdit={() => handleEdit(card.filename)}
+                      onDelete={() => handleDelete(card.filename)}
+                      onExpand={() => setExpandedCard(card)}
+                    />
+                  ))}
+                </div>
+              )}
 
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Content cards — masonry layout */}
-          {contentCards.length > 0 && (
-            <div className="wb-masonry">
-              {contentCards.map((card) => (
-                <FileCard
-                  key={card.filename}
-                  filename={card.filename}
-                  html={card.html}
-                  exports={card.exports}
-                  meta={card.meta}
-                  projectId={projectId}
-                  canvasId={canvasId}
-                  canvasColor={canvasColor}
-                  onEdit={() => handleEdit(card.filename)}
-                  onDelete={() => handleDelete(card.filename)}
-                  onExpand={() => setExpandedCard(card)}
-
-                />
-              ))}
+              {/* Content cards — masonry layout */}
+              {contentCards.length > 0 && (
+                <div className="wb-masonry">
+                  {contentCards.map((card) => (
+                    <FileCard
+                      key={card.filename}
+                      filename={card.filename}
+                      html={card.html}
+                      exports={card.exports}
+                      meta={card.meta}
+                      projectId={projectId}
+                      canvasId={canvasId}
+                      canvasColor={canvasColor}
+                      onEdit={() => handleEdit(card.filename)}
+                      onDelete={() => handleDelete(card.filename)}
+                      onExpand={() => setExpandedCard(card)}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            /* Freeform layout — all cards absolutely positioned */
+            <div className="wb-freeform">
+              {cards.filter((c) => c.filename !== "_chat.md").map((card) => {
+                const layout = cardLayouts.get(card.filename);
+                if (!layout) return null;
+                return (
+                  <FileCard
+                    key={card.filename}
+                    filename={card.filename}
+                    html={card.html}
+                    exports={card.exports}
+                    meta={card.meta}
+                    projectId={projectId}
+                    canvasId={canvasId}
+                    canvasColor={canvasColor}
+                    resizable
+                    cardStyle={{
+                      left: layout.x,
+                      top: layout.y,
+                      width: layout.w,
+                      height: layout.h,
+                    }}
+                    onEdit={() => handleEdit(card.filename)}
+                    onDelete={() => handleDelete(card.filename)}
+                    onExpand={() => setExpandedCard(card)}
+                    onDragEnd={(x, y) => handleCardDragEnd(card.filename, x, y)}
+                    onResize={(w, h) => handleCardResize(card.filename, w, h)}
+                  />
+                );
+              })}
             </div>
           )}
         </div>

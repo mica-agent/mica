@@ -2,6 +2,10 @@
 
 .wb-container {
   padding: 16px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 
 /* ── Toolbar ─────────────────────────────────────────── */
@@ -93,6 +97,8 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
 /* System cards — 2-column grid on wide screens, stacked on narrow */
@@ -804,6 +810,89 @@ pre.mermaid svg {
   flex: 1;
   cursor: crosshair;
   border-radius: 0 0 12px 12px;
+}
+
+/* ── Freeform Canvas Surface ────────────────────────── */
+
+.wb-freeform {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.wb-freeform > .wb-card {
+  position: absolute;
+  width: 320px;
+}
+
+/* Resize handle — bottom-right corner grip */
+.wb-card-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 5;
+}
+
+.wb-card-resize-handle::after {
+  content: "";
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-dim);
+  border-bottom: 2px solid var(--text-dim);
+  opacity: 0.6;
+}
+
+.wb-card:hover .wb-card-resize-handle {
+  opacity: 0.5;
+}
+
+.wb-card-resize-handle:hover {
+  opacity: 1 !important;
+}
+
+/* When card has explicit height from resize, body scrolls instead of clipping */
+.wb-card--resized .wb-card-body {
+  max-height: none !important;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Remove fade gradient on resized cards */
+.wb-card--resized .wb-card-body--overflows::after {
+  display: none;
+}
+
+/* Drag cursor on header in freeform mode */
+.wb-freeform .wb-card-header {
+  cursor: grab;
+}
+
+.wb-freeform .wb-card-header:active {
+  cursor: grabbing;
+}
+
+/* Card being dragged — subtle lift effect */
+.wb-card--dragging {
+  z-index: 100;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  opacity: 0.9;
+}
+
+/* Layout toggle button active state */
+.wb-btn--active {
+  background: var(--canvas-color, #4acaa0) !important;
+  color: #0a0a0e !important;
+  font-weight: 600;
 }
 
 /* ── Widget Runtime Container ───────────────────────── */

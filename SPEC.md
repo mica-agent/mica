@@ -28,6 +28,10 @@ This person may be a solo operator or part of a very small human team. They do n
 
 Agents are cards on the canvas (see Section 2.5). Each agent has a brief that defines its role, a model of your choice (Claude, GPT, Gemini, a local model — whatever fits the task), and tools that let it act on the project. A simple project might have one agent. A complex one might have several, each focused on a different concern, collaborating with each other and with you.
 
+Mica currently supports two agent backends: **Claude** (via Anthropic's API) and **local LLMs** via llama-server (llama.cpp). The backend is a per-project config choice (`agentProvider: "claude" | "local"` in `.mica/config.json`), selectable at project creation or changed at any time. The local backend exposes an OpenAI-compatible API, so any model that llama.cpp supports can serve as the agent — enabling fully offline operation with no cloud dependency.
+
+Agents also **stay in sync with your work** — when you edit a file directly, the agent notices, triages the impact on related artifacts, and proposes updates if needed. Change a requirements doc and the agent flags the outdated diagram. This behavior is opt-in and configurable per project (see [ARCHITECTURE.md](ARCHITECTURE.md) §7.11).
+
 There are no hardcoded phases or mandatory agent roles. You configure agents for whatever your project needs — or let them emerge as the work demands.
 
 ### 1.4 The Relationship
@@ -99,11 +103,12 @@ An agent card wraps an LLM-backed agent and renders on the canvas like any other
 - Configurable: brief (instructions), model (any LLM provider), tools, permissions
 
 **Key properties:**
-- **Any model.** An agent card can wrap Claude, GPT, Gemini, a local model via llama-server, or any OpenAI-compatible API. The model is a configuration choice, not an architectural constraint.
+- **Any model.** An agent card can wrap Claude, GPT, Gemini, a local model via llama-server, or any OpenAI-compatible API. The model is a configuration choice, not an architectural constraint. Per-project routing (`agentProvider` in `.mica/config.json`) controls which backend handles agent requests — switch between cloud and local without changing anything else.
 - **Multiple agents.** A project can have many agent cards — one for research, one for coding, one for testing, or however the work naturally divides. A simple project might have one.
 - **Agents collaborate.** Agent cards can message each other directly. An architecture agent can ask the implementation agent about feasibility without the human brokering the exchange. The human sees it happening on the canvas.
 - **Agents create artifacts.** When an agent produces something — a diagram, a code file, a decision document — it appears as a new card on the canvas, linked to the agent that created it.
 - **Agents can organize.** An agent can rearrange cards on the canvas, group related artifacts, create summary views — just like a collaborator might redraw a messy whiteboard.
+- **Stay in sync.** Agents watch for file changes and proactively suggest or make updates. When you edit a requirements doc, the agent triages the change (is this substantive? does it affect other files?) and, if warranted, proposes updates to related artifacts — without you having to ask.
 
 ### 2.6 Artifact Management
 

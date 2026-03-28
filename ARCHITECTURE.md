@@ -31,7 +31,7 @@ my-project/
 ├── README.md
 ├── .git/
 └── .mica/                  ← Mica's footprint
-    ├── config.json         # Project manifest
+    ├── config.json         # Project manifest (agent provider, reactive settings, worker config)
     ├── _project.md         # Project card (top-level canvas card)
     ├── _brief.md           # Agent personality/instructions
     ├── _goal.md            # Project objectives
@@ -257,7 +257,23 @@ Server-side export handlers can call back into Mica: `mica.write()`, `mica.read_
 
 #### 7.8 Worker Pool
 
-Card classes run in a pool of 8 long-lived Python worker processes. Workers communicate with the server via JSON lines on stdin/stdout. Class modules are cached per-worker and invalidated when the source file changes.
+Card classes run in a pool of long-lived Python worker processes (configurable `warm` and `max` count per project). Workers communicate with the server via JSON lines on stdin/stdout. Class modules are cached per-worker and invalidated when the source file changes.
+
+**Lifecycle:**
+- `warm` workers (default 1) start when the project sandbox initializes and stay alive
+- Extra workers spawn on demand up to `max` (default 6)
+- Idle extra workers are evicted after 30s of inactivity
+- Channel workers (terminal PTY, etc.) are never idle-evicted
+
+**Restart backoff:**
+- When a worker exits unexpectedly, it restarts with exponential backoff: 1s, 2s, 4s, ... up to 30s cap
+- After 8 consecutive failures, the worker stops automatic restarts
+- Backoff resets on successful startup (worker sends `ready` message)
+
+**Work dispatch:**
+- Renders prefer idle workers, then spawn extras, then round-robin across alive workers
+- Export calls and channel opens require an idle worker (will wait up to 60s)
+- Each worker tracks busy/idle state; request contexts are scoped per `(project, canvas, filename)`
 
 #### 7.9 Creating Card Classes
 
@@ -268,6 +284,78 @@ Agents and users can create new card classes at runtime:
 3. The file watcher picks up the new class and renders it immediately
 
 See `card-classes/CREATING_WIDGETS.md` for the full API reference including all five communication patterns, HTML structure, external resource loading, and complete examples.
+
+#### 7.10 Local LLM Agent
+
+Mica can run agents against a local LLM instead of Claude, enabling fully offline operation.
+
+**llama-server lifecycle** (`server/llamaServer.ts`):
+- Singleton process managed by Mica — starts on first agent request, stays running until shutdown
+- Exposes OpenAI-compatible API at `http://127.0.0.1:8012`
+- Default model: Qwen3-Coder-Next 80B MXFP4 (configurable via `MODEL_PATH`)
+- Launch flags: 32K context, flash-attn, GPU offloading (`--n-gpu-layers 999`), 2 parallel slots
+- Health check polling (500ms intervals, 120s timeout) before marking ready
+- Graceful shutdown: SIGTERM → 5s grace → SIGKILL
+
+**Local agent** (`server/localAgent.ts`):
+- Mirrors `chatWithAgent()` from `agents.ts` but calls llama-server's HTTP API
+- Tool loop (max 5 turns): `list_files`, `read_file`, `write_file`, `delete_file`
+- Per-canvas conversation memory with history trimming (system prompt + last 20 messages)
+- Text-embedded tool call parsing: XML fallback (`<tool_call><function=name>...`) for models that don't populate the `tool_calls` array
+- Mermaid syntax sanitization: auto-quotes special characters in node labels
+- Truncation detection: if `finish_reason === "length"` mid-tool-call, discards broken tool JSON and retries
+- Final turn forces a text response (no tools) to guarantee a reply
+
+**Agent routing** (`server/index.ts`):
+- `routedChat()` reads `agentProvider` from `.mica/config.json`
+- `"local"` → `chatWithLocalAgent()`, `"claude"` (default) → `chatWithAgent()`
+- UI toggle in `ProjectNav.tsx` sets `agentProvider` at project creation
+
+#### 7.11 Reactive Behavior
+
+Agents can react to human file edits and propose updates to related artifacts. This is implemented as a reactive layer (`server/reactiveAgent.ts`) that triggers the project's configured agent.
+
+**Two-phase pipeline:**
+
+| Phase | Model | Purpose |
+|-------|-------|---------|
+| **Triage** | Claude Haiku | Cheap check: does this change affect other files? Returns `{shouldReact, reason, affectedFiles}` |
+| **Reaction** | Project's configured agent | Full tool-using agent call to read affected files and make/propose updates |
+
+**Feedback loop prevention:**
+- Agent-originated writes are tracked via `markAgentWrite()` — the file watcher suppresses reactions to those files
+- Entries auto-expire after 5s as a safety net
+
+**Rate limiting:**
+- Per-canvas cooldown: 60s default (configurable via `config.reactive.cooldownMs`)
+- Per-canvas busy lock: skips events while an agent is already working on the canvas
+- Ignored files: `_chat-history.json`, `_log.md`, `config.json`
+- Deletes are skipped (triage only makes sense for content changes)
+
+**Configuration** (`.mica/config.json`):
+```json
+{
+  "reactive": {
+    "enabled": true,
+    "cooldownMs": 60000
+  }
+}
+```
+
+Reaction results appear in chat history tagged with `reactive: true` and `trigger: filename`.
+
+#### 7.12 Sandbox Lifecycle Hardening
+
+Per-project container management (`server/projectSandbox.ts`) includes several reliability guarantees:
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| **Stale cleanup** | On first `getPool()` call, removes all `mica-project-*` containers from previous server runs |
+| **Liveness check** | Before dispatching work, verifies container is running via `docker inspect` |
+| **Auto-recreate** | If a container is found dead, tears down the sandbox and starts a fresh one |
+| **Startup backoff** | Exponential backoff on container start failures: 5s, 10s, 20s, 40s, 60s cap. Tracks per-project failure count. Clears on success |
+
+The two-phase container runtime (setup with network → execute without network) is unchanged — see Section 5 and the Security Model.
 
 ---
 
@@ -280,6 +368,11 @@ See `card-classes/CREATING_WIDGETS.md` for the full API reference including all 
 | `server/projectConnection.ts` | Connect/disconnect projects, `.mica/` lifecycle, workspace registry, migration |
 | `server/projectGit.ts` | Per-project git operations with mutex locking |
 | `server/projectContainer.ts` | Per-project Docker container lifecycle |
+| `server/projectSandbox.ts` | Per-project Docker sandbox with liveness checks, backoff, stale cleanup |
+| `server/llamaServer.ts` | llama-server singleton lifecycle (start, health check, stop) |
+| `server/localAgent.ts` | Local LLM agent with tool loop, XML fallback parsing, mermaid sanitization |
+| `server/reactiveAgent.ts` | Two-phase reactive agent (triage → reaction) with cooldowns |
+| `server/cardManager.ts` | Card rendering dispatch through sandbox/global worker pools |
 | `src/api/projectGit.ts` | Frontend git API client |
 | `src/api/projectContainer.ts` | Frontend container API client |
 
@@ -288,11 +381,13 @@ See `card-classes/CREATING_WIDGETS.md` for the full API reference including all 
 | File | Changes |
 |------|---------|
 | `server/canvasFiles.ts` | Path resolution via `getProjectPath()` instead of `canvases/` |
-| `server/seedCanvases.ts` | `seedNewProject()` → `initMicaDir()` |
-| `server/index.ts` | New connect/disconnect/git/container endpoints |
-| `server/agents.ts` | Read from repo root + `.mica/`, auto-commit after changes |
+| `server/seedCanvases.ts` | `seedNewProject()` accepts `agentProvider`, writes to config |
+| `server/index.ts` | Agent routing (`routedChat`), reactive agent integration, llama-server shutdown hook |
+| `server/agents.ts` | Read from repo root + `.mica/`, exported shared prompts for local agent reuse |
+| `server/workerPool.ts` | Exponential restart backoff, configurable warm/max, idle eviction |
 | `server/fileWatcher.ts` | Watch project root + `.mica/`, skip `.git/` |
 | `server/dockerSpawn.ts` | Export `parseDependencies` and `getOrBuildImage` for reuse |
+| `src/ProjectNav.tsx` | Agent provider toggle (Claude / Local) in project creation UI |
 
 ---
 

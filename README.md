@@ -11,6 +11,8 @@ Mica fixes this. It's a persistent, extensible canvas where:
 - **The recipe persists.** Briefs, goals, decisions, and context are captured in `.mica/` inside your project repo, versioned in git. Any agent or teammate picks up with full context.
 - **Projects stay sovereign.** Mica connects to your existing git repos via a `.mica/` directory. Remove it and the project is untouched. No lock-in.
 - **Multiple projects at once.** Manage a portfolio of projects from one surface — see which need attention, which are stuck, which are shipping.
+- **Run with any model.** Use Claude, or switch to a local LLM (llama-server) per project. No cloud dependency required — agent routing is a config toggle.
+- **Agents stay in sync.** Edit a file and your agent notices — it triages the impact and proposes updates to related artifacts, like a teammate who keeps derived work current.
 - **Everything is extensible.** The canvas is built from composable cards. New card classes add new capabilities, like Emacs packages.
 
 ## Quick Start
