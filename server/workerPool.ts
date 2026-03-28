@@ -346,6 +346,7 @@ class PythonWorker {
   }
 
   kill() {
+    this.autoRestart = false;
     this.proc.kill("SIGTERM");
   }
 }

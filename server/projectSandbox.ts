@@ -37,7 +37,7 @@ interface ProjectSandboxInfo {
 const SANDBOX_IMAGE = "mica-sandbox:base";
 const CARD_CLASSES_DIR = path.resolve("card-classes");
 const SDK_DIR = path.join(__dirname, "mica_sdk");
-const WORKER_PATH_IN_CONTAINER = "/mica-sdk/mica_worker.py";
+const WORKER_PATH = path.join(SDK_DIR, "mica_worker.py");
 
 // ── SandboxManager ─────────────────────────────────────────
 
@@ -45,6 +45,7 @@ export class SandboxManager {
   private sandboxes: Map<string, ProjectSandboxInfo> = new Map();
   private rpcHandler: RpcHandler | null = null;
   private dockerAvailable: boolean | null = null;
+  private failedProjects: Map<string, number> = new Map(); // projectId → failure timestamp
 
   /** Check if Docker is available. Cached after first check. */
   private async isDockerAvailable(): Promise<boolean> {
@@ -78,6 +79,12 @@ export class SandboxManager {
     const existing = this.sandboxes.get(projectId);
     if (existing && existing.status === "running") return existing.pool;
 
+    // Don't retry failed projects for 60 seconds
+    const lastFailure = this.failedProjects.get(projectId);
+    if (lastFailure && Date.now() - lastFailure < 60000) {
+      throw new Error(`Sandbox for "${projectId}" failed recently, waiting before retry`);
+    }
+
     const useDocker = await this.isDockerAvailable();
     const containerName = `mica-project-${projectId}`;
 
@@ -95,13 +102,18 @@ export class SandboxManager {
 
     if (useDocker) {
       // Start the Docker container
-      await this.startContainer(projectId, containerName, config);
+      try {
+        await this.startContainer(projectId, containerName, config);
+      } catch (err) {
+        this.failedProjects.set(projectId, Date.now());
+        throw err;
+      }
 
       // Create worker pool that spawns via docker exec
       pool = new WorkerPool({
         warm,
         max,
-        spawnFn: dockerSpawnFn(containerName, WORKER_PATH_IN_CONTAINER),
+        spawnFn: dockerSpawnFn(containerName, WORKER_PATH),
         label: projectId,
       });
     } else {
@@ -142,36 +154,68 @@ export class SandboxManager {
     const projectPath = await getProjectPath(projectId);
     const memory = config.memory ?? "1g";
 
+    // Phase 1: Start container WITH network (for dependency installation)
     const dockerArgs = [
       "run", "-d",
       "--name", containerName,
-      "--network", "none",
+      "--network", "bridge",
       "--memory", memory,
       "--cpus", "2.0",
-      // Mount project directory
-      "-v", `${projectPath}:/workspace:rw`,
-      // Mount built-in card classes (read-only)
-      "-v", `${CARD_CLASSES_DIR}:/card-classes:ro`,
-      // Mount SDK (read-only)
-      "-v", `${SDK_DIR}:/mica-sdk:ro`,
-      // Working directory
-      "-w", "/workspace",
+      // Mount at same host paths so cardManager path resolution works inside container
+      "-v", `${projectPath}:${projectPath}:rw`,
+      "-v", `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
+      "-v", `${SDK_DIR}:${SDK_DIR}:ro`,
+      "-w", projectPath,
       // Filtered environment
       "-e", `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       "-e", `HOME=/home/sandbox`,
       "-e", `TERM=xterm-256color`,
-      "-e", `PYTHONPATH=/mica-sdk`,
+      "-e", `PYTHONPATH=${SDK_DIR}`,
+      // Override entrypoint (image may have a custom one)
+      "--entrypoint", "sleep",
       // Image + keep alive
       SANDBOX_IMAGE,
-      "sleep", "infinity",
+      "infinity",
     ];
 
     try {
       await execFileAsync("docker", dockerArgs, { timeout: 30000 });
-      console.log(`[sandbox] Started container ${containerName} for project "${projectId}" (--network=none, ${memory} RAM)`);
+      console.log(`[sandbox] Started container ${containerName} for project "${projectId}" (setup phase)`);
     } catch (err) {
       console.error(`[sandbox] Failed to start container for "${projectId}":`, (err as Error).message);
       throw err;
+    }
+
+    // Phase 2: Install dependencies (two-phase runtime)
+    await this.installDeps(containerName, projectId);
+
+    // Phase 3: Remove network access (execute phase — no egress)
+    try {
+      await execFileAsync("docker", ["network", "disconnect", "bridge", containerName], { timeout: 10000 });
+      console.log(`[sandbox] Network removed from ${containerName} — now isolated (${memory} RAM)`);
+    } catch (err) {
+      console.warn(`[sandbox] Failed to disconnect network for "${projectId}":`, (err as Error).message);
+    }
+  }
+
+  /** Install Python dependencies inside container (runs during setup phase with network). */
+  private async installDeps(containerName: string, projectId: string): Promise<void> {
+    // Core deps required by built-in card classes
+    const coreDeps = ["markdown"];
+
+    // TODO: Parse project _brief.md for additional dependencies
+
+    if (coreDeps.length === 0) return;
+
+    try {
+      console.log(`[sandbox] Installing dependencies in ${containerName}: ${coreDeps.join(", ")}`);
+      await execFileAsync("docker", [
+        "exec", containerName,
+        "pip", "install", "--break-system-packages", "--quiet",
+        ...coreDeps,
+      ], { timeout: 60000 });
+    } catch (err) {
+      console.warn(`[sandbox] Dependency install failed for "${projectId}":`, (err as Error).message);
     }
   }
 

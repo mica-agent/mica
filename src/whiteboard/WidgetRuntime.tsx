@@ -2,7 +2,7 @@
 // Provides the `mica` bridge (call, send, on, openChannel) for interactive widgets.
 // Initializes mermaid.js for any <pre class="mermaid"> elements in the output.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import mermaid from "mermaid";
 import type { CanvasId } from "../api/canvasFiles";
 import { createBridge } from "../api/micaSocket";
@@ -36,6 +36,7 @@ const loadedExternalStyles = new Set<string>();
 export default function WidgetRuntime({ html, exports: exportFns, project, canvas, filename }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const prevHtmlRef = useRef<string>("");
+  const [activeCalls, setActiveCalls] = useState(0);
 
   // Only re-run when html changes
   useEffect(() => {
@@ -82,8 +83,18 @@ export default function WidgetRuntime({ html, exports: exportFns, project, canva
     });
 
     // Build mica bridge — WebSocket-based with all 4 patterns
+    // Wrap call() to track in-flight exports for the activity indicator
+    const baseBridge = createBridge(project, canvas, filename);
     const micaBridge = {
-      ...createBridge(project, canvas, filename),
+      ...baseBridge,
+      call: async (fn: string, args: Record<string, unknown> = {}) => {
+        setActiveCalls((n) => n + 1);
+        try {
+          return await baseBridge.call(fn, args);
+        } finally {
+          setActiveCalls((n) => n - 1);
+        }
+      },
       exports: exportFns || [],
     };
 
@@ -164,5 +175,9 @@ export default function WidgetRuntime({ html, exports: exportFns, project, canva
     }
   }, [html, project, canvas, filename]);
 
-  return <div ref={containerRef} className="widget-runtime" />;
+  return (
+    <div ref={containerRef} className={`widget-runtime ${activeCalls > 0 ? "widget-runtime--busy" : ""}`}>
+      {activeCalls > 0 && <div className="widget-activity-indicator" />}
+    </div>
+  );
 }

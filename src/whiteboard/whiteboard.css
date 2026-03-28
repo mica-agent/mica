@@ -773,6 +773,29 @@ pre.mermaid svg {
   overflow: hidden;
 }
 
+/* Activity indicator — subtle animated bar at top of card */
+.widget-activity-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 10;
+  background: linear-gradient(90deg, transparent 0%, var(--canvas-color, #60a5fa) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: widget-activity-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes widget-activity-slide {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.widget-runtime--busy {
+  opacity: 0.85;
+  transition: opacity 0.2s;
+}
+
 /* Expanded view: widget fills available space */
 .wb-expanded-body .widget-runtime {
   width: 100%;
