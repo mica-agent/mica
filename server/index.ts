@@ -62,6 +62,24 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 
+// ── Content Security Policy ──────────────────────────────
+// Block browser-side exfiltration: cards can only talk to the Mica server.
+// External CDN resources are served via server-side proxy/cache (future).
+app.use((_req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
+      "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
+      "connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:*",
+      "img-src 'self' data: blob:",
+      "font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+    ].join("; ")
+  );
+  next();
+});
+
 // ── Helper: validate project+canvas from route params ────
 async function validateParams(
   res: express.Response,

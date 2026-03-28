@@ -322,3 +322,59 @@ Existing projects in `canvases/{project}/` can be migrated via `migrateLegacyPro
 **Why per-project git?** Projects have their own commit history, branches, and workflow. Mica doesn't impose a shared repo or monorepo structure. Each project's version control is self-contained.
 
 **What about `.gitignore`?** Recommend adding `.mica/_chat-history.json` and `.mica/*/_chat-history.json` to the project's `.gitignore`. Everything else in `.mica/` (briefs, goals, todos, card layouts) should be committed — it's valuable shared project context.
+
+## Security Model
+
+Card classes are code — they run Python on the server and JavaScript in the browser. The security model prevents data exfiltration while allowing cards full local compute (PTY, GPU, filesystem).
+
+### Principle: Network is the key boundary
+
+A card can spawn a shell, read project files, render with Three.js or xterm.js. It cannot send data to the internet. Network egress is the threat; local access is a feature.
+
+### Per-project container isolation
+
+Each project runs all untrusted code inside a Docker container:
+
+```
+Mica Server (host, trusted)
+  ├── /proxy/cdn/*          (allowlisted CDN fetch)
+  ├── /api/agent/chat       (proxies Claude API)
+  │
+  ├──→ Project A Container  (--network=none, always-on)
+  │      ├── Python workers (elastic pool)
+  │      ├── Agent Bash sessions
+  │      └── Project app
+  │
+  └──→ Project B Container  (--network=none, always-on)
+```
+
+Container properties:
+- **Filesystem**: project directory (rw) + card class libraries (ro). No `~/.ssh`, `~/.aws`, other projects.
+- **Network**: `--network=none`. Zero outbound. Communication to Mica server via Unix socket only.
+- **Env vars**: filtered allowlist (PATH, HOME, TERM, PYTHONPATH). No API keys or tokens.
+- **Always-on**: containers run while the project is registered, supporting multi-endpoint access.
+
+### Two-phase runtime
+
+Follows the Codex model:
+1. **Setup phase**: container starts with network. Installs dependencies from `_brief.md`, caches CDN resources.
+2. **Execute phase**: network is removed. Cards render offline. CDN resources served from cache. Agent API calls proxied through the Mica server.
+
+### Browser-side defense (CSP)
+
+Content Security Policy blocks `fetch()` to external origins from card JavaScript:
+- `connect-src 'self'` — cards can only talk to the Mica server
+- `script-src` / `style-src` allowlist trusted CDNs only
+- Defense in depth: even if container isolation were bypassed, browser-side exfiltration is blocked
+
+### Elastic worker pool
+
+Per-project workers with configurable warm/max policy (`.mica/config.json`):
+- `warm` (default 1): idle workers kept alive with hot card class cache
+- `max` (default 6): upper bound; additional workers spawn on demand, die after 30s idle
+- Memory pressure: when container exceeds 80% memory, idle workers beyond `warm` are evicted
+- Channel workers (terminal PTY, etc.) are never idle-evicted
+
+### Portfolio and workspace scope
+
+Built-in card classes (portfolio, project chrome) run on the host — they're trusted code that ships with Mica. They only read project metadata, never execute project-scoped card classes. Per-project isolation doesn't affect the portfolio view.

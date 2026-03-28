@@ -14,6 +14,20 @@ import readline from "readline";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ── Worker environment ────────────────────────────────────
+// Workers receive a filtered env — no API keys, cloud credentials, or tokens.
+// Only the minimum needed for Python to run and card classes to function.
+function buildWorkerEnv(): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    TERM: "xterm-256color",
+    LANG: process.env.LANG || "en_US.UTF-8",
+    PYTHONDONTWRITEBYTECODE: "1",
+    PYTHONPATH: path.join(__dirname, "mica_sdk"),
+  };
+}
+
 // ── Types ──────────────────────────────────────────────────
 
 interface PendingRequest {
@@ -84,7 +98,7 @@ class PythonWorker {
 
     this.proc = spawn(this.pythonPath, ["-u", this.workerPath], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+      env: buildWorkerEnv(),
     });
 
     this.setupProcessHandlers();
@@ -132,7 +146,7 @@ class PythonWorker {
     });
     this.proc = spawn(this.pythonPath, ["-u", this.workerPath], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+      env: buildWorkerEnv(),
     });
     this.setupProcessHandlers();
     if (this.rpcHandler) this.setRpcHandler(this.rpcHandler);
