@@ -34,6 +34,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [creatingType, setCreatingType] = useState<"text" | "markdown" | "mermaid" | null>(null);
   const [drawingMode, setDrawingMode] = useState(false);
   const [converting, setConverting] = useState(false);
+  const [renderingFiles, setRenderingFiles] = useState<Set<string>>(new Set());
+  const [flashFiles, setFlashFiles] = useState<Set<string>>(new Set());
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -68,6 +70,12 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   // ── Real-time updates via WebSocket ─────────────────────
 
   useEffect(() => {
+    function handleRendering(msg: unknown) {
+      const m = msg as { project?: string; canvas?: string; filename?: string };
+      if (m.project !== projectId || m.canvas !== "_root" || !m.filename) return;
+      setRenderingFiles((prev) => new Set(prev).add(m.filename!));
+    }
+
     function handleFileEvent(msg: unknown) {
       const m = msg as {
         type: string;
@@ -87,6 +95,11 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
         return;
       }
 
+      // Clear rendering state
+      if (m.filename) {
+        setRenderingFiles((prev) => { const next = new Set(prev); next.delete(m.filename!); return next; });
+      }
+
       if ((m.type === "file-changed" || m.type === "file-created") && m.html && m.filename && m.meta) {
         setChildren((prev) => {
           const card: RenderedCard = {
@@ -103,15 +116,21 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           }
           return [...prev, card];
         });
+        // Trigger flash highlight
+        setFlashFiles((prev) => new Set(prev).add(m.filename!));
+        setTimeout(() => {
+          setFlashFiles((prev) => { const next = new Set(prev); next.delete(m.filename!); return next; });
+        }, 1200);
       } else if (m.type === "file-deleted" && m.filename) {
         setChildren((prev) => prev.filter((c) => c.filename !== m.filename));
       }
     }
 
+    const unsub0 = on("file-rendering", handleRendering);
     const unsub1 = on("file-changed", handleFileEvent);
     const unsub2 = on("file-created", handleFileEvent);
     const unsub3 = on("file-deleted", handleFileEvent);
-    return () => { unsub1(); unsub2(); unsub3(); };
+    return () => { unsub0(); unsub1(); unsub2(); unsub3(); };
   }, [projectId, loadProjectCard]);
 
   // ── Listen for toolbar-action broadcasts from the parent card's scripts ──
@@ -214,6 +233,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
                 projectId={projectId}
                 canvasId="_root"
                 canvasColor={canvasColor}
+                rendering={renderingFiles.has(card.filename)}
+                flash={flashFiles.has(card.filename)}
                 onEdit={() => handleEdit(card.filename)}
                 onDelete={() => handleDelete(card.filename)}
                 onExpand={() => setExpandedCard(card)}
@@ -233,6 +254,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
             projectId={projectId}
             canvasId="_root"
             canvasColor={canvasColor}
+            rendering={renderingFiles.has(card.filename)}
+            flash={flashFiles.has(card.filename)}
             onEdit={() => handleEdit(card.filename)}
             onDelete={() => handleDelete(card.filename)}
             onExpand={() => setExpandedCard(card)}
@@ -252,6 +275,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
                 projectId={projectId}
                 canvasId="_root"
                 canvasColor={canvasColor}
+                rendering={renderingFiles.has(card.filename)}
+                flash={flashFiles.has(card.filename)}
                 onEdit={() => handleEdit(card.filename)}
                 onDelete={() => handleDelete(card.filename)}
                 onExpand={() => setExpandedCard(card)}

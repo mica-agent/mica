@@ -10,12 +10,14 @@ interface Props {
   projectId: string;
   canvasId: CanvasId;
   canvasColor: string;
+  rendering?: boolean;
+  flash?: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onExpand: () => void;
 }
 
-export default function FileCard({ filename, html, exports: exportFns, meta, projectId, canvasId, canvasColor, onEdit, onDelete, onExpand }: Props) {
+export default function FileCard({ filename, html, exports: exportFns, meta, projectId, canvasId, canvasColor, rendering, flash, onEdit, onDelete, onExpand }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
 
@@ -35,12 +37,16 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
   // For interactive cards, don't expand when clicking the body — only via header/footer
   const handleCardClick = isInteractive ? undefined : onExpand;
 
+  const flashClass = flash ? "wb-card--flash" : "";
+  const renderingClass = rendering ? "wb-card--rendering" : "";
+
   return (
     <div
-      className={`wb-card ${cardClass}`}
+      className={`wb-card ${cardClass} ${flashClass} ${renderingClass}`}
       style={{ "--canvas-color": canvasColor } as React.CSSProperties}
       onClick={handleCardClick}
     >
+      {rendering && <div className="wb-card-rendering-bar" />}
       <div className="wb-card-header">
         <span className="wb-card-type">{meta.badge}</span>
         <span className="wb-card-title">{meta.title}</span>

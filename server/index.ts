@@ -895,6 +895,9 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
   // Skip chat history from rendering (it's data, not a card)
   if (event.filename === "_chat-history.json") return;
 
+  // Notify clients that a re-render is starting
+  broadcast({ type: "file-rendering", project: event.project, canvas: event.canvas, filename: event.filename });
+
   // Re-render the changed card
   cardManager.invalidateCard(event.project, event.canvas, event.filename);
   try {

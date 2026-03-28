@@ -164,6 +164,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  position: relative;
   transition: border-color 0.2s, box-shadow 0.2s;
   cursor: pointer;
 }
@@ -171,6 +172,47 @@
 .wb-card:hover {
   border-color: var(--canvas-color, var(--border));
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* ── Card rendering indicator ─────────────────────── */
+
+.wb-card--rendering {
+  opacity: 0.7;
+  border-color: var(--canvas-color, #60a5fa);
+}
+
+.wb-card-rendering-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 10;
+  background: linear-gradient(90deg, transparent 0%, var(--canvas-color, #60a5fa) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: card-rendering-slide 1s ease-in-out infinite;
+}
+
+@keyframes card-rendering-slide {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* ── Card flash on update ─────────────────────────── */
+
+.wb-card--flash {
+  animation: card-flash 1.2s ease-out;
+}
+
+@keyframes card-flash {
+  0% {
+    border-color: var(--canvas-color, #60a5fa);
+    box-shadow: 0 0 12px rgba(74, 138, 255, 0.4);
+  }
+  100% {
+    border-color: var(--border);
+    box-shadow: none;
+  }
 }
 
 /* ── System card variants ─────────────────────────── */
