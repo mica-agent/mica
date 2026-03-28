@@ -17,7 +17,7 @@ const __dirname = path.dirname(__filename);
 // ── Worker environment ────────────────────────────────────
 // Workers receive a filtered env — no API keys, cloud credentials, or tokens.
 // Only the minimum needed for Python to run and card classes to function.
-function buildWorkerEnv(): NodeJS.ProcessEnv {
+export function buildWorkerEnv(): NodeJS.ProcessEnv {
   return {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
@@ -26,6 +26,29 @@ function buildWorkerEnv(): NodeJS.ProcessEnv {
     PYTHONDONTWRITEBYTECODE: "1",
     PYTHONPATH: path.join(__dirname, "mica_sdk"),
   };
+}
+
+/** Function that spawns a Python worker process. Override for Docker exec. */
+export type SpawnWorkerFn = () => ChildProcess;
+
+/** Default: spawn Python directly on the host. */
+export function localSpawnFn(pythonPath: string, workerPath: string): SpawnWorkerFn {
+  return () => spawn(pythonPath, ["-u", workerPath], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: buildWorkerEnv(),
+  });
+}
+
+/** Spawn a worker inside a Docker container via `docker exec`. */
+export function dockerSpawnFn(containerName: string, workerPath: string): SpawnWorkerFn {
+  return () => spawn("docker", [
+    "exec", "-i",
+    "--env", "PYTHONDONTWRITEBYTECODE=1",
+    containerName,
+    "python3", "-u", workerPath,
+  ], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 }
 
 // ── Types ──────────────────────────────────────────────────
@@ -78,7 +101,7 @@ export interface ChannelCloseHandler {
 class PythonWorker {
   private proc: ChildProcess;
   private pending: Map<string, PendingRequest> = new Map();
-  private rl: readline.Interface;
+  private rl!: readline.Interface;
   private ready: boolean = false;
   private readyPromise: Promise<void>;
   private readyResolve!: () => void;
@@ -87,20 +110,17 @@ class PythonWorker {
   private channelDataHandler: ChannelDataHandler | null = null;
   private channelCloseHandler: ChannelCloseHandler | null = null;
   private requestContexts: Map<string, { project: string; canvas: string; filename: string }> = new Map();
+  private _hasChannel: boolean = false;
 
   constructor(
-    private workerPath: string,
-    private pythonPath: string = "/usr/bin/python3"
+    private spawnFn: SpawnWorkerFn,
+    private autoRestart: boolean = true
   ) {
     this.readyPromise = new Promise((resolve) => {
       this.readyResolve = resolve;
     });
 
-    this.proc = spawn(this.pythonPath, ["-u", this.workerPath], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: buildWorkerEnv(),
-    });
-
+    this.proc = this.spawnFn();
     this.setupProcessHandlers();
   }
 
@@ -140,16 +160,18 @@ class PythonWorker {
   }
 
   private restart() {
+    if (!this.autoRestart) return;
     console.log("[mica-worker] Restarting worker...");
     this.readyPromise = new Promise((resolve) => {
       this.readyResolve = resolve;
     });
-    this.proc = spawn(this.pythonPath, ["-u", this.workerPath], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: buildWorkerEnv(),
-    });
+    this.proc = this.spawnFn();
     this.setupProcessHandlers();
     if (this.rpcHandler) this.setRpcHandler(this.rpcHandler);
+  }
+
+  get hasChannel(): boolean {
+    return this._hasChannel;
   }
 
   setRpcHandler(handler: RpcHandler) {
@@ -305,6 +327,7 @@ class PythonWorker {
   /** Open a bidirectional channel — marks worker as busy for the channel's duration. */
   openChannel(msg: Record<string, unknown>) {
     this._busy = true;
+    this._hasChannel = true;
     this.sendToWorker(msg);
   }
 
@@ -329,24 +352,39 @@ class PythonWorker {
 
 // ── WorkerPool ─────────────────────────────────────────────
 
+export interface WorkerPoolOptions {
+  /** Number of idle workers to keep alive (default: 1) */
+  warm?: number;
+  /** Maximum workers (default: 6) */
+  max?: number;
+  /** Spawn function — defaults to local Python spawn */
+  spawnFn?: SpawnWorkerFn;
+  /** Python path for local spawn (ignored if spawnFn is provided) */
+  pythonPath?: string;
+  /** Label for logging */
+  label?: string;
+}
+
 export class WorkerPool extends EventEmitter {
   private workers: PythonWorker[] = [];
-  private workerPath: string;
-  private pythonPath: string;
-  private poolSize: number;
+  private warmCount: number;
+  private maxCount: number;
+  private spawnFn: SpawnWorkerFn;
   private rpcHandler: RpcHandler | null = null;
   private requestCounter = 0;
   private roundRobinIndex = 0;
   private channelWorkers: Map<string, PythonWorker> = new Map();
+  private idleTimers: Map<PythonWorker, ReturnType<typeof setTimeout>> = new Map();
+  private label: string;
 
-  constructor(options?: {
-    poolSize?: number;
-    pythonPath?: string;
-  }) {
+  constructor(options?: WorkerPoolOptions) {
     super();
-    this.poolSize = options?.poolSize ?? 8;
-    this.pythonPath = options?.pythonPath ?? "/usr/bin/python3";
-    this.workerPath = path.join(__dirname, "mica_sdk", "mica_worker.py");
+    this.warmCount = options?.warm ?? 1;
+    this.maxCount = options?.max ?? 6;
+    this.label = options?.label ?? "pool";
+    const workerPath = path.join(__dirname, "mica_sdk", "mica_worker.py");
+    this.spawnFn = options?.spawnFn
+      ?? localSpawnFn(options?.pythonPath ?? "/usr/bin/python3", workerPath);
   }
 
   setRpcHandler(handler: RpcHandler) {
@@ -357,19 +395,70 @@ export class WorkerPool extends EventEmitter {
   }
 
   async start(): Promise<void> {
-    console.log(`[worker-pool] Starting ${this.poolSize} Python workers...`);
+    console.log(`[worker-pool:${this.label}] Starting ${this.warmCount} warm workers (max ${this.maxCount})...`);
 
-    for (let i = 0; i < this.poolSize; i++) {
-      const worker = new PythonWorker(this.workerPath, this.pythonPath);
-      if (this.rpcHandler) {
-        worker.setRpcHandler(this.rpcHandler);
-      }
+    for (let i = 0; i < this.warmCount; i++) {
+      const worker = this.createWorker();
       this.workers.push(worker);
     }
 
-    // Wait for all workers to be ready
+    // Wait for all warm workers to be ready
     await Promise.all(this.workers.map((w) => w.waitReady()));
-    console.log(`[worker-pool] All ${this.poolSize} workers ready.`);
+    console.log(`[worker-pool:${this.label}] ${this.warmCount} warm workers ready.`);
+  }
+
+  private createWorker(): PythonWorker {
+    const worker = new PythonWorker(this.spawnFn);
+    if (this.rpcHandler) {
+      worker.setRpcHandler(this.rpcHandler);
+    }
+    return worker;
+  }
+
+  /** Spawn an additional worker on demand (up to max). Returns null if at max. */
+  private async spawnExtraWorker(): Promise<PythonWorker | null> {
+    if (this.workers.length >= this.maxCount) return null;
+    console.log(`[worker-pool:${this.label}] Spawning extra worker (${this.workers.length + 1}/${this.maxCount})`);
+    const worker = this.createWorker();
+    this.workers.push(worker);
+    await worker.waitReady();
+    return worker;
+  }
+
+  /** Start idle timer for a worker — kills it after 30s if pool is above warm count. */
+  private startIdleTimer(worker: PythonWorker) {
+    if (this.workers.length <= this.warmCount) return;
+    if (worker.hasChannel) return;
+    const timer = setTimeout(() => {
+      this.evictWorker(worker);
+    }, 30000);
+    this.idleTimers.set(worker, timer);
+  }
+
+  private clearIdleTimer(worker: PythonWorker) {
+    const timer = this.idleTimers.get(worker);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleTimers.delete(worker);
+    }
+  }
+
+  private evictWorker(worker: PythonWorker) {
+    if (this.workers.length <= this.warmCount) return;
+    if (worker.isBusy) return;
+    console.log(`[worker-pool:${this.label}] Evicting idle worker (${this.workers.length - 1} remaining)`);
+    this.clearIdleTimer(worker);
+    worker.kill();
+    this.workers = this.workers.filter((w) => w !== worker);
+  }
+
+  /** Evict idle workers under memory pressure — down to warm count. */
+  evictIdleWorkers() {
+    const idle = this.workers.filter((w) => !w.isBusy && !w.hasChannel);
+    for (const w of idle) {
+      if (this.workers.length <= this.warmCount) break;
+      this.evictWorker(w);
+    }
   }
 
   private nextId(): string {
@@ -378,13 +467,24 @@ export class WorkerPool extends EventEmitter {
 
   private getIdleWorker(): PythonWorker | null {
     for (const w of this.workers) {
-      if (w.isAlive && !w.isBusy) return w;
+      if (w.isAlive && !w.isBusy) {
+        this.clearIdleTimer(w);
+        return w;
+      }
     }
     return null;
   }
 
   private async waitForWorker(maxWait = 60000): Promise<PythonWorker> {
-    // Simple polling for an idle worker
+    // Try to get an idle worker
+    const idle = this.getIdleWorker();
+    if (idle) return idle;
+
+    // Try to spawn an extra worker
+    const extra = await this.spawnExtraWorker();
+    if (extra) return extra;
+
+    // All workers busy and at max — poll for one to become free
     const start = Date.now();
     while (Date.now() - start < maxWait) {
       const worker = this.getIdleWorker();
@@ -414,22 +514,28 @@ export class WorkerPool extends EventEmitter {
     config: Record<string, unknown>,
     context: { project: string; canvas: string; filename: string }
   ): Promise<RenderResult> {
-    // Renders prefer idle workers but never wait — fall back to round-robin
-    // so they don't get stuck behind long-running export calls
-    const worker = this.getIdleWorker() ?? this.getNextAliveWorker();
+    // Renders prefer idle workers; try spawning extra if all busy; fall back to round-robin
+    let worker = this.getIdleWorker();
+    if (!worker) {
+      worker = await this.spawnExtraWorker() ?? this.getNextAliveWorker();
+    }
     const id = this.nextId();
     worker.setRequestContext(id, context);
-    return worker.send(
-      {
-        type: "render",
-        id,
-        class_name: className,
-        class_path: classPath,
-        content,
-        config,
-      },
-      30000 // 30s timeout for renders
-    );
+    try {
+      return await worker.send(
+        {
+          type: "render",
+          id,
+          class_name: className,
+          class_path: classPath,
+          content,
+          config,
+        },
+        30000 // 30s timeout for renders
+      );
+    } finally {
+      this.startIdleTimer(worker);
+    }
   }
 
   async callExport(
@@ -443,18 +549,22 @@ export class WorkerPool extends EventEmitter {
     const worker = this.getIdleWorker() ?? (await this.waitForWorker());
     const id = this.nextId();
     worker.setRequestContext(id, context);
-    return worker.send(
-      {
-        type: "export_call",
-        id,
-        class_name: className,
-        class_path: classPath,
-        function: fn,
-        content,
-        args,
-      },
-      300000 // 5min timeout for exports (agent.chat can be slow)
-    );
+    try {
+      return await worker.send(
+        {
+          type: "export_call",
+          id,
+          class_name: className,
+          class_path: classPath,
+          function: fn,
+          content,
+          args,
+        },
+        300000 // 5min timeout for exports (agent.chat can be slow)
+      );
+    } finally {
+      this.startIdleTimer(worker);
+    }
   }
 
   /**
@@ -484,6 +594,7 @@ export class WorkerPool extends EventEmitter {
       if (id === channelId) {
         onClose();
         this.channelWorkers.delete(channelId);
+        this.startIdleTimer(worker);
       }
     });
 
@@ -525,9 +636,19 @@ export class WorkerPool extends EventEmitter {
 
   async stop(): Promise<void> {
     for (const w of this.workers) {
+      this.clearIdleTimer(w);
       w.kill();
     }
     this.workers = [];
     this.channelWorkers.clear();
+    this.idleTimers.clear();
+  }
+
+  get workerCount(): number {
+    return this.workers.length;
+  }
+
+  get idleCount(): number {
+    return this.workers.filter((w) => w.isAlive && !w.isBusy).length;
   }
 }

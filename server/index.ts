@@ -45,6 +45,7 @@ import { initializeProjects, seedNewProject } from "./seedCanvases.js";
 import { WorkerPool } from "./workerPool.js";
 import { CardManager } from "./cardManager.js";
 import { FileWatcher } from "./fileWatcher.js";
+import { SandboxManager } from "./projectSandbox.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3001");
 
@@ -571,12 +572,13 @@ app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, 
 
 // ── Widget Card System ──────────────────────────────────────
 
-const workerPool = new WorkerPool({ poolSize: 8, pythonPath: "/usr/bin/python3" });
-const cardManager = new CardManager(workerPool);
+const workerPool = new WorkerPool({ warm: 2, max: 8, pythonPath: "/usr/bin/python3", label: "global" });
+const sandboxManager = new SandboxManager();
+const cardManager = new CardManager(workerPool, sandboxManager);
 const fileWatcher = new FileWatcher();
 
 // RPC handler: Python card classes can call mica.write(), mica.agent.chat(), etc.
-workerPool.setRpcHandler(async (method, args, context) => {
+const rpcHandler = async (method: string, args: Record<string, unknown>, context: { project: string; canvas: string; filename: string }) => {
   const project = context.project as string;
   const canvas = context.canvas as string;
 
@@ -633,7 +635,9 @@ workerPool.setRpcHandler(async (method, args, context) => {
     default:
       throw new Error(`Unknown RPC method: ${method}`);
   }
-});
+};
+workerPool.setRpcHandler(rpcHandler);
+sandboxManager.setRpcHandler(rpcHandler);
 
 // Get all rendered cards for a canvas
 app.get("/api/projects/:project/canvases/:canvas/cards", async (req, res) => {
@@ -729,6 +733,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel IDs
+const channelPools = new Map<string, WorkerPool>(); // channelId → pool that owns it
 
 wss.on("error", (err) => {
   console.error("[websocket-server] Error:", (err as Error).message);
@@ -743,7 +748,9 @@ wss.on("connection", (ws) => {
     const channels = wsChannels.get(ws);
     if (channels) {
       for (const channelId of channels) {
-        workerPool.closeChannel(channelId);
+        const pool = channelPools.get(channelId) || workerPool;
+        pool.closeChannel(channelId);
+        channelPools.delete(channelId);
       }
       wsChannels.delete(ws);
     }
@@ -807,6 +814,13 @@ wss.on("connection", (ws) => {
       // Pattern 5: Bidirectional channel — open
       case "channel_open": {
         try {
+          // Resolve the pool for this project so we can track it for data/close routing
+          let pool: WorkerPool = workerPool;
+          if (sandboxManager) {
+            try { pool = await sandboxManager.getPool(project as string); } catch { /* fallback */ }
+          }
+          channelPools.set(id as string, pool);
+
           await cardManager.openChannel(
             id as string,
             project as string, canvas as string, filename as string,
@@ -823,12 +837,14 @@ wss.on("connection", (ws) => {
                 ws.send(JSON.stringify({ type: "channel_close", id }));
               }
               wsChannels.get(ws)?.delete(id as string);
+              channelPools.delete(id as string);
             }
           );
           // Track this channel for cleanup on disconnect
           if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
           wsChannels.get(ws)!.add(id as string);
         } catch (err) {
+          channelPools.delete(id as string);
           ws.send(JSON.stringify({ type: "error", id, error: (err as Error).message }));
         }
         break;
@@ -836,13 +852,16 @@ wss.on("connection", (ws) => {
 
       // Pattern 5: Bidirectional channel — data (browser → Python)
       case "channel_data": {
-        workerPool.sendChannelData(id as string, (msg as { data?: unknown }).data);
+        const pool = channelPools.get(id as string) || workerPool;
+        pool.sendChannelData(id as string, (msg as { data?: unknown }).data);
         break;
       }
 
       // Pattern 5: Bidirectional channel — close (browser → Python)
       case "channel_close": {
-        workerPool.closeChannel(id as string);
+        const pool = channelPools.get(id as string) || workerPool;
+        pool.closeChannel(id as string);
+        channelPools.delete(id as string);
         wsChannels.get(ws)?.delete(id as string);
         break;
       }
@@ -926,13 +945,24 @@ fileWatcher.on("class-change", (event: { className: string }) => {
 ║  WebSocket: ws://localhost:${PORT}/ws/cards                  ║
 ╠══════════════════════════════════════════════════════════╣
 ║  Widget System:                                          ║
-║    Worker Pool: 8 Python workers                         ║
+║    Global Pool: warm=2, max=8 Python workers             ║
+║    Per-Project Sandboxes: Docker --network=none          ║
 ║    Card Classes: card-classes/                           ║
 ║    File Watcher: active                                  ║
 ╠══════════════════════════════════════════════════════════╣
+║  Security: CSP + env filtering + container isolation     ║
 ║  Auth: Claude Code subscription (Pro/Max)                ║
-║  No API key needed — uses your existing login            ║
 ╚══════════════════════════════════════════════════════════╝
 `);
   });
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    console.log("\n[shutdown] Stopping sandboxes and worker pool...");
+    await sandboxManager.stopAll();
+    await workerPool.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 })();

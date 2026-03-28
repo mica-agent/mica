@@ -8,6 +8,7 @@
 import path from "path";
 import fs from "fs";
 import { WorkerPool, type RenderResult } from "./workerPool.js";
+import type { SandboxManager } from "./projectSandbox.js";
 import {
   readCanvasFile,
   writeCanvasFile,
@@ -105,11 +106,25 @@ function parseFrontmatter(raw: string): ParsedFile {
 export class CardManager {
   private cache: Map<string, CacheEntry> = new Map();
   private pool: WorkerPool;
+  private sandboxManager: SandboxManager | null = null;
   private manifest: Record<string, ClassManifestEntry> = {};
 
-  constructor(pool: WorkerPool) {
+  constructor(pool: WorkerPool, sandboxManager?: SandboxManager) {
     this.pool = pool;
+    this.sandboxManager = sandboxManager ?? null;
     this.loadManifest();
+  }
+
+  /** Get the worker pool for a project. Uses sandbox if available, else global pool. */
+  private async getPool(project: string): Promise<WorkerPool> {
+    if (this.sandboxManager) {
+      try {
+        return await this.sandboxManager.getPool(project);
+      } catch (err) {
+        console.warn(`[card-manager] Sandbox unavailable for "${project}", falling back to global pool:`, (err as Error).message);
+      }
+    }
+    return this.pool;
   }
 
   private loadManifest(projectPath?: string) {
@@ -225,10 +240,11 @@ export class CardManager {
     }
 
     // Retry renders up to 3 times (workers may be temporarily busy with exports)
+    const pool = await this.getPool(project);
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const result = await this.pool.render(
+        const result = await pool.render(
           cardClass,
           classPath,
           strippedContent,
@@ -279,7 +295,8 @@ export class CardManager {
       throw new Error(`Card class "${cardClass}" not found`);
     }
 
-    return this.pool.callExport(
+    const pool = await this.getPool(project);
+    return pool.callExport(
       cardClass,
       classPath,
       fn,
@@ -308,7 +325,8 @@ export class CardManager {
       return;
     }
 
-    this.pool.callExport(cardClass, classPath, fn, strippedContent, args, { project, canvas, filename })
+    const pool = await this.getPool(project);
+    pool.callExport(cardClass, classPath, fn, strippedContent, args, { project, canvas, filename })
       .catch((err) => console.error(`[card-manager] callSend error:`, (err as Error).message));
   }
 
@@ -336,7 +354,8 @@ export class CardManager {
       throw new Error(`Card class "${cardClass}" not found`);
     }
 
-    return this.pool.openChannel(
+    const pool = await this.getPool(project);
+    return pool.openChannel(
       channelId,
       cardClass,
       classPath,
