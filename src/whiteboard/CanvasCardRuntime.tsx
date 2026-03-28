@@ -4,7 +4,7 @@
 // This component fills those slots with individually isolated WidgetRuntime instances,
 // one per child card. Each child gets its own container, bridge, and script scope.
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
 import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing } from "../api/canvasFiles";
 import type { RenderedCard } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
@@ -13,15 +13,17 @@ import FileCard from "./FileCard";
 import FileEditor from "./FileEditor";
 import ExpandedCardView from "./ExpandedCardView";
 import DrawingCanvas from "./DrawingCanvas";
+import "./whiteboard.css";
 
 interface Props {
   projectId: string;
+  onReloadRef?: MutableRefObject<(() => void) | null>;
 }
 
 // System files ordering
 const SYSTEM_ORDER = ["_goal.md", "_todo.md", "_brief.md", "_log.md"];
 
-export default function CanvasCardRuntime({ projectId }: Props) {
+export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [parentCard, setParentCard] = useState<RenderedCard | null>(null);
   const [children, setChildren] = useState<RenderedCard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,6 +58,12 @@ export default function CanvasCardRuntime({ projectId }: Props) {
     setLoading(true);
     loadProjectCard();
   }, [loadProjectCard]);
+
+  // Expose reload function so parent can trigger refresh (e.g. after agent writes files)
+  useEffect(() => {
+    if (onReloadRef) onReloadRef.current = loadProjectCard;
+    return () => { if (onReloadRef) onReloadRef.current = null; };
+  }, [onReloadRef, loadProjectCard]);
 
   // ── Real-time updates via WebSocket ─────────────────────
 
@@ -110,8 +118,9 @@ export default function CanvasCardRuntime({ projectId }: Props) {
 
   useEffect(() => {
     const unsub = on("toolbar-action", (msg) => {
-      const m = msg as { data?: { action?: string } };
-      const action = m.data?.action;
+      const m = msg as Record<string, unknown>;
+      // Server flattens broadcast data — action is a top-level key
+      const action = m.action as string | undefined;
       if (action === "new-note") setCreatingType("text");
       else if (action === "new-doc") setCreatingType("markdown");
       else if (action === "new-diagram") setCreatingType("mermaid");
@@ -175,67 +184,70 @@ export default function CanvasCardRuntime({ projectId }: Props) {
 
   return (
     <div className="wb-container">
-      {/* Parent card chrome — rendered by simple-project render.py */}
-      {parentCard && (
-        <div ref={parentRef} className="canvas-card-parent">
-          <WidgetRuntime
-            html={parentCard.html}
-            exports={parentCard.exports}
-            project={projectId}
-            canvas="_root"
-            filename="_project.md"
-          />
-        </div>
-      )}
-
-      {/* System cards — fill the system-cards slot area */}
-      {allSystem.length > 0 && (
-        <div className="wb-system-cards">
-          {allSystem.map((card) => (
-            <FileCard
-              key={card.filename}
-              filename={card.filename}
-              html={card.html}
-              exports={card.exports}
-              meta={card.meta}
-              projectId={projectId}
-              canvasId="_root"
-              canvasColor={canvasColor}
-              onEdit={() => handleEdit(card.filename)}
-              onDelete={() => handleDelete(card.filename)}
-              onExpand={() => setExpandedCard(card)}
+      {/* Scrollable content area */}
+      <div className="wb-grid">
+        {/* Parent card chrome — rendered by simple-project render.py */}
+        {parentCard && (
+          <div ref={parentRef} className="canvas-card-parent">
+            <WidgetRuntime
+              html={parentCard.html}
+              exports={parentCard.exports}
+              project={projectId}
+              canvas="_root"
+              filename="_project.md"
             />
-          ))}
-        </div>
-      )}
+          </div>
+        )}
 
-      {/* Content cards — fill the content-cards slot area */}
-      {contentCards.length > 0 && (
-        <div className="wb-masonry">
-          {contentCards.map((card) => (
-            <FileCard
-              key={card.filename}
-              filename={card.filename}
-              html={card.html}
-              exports={card.exports}
-              meta={card.meta}
-              projectId={projectId}
-              canvasId="_root"
-              canvasColor={canvasColor}
-              onEdit={() => handleEdit(card.filename)}
-              onDelete={() => handleDelete(card.filename)}
-              onExpand={() => setExpandedCard(card)}
-            />
-          ))}
-        </div>
-      )}
+        {/* System cards */}
+        {allSystem.length > 0 && (
+          <div className="wb-system-cards">
+            {allSystem.map((card) => (
+              <FileCard
+                key={card.filename}
+                filename={card.filename}
+                html={card.html}
+                exports={card.exports}
+                meta={card.meta}
+                projectId={projectId}
+                canvasId="_root"
+                canvasColor={canvasColor}
+                onEdit={() => handleEdit(card.filename)}
+                onDelete={() => handleDelete(card.filename)}
+                onExpand={() => setExpandedCard(card)}
+              />
+            ))}
+          </div>
+        )}
 
-      {!loading && children.length === 0 && !parentCard && (
-        <div className="wb-empty">
-          <div className="wb-empty-icon">&#9744;</div>
-          <p>No files yet. Create a note, document, or diagram to get started.</p>
-        </div>
-      )}
+        {/* Content cards — masonry layout */}
+        {contentCards.length > 0 && (
+          <div className="wb-masonry">
+            {contentCards.map((card) => (
+              <FileCard
+                key={card.filename}
+                filename={card.filename}
+                html={card.html}
+                exports={card.exports}
+                meta={card.meta}
+                projectId={projectId}
+                canvasId="_root"
+                canvasColor={canvasColor}
+                onEdit={() => handleEdit(card.filename)}
+                onDelete={() => handleDelete(card.filename)}
+                onExpand={() => setExpandedCard(card)}
+              />
+            ))}
+          </div>
+        )}
+
+        {!loading && children.length === 0 && !parentCard && (
+          <div className="wb-empty">
+            <div className="wb-empty-icon">&#9744;</div>
+            <p>No files yet. Create a note, document, or diagram to get started.</p>
+          </div>
+        )}
+      </div>
 
       {/* Expanded card reader */}
       {expandedCard && (

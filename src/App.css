@@ -10,6 +10,7 @@
   --text: #e8e8f0;
   --text-secondary: rgba(255, 255, 255, 0.65);
   --text-dim: rgba(255, 255, 255, 0.45);
+  --border: rgba(255, 255, 255, 0.15);
   --radius: 14px;
   --radius-sm: 8px;
   --radius-xs: 6px;
@@ -78,9 +79,23 @@
 
 .canvas-container {
   position: absolute;
-  inset: 60px 60px 0 0; /* top for breadcrumb, right for depth indicator */
+  inset: 48px 0 0 0; /* top for breadcrumb */
   transition: transform var(--transition), opacity var(--transition), filter var(--transition);
   will-change: transform, opacity, filter;
+}
+
+/* Project-first layout: breadcrumb + scrollable content */
+.app--project {
+  display: flex;
+  flex-direction: column;
+}
+
+.project-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  z-index: 1;
 }
 
 .canvas-active {

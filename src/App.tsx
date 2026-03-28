@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { fetchProjects } from './api/canvasFiles';
 import type { ProjectConfig } from './api/canvasFiles';
 import { connect as connectMicaSocket } from './api/micaSocket';
@@ -17,6 +17,7 @@ export default function App() {
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
   const [activeProjectIndex, setActiveProjectIndex] = useState(0);
   const [, setAgentBusy] = useState(false);
+  const reloadRef = useRef<(() => void) | null>(null);
 
   const loadProjects = useCallback(() => {
     fetchProjects()
@@ -46,7 +47,7 @@ export default function App() {
   return (
     <div className="app-with-ai">
       <div className="app-main">
-        <div className="app">
+        <div className="app app--project">
           <div
             className="app-bg-tint"
             style={{ background: 'rgba(74, 138, 255, 0.06)' }}
@@ -65,13 +66,12 @@ export default function App() {
             />
           </nav>
 
-          <div className="canvas-stack">
-            <div className="canvas-container canvas-active">
-              <CanvasCardRuntime
-                key={projectId}
-                projectId={projectId}
-              />
-            </div>
+          <div className="project-content">
+            <CanvasCardRuntime
+              key={projectId}
+              projectId={projectId}
+              onReloadRef={reloadRef}
+            />
           </div>
         </div>
       </div>
@@ -84,6 +84,7 @@ export default function App() {
           activeCanvas="_root"
           canvasColor={canvasColor}
           onAgentBusy={setAgentBusy}
+          onFilesChanged={() => reloadRef.current?.()}
         />
       </div>
     </div>
