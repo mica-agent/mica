@@ -2,7 +2,7 @@
 // In the project-first model, seeding creates .mica/ inside a project directory.
 
 import { existsSync } from "fs";
-import { readFile, mkdir } from "fs/promises";
+import { readFile, writeFile as writeFileFs, mkdir } from "fs/promises";
 import { join } from "path";
 import {
   listFiles,
@@ -110,7 +110,8 @@ This is a **markdown** card. You can use it for documentation, notes, or any ric
 /** Create a new project directory, connect it to Mica, and seed starter files */
 export async function seedNewProject(
   projectId: string,
-  projectName: string
+  projectName: string,
+  agentProvider?: "claude" | "local",
 ): Promise<ConnectedProject> {
   // Create project directory
   const projectDir = join(PROJECTS_DIR, projectId);
@@ -118,6 +119,20 @@ export async function seedNewProject(
 
   // Connect the project (this creates .mica/ and git init)
   const config = await connectProject(projectDir, projectName);
+
+  // Write agentProvider to config if specified
+  if (agentProvider && agentProvider !== "claude") {
+    const configPath = join(projectDir, ".mica", "config.json");
+    try {
+      const raw = await readFile(configPath, "utf-8");
+      const micaConfig = JSON.parse(raw);
+      micaConfig.agentProvider = agentProvider;
+      await writeFileFs(configPath, JSON.stringify(micaConfig, null, 2), "utf-8");
+      console.log(`[seed] Set agentProvider="${agentProvider}" for "${projectId}"`);
+    } catch (err) {
+      console.error(`[seed] Failed to set agentProvider:`, (err as Error).message);
+    }
+  }
 
   // Seed the _root canvas with starter files
   const existing = await listFiles(projectId, "_root");

@@ -17,6 +17,7 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [agentProvider, setAgentProvider] = useState<"claude" | "local">("claude");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -39,8 +40,9 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
     const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     if (!id) return;
     try {
-      await createProject(id, name);
+      await createProject(id, name, agentProvider);
       setNewName("");
+      setAgentProvider("claude");
       setCreating(false);
       onProjectsChanged();
     } catch (err) {
@@ -136,6 +138,20 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
                   if (e.key === "Escape") { setCreating(false); setNewName(""); }
                 }}
               />
+              <div className="project-nav-agent-toggle">
+                <button
+                  className={`project-nav-agent-btn ${agentProvider === "claude" ? "project-nav-agent-btn--active" : ""}`}
+                  onClick={() => setAgentProvider("claude")}
+                >
+                  Claude
+                </button>
+                <button
+                  className={`project-nav-agent-btn ${agentProvider === "local" ? "project-nav-agent-btn--active" : ""}`}
+                  onClick={() => setAgentProvider("local")}
+                >
+                  Local (Nemotron 30B)
+                </button>
+              </div>
               <button
                 className="project-nav-create-submit"
                 onClick={handleCreate}

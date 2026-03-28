@@ -28,6 +28,7 @@ export interface WorkspaceRegistry {
 export interface MicaConfig {
   name: string;
   canvases: string[];
+  agentProvider?: "claude" | "local"; // default: "claude"
   model?: string; // default model for all agents in this project
   agents?: Record<string, { // per-canvas/agent overrides
     model?: string;

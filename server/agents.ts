@@ -32,7 +32,7 @@ export function setAgentWriteHook(hook: (project: string, canvas: string, filena
 // ── Helpers ────────────────────────────────────────────────
 
 /** Build a human-readable one-liner from a tool_use block. */
-function describeToolUse(name: string, input?: Record<string, unknown>): string {
+export function describeToolUse(name: string, input?: Record<string, unknown>): string {
   if (!input) return name;
   switch (name) {
     case "Bash": {
@@ -88,12 +88,12 @@ export interface Consultation {
 
 // ── Agent system prompts ───────────────────────────────────
 
-function getAgentIdentity(canvas: string): string {
+export function getAgentIdentity(canvas: string): string {
   // Generic identity — canvas-specific personality comes from _brief.md
   return `You are the AI agent for the "${canvas}" workspace in Mica.`;
 }
 
-const TOOL_INSTRUCTIONS = `
+export const TOOL_INSTRUCTIONS = `
 You have access to tools for managing files on the shared whiteboard, reading other canvases, and cross-canvas collaboration.
 
 ## Your Canvas's Whiteboard
@@ -146,7 +146,7 @@ IMPORTANT: Actually use the tools when appropriate — don't just describe what 
 ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.md so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
 `;
 
-const GOAL_INSTRUCTIONS = `
+export const GOAL_INSTRUCTIONS = `
 ## Goal-Driven Collaboration
 
 You are a COLLABORATOR, not just a chatbot. Your behavior is driven by the canvas's _goal.md file.
@@ -200,7 +200,7 @@ export function getAgentMeta(canvas: string): { name: string; role: string } {
 
 // ── Activity log helper ─────────────────────────────────────
 
-async function appendToLog(project: string, canvas: CanvasId, entry: string) {
+export async function appendToLog(project: string, canvas: CanvasId, entry: string) {
   const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
   const line = `- **${timestamp}** — ${entry}\n`;
   try {

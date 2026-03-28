@@ -111,6 +111,10 @@ class PythonWorker {
   private channelCloseHandler: ChannelCloseHandler | null = null;
   private requestContexts: Map<string, { project: string; canvas: string; filename: string }> = new Map();
   private _hasChannel: boolean = false;
+  private consecutiveFailures: number = 0;
+  private static readonly BACKOFF_BASE_MS = 1000;
+  private static readonly BACKOFF_MAX_MS = 30000;
+  private static readonly MAX_CONSECUTIVE_FAILURES = 8;
 
   constructor(
     private spawnFn: SpawnWorkerFn,
@@ -145,8 +149,7 @@ class PythonWorker {
     this.proc.on("exit", (code) => {
       console.log(`[mica-worker ${this.proc.pid}] exited with code ${code}`);
       this.rejectAllPending(`Worker exited with code ${code}`);
-      // Auto-restart after 1s
-      setTimeout(() => this.restart(), 1000);
+      this.scheduleRestart();
     });
   }
 
@@ -159,15 +162,30 @@ class PythonWorker {
     this.ready = false;
   }
 
-  private restart() {
+  private scheduleRestart() {
     if (!this.autoRestart) return;
-    console.log("[mica-worker] Restarting worker...");
-    this.readyPromise = new Promise((resolve) => {
-      this.readyResolve = resolve;
-    });
-    this.proc = this.spawnFn();
-    this.setupProcessHandlers();
-    if (this.rpcHandler) this.setRpcHandler(this.rpcHandler);
+
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures > PythonWorker.MAX_CONSECUTIVE_FAILURES) {
+      console.error(`[mica-worker] ${this.consecutiveFailures} consecutive failures — giving up restarts`);
+      return;
+    }
+
+    const delay = Math.min(
+      PythonWorker.BACKOFF_BASE_MS * Math.pow(2, this.consecutiveFailures - 1),
+      PythonWorker.BACKOFF_MAX_MS,
+    );
+    console.log(`[mica-worker] Restarting in ${(delay / 1000).toFixed(1)}s (attempt ${this.consecutiveFailures}/${PythonWorker.MAX_CONSECUTIVE_FAILURES})...`);
+
+    setTimeout(() => {
+      if (!this.autoRestart) return;
+      this.readyPromise = new Promise((resolve) => {
+        this.readyResolve = resolve;
+      });
+      this.proc = this.spawnFn();
+      this.setupProcessHandlers();
+      if (this.rpcHandler) this.setRpcHandler(this.rpcHandler);
+    }, delay);
   }
 
   get hasChannel(): boolean {
@@ -197,6 +215,7 @@ class PythonWorker {
 
     if (msg.type === "ready") {
       this.ready = true;
+      this.consecutiveFailures = 0; // Reset backoff on successful start
       this.readyResolve();
       return;
     }

@@ -4,6 +4,12 @@
  * Each project gets an isolated container running Python workers.
  * All untrusted card code executes inside this container.
  * The Mica server (on the host) communicates with workers via docker exec pipes.
+ *
+ * Lifecycle guarantees:
+ * - Stale containers from previous runs are cleaned up on first use.
+ * - Container liveness is verified before dispatching work.
+ * - Dead containers are automatically recreated.
+ * - Failed startups use exponential backoff (not fixed 60s blacklist).
  */
 
 import { execFile } from "child_process";
@@ -38,6 +44,11 @@ const SANDBOX_IMAGE = "mica-sandbox:base";
 const CARD_CLASSES_DIR = path.resolve("card-classes");
 const SDK_DIR = path.join(__dirname, "mica_sdk");
 const WORKER_PATH = path.join(SDK_DIR, "mica_worker.py");
+const CONTAINER_PREFIX = "mica-project-";
+
+// Backoff: 5s, 10s, 20s, 40s, 60s cap
+const BACKOFF_BASE_MS = 5000;
+const BACKOFF_MAX_MS = 60000;
 
 // ── SandboxManager ─────────────────────────────────────────
 
@@ -45,7 +56,8 @@ export class SandboxManager {
   private sandboxes: Map<string, ProjectSandboxInfo> = new Map();
   private rpcHandler: RpcHandler | null = null;
   private dockerAvailable: boolean | null = null;
-  private failedProjects: Map<string, number> = new Map(); // projectId → failure timestamp
+  private failedProjects: Map<string, { at: number; attempts: number }> = new Map();
+  private cleanedUp = false;
 
   /** Check if Docker is available. Cached after first check. */
   private async isDockerAvailable(): Promise<boolean> {
@@ -60,6 +72,43 @@ export class SandboxManager {
     return this.dockerAvailable;
   }
 
+  /**
+   * Remove any mica-project-* containers left over from a previous server run.
+   * Called once on first getPool() — ensures a clean slate.
+   */
+  private async cleanupStaleContainers(): Promise<void> {
+    if (this.cleanedUp) return;
+    this.cleanedUp = true;
+
+    if (!(await this.isDockerAvailable())) return;
+
+    try {
+      const { stdout } = await execFileAsync("docker", [
+        "ps", "-a", "--filter", `name=${CONTAINER_PREFIX}`, "--format", "{{.Names}}",
+      ], { timeout: 5000 });
+
+      const names = stdout.trim().split("\n").filter(Boolean);
+      if (names.length === 0) return;
+
+      console.log(`[sandbox] Cleaning up ${names.length} stale container(s): ${names.join(", ")}`);
+      await execFileAsync("docker", ["rm", "-f", ...names], { timeout: 15000 });
+    } catch (err) {
+      console.warn("[sandbox] Stale container cleanup failed:", (err as Error).message);
+    }
+  }
+
+  /** Check if a Docker container is running. */
+  private async isContainerAlive(containerName: string): Promise<boolean> {
+    try {
+      const { stdout } = await execFileAsync("docker", [
+        "inspect", "-f", "{{.State.Running}}", containerName,
+      ], { timeout: 5000 });
+      return stdout.trim() === "true";
+    } catch {
+      return false;
+    }
+  }
+
   setRpcHandler(handler: RpcHandler) {
     this.rpcHandler = handler;
     for (const sandbox of this.sandboxes.values()) {
@@ -67,26 +116,47 @@ export class SandboxManager {
     }
   }
 
-  /** Get or create a sandbox for a project. */
+  /** Get or create a sandbox for a project. Verifies liveness before returning. */
   async getPool(projectId: string): Promise<WorkerPool> {
+    // First call: clean up containers from previous server runs
+    await this.cleanupStaleContainers();
+
     const existing = this.sandboxes.get(projectId);
-    if (existing && existing.status === "running") return existing.pool;
+    if (existing && existing.status === "running") {
+      // Verify container is still alive
+      const useDocker = await this.isDockerAvailable();
+      if (useDocker) {
+        const alive = await this.isContainerAlive(existing.containerName);
+        if (!alive) {
+          console.warn(`[sandbox] Container ${existing.containerName} is dead — recreating`);
+          await this.teardownSandbox(projectId);
+          return this.startSandbox(projectId);
+        }
+      }
+      return existing.pool;
+    }
+
     return this.startSandbox(projectId);
   }
 
-  /** Start a sandbox for a project. Idempotent — reuses existing if running. */
+  /** Start a sandbox for a project. */
   async startSandbox(projectId: string): Promise<WorkerPool> {
     const existing = this.sandboxes.get(projectId);
     if (existing && existing.status === "running") return existing.pool;
 
-    // Don't retry failed projects for 60 seconds
-    const lastFailure = this.failedProjects.get(projectId);
-    if (lastFailure && Date.now() - lastFailure < 60000) {
-      throw new Error(`Sandbox for "${projectId}" failed recently, waiting before retry`);
+    // Exponential backoff on repeated failures
+    const failure = this.failedProjects.get(projectId);
+    if (failure) {
+      const backoff = Math.min(BACKOFF_BASE_MS * Math.pow(2, failure.attempts - 1), BACKOFF_MAX_MS);
+      const elapsed = Date.now() - failure.at;
+      if (elapsed < backoff) {
+        const waitSec = ((backoff - elapsed) / 1000).toFixed(0);
+        throw new Error(`Sandbox for "${projectId}" failed ${failure.attempts} time(s), retrying in ${waitSec}s`);
+      }
     }
 
     const useDocker = await this.isDockerAvailable();
-    const containerName = `mica-project-${projectId}`;
+    const containerName = `${CONTAINER_PREFIX}${projectId}`;
 
     // Read project config for worker settings
     let config: SandboxConfig = {};
@@ -101,15 +171,19 @@ export class SandboxManager {
     let pool: WorkerPool;
 
     if (useDocker) {
-      // Start the Docker container
       try {
         await this.startContainer(projectId, containerName, config);
+        // Success — clear any failure history
+        this.failedProjects.delete(projectId);
       } catch (err) {
-        this.failedProjects.set(projectId, Date.now());
+        const prev = this.failedProjects.get(projectId);
+        this.failedProjects.set(projectId, {
+          at: Date.now(),
+          attempts: (prev?.attempts ?? 0) + 1,
+        });
         throw err;
       }
 
-      // Create worker pool that spawns via docker exec
       pool = new WorkerPool({
         warm,
         max,
@@ -117,7 +191,6 @@ export class SandboxManager {
         label: projectId,
       });
     } else {
-      // Fallback: local workers (no container isolation)
       const workerPath = path.join(__dirname, "mica_sdk", "mica_worker.py");
       pool = new WorkerPool({
         warm,
@@ -146,7 +219,7 @@ export class SandboxManager {
     containerName: string,
     config: SandboxConfig
   ): Promise<void> {
-    // Stop existing container if any
+    // Remove any existing container with this name (idempotent)
     try {
       await execFileAsync("docker", ["rm", "-f", containerName], { timeout: 10000 });
     } catch { /* not running */ }
@@ -161,19 +234,15 @@ export class SandboxManager {
       "--network", "bridge",
       "--memory", memory,
       "--cpus", "2.0",
-      // Mount at same host paths so cardManager path resolution works inside container
       "-v", `${projectPath}:${projectPath}:rw`,
       "-v", `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
       "-v", `${SDK_DIR}:${SDK_DIR}:ro`,
       "-w", projectPath,
-      // Filtered environment
       "-e", `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       "-e", `HOME=/home/sandbox`,
       "-e", `TERM=xterm-256color`,
       "-e", `PYTHONPATH=${SDK_DIR}`,
-      // Override entrypoint (image may have a custom one)
       "--entrypoint", "sleep",
-      // Image + keep alive
       SANDBOX_IMAGE,
       "infinity",
     ];
@@ -200,10 +269,7 @@ export class SandboxManager {
 
   /** Install Python dependencies inside container (runs during setup phase with network). */
   private async installDeps(containerName: string, projectId: string): Promise<void> {
-    // Core deps required by built-in card classes
     const coreDeps = ["markdown"];
-
-    // TODO: Parse project _brief.md for additional dependencies
 
     if (coreDeps.length === 0) return;
 
@@ -219,22 +285,30 @@ export class SandboxManager {
     }
   }
 
-  /** Stop a project's sandbox. */
-  async stopSandbox(projectId: string): Promise<void> {
+  /**
+   * Tear down a sandbox's pool and remove it from tracking,
+   * WITHOUT removing the Docker container (it may already be gone).
+   */
+  private async teardownSandbox(projectId: string): Promise<void> {
     const sandbox = this.sandboxes.get(projectId);
     if (!sandbox) return;
 
     sandbox.status = "stopped";
     await sandbox.pool.stop();
+    this.sandboxes.delete(projectId);
 
+    // Best-effort container removal
     if (await this.isDockerAvailable()) {
       try {
         await execFileAsync("docker", ["rm", "-f", sandbox.containerName], { timeout: 10000 });
-        console.log(`[sandbox] Stopped container ${sandbox.containerName}`);
-      } catch { /* already stopped */ }
+      } catch { /* already gone */ }
     }
+  }
 
-    this.sandboxes.delete(projectId);
+  /** Stop a project's sandbox. */
+  async stopSandbox(projectId: string): Promise<void> {
+    await this.teardownSandbox(projectId);
+    console.log(`[sandbox] Stopped container ${CONTAINER_PREFIX}${projectId}`);
   }
 
   /** Stop all sandboxes (server shutdown). */

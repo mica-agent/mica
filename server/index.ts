@@ -27,7 +27,7 @@ import {
   getProjectConfig,
   validateProjectCanvas,
 } from "./canvasFiles.js";
-import { connectProject, addCanvasToProject, migrateLegacyProjects } from "./projectConnection.js";
+import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig } from "./projectConnection.js";
 import {
   getGitStatus,
   gitCommit,
@@ -48,6 +48,8 @@ import { CardManager } from "./cardManager.js";
 import { FileWatcher } from "./fileWatcher.js";
 import { SandboxManager } from "./projectSandbox.js";
 import { ReactiveAgent } from "./reactiveAgent.js";
+import { chatWithLocalAgent, setLocalAgentWriteHook, resetLocalCanvas, resetAllLocal } from "./localAgent.js";
+import { stopLlamaServer } from "./llamaServer.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3001");
 
@@ -138,13 +140,13 @@ app.get("/api/projects/:project", async (req, res) => {
 
 // Create a new project (seeds a fresh directory)
 app.post("/api/projects", async (req, res) => {
-  const { id, name } = req.body;
+  const { id, name, agentProvider } = req.body;
   if (!id || !name) {
     res.status(400).json({ error: "id and name required" });
     return;
   }
   try {
-    const config = await seedNewProject(id, name);
+    const config = await seedNewProject(id, name, agentProvider);
 
     // Add watchers for the new project
     await fileWatcher.addProject(id, config.canvases);
@@ -353,9 +355,9 @@ app.post("/api/projects/:project/canvases/:canvas/chat", async (req, res) => {
 
   reactiveAgent.markBusy(project, canvas);
   try {
-    const response = await chatWithAgent(project, canvas, message);
+    const response = await routedChat(project, canvas, message);
 
-    // If there's a pending consultation, forward it
+    // If there's a pending consultation, forward it (Claude only)
     if (response.consultation) {
       const consultationResponse = await consultCanvas(
         project,
@@ -429,8 +431,10 @@ app.post("/api/projects/:project/reset", (req, res) => {
   const { canvas } = req.body;
   if (canvas) {
     resetCanvas(project, canvas);
+    resetLocalCanvas(project, canvas);
   } else {
     resetAll();
+    resetAllLocal();
   }
   res.json({ success: true });
 });
@@ -581,12 +585,23 @@ const workerPool = new WorkerPool({ warm: 2, max: 8, pythonPath: "/usr/bin/pytho
 const sandboxManager = new SandboxManager();
 const cardManager = new CardManager(workerPool, sandboxManager);
 const fileWatcher = new FileWatcher();
-const reactiveAgent = new ReactiveAgent(chatWithAgent, broadcast);
+// Routed chat function — picks Claude or local agent based on project config
+const routedChat: typeof chatWithAgent = async (project, canvas, message, image?, onProgress?) => {
+  const config = await readMicaConfig(project);
+  if (config?.agentProvider === "local") {
+    return chatWithLocalAgent(project, canvas, message, image, onProgress);
+  }
+  return chatWithAgent(project, canvas, message, image, onProgress);
+};
+
+const reactiveAgent = new ReactiveAgent(routedChat, broadcast);
 
 // Wire agent write suppression — prevents reactive loops when agent writes files
-setAgentWriteHook((project, canvas, filename) => {
+const writeHook = (project: string, canvas: string, filename: string) => {
   reactiveAgent.markAgentWrite(project, canvas, filename);
-});
+};
+setAgentWriteHook(writeHook);
+setLocalAgentWriteHook(writeHook);
 
 // RPC handler: Python card classes can call mica.write(), mica.agent.chat(), etc.
 const rpcHandler = async (method: string, args: Record<string, unknown>, context: { project: string; canvas: string; filename: string }) => {
@@ -624,7 +639,7 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
     case "agent.chat": {
       reactiveAgent.markBusy(project, canvas);
       try {
-        const response = await chatWithAgent(project, canvas, args.message as string, undefined, (evt) => {
+        const response = await routedChat(project, canvas, args.message as string, undefined, (evt) => {
           broadcast({
             type: "agent-progress",
             project,
@@ -937,12 +952,14 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
   cardManager.invalidateCard(event.project, event.canvas, event.filename);
   try {
     const file = await readCanvasFile(event.project, event.canvas, event.filename);
+    console.log(`[file-watcher] Rendering ${event.project}/${event.canvas}/${event.filename}...`);
     const rendered = await cardManager.renderCard(
       event.project,
       event.canvas,
       event.filename,
       file.content
     );
+    console.log(`[file-watcher] Broadcasting ${event.type} for ${event.project}/${event.canvas}/${event.filename}`);
     broadcast({
       type: event.type === "created" ? "file-created" : "file-changed",
       project: event.project,
@@ -999,7 +1016,8 @@ fileWatcher.on("class-change", (event: { className: string }) => {
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log("\n[shutdown] Stopping sandboxes and worker pool...");
+    console.log("\n[shutdown] Stopping sandboxes, worker pool, and llama-server...");
+    await stopLlamaServer();
     await sandboxManager.stopAll();
     await workerPool.stop();
     process.exit(0);

@@ -341,8 +341,8 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
           />
         )}
 
-        {/* Typing indicator during auto check-in */}
-        {checkingIn && (
+        {/* Typing indicator during auto check-in (hide once user sends a message) */}
+        {checkingIn && turn === "agent-working" && !pending && (
           <div className="chat-pending">
             <div className="chat-pending-typing">
               <span /><span /><span />
@@ -355,11 +355,6 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
         {pending && (
           <div className="chat-pending" ref={pendingRef}>
             <div className="chat-pending-user">{pending.text}</div>
-            {pending.status === "sending" && (
-              <div className="chat-pending-typing">
-                <span /><span /><span />
-              </div>
-            )}
             {pending.status === "error" && (
               <div className="chat-pending-error">
                 <span>Timed out — the agent took too long to respond.</span>
