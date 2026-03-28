@@ -14,6 +14,7 @@ import {
   resetCanvas,
   resetAll,
   getAgentMeta,
+  setAgentWriteHook,
 } from "./agents.js";
 import type { CanvasId } from "./agents.js";
 import {
@@ -46,6 +47,7 @@ import { WorkerPool } from "./workerPool.js";
 import { CardManager } from "./cardManager.js";
 import { FileWatcher } from "./fileWatcher.js";
 import { SandboxManager } from "./projectSandbox.js";
+import { ReactiveAgent } from "./reactiveAgent.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3001");
 
@@ -349,6 +351,7 @@ app.post("/api/projects/:project/canvases/:canvas/chat", async (req, res) => {
     return;
   }
 
+  reactiveAgent.markBusy(project, canvas);
   try {
     const response = await chatWithAgent(project, canvas, message);
 
@@ -370,6 +373,8 @@ app.post("/api/projects/:project/canvases/:canvas/chat", async (req, res) => {
     const error = err as Error;
     console.error(`[${project}/${canvas}] Error:`, error.message);
     res.status(500).json({ error: error.message });
+  } finally {
+    reactiveAgent.clearBusy(project, canvas);
   }
 });
 
@@ -576,6 +581,12 @@ const workerPool = new WorkerPool({ warm: 2, max: 8, pythonPath: "/usr/bin/pytho
 const sandboxManager = new SandboxManager();
 const cardManager = new CardManager(workerPool, sandboxManager);
 const fileWatcher = new FileWatcher();
+const reactiveAgent = new ReactiveAgent(chatWithAgent, broadcast);
+
+// Wire agent write suppression — prevents reactive loops when agent writes files
+setAgentWriteHook((project, canvas, filename) => {
+  reactiveAgent.markAgentWrite(project, canvas, filename);
+});
 
 // RPC handler: Python card classes can call mica.write(), mica.agent.chat(), etc.
 const rpcHandler = async (method: string, args: Record<string, unknown>, context: { project: string; canvas: string; filename: string }) => {
@@ -611,22 +622,27 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
       return { success: true };
     }
     case "agent.chat": {
-      const response = await chatWithAgent(project, canvas, args.message as string, undefined, (evt) => {
-        broadcast({
-          type: "agent-progress",
-          project,
-          canvas,
-          event: evt.type,
-          tool: evt.tool,
-          elapsed: evt.elapsed,
-          description: evt.description,
+      reactiveAgent.markBusy(project, canvas);
+      try {
+        const response = await chatWithAgent(project, canvas, args.message as string, undefined, (evt) => {
+          broadcast({
+            type: "agent-progress",
+            project,
+            canvas,
+            event: evt.type,
+            tool: evt.tool,
+            elapsed: evt.elapsed,
+            description: evt.description,
+          });
         });
-      });
-      return {
-        message: response.message,
-        agentName: getAgentMeta(canvas).name,
-        filesChanged: response.filesChanged,
-      };
+        return {
+          message: response.message,
+          agentName: getAgentMeta(canvas).name,
+          filesChanged: response.filesChanged,
+        };
+      } finally {
+        reactiveAgent.clearBusy(project, canvas);
+      }
     }
     case "emit": {
       broadcast({ type: args.event as string, ...(args.data as Record<string, unknown> || {}) });
@@ -892,8 +908,27 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
     return;
   }
 
-  // Skip chat history from rendering (it's data, not a card)
-  if (event.filename === "_chat-history.json") return;
+  // Chat history is data, not a card — but when it changes, re-render _chat.md
+  // so the chat sidebar picks up new messages (e.g. from reactive agent)
+  if (event.filename === "_chat-history.json") {
+    cardManager.invalidateCard(event.project, event.canvas, "_chat.md");
+    try {
+      const file = await readCanvasFile(event.project, event.canvas, "_chat.md");
+      const rendered = await cardManager.renderCard(event.project, event.canvas, "_chat.md", file.content);
+      broadcast({
+        type: "file-changed",
+        project: event.project,
+        canvas: event.canvas,
+        filename: "_chat.md",
+        html: rendered.html,
+        exports: rendered.exports,
+        meta: rendered.meta,
+      });
+    } catch {
+      // _chat.md may not exist — that's fine
+    }
+    return;
+  }
 
   // Notify clients that a re-render is starting
   broadcast({ type: "file-rendering", project: event.project, canvas: event.canvas, filename: event.filename });
@@ -920,6 +955,9 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
   } catch (err) {
     console.error(`[file-watcher] Re-render failed for ${event.project}/${event.canvas}/${event.filename}:`, (err as Error).message);
   }
+
+  // Notify reactive agent of the change (runs asynchronously)
+  reactiveAgent.onFileChange(event);
 });
 
 // Card class changes → invalidate + re-render all instances

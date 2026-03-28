@@ -21,6 +21,14 @@ import {
 } from "./canvasFiles.js";
 import { readMicaConfig } from "./projectConnection.js";
 
+// ── Write hook for reactive agent ──────────────────────────
+// Called before agent writes a file — allows ReactiveAgent to suppress feedback loops.
+let onAgentWrite: ((project: string, canvas: string, filename: string) => void) | null = null;
+
+export function setAgentWriteHook(hook: (project: string, canvas: string, filename: string) => void): void {
+  onAgentWrite = hook;
+}
+
 // ── Helpers ────────────────────────────────────────────────
 
 /** Build a human-readable one-liner from a tool_use block. */
@@ -264,6 +272,7 @@ const writeFileTool = tool(
     summary: z.string().describe("One-line summary of what you did and why (for the activity log)"),
   },
   async (args) => {
+    onAgentWrite?.(currentProject, currentCanvas, args.filename);
     await writeCanvasFile(currentProject, currentCanvas, args.filename, args.content);
     filesWereChanged = true;
     // Append to activity log (skip if writing the log itself)
@@ -289,6 +298,7 @@ const deleteFileTool = tool(
     reason: z.string().describe("Why this file is being deleted (for the activity log)"),
   },
   async (args) => {
+    onAgentWrite?.(currentProject, currentCanvas, args.filename);
     await deleteCanvasFile(currentProject, currentCanvas, args.filename);
     filesWereChanged = true;
     await appendToLog(currentProject, currentCanvas, `Deleted **${args.filename}**: ${args.reason}`);

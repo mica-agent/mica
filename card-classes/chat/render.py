@@ -34,6 +34,7 @@ def _render_messages(messages):
         content = msg.get("content", "")
         agent = html_module.escape(msg.get("agent", ""))
         files_changed = msg.get("filesChanged", False)
+        reactive = msg.get("reactive", False)
 
         if role == "user":
             html_parts.append(
@@ -47,9 +48,14 @@ def _render_messages(messages):
                 '<span class="chat-action-badge">whiteboard updated</span>'
                 if files_changed else ''
             )
+            trigger_badge = ''
+            if reactive:
+                trigger_file = html_module.escape(msg.get("trigger", ""))
+                trigger_badge = f'<span class="chat-action-badge chat-action-badge--reactive">noticed change in {trigger_file}</span>'
+            reactive_class = ' chat-msg--reactive' if reactive else ''
             html_parts.append(
-                f'<div class="chat-msg chat-msg--assistant">'
-                f'<div class="chat-msg-header">{agent}{action_badge}</div>'
+                f'<div class="chat-msg chat-msg--assistant{reactive_class}">'
+                f'<div class="chat-msg-header">{agent}{trigger_badge}{action_badge}</div>'
                 f'<div class="chat-msg-body">{body_html}</div>'
                 f'</div>'
             )

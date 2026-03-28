@@ -142,6 +142,19 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
     return unsub;
   }, [projectId, activeCanvas]);
 
+  // Listen for reactive agent events (agent noticed a file change)
+  useEffect(() => {
+    const unsubReactive = on("reactive-started", (msg) => {
+      const m = msg as { project?: string; canvas?: string; filename?: string };
+      if (m.project !== projectId || m.canvas !== activeCanvas) return;
+      setTurn("agent-working");
+      setCurrentTool(`Analyzing changes to ${m.filename || "file"}...`);
+      setProgressLog([]);
+      onAgentBusy?.(true);
+    });
+    return unsubReactive;
+  }, [projectId, activeCanvas, onAgentBusy]);
+
   const loadChat = useCallback(async () => {
     try {
       const cards = await fetchCards(projectId, activeCanvas);
@@ -165,10 +178,17 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
       const m = msg as { project?: string; canvas?: string; filename?: string };
       if (m.project === projectId && m.canvas === activeCanvas && m.filename === "_chat.md") {
         loadChat();
+        // If this was a reactive agent update, transition out of working state
+        if (turn === "agent-working" && !sending) {
+          setTurn("agent-done");
+          setCurrentTool(null);
+          onAgentBusy?.(false);
+          setTimeout(() => inputRef.current?.focus(), 100);
+        }
       }
     });
     return unsub;
-  }, [projectId, activeCanvas, loadChat]);
+  }, [projectId, activeCanvas, loadChat, turn, sending, onAgentBusy]);
 
   const showDoneStatus = useCallback((filesChanged: boolean) => {
     setTurn(filesChanged ? "agent-done-files" : "agent-done");

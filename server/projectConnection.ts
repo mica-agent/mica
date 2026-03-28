@@ -37,6 +37,10 @@ export interface MicaConfig {
     ports?: number[];
     env?: Record<string, string>;
   };
+  reactive?: {
+    enabled?: boolean;       // default: true
+    cooldownMs?: number;     // default: 60000
+  };
 }
 
 // ── Constants ──────────────────────────────────────────────
