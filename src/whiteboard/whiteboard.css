@@ -296,6 +296,23 @@
   max-height: 280px;
 }
 
+/* Mermaid cards: taller cap, diagram fills width */
+.wb-card.wb-card--mermaid .wb-card-body {
+  max-height: 600px !important;
+  overflow: hidden;
+}
+
+.wb-card.wb-card--mermaid .wb-card-body svg,
+.wb-expanded-card--full svg {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+/* Always show expand hint on mermaid cards */
+.wb-card--mermaid .wb-card-expand-hint {
+  opacity: 0.5;
+}
+
 .wb-card:not(.wb-card--expanded) .wb-card-body--overflows::after {
   content: "";
   position: absolute;
@@ -424,9 +441,10 @@
   justify-content: center;
 }
 
-.wb-mermaid-svg svg {
-  max-width: 100%;
-  height: auto;
+.wb-mermaid-svg svg,
+pre.mermaid svg {
+  width: 100% !important;
+  max-width: none !important;
 }
 
 .wb-mermaid-error {
@@ -470,7 +488,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 90;
+  z-index: 200;
   animation: wb-fade-in 0.15s ease-out;
 }
 
@@ -485,6 +503,19 @@
   border-radius: 12px;
   width: min(90vw, 800px);
   max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.wb-expanded-card--full {
+  width: 95vw;
+  max-height: 95vh;
+}
+
+/* Fullscreen expanded view — mermaid diagrams scale to fill */
+.wb-expanded-card--full .wb-expanded-body {
+  padding: 24px;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -731,4 +762,68 @@
   flex: 1;
   cursor: crosshair;
   border-radius: 0 0 12px 12px;
+}
+
+/* ── Widget Runtime Container ───────────────────────── */
+
+.widget-runtime {
+  width: 100%;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Expanded view: widget fills available space */
+.wb-expanded-body .widget-runtime {
+  width: 100%;
+  min-height: 200px;
+  flex: 1;
+}
+
+/* ── Pan/Zoom Container (expanded diagrams) ─────────── */
+
+.wb-panzoom-container {
+  flex: 1;
+  overflow: hidden;
+  cursor: grab;
+  position: relative;
+}
+
+.wb-panzoom-container:active {
+  cursor: grabbing;
+}
+
+.wb-panzoom-inner {
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.wb-zoom-controls {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.wb-zoom-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.wb-zoom-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.wb-zoom-label {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  display: flex;
+  align-items: center;
 }

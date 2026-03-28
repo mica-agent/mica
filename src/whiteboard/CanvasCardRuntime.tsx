@@ -165,7 +165,9 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   // ── Partition children into system vs content ───────────
 
   const systemCards = children.filter((c) => c.meta.isSystem && c.filename !== "_chat.md" && c.filename !== "_agent.md");
-  const contentCards = children.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
+  const allContent = children.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
+  const diagramCards = allContent.filter((c) => c.meta.cardClass === "mermaid");
+  const contentCards = allContent.filter((c) => c.meta.cardClass !== "mermaid");
 
   // Order system cards
   const orderedSystem = SYSTEM_ORDER
@@ -219,6 +221,23 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
             ))}
           </div>
         )}
+
+        {/* Diagram cards — full width, outside masonry */}
+        {diagramCards.map((card) => (
+          <FileCard
+            key={card.filename}
+            filename={card.filename}
+            html={card.html}
+            exports={card.exports}
+            meta={card.meta}
+            projectId={projectId}
+            canvasId="_root"
+            canvasColor={canvasColor}
+            onEdit={() => handleEdit(card.filename)}
+            onDelete={() => handleDelete(card.filename)}
+            onExpand={() => setExpandedCard(card)}
+          />
+        ))}
 
         {/* Content cards — masonry layout */}
         {contentCards.length > 0 && (

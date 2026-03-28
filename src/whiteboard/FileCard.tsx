@@ -19,7 +19,7 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
   const bodyRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
 
-  const cardClass = meta.isSystem ? `wb-card--${meta.cardClass}` : "";
+  const cardClass = (meta.isSystem || meta.cardClass === "mermaid") ? `wb-card--${meta.cardClass}` : "";
   const isInteractive = exportFns.length > 0;
 
   // Detect overflow after render
@@ -77,7 +77,11 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
       </div>
       <div className="wb-card-footer">
         <span className="wb-card-filename">{filename}</span>
-        {overflows && <span className="wb-card-expand-hint">Click to read</span>}
+        {(overflows || meta.cardClass === "mermaid") && (
+          <span className="wb-card-expand-hint">
+            {meta.cardClass === "mermaid" ? "Click to expand" : "Click to read"}
+          </span>
+        )}
       </div>
     </div>
   );

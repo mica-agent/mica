@@ -16,7 +16,18 @@ interface Props {
 }
 
 // Initialize mermaid once
-mermaid.initialize({ startOnLoad: false, theme: "dark" });
+mermaid.initialize({ startOnLoad: false, theme: "dark", maxTextSize: 100000, flowchart: { useMaxWidth: true }, sequence: { useMaxWidth: true } });
+
+/** Force mermaid SVGs to fill their container width */
+function fixMermaidSvgs(el: HTMLElement) {
+  el.querySelectorAll("pre.mermaid svg").forEach((svg) => {
+    const s = svg as SVGElement;
+    s.setAttribute("width", "100%");
+    s.removeAttribute("height");
+    s.style.maxWidth = "none";
+    s.style.width = "100%";
+  });
+}
 
 // Track globally loaded external scripts and stylesheets
 const loadedExternalScripts = new Set<string>();
@@ -142,10 +153,14 @@ export default function WidgetRuntime({ html, exports: exportFns, project, canva
       mermaid.run({ nodes: mermaidEls as unknown as ArrayLike<HTMLElement> })
         .then(() => {
           mermaidEls.forEach((pre) => pre.classList.add("mermaid-rendered"));
+          fixMermaidSvgs(el);
         })
         .catch((err) => {
           console.error("[mermaid] render failed:", err);
         });
+    } else {
+      // HMR / re-mount: fix already-rendered SVGs
+      fixMermaidSvgs(el);
     }
   }, [html, project, canvas, filename]);
 
