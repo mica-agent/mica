@@ -75,7 +75,7 @@ export class FileWatcher extends EventEmitter {
         const entries = await fs.promises.readdir(dir);
         for (const entry of entries) {
           const ext = path.extname(entry);
-          if (getValidExtensions().includes(ext) && !entry.startsWith(".")) {
+          if (getValidExtensions(projectPath).includes(ext) && !entry.startsWith(".")) {
             files.add(entry);
           }
         }
@@ -84,13 +84,13 @@ export class FileWatcher extends EventEmitter {
       }
       this.knownFiles.set(key, files);
 
-      this.watchDirectory(dir, projectId, canvas);
+      this.watchDirectory(dir, projectId, canvas, projectPath);
     } catch (err) {
       console.warn(`[file-watcher] Could not watch ${dir}: ${(err as Error).message}`);
     }
   }
 
-  private watchDirectory(dir: string, project: string, canvas: string): void {
+  private watchDirectory(dir: string, project: string, canvas: string, projectPath?: string): void {
     try {
       const watcher = fs.watch(dir, (eventType, filename) => {
         if (!filename) return;
@@ -99,7 +99,7 @@ export class FileWatcher extends EventEmitter {
         // For _root canvas, skip subdirectories (canvas dirs, .card-classes)
         if (canvas === "_root" && !filename.includes(".")) return;
         const ext = path.extname(filename);
-        if (!getValidExtensions().includes(ext)) return;
+        if (!getValidExtensions(projectPath).includes(ext)) return;
 
         // Debounce
         const debounceKey = `${project}/${canvas}/${filename}`;

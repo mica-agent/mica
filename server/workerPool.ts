@@ -247,6 +247,17 @@ class PythonWorker {
       return;
     }
 
+    // Handle errors from channel threads — log them
+    if (msg.type === "error" && msg.traceback) {
+      console.error(`[mica-worker ${this.proc.pid}] Channel error: ${msg.error}\n${msg.traceback}`);
+      // Also forward as channel close so the browser knows
+      if (msg.id && this.channelCloseHandler) {
+        this.channelCloseHandler(msg.id);
+      }
+      this._busy = false;
+      return;
+    }
+
     // Handle responses to our requests
     const id = msg.id;
     if (!id) return;

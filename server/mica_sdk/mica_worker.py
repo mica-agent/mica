@@ -150,11 +150,30 @@ def send(msg):
         sys.stdout.flush()
 
 
-def handle_rpc_in_export(request_id, method, args):
-    """Called by mica SDK when a card class calls mica.write() etc. during an export.
+def handle_rpc_in_channel(request_id, method, args):
+    """Called from a channel thread — sends RPC and waits for the main loop to deliver the response."""
+    event = threading.Event()
+    waiter = {"event": event, "response": None}
+    with _rpc_lock:
+        _rpc_waiters[request_id] = waiter
 
-    Sends the RPC request and blocks until the server responds.
-    """
+    send({
+        "type": "rpc",
+        "request_id": request_id,
+        "method": method,
+        "args": args,
+    })
+
+    # Block until the main loop delivers our response
+    event.wait()
+    with _rpc_lock:
+        _rpc_waiters.pop(request_id, None)
+    return waiter["response"]
+
+
+def handle_rpc_in_export(request_id, method, args):
+    """Called from the main thread during an export — reads stdin directly since
+    the main loop is blocked waiting for the export to finish."""
     send({
         "type": "rpc",
         "request_id": request_id,
@@ -182,10 +201,18 @@ import mica
 _original_send_rpc = mica._send_rpc
 
 
+_main_thread_id = threading.current_thread().ident
+
+
 def _patched_send_rpc(method, args=None):
-    """Override mica._send_rpc to work within the worker."""
+    """Override mica._send_rpc to work within the worker.
+    Routes to the correct handler depending on whether we're on the main thread
+    (export calls) or a channel thread."""
     request_id = mica._request_id
-    response = handle_rpc_in_export(request_id, method, args)
+    if threading.current_thread().ident == _main_thread_id:
+        response = handle_rpc_in_export(request_id, method, args)
+    else:
+        response = handle_rpc_in_channel(request_id, method, args)
     if response.get("error"):
         raise RuntimeError(f"mica.{method} failed: {response['error']}")
     return response.get("result")
@@ -227,10 +254,27 @@ def _run_channel(fn, content, args, channel):
 
 # ── Main loop ───────────────────────────────────────────────
 
+def _dispatch_rpc_response(msg):
+    """Deliver an rpc_response to the waiting channel thread, if any."""
+    rid = msg.get("request_id")
+    with _rpc_lock:
+        waiter = _rpc_waiters.get(rid)
+    if waiter:
+        waiter["response"] = msg
+        waiter["event"].set()
+        return True
+    return False
+
+
 def process_message(msg):
     """Process a single request message."""
     msg_type = msg.get("type")
     msg_id = msg.get("id", "unknown")
+
+    # RPC responses go to waiting channel threads
+    if msg_type == "rpc_response":
+        _dispatch_rpc_response(msg)
+        return
 
     try:
         if msg_type == "render":

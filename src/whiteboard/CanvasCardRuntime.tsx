@@ -4,7 +4,7 @@
 // This component fills those slots with individually isolated WidgetRuntime instances,
 // one per child card. Each child gets its own container, bridge, and script scope.
 
-import { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
+import React, { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
 import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing, fetchLayout, saveLayout } from "../api/canvasFiles";
 import type { RenderedCard } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
@@ -197,6 +197,16 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── File operations ─────────────────────────────────────
 
+  const createTerminal = useCallback(async () => {
+    const name = `term-${Date.now().toString(36)}.terminal`;
+    await saveFile(projectId, "_root", name, "");
+  }, [projectId]);
+
+  const createAgent = useCallback(async () => {
+    const name = `agent-${Date.now().toString(36)}.agent`;
+    await saveFile(projectId, "_root", name, "");
+  }, [projectId]);
+
   const handleSave = useCallback(async (filename: string, content: string) => {
     await saveFile(projectId, "_root", filename, content);
     setEditingFile(null);
@@ -322,20 +332,31 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           </div>
         )}
 
-        {/* Layout toggle */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-          <button
-            className={`wb-btn wb-btn--tool ${layoutMode === "masonry" ? "wb-btn--active" : ""}`}
-            onClick={() => setLayoutMode("masonry")}
-          >
-            Grid
-          </button>
-          <button
-            className={`wb-btn wb-btn--tool ${layoutMode === "freeform" ? "wb-btn--active" : ""}`}
-            onClick={() => setLayoutMode("freeform")}
-          >
-            Free
-          </button>
+        {/* Toolbar */}
+        <div className="wb-toolbar" style={{ "--canvas-color": canvasColor } as React.CSSProperties}>
+          <div className="wb-toolbar-left">
+            <button className="wb-btn wb-btn--tool" onClick={() => setCreatingType("text")}>+ Note</button>
+            <button className="wb-btn wb-btn--tool" onClick={() => setCreatingType("markdown")}>+ Doc</button>
+            <button className="wb-btn wb-btn--tool" onClick={() => setCreatingType("mermaid")}>+ Diagram</button>
+            <button className="wb-btn wb-btn--tool" onClick={() => setDrawingMode(true)}>Draw</button>
+            <span className="wb-toolbar-divider" />
+            <button className="wb-btn wb-btn--tool" onClick={createTerminal}>+ Terminal</button>
+            <button className="wb-btn wb-btn--tool" onClick={createAgent}>+ Agent</button>
+          </div>
+          <div className="wb-toolbar-right">
+            <button
+              className={`wb-btn wb-btn--tool ${layoutMode === "masonry" ? "wb-btn--active" : ""}`}
+              onClick={() => setLayoutMode("masonry")}
+            >
+              Grid
+            </button>
+            <button
+              className={`wb-btn wb-btn--tool ${layoutMode === "freeform" ? "wb-btn--active" : ""}`}
+              onClick={() => setLayoutMode("freeform")}
+            >
+              Free
+            </button>
+          </div>
         </div>
 
         {layoutMode === "masonry" ? (

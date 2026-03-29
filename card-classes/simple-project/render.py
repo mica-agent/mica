@@ -57,17 +57,7 @@ def render(content, config):
 
         {description_html}
 
-        <div class="project-toolbar">
-            <button class="toolbar-btn" data-action="new-note" title="New note">
-                + Note
-            </button>
-            <button class="toolbar-btn" data-action="new-doc" title="New document">
-                + Doc
-            </button>
-            <button class="toolbar-btn" data-action="new-diagram" title="New diagram">
-                + Diagram
-            </button>
-        </div>
+        <!-- Toolbar moved to React shell (CanvasCardRuntime) -->
 
         <div data-slot="system-cards" class="project-system-cards"></div>
 

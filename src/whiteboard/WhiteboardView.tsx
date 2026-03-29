@@ -55,6 +55,16 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
       fetchContextStats(projectId, canvasId).then(setContextStats).catch(() => {});
     }, [projectId, canvasId, cards.length]);
 
+    const createTerminal = useCallback(async () => {
+      const name = `term-${Date.now().toString(36)}.terminal`;
+      await saveFile(projectId, canvasId, name, "");
+    }, [projectId, canvasId]);
+
+    const createAgent = useCallback(async () => {
+      const name = `agent-${Date.now().toString(36)}.agent`;
+      await saveFile(projectId, canvasId, name, "");
+    }, [projectId, canvasId]);
+
     const handleSave = useCallback(async (filename: string, content: string) => {
       await saveFile(projectId, canvasId, filename, content);
       setEditingFile(null);
@@ -169,6 +179,13 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
             </button>
             <button className="wb-btn wb-btn--tool" onClick={() => setDrawingMode(true)}>
               Draw
+            </button>
+            <span className="wb-toolbar-divider" />
+            <button className="wb-btn wb-btn--tool" onClick={createTerminal}>
+              + Terminal
+            </button>
+            <button className="wb-btn wb-btn--tool" onClick={createAgent}>
+              + Agent
             </button>
           </div>
           <div className="wb-toolbar-right">

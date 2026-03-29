@@ -148,7 +148,22 @@ def terminal_session(content, args, channel):
 
 - Returns a **Channel** object: `{ id, send(data), close(), onData(cb), onClose(cb) }`
 - The Python handler runs in its own thread — it can block on `channel.receive()` without stalling other widgets
+- All server bridge functions (`mica.write()`, `mica.agent.chat()`, etc.) work inside channels
 - Use for: terminals, real-time collaboration, streaming output, any long-lived bidirectional communication
+
+### Choosing Between Exports and Channels
+
+Use **`@mica.export`** (via `mica.call`/`mica.send`) when:
+- The operation is request → response (e.g., send a chat message, save settings)
+- You need `mica.agent.chat()` for a single-turn interaction
+- The browser waits for one result
+
+Use **`@mica.channel`** (via `mica.openChannel`) when:
+- You need to push multiple updates to the browser over time (progress, streaming)
+- The operation involves a multi-step workflow with intermediate status updates
+- You need bidirectional communication (e.g., terminal I/O, human-in-the-loop)
+
+Both support all server bridge functions including `mica.agent.chat()`.
 
 ### Pattern 5: Widget Broadcast — `mica.broadcast(event, data)`
 
@@ -228,7 +243,7 @@ def my_stream(content, args, channel):
 
 ### Server Bridge Functions
 
-These functions let your Python code interact with the Mica server during `@mica.export` execution:
+These functions work in both `@mica.export` and `@mica.channel` handlers:
 
 | Function | Description |
 |----------|-------------|

@@ -27,6 +27,13 @@
   gap: 6px;
 }
 
+.wb-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
 .wb-context-stats {
   font-size: 0.65rem;
   color: rgba(255, 255, 255, 0.35);

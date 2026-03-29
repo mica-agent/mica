@@ -34,22 +34,35 @@ export const deleteProject = disconnectConnected;
 const MANIFEST_PATH = join(process.cwd(), "card-classes", "_manifest.json");
 let _cachedExtensions: string[] | null = null;
 
-export function getValidExtensions(): string[] {
-  if (_cachedExtensions) return _cachedExtensions;
+export function getValidExtensions(projectPath?: string): string[] {
+  if (_cachedExtensions && !projectPath) return _cachedExtensions;
+  const exts = new Set<string>();
   try {
     const raw = readFileSync(MANIFEST_PATH, "utf-8");
     const manifest = JSON.parse(raw) as Record<string, { extension?: string }>;
-    const exts = new Set<string>();
     for (const entry of Object.values(manifest)) {
       if (entry.extension) exts.add(entry.extension);
     }
-    exts.add(".json"); // Always valid for data files
-    _cachedExtensions = [...exts];
-    return _cachedExtensions;
   } catch {
     // Fallback if manifest unreadable
-    return [".txt", ".md", ".mmd", ".json", ".html", ".goal", ".todo", ".brief", ".log", ".chat", ".agent", ".canvas", ".project"];
+    for (const e of [".txt", ".md", ".mmd", ".html", ".goal", ".todo", ".brief", ".log", ".chat", ".agent", ".canvas", ".project"]) {
+      exts.add(e);
+    }
   }
+  // Merge project-level manifest extensions
+  if (projectPath) {
+    try {
+      const raw = readFileSync(join(projectPath, ".mica", ".card-classes", "_manifest.json"), "utf-8");
+      const manifest = JSON.parse(raw) as Record<string, { extension?: string }>;
+      for (const entry of Object.values(manifest)) {
+        if (entry.extension) exts.add(entry.extension);
+      }
+    } catch { /* no project manifest */ }
+  }
+  exts.add(".json"); // Always valid for data files
+  const result = [...exts];
+  if (!projectPath) _cachedExtensions = result;
+  return result;
 }
 
 /** Call when manifest changes to refresh the extension cache. */
@@ -72,13 +85,13 @@ function extToType(ext: string): "text" | "markdown" | "mermaid" {
 
 // ── Validation ──────────────────────────────────────────────
 
-function validateFilename(filename: string): void {
+function validateFilename(filename: string, projectPath?: string): void {
   const base = basename(filename);
   if (base !== filename || filename.includes("..") || filename.includes("/")) {
     throw new Error(`Invalid filename: ${filename}`);
   }
   const ext = extname(filename);
-  const validExts = getValidExtensions();
+  const validExts = getValidExtensions(projectPath);
   if (!validExts.includes(ext)) {
     throw new Error(
       `Invalid extension: ${ext}. Must be one of: ${validExts.join(", ")}`
@@ -96,6 +109,8 @@ export async function ensureCanvasDir(project: string, canvas: string): Promise<
 
 export async function listFiles(project: string, canvas: string): Promise<CanvasFile[]> {
   const dir = await ensureCanvasDir(project, canvas);
+  let projectPath: string | undefined;
+  try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   let entries: string[];
   try {
     entries = await readdir(dir);
@@ -103,10 +118,11 @@ export async function listFiles(project: string, canvas: string): Promise<Canvas
     return [];
   }
 
+  const validExts = getValidExtensions(projectPath);
   const files: CanvasFile[] = [];
   for (const name of entries) {
     const ext = extname(name);
-    if (!getValidExtensions().includes(ext) || name.startsWith(".")) continue;
+    if (!validExts.includes(ext) || name.startsWith(".")) continue;
 
     const filepath = join(dir, name);
     const content = await readFile(filepath, "utf-8");
@@ -130,7 +146,9 @@ export async function readCanvasFile(
   canvas: string,
   filename: string
 ): Promise<CanvasFile> {
-  validateFilename(filename);
+  let projectPath: string | undefined;
+  try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
+  validateFilename(filename, projectPath);
   const dir = await getCanvasDir(project, canvas);
   const filepath = join(dir, filename);
   const content = await readFile(filepath, "utf-8");
@@ -149,7 +167,9 @@ export async function writeCanvasFile(
   filename: string,
   content: string
 ): Promise<void> {
-  validateFilename(filename);
+  let projectPath: string | undefined;
+  try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
+  validateFilename(filename, projectPath);
   const dir = await ensureCanvasDir(project, canvas);
   await writeFile(join(dir, filename), content, "utf-8");
 }
@@ -159,7 +179,9 @@ export async function deleteCanvasFile(
   canvas: string,
   filename: string
 ): Promise<void> {
-  validateFilename(filename);
+  let projectPath: string | undefined;
+  try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
+  validateFilename(filename, projectPath);
   const dir = await getCanvasDir(project, canvas);
   await unlink(join(dir, filename));
 }

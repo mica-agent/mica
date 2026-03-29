@@ -898,6 +898,7 @@ wss.on("connection", (ws) => {
           if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
           wsChannels.get(ws)!.add(id as string);
         } catch (err) {
+          console.error(`[ws] channel_open error for ${project}/${canvas}/${filename}#${fn}:`, (err as Error).message);
           channelPools.delete(id as string);
           ws.send(JSON.stringify({ type: "error", id, error: (err as Error).message }));
         }
