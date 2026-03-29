@@ -94,7 +94,8 @@ function waitForStyleApplication(): Promise<void> {
 }
 
 export default function WidgetRuntime({ html, exports: exportFns, dependencies, project, canvas, filename }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const widgetRef = useRef<HTMLDivElement>(null);
   const prevHtmlRef = useRef<string>("");
   const bridgeRef = useRef<ReturnType<typeof createBridge> | null>(null);
   const [activeCalls, setActiveCalls] = useState(0);
@@ -102,7 +103,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
 
   // Only re-run when html changes
   useEffect(() => {
-    const el = containerRef.current;
+    const el = widgetRef.current;
     if (!el) return;
     if (html === prevHtmlRef.current) return;
 
@@ -247,7 +248,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
   }, [html, project, canvas, filename, dependencies]);
 
   return (
-    <div ref={containerRef} className={`widget-runtime ${activeCalls > 0 ? "widget-runtime--busy" : ""}`}>
+    <div ref={outerRef} className={`widget-runtime ${activeCalls > 0 ? "widget-runtime--busy" : ""}`}>
       {activeCalls > 0 && <div className="widget-activity-indicator" />}
       {loadingDeps && (
         <div className="widget-deps-loading">
@@ -256,6 +257,10 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
           <div className="widget-deps-skeleton widget-deps-skeleton--med" />
         </div>
       )}
+      {/* Widget HTML is injected into this div via innerHTML — kept separate
+          from React-managed children to avoid NotFoundError when React tries
+          to reconcile nodes that innerHTML has destroyed. */}
+      <div ref={widgetRef} />
     </div>
   );
 }
