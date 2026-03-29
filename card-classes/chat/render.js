@@ -55,10 +55,8 @@ function renderMessages(messages) {
 }
 
 export default function render(content, config) {
-  // Load existing history via RPC — but render() doesn't have active RPC,
-  // so we parse from the content passed in (which is the .chat file content).
-  // Chat history is loaded by the server and passed via config.
-  const historyRaw = config.__chatHistory || null;
+  // Load existing chat history from the canvas data file
+  const historyRaw = mica.readFile(".chat-history.json");
   let messages = [];
   if (historyRaw) {
     try { messages = JSON.parse(historyRaw); } catch { messages = []; }
