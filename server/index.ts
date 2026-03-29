@@ -926,6 +926,7 @@ wss.on("connection", (ws) => {
           if (fname.endsWith(".terminal")) {
             terminalManager.open(
               id as string,
+              project as string, canvas as string, fname,
               (args || {}) as Record<string, unknown>,
               (data) => {
                 if (ws.readyState === WebSocket.OPEN) {

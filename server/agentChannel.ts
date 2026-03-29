@@ -1,28 +1,44 @@
 /**
  * AgentChannel — Node-side manager for agent card sessions.
  *
- * Routes agent channels to the appropriate provider (Claude Code, etc.)
- * based on the provider field in the args. Manages the lifecycle of
- * agent sessions and provides a message queue for blocking receive.
+ * Sessions are keyed by (project, canvas, filename), not by channel ID.
+ * Multiple browser channels can attach to the same running agent session.
  *
- * Follows the same pattern as TerminalChannelManager.
+ * Lifecycle (task-scoped):
+ *   openChannel + task → session running? attach (replay status) : start new task
+ *   closeChannel → detach. Task keeps running even with 0 channels.
+ *   task completes → notify all attached channels, clean up session.
+ *   openChannel after completion → starts a fresh task.
  */
 
 import { runClaudeCodeSession } from "./agentProviders/claudeCode.js";
 
 export type BroadcastFn = (msg: Record<string, unknown>) => void;
 
-interface AgentSession {
+interface ChannelHandle {
   onData: (data: unknown) => void;
   onClose: () => void;
+}
+
+interface AgentSession {
+  channels: Map<string, ChannelHandle>;
   messageQueue: Array<unknown>;
   messageResolve: ((value: unknown | null) => void) | null;
   closed: boolean;
+  running: boolean;
+  lastStatus: unknown[];  // recent status messages for replay to new attachers
 }
 
 export class AgentChannelManager {
+  // Sessions keyed by "project/canvas/filename"
   private sessions: Map<string, AgentSession> = new Map();
+  // Reverse lookup: channelId → sessionKey
+  private channelToSession: Map<string, string> = new Map();
   private broadcast: BroadcastFn | null = null;
+
+  private sessionKey(project: string, canvas: string, filename: string): string {
+    return `${project}/${canvas}/${filename}`;
+  }
 
   /** Set the broadcast function for lifecycle events. */
   setBroadcast(fn: BroadcastFn): void {
@@ -39,7 +55,9 @@ export class AgentChannelManager {
   }
 
   /**
-   * Open a new agent session for a channel.
+   * Open or attach to an agent session.
+   * If a task is running for this file, attach and replay status.
+   * If no task running, start a new one.
    */
   open(
     channelId: string,
@@ -50,28 +68,46 @@ export class AgentChannelManager {
     onData: (data: unknown) => void,
     onClose: () => void,
   ): void {
+    const key = this.sessionKey(project, canvas, filename);
+    const existing = this.sessions.get(key);
+
+    if (existing && existing.running) {
+      // Attach to in-progress session
+      existing.channels.set(channelId, { onData, onClose });
+      this.channelToSession.set(channelId, key);
+
+      // Replay recent status messages so the new channel sees current state
+      for (const msg of existing.lastStatus) {
+        onData(msg);
+      }
+
+      console.log(`[agent] Attached channel ${channelId} to running session ${key} (${existing.channels.size} channels)`);
+      return;
+    }
+
+    // Start new task
     const task = args.task as string || "";
     const provider = args.provider as string || "claude-code";
 
     const session: AgentSession = {
-      onData,
-      onClose,
+      channels: new Map([[channelId, { onData, onClose }]]),
       messageQueue: [],
       messageResolve: null,
       closed: false,
+      running: true,
+      lastStatus: [],
     };
-    this.sessions.set(channelId, session);
+    this.sessions.set(key, session);
+    this.channelToSession.set(channelId, key);
 
-    // Create a receive function that blocks until the client sends data
+    // Create a receive function that blocks until a client sends data
     const receiveFromClient = (): Promise<unknown | null> => {
       if (session.closed) return Promise.resolve(null);
 
-      // Check queue first
       if (session.messageQueue.length > 0) {
         return Promise.resolve(session.messageQueue.shift()!);
       }
 
-      // Wait for next message
       return new Promise((resolve) => {
         session.messageResolve = resolve;
       });
@@ -79,10 +115,23 @@ export class AgentChannelManager {
 
     const sendToClient = (data: unknown) => {
       if (session.closed) return;
-      onData(data);
 
-      // Emit lifecycle broadcasts for key transitions (orchestrator listens to these)
+      // Cache status messages for replay to new attachers
       const msg = data as Record<string, unknown>;
+      if (msg.type === "status" || msg.type === "phase" || msg.type === "plan" || msg.type === "action") {
+        session.lastStatus.push(data);
+        // Keep only last 20 status messages
+        if (session.lastStatus.length > 20) {
+          session.lastStatus = session.lastStatus.slice(-20);
+        }
+      }
+
+      // Broadcast to all attached channels
+      for (const ch of session.channels.values()) {
+        ch.onData(data);
+      }
+
+      // Emit lifecycle broadcasts for key transitions
       switch (msg.type) {
         case "plan":
           this.emitLifecycle(project, canvas, filename, "started", { task, provider });
@@ -120,66 +169,79 @@ export class AgentChannelManager {
       } catch (err) {
         sendToClient({ type: "error", message: (err as Error).message });
       } finally {
-        this.sessions.delete(channelId);
-        if (!session.closed) {
-          onClose();
+        session.running = false;
+        // Notify all remaining channels that the session is done
+        for (const [chId, ch] of session.channels) {
+          ch.onClose();
+          this.channelToSession.delete(chId);
         }
+        session.channels.clear();
+        this.sessions.delete(key);
+        console.log(`[agent] Session ${key} completed`);
       }
     };
 
-    console.log(`[agent] Opened session ${channelId} (provider=${provider}, task="${task.slice(0, 50)}")`);
+    console.log(`[agent] Started session ${key} via channel ${channelId} (provider=${provider}, task="${task.slice(0, 50)}")`);
     run();
   }
 
   /**
    * Handle incoming data from the browser for an agent channel.
+   * Routes to the session — any attached channel can send (e.g., blocker responses).
    */
   sendData(channelId: string, data: unknown): void {
-    const session = this.sessions.get(channelId);
+    const key = this.channelToSession.get(channelId);
+    if (!key) return;
+    const session = this.sessions.get(key);
     if (!session) return;
 
-    // If there's a pending receive, resolve it
     if (session.messageResolve) {
       const resolve = session.messageResolve;
       session.messageResolve = null;
       resolve(data);
     } else {
-      // Queue it for later
       session.messageQueue.push(data);
     }
   }
 
   /**
-   * Close an agent channel.
+   * Detach a channel from its session.
+   * The task keeps running even with 0 channels — it completes on its own.
    */
   close(channelId: string): void {
-    const session = this.sessions.get(channelId);
+    const key = this.channelToSession.get(channelId);
+    if (!key) return;
+    this.channelToSession.delete(channelId);
+
+    const session = this.sessions.get(key);
     if (!session) return;
-    session.closed = true;
 
-    // Unblock any pending receive
-    if (session.messageResolve) {
-      session.messageResolve(null);
-      session.messageResolve = null;
-    }
-
-    this.sessions.delete(channelId);
-    console.log(`[agent] Closed session ${channelId}`);
+    session.channels.delete(channelId);
+    console.log(`[agent] Detached channel ${channelId} from session ${key} (${session.channels.size} channels remaining)`);
   }
 
   /**
    * Check if a channel ID belongs to an agent session.
    */
   has(channelId: string): boolean {
-    return this.sessions.has(channelId);
+    return this.channelToSession.has(channelId);
   }
 
   /**
    * Close all agent sessions (for graceful shutdown).
    */
   closeAll(): void {
-    for (const [id] of this.sessions) {
-      this.close(id);
+    for (const [key, session] of this.sessions) {
+      session.closed = true;
+      if (session.messageResolve) {
+        session.messageResolve(null);
+        session.messageResolve = null;
+      }
+      for (const [chId] of session.channels) {
+        this.channelToSession.delete(chId);
+      }
+      console.log(`[agent] Shutdown: closed session ${key}`);
     }
+    this.sessions.clear();
   }
 }

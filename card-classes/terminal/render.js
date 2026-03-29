@@ -64,6 +64,12 @@ export default function render(content, config) {
 
   const ro = new ResizeObserver(() => fitAddon.fit());
   ro.observe(termEl);
+
+  mica.onDestroy(() => {
+    ch.close();
+    ro.disconnect();
+    term.dispose();
+  });
 </script>
   `;
 }

@@ -300,6 +300,14 @@ export default function render(content, config) {
   }
 
   attachRunListener();
+
+  mica.onDestroy(() => {
+    stopSpinner();
+    if (activeChannel) {
+      activeChannel.close();
+      activeChannel = null;
+    }
+  });
 })();
 </script>`;
 }
