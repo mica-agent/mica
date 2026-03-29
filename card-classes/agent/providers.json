@@ -1,0 +1,8 @@
+{
+  "claude-code": {
+    "name": "Claude Code",
+    "description": "Anthropic's AI coding agent",
+    "icon": "\u25c6",
+    "setup_steps": ["claude_md"]
+  }
+}

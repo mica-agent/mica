@@ -52,7 +52,7 @@
   "agent": {
     "extension": ".agent",
     "badge": "AGENT",
-    "system": true,
+    "system": false,
     "defaultTitle": "Agent"
   },
   "canvas": {

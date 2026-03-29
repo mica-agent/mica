@@ -204,7 +204,16 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   const createAgent = useCallback(async () => {
     const name = `agent-${Date.now().toString(36)}.agent`;
-    await saveFile(projectId, "_root", name, "");
+    const initialState = JSON.stringify({
+      provider: null,
+      status: "setup",
+      phase: "Choose an agent",
+      plan: [],
+      current_action: null,
+      blocker: null,
+      last_updated: null,
+    }, null, 2);
+    await saveFile(projectId, "_root", name, initialState);
   }, [projectId]);
 
   const handleSave = useCallback(async (filename: string, content: string) => {
@@ -241,7 +250,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Freeform layout management ─────────────────────────
 
-  const allNonChat = children.filter((c) => c.filename !== "_chat.chat" && c.filename !== "_agent.agent");
+  const allNonChat = children.filter((c) => c.filename !== "_chat.chat");
 
   useEffect(() => {
     if (layoutMode !== "freeform") {
@@ -295,7 +304,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Partition children into system vs content ───────────
 
-  const systemCards = children.filter((c) => c.meta.isSystem && c.filename !== "_chat.chat" && c.filename !== "_agent.agent");
+  const systemCards = children.filter((c) => c.meta.isSystem && c.filename !== "_chat.chat");
   const allContent = children.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
   const diagramCards = allContent.filter((c) => c.meta.cardClass === "mermaid");
   const contentCards = allContent.filter((c) => c.meta.cardClass !== "mermaid");

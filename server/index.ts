@@ -51,6 +51,7 @@ import { ReactiveAgent } from "./reactiveAgent.js";
 import { chatWithLocalAgent, setLocalAgentWriteHook, resetLocalCanvas, resetAllLocal } from "./localAgent.js";
 import { stopLlamaServer } from "./llamaServer.js";
 import { TerminalChannelManager } from "./terminalChannel.js";
+import { AgentChannelManager } from "./agentChannel.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3001");
 
@@ -790,6 +791,7 @@ const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel IDs
 const channelPools = new Map<string, WorkerPool>(); // channelId → pool that owns it
 const terminalManager = new TerminalChannelManager(); // Node-side PTY sessions
+const agentManager = new AgentChannelManager(); // Node-side agent sessions
 
 wss.on("error", (err) => {
   console.error("[websocket-server] Error:", (err as Error).message);
@@ -806,6 +808,8 @@ wss.on("connection", (ws) => {
       for (const channelId of channels) {
         if (terminalManager.has(channelId)) {
           terminalManager.close(channelId);
+        } else if (agentManager.has(channelId)) {
+          agentManager.close(channelId);
         } else {
           const pool = channelPools.get(channelId) || workerPool;
           pool.closeChannel(channelId);
@@ -897,6 +901,29 @@ wss.on("connection", (ws) => {
             break;
           }
 
+          // Agent cards: handle session directly in Node (bypass Python worker)
+          if (fname.endsWith(".agent")) {
+            agentManager.open(
+              id as string,
+              project as string, canvas as string, fname,
+              (args || {}) as Record<string, unknown>,
+              (data) => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "channel_data", id, data }));
+                }
+              },
+              () => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "channel_close", id }));
+                }
+                wsChannels.get(ws)?.delete(id as string);
+              }
+            );
+            if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
+            wsChannels.get(ws)!.add(id as string);
+            break;
+          }
+
           // Resolve the pool for this project so we can track it for data/close routing
           let pool: WorkerPool = workerPool;
           if (sandboxManager) {
@@ -934,11 +961,13 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Pattern 5: Bidirectional channel — data (browser → PTY or Python)
+      // Pattern 5: Bidirectional channel — data (browser → Node or Python)
       case "channel_data": {
         const cid = id as string;
         if (terminalManager.has(cid)) {
           terminalManager.sendData(cid, (msg as { data?: unknown }).data);
+        } else if (agentManager.has(cid)) {
+          agentManager.sendData(cid, (msg as { data?: unknown }).data);
         } else {
           const pool = channelPools.get(cid) || workerPool;
           pool.sendChannelData(cid, (msg as { data?: unknown }).data);
@@ -946,11 +975,13 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Pattern 5: Bidirectional channel — close (browser → PTY or Python)
+      // Pattern 5: Bidirectional channel — close (browser → Node or Python)
       case "channel_close": {
         const cid = id as string;
         if (terminalManager.has(cid)) {
           terminalManager.close(cid);
+        } else if (agentManager.has(cid)) {
+          agentManager.close(cid);
         } else {
           const pool = channelPools.get(cid) || workerPool;
           pool.closeChannel(cid);
@@ -975,6 +1006,9 @@ function broadcast(msg: Record<string, unknown>) {
     }
   }
 }
+
+// Wire broadcast for agent lifecycle events
+agentManager.setBroadcast(broadcast);
 
 // File watcher → re-render + broadcast
 fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {
@@ -1061,7 +1095,8 @@ fileWatcher.on("class-change", (event: { className: string }) => {
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log("\n[shutdown] Stopping terminals, sandboxes, worker pool, and llama-server...");
+    console.log("\n[shutdown] Stopping agents, terminals, sandboxes, worker pool, and llama-server...");
+    agentManager.closeAll();
     terminalManager.closeAll();
     await stopLlamaServer();
     await sandboxManager.stopAll();

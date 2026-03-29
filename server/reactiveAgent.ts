@@ -69,6 +69,8 @@ export class ReactiveAgent {
     // Skip ignored files
     if (event.filename.startsWith(".")) return;   // dot-prefix = internal data
     if (event.filename === "_log.log") return;      // reacting to log changes creates loops
+    if (event.filename.endsWith(".agent")) return;  // agent cards use lifecycle broadcasts, not file watches
+    if (event.filename.endsWith(".terminal")) return; // terminal cards are interactive, not reactive
 
     // Skip agent-originated writes (feedback loop prevention)
     const writeKey = this.fileKey(event.project, event.canvas, event.filename);
