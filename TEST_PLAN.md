@@ -74,18 +74,18 @@ curl -X POST http://localhost:3001/api/projects/connect \
 curl http://localhost:3001/api/projects/project-alpha/canvases/workspace/files
 ```
 **Verify:**
-- [ ] Returns metadata files from `.mica/workspace/` (e.g., `_brief.md`, `_goal.md`)
+- [ ] Returns metadata files from `.mica/workspace/` (e.g., `_brief.brief`, `_goal.goal`)
 
 ### 2b. Write and read a brief
 ```bash
-curl -X PUT http://localhost:3001/api/projects/project-alpha/canvases/workspace/files/_brief.md \
+curl -X PUT http://localhost:3001/api/projects/project-alpha/canvases/workspace/files/_brief.brief \
   -H 'Content-Type: application/json' \
   -d '{"content": "You are a test agent."}'
 
-curl http://localhost:3001/api/projects/project-alpha/canvases/workspace/files/_brief.md
+curl http://localhost:3001/api/projects/project-alpha/canvases/workspace/files/_brief.brief
 ```
 **Verify:**
-- [ ] File written to `/tmp/mica-test/project-alpha/.mica/workspace/_brief.md`
+- [ ] File written to `/tmp/mica-test/project-alpha/.mica/workspace/_brief.brief`
 - [ ] Content returned correctly on read
 
 ### 2c. Add a canvas
@@ -224,9 +224,9 @@ curl -X POST http://localhost:3001/api/migrate
 ```
 **Verify:**
 - [ ] New project directories created at target location
-- [ ] `.mica/config.json` written with correct canvas list
-- [ ] Canvas metadata files (`_brief.md`, `_goal.md`, etc.) copied to `.mica/{canvas}/`
-- [ ] `_card-classes/` copied if present
+- [ ] `.mica/.config.json` written with correct canvas list
+- [ ] Canvas metadata files (`_brief.brief`, `_goal.goal`, etc.) copied to `.mica/{canvas}/`
+- [ ] `.card-classes/` copied if present
 - [ ] Each migrated project registered in `workspaces.json`
 - [ ] Each migrated project has `.git/` initialized
 - [ ] Original `canvases/` directory preserved
@@ -237,7 +237,7 @@ curl -X POST http://localhost:3001/api/migrate
 
 ### Full cycle test
 1. Connect a fresh directory as a project
-2. Write a `_brief.md` with agent instructions
+2. Write a `_brief.brief` with agent instructions
 3. Create `app.py` in the project root
 4. Start the project container → verify app is accessible
 5. Chat with the agent → agent modifies `app.py`

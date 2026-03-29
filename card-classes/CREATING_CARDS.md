@@ -12,25 +12,26 @@ card-classes/
   markdown/render.py
 ```
 
-**Project-specific classes** live in `.mica/_card-classes/` inside the project repo:
+**Project-specific classes** live in `.mica/.card-classes/` inside the project repo:
 ```
 my-project/
   .mica/
-    _card-classes/
+    .card-classes/
       my-widget/
         render.py          # required
       _manifest.json       # optional: badge/title metadata
     workspace/
-      _my-widget.md        # triggers the card class
+      dashboard.my-widget  # triggers the card class (extension = class name)
 ```
 
 Project classes override built-in classes of the same name. Project classes have full Python module access (no import restrictions).
 
 ## How Files Map to Card Classes
 
-1. **Frontmatter**: `card: my-widget` in YAML frontmatter
-2. **Filename convention**: `_chat.md` → `chat`, `_todo.md` → `todo`
-3. **Extension fallback**: `.md` → `markdown`, `.mmd` → `mermaid`, `.html` → `html`
+1. **Frontmatter**: `card: my-widget` in YAML frontmatter (explicit override, always wins)
+2. **Extension**: `.chat` → `chat`, `.todo` → `todo`, `.md` → `markdown`, `.mmd` → `mermaid`
+
+Extensions are registered in `card-classes/_manifest.json`. Standard formats keep standard extensions (`.md`, `.mmd`, `.html`); Mica-native types use the class name (`.todo`, `.goal`, `.terminal`).
 
 ---
 
@@ -191,7 +192,7 @@ def render(content, config):
     """Required. Return an HTML string.
 
     Args:
-        content: The .md file body (str)
+        content: The card file body (str)
         config:  Dict with project, canvas, filename keys
     """
     return "<div>Hello</div>"
@@ -201,7 +202,7 @@ def my_function(content, args):
     """Callable from browser via mica.call() or mica.send().
 
     Args:
-        content: The .md file body (str) at call time
+        content: The card file body (str) at call time
         args:    Dict of arguments from the JavaScript call
 
     Returns:
@@ -214,7 +215,7 @@ def my_stream(content, args, channel):
     """Bidirectional channel handler. Runs in its own thread.
 
     Args:
-        content: The .md file body (str)
+        content: The card file body (str)
         args:    Dict of arguments from the JavaScript openChannel call
         channel: Channel object with send(), receive(), close()
     """
@@ -231,10 +232,10 @@ These functions let your Python code interact with the Mica server during `@mica
 
 | Function | Description |
 |----------|-------------|
-| `mica.write(content)` | Overwrite this card's `.md` file content |
+| `mica.write(content)` | Overwrite this card's file content |
 | `mica.write_file(filename, content)` | Write to any file in the current canvas |
 | `mica.read_file(filename)` | Read a file from the current canvas (returns `str` or `None`) |
-| `mica.log(message)` | Append a message to the canvas's `_log.md` |
+| `mica.log(message)` | Append a message to the canvas's `_log.log` |
 | `mica.emit(event, data)` | Broadcast an event to all connected browser widgets |
 | `mica.agent.chat(message)` | Send a message to the canvas's AI agent (returns response dict) |
 
@@ -245,7 +246,7 @@ These functions let your Python code interact with the Mica server during `@mica
 def render(content, config):
     project  = config["project"]   # e.g. "my-project"
     canvas   = config["canvas"]    # e.g. "workspace"
-    filename = config["filename"]  # e.g. "_my-widget.md"
+    filename = config["filename"]  # e.g. "dashboard.my-widget"
 ```
 
 ---
@@ -368,19 +369,30 @@ The card body has `max-height: 280px` with `12px` vertical padding (content area
 
 ---
 
-## _manifest.json (Optional)
+## _manifest.json
 
-Add metadata for the whiteboard UI:
+Register your card class with an extension and UI metadata. Place this at `.card-classes/_manifest.json` for project-specific classes:
 
 ```json
 {
   "my-widget": {
+    "extension": ".my-widget",
     "badge": "WIDGET",
-    "system": false,
     "defaultTitle": "My Widget"
   }
 }
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `extension` | Yes | File extension that maps to this class (e.g., `.dashboard`, `.my-widget`) |
+| `badge` | Yes | Short label shown on the card header (e.g., "WIDGET", "DASH") |
+| `system` | No | If `true`, card appears in the system cards section |
+| `defaultTitle` | No | Title shown when the filename is just `_name.ext` |
+
+The extension is how Mica knows which `render.py` to use. A file named `overview.my-widget` will be rendered by the `my-widget` card class because `.my-widget` is registered in the manifest.
+
+**Multiple instances are natural**: `overview.dashboard` and `sales.dashboard` are both rendered by the `dashboard` class.
 
 ---
 
@@ -449,4 +461,4 @@ Look at existing card classes for more patterns:
 - `card-classes/chat/render.py` — Chat with message history, agent integration
 - `card-classes/todo/render.py` — Todo list with assignments
 - `card-classes/html/render.py` — Raw HTML passthrough
-- `.mica/_card-classes/terminal/render.py` (in any project) — xterm.js terminal with PTY channel (example of third-party library integration with inlined CSS)
+- `.mica/.card-classes/terminal/render.py` (in any project) — xterm.js terminal with PTY channel (example of third-party library integration with inlined CSS)

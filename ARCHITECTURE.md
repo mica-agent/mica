@@ -160,7 +160,7 @@ Card classes are Python `render.py` files that produce interactive HTML. They us
 
 The manifest (`card-classes/_manifest.json`) maps each card class to its extension. Valid file extensions are determined dynamically from the manifest at runtime — no hardcoded extension list.
 
-See `card-classes/CREATING_WIDGETS.md` for the full API reference for writing card classes.
+See `card-classes/CREATING_CARDS.md` for the full API reference for writing card classes.
 
 #### 7.1 Card Types
 
@@ -321,7 +321,7 @@ Agents and users can create new card classes at runtime:
 2. Create a card file — either use the class name as extension (`mycard.{name}`) or use frontmatter `card: name` in a `.md` file
 3. The file watcher picks up the new class and renders it immediately
 
-See `card-classes/CREATING_WIDGETS.md` for the full API reference including all five communication patterns, HTML structure, external resource loading, and complete examples.
+See `card-classes/CREATING_CARDS.md` for the full API reference including all five communication patterns, HTML structure, external resource loading, and complete examples.
 
 #### 7.10 Local LLM Agent
 

@@ -18,8 +18,9 @@ import {
   deleteCanvasFile,
   getAllFilesAsContext,
   getProjectConfig,
+  invalidateExtensionCache,
 } from "./canvasFiles.js";
-import { readMicaConfig } from "./projectConnection.js";
+import { readMicaConfig, getProjectPath } from "./projectConnection.js";
 
 // ── Write hook for reactive agent ──────────────────────────
 // Called before agent writes a file — allows ReactiveAgent to suppress feedback loops.
@@ -135,11 +136,14 @@ When you see _decision-*.md files on your whiteboard, READ THEM — they contain
 - Working directory is the project root
 - Keep commands focused and safe — avoid destructive operations unless explicitly asked
 
-## Custom Widgets
-- To create a new interactive widget card class, first read the docs: \`cat card-classes/CREATING_WIDGETS.md\`
-- Project-specific card classes go in \`.mica/.card-classes/<classname>/render.py\` (inside the project's .mica directory, NOT inside a canvas)
-- The project root is your working directory — card classes live at .mica/.card-classes/
-- Then create a \`_<classname>.md\` file in the canvas to use it
+## Custom Card Classes
+- To create a new card class, first read the docs: \`cat card-classes/CREATING_CARDS.md\`
+- Card classes are Python render.py files. Use write_file with a .card-classes/ path:
+  1. write_file with filename \`.card-classes/<classname>/render.py\` — the render code
+  2. write_file with filename \`.card-classes/_manifest.json\` — register extension/badge metadata
+- The file extension IS the card class. To use your new class, create a card file with a matching extension:
+  e.g., for class "dashboard" → write_file \`my-dashboard.dashboard\` to place it on the whiteboard
+- Look at existing card classes for patterns: \`ls card-classes/\` and \`cat card-classes/<name>/render.py\`
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
@@ -261,17 +265,40 @@ const readFileTool = tool(
 
 const writeFileTool = tool(
   "write_file",
-  "Create or update a file on the whiteboard. Use .md for rich content, .mmd for mermaid diagrams, .txt for simple notes.",
+  "Create or update a file. For canvas cards, use a simple filename (e.g., notes.md). For card classes, use a path like .card-classes/my-widget/render.py",
   {
     filename: z
       .string()
       .describe(
-        "Filename with extension (e.g., user-persona.md, system-flow.mmd, notes.txt)"
+        "Filename or path. Canvas cards: 'user-persona.md'. Card classes: '.card-classes/my-widget/render.py' or '.card-classes/_manifest.json'"
       ),
     content: z.string().describe("The file content"),
     summary: z.string().describe("One-line summary of what you did and why (for the activity log)"),
   },
   async (args) => {
+    // Reject path traversal
+    if (args.filename.includes("..")) {
+      return { content: [{ type: "text" as const, text: "Invalid path: '..' not allowed." }] };
+    }
+
+    // Route .card-classes/ paths to .mica/.card-classes/ in the project
+    if (args.filename.startsWith(".card-classes/")) {
+      const projectPath = await getProjectPath(currentProject);
+      const targetPath = path.join(projectPath, ".mica", args.filename);
+      await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.promises.writeFile(targetPath, args.content, "utf-8");
+      // Invalidate extension cache when manifest changes
+      if (args.filename.endsWith("_manifest.json")) {
+        invalidateExtensionCache();
+      }
+      filesWereChanged = true;
+      await appendToLog(currentProject, currentCanvas, `Updated **${args.filename}**: ${args.summary}`);
+      return {
+        content: [{ type: "text" as const, text: `File "${args.filename}" written to .mica/${args.filename}` }],
+      };
+    }
+
+    // Standard canvas file write
     onAgentWrite?.(currentProject, currentCanvas, args.filename);
     await writeCanvasFile(currentProject, currentCanvas, args.filename, args.content);
     filesWereChanged = true;
@@ -312,6 +339,7 @@ const deleteFileTool = tool(
     };
   }
 );
+
 
 // ── Cross-canvas tools ─────────────────────────────────────
 

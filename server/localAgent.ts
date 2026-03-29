@@ -122,8 +122,8 @@ When creating files, use kebab-case names with descriptive titles:
 - .html for interactive widgets, styled documents, or visual layouts
 - .txt for simple notes and lists
 
-## Custom Widgets
-- To create a new interactive widget card class, first read the docs: \`cat card-classes/CREATING_WIDGETS.md\`
+## Custom Card Classes
+- To create a new card class, first read the docs: \`cat card-classes/CREATING_CARDS.md\`
 - Project-specific card classes go in \`.mica/.card-classes/<classname>/render.py\`
 
 CRITICAL RULE: You MUST use the write_file tool to create any content. NEVER paste file content (markdown, mermaid, HTML, etc.) directly in your chat response. If the user asks you to create, generate, or write something, ALWAYS use write_file to save it as a file on the whiteboard. Your chat response should only describe what you did, not contain the file content itself.
