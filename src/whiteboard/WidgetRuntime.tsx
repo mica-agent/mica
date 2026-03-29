@@ -4,7 +4,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import mermaid from "mermaid";
-import morphdom from "morphdom";
+// morphdom removed — innerHTML replacement is safer with React's lifecycle.
+// TODO: Re-evaluate morphdom for preserving mounted library instances once
+// we add proper lifecycle coordination between React and widget scripts.
 import type { CanvasId } from "../api/canvasFiles";
 import { createBridge } from "../api/micaSocket";
 
@@ -109,7 +111,6 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
       bridgeRef.current._runDestroy();
     }
 
-    const isFirstRender = prevHtmlRef.current === "";
     prevHtmlRef.current = html;
 
     // ── Phase 1: Preload declared dependencies ──────────────────
@@ -132,20 +133,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
 
     const continueRender = () => {
       // ── Phase 2: Inject HTML ──────────────────────────────────
-      if (isFirstRender) {
-        el.innerHTML = html;
-      } else {
-        const wrapper = document.createElement("div");
-        wrapper.innerHTML = html;
-        morphdom(el, wrapper, {
-          childrenOnly: true,
-          onBeforeElUpdated(fromEl) {
-            if (fromEl.tagName === "SCRIPT") return false;
-            if (fromEl.hasAttribute("data-morphdom-skip")) return false;
-            return true;
-          },
-        });
-      }
+      el.innerHTML = html;
 
       // ── Phase 3: Process inline dependencies from HTML ────────
       // Handle <link> and <script src> tags that weren't declared
