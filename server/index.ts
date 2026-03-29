@@ -50,6 +50,7 @@ import { SandboxManager } from "./projectSandbox.js";
 import { ReactiveAgent } from "./reactiveAgent.js";
 import { chatWithLocalAgent, setLocalAgentWriteHook, resetLocalCanvas, resetAllLocal } from "./localAgent.js";
 import { stopLlamaServer } from "./llamaServer.js";
+import { TerminalChannelManager } from "./terminalChannel.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3001");
 
@@ -788,6 +789,7 @@ const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel IDs
 const channelPools = new Map<string, WorkerPool>(); // channelId → pool that owns it
+const terminalManager = new TerminalChannelManager(); // Node-side PTY sessions
 
 wss.on("error", (err) => {
   console.error("[websocket-server] Error:", (err as Error).message);
@@ -802,9 +804,13 @@ wss.on("connection", (ws) => {
     const channels = wsChannels.get(ws);
     if (channels) {
       for (const channelId of channels) {
-        const pool = channelPools.get(channelId) || workerPool;
-        pool.closeChannel(channelId);
-        channelPools.delete(channelId);
+        if (terminalManager.has(channelId)) {
+          terminalManager.close(channelId);
+        } else {
+          const pool = channelPools.get(channelId) || workerPool;
+          pool.closeChannel(channelId);
+          channelPools.delete(channelId);
+        }
       }
       wsChannels.delete(ws);
     }
@@ -868,6 +874,29 @@ wss.on("connection", (ws) => {
       // Pattern 5: Bidirectional channel — open
       case "channel_open": {
         try {
+          // Terminal cards: handle PTY directly in Node (bypass Python worker)
+          const fname = filename as string;
+          if (fname.endsWith(".terminal")) {
+            terminalManager.open(
+              id as string,
+              (args || {}) as Record<string, unknown>,
+              (data) => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "channel_data", id, data }));
+                }
+              },
+              () => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "channel_close", id }));
+                }
+                wsChannels.get(ws)?.delete(id as string);
+              }
+            );
+            if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
+            wsChannels.get(ws)!.add(id as string);
+            break;
+          }
+
           // Resolve the pool for this project so we can track it for data/close routing
           let pool: WorkerPool = workerPool;
           if (sandboxManager) {
@@ -877,7 +906,7 @@ wss.on("connection", (ws) => {
 
           await cardManager.openChannel(
             id as string,
-            project as string, canvas as string, filename as string,
+            project as string, canvas as string, fname,
             fn as string, (args || {}) as Record<string, unknown>,
             // onData: forward Python → this browser client
             (data) => {
@@ -905,19 +934,29 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Pattern 5: Bidirectional channel — data (browser → Python)
+      // Pattern 5: Bidirectional channel — data (browser → PTY or Python)
       case "channel_data": {
-        const pool = channelPools.get(id as string) || workerPool;
-        pool.sendChannelData(id as string, (msg as { data?: unknown }).data);
+        const cid = id as string;
+        if (terminalManager.has(cid)) {
+          terminalManager.sendData(cid, (msg as { data?: unknown }).data);
+        } else {
+          const pool = channelPools.get(cid) || workerPool;
+          pool.sendChannelData(cid, (msg as { data?: unknown }).data);
+        }
         break;
       }
 
-      // Pattern 5: Bidirectional channel — close (browser → Python)
+      // Pattern 5: Bidirectional channel — close (browser → PTY or Python)
       case "channel_close": {
-        const pool = channelPools.get(id as string) || workerPool;
-        pool.closeChannel(id as string);
-        channelPools.delete(id as string);
-        wsChannels.get(ws)?.delete(id as string);
+        const cid = id as string;
+        if (terminalManager.has(cid)) {
+          terminalManager.close(cid);
+        } else {
+          const pool = channelPools.get(cid) || workerPool;
+          pool.closeChannel(cid);
+          channelPools.delete(cid);
+        }
+        wsChannels.get(ws)?.delete(cid);
         break;
       }
     }
@@ -1022,7 +1061,8 @@ fileWatcher.on("class-change", (event: { className: string }) => {
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log("\n[shutdown] Stopping sandboxes, worker pool, and llama-server...");
+    console.log("\n[shutdown] Stopping terminals, sandboxes, worker pool, and llama-server...");
+    terminalManager.closeAll();
     await stopLlamaServer();
     await sandboxManager.stopAll();
     await workerPool.stop();

@@ -61,6 +61,12 @@
     "system": true,
     "defaultTitle": "Canvas"
   },
+  "terminal": {
+    "extension": ".terminal",
+    "badge": "TERM",
+    "system": false,
+    "defaultTitle": "Terminal"
+  },
   "simple-project": {
     "extension": ".project",
     "badge": "PROJECT",
