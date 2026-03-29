@@ -55,8 +55,9 @@ function renderMessages(messages) {
 }
 
 export default function render(content, config) {
-  // Load existing chat history from the canvas data file
-  const historyRaw = mica.readFile(".chat-history.json");
+  // Chat history is pre-loaded by cardManager and passed via config.
+  // (RPC is not available during render — applySyncPromise would deadlock.)
+  const historyRaw = config.__chatHistory || null;
   let messages = [];
   if (historyRaw) {
     try { messages = JSON.parse(historyRaw); } catch { messages = []; }

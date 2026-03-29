@@ -256,10 +256,21 @@ export class CardManager {
       return { html, exports: [], meta };
     }
 
+    // Pre-load data into config for cards that need it during render.
+    // RPC is not available during render (applySyncPromise would deadlock),
+    // so cards receive data via config instead of calling mica.readFile().
+    const extraConfig: Record<string, unknown> = {};
+    if (cardClass === "chat") {
+      try {
+        const historyFile = await readCanvasFile(project, canvas, ".chat-history.json");
+        extraConfig.__chatHistory = historyFile.content;
+      } catch { /* no history yet */ }
+    }
+
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const renderConfig = { ...metadata, ...(config || {}), project, canvas, filename };
+        const renderConfig = { ...metadata, ...(config || {}), ...extraConfig, project, canvas, filename };
         const requestContext = { project, canvas, filename };
         const result = await this.isolatePool.render(
           cardClass, classPath, strippedContent, renderConfig, requestContext

@@ -304,8 +304,9 @@ export class IsolatePool {
     requestContext: { project: string; canvas: string; filename: string }
   ): Promise<RenderResult> {
     const loaded = await this.loadClass(className, classPath);
-    // Enable RPC for renders — some cards (e.g., chat) call mica.readFile() during render
-    await this.injectRpc(loaded, requestContext, true);
+    // RPC is disabled during renders — applySyncPromise deadlocks the event loop.
+    // Cards that need data during render should receive it via config.
+    await this.injectRpc(loaded, requestContext, false);
 
     const configJson = JSON.stringify(config);
     const contentEscaped = JSON.stringify(content);
