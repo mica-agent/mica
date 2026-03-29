@@ -37,6 +37,9 @@ export interface ProjectMounts {
  * Get the standard Docker volume mounts for a project.
  * Used by both card worker containers and agent subprocess containers.
  */
+// Node modules path — mounted so agent CLI (claude-agent-sdk) is available inside container
+const NODE_MODULES_DIR = resolve("node_modules");
+
 export async function getProjectMounts(projectId: string): Promise<ProjectMounts> {
   const projectPath = await getProjectPath(projectId);
   return {
@@ -45,6 +48,7 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
       `${projectPath}:${projectPath}:rw`,
       `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
       `${SDK_DIR}:${SDK_DIR}:ro`,
+      `${NODE_MODULES_DIR}:${NODE_MODULES_DIR}:ro`,
     ],
     workdir: projectPath,
   };
