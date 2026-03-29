@@ -172,7 +172,6 @@
   flex-direction: column;
   position: relative;
   transition: border-color 0.2s, box-shadow 0.2s;
-  cursor: pointer;
 }
 
 .wb-card:hover {
@@ -276,6 +275,7 @@
   align-items: center;
   gap: 8px;
   padding: 10px 12px 6px;
+  cursor: pointer;
 }
 
 .wb-card-type {
@@ -335,8 +335,11 @@
 
 .wb-card-body {
   padding: 4px 12px 8px;
-  overflow: hidden;
+  overflow: auto;
   position: relative;
+  cursor: text;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Collapsed card: limit height and add fade */
@@ -508,6 +511,7 @@ pre.mermaid svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  cursor: pointer;
 }
 
 .wb-card-filename {
@@ -901,7 +905,8 @@ pre.mermaid svg {
   width: 100%;
   min-height: 0;
   position: relative;
-  overflow: hidden;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Activity indicator — subtle animated bar at top of card */

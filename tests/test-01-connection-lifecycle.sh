@@ -22,7 +22,7 @@ CONN_ID=$(echo "$RESP" | json_get "['id']")
 check "Connect returns id" "$CONN_ID" "project-alpha"
 
 check ".mica/ exists" "$(test -d $PROJ_A/.mica && echo yes || echo no)" "yes"
-check "config.json exists" "$(test -f $PROJ_A/.mica/config.json && echo yes || echo no)" "yes"
+check ".config.json exists" "$(test -f $PROJ_A/.mica/.config.json && echo yes || echo no)" "yes"
 check "workspace/ dir exists" "$(test -d $PROJ_A/.mica/workspace && echo yes || echo no)" "yes"
 check ".git/ initialized" "$(test -d $PROJ_A/.git && echo yes || echo no)" "yes"
 
@@ -75,7 +75,7 @@ check "Removed from project list" "$IN_LIST" "no"
 
 # Verify .mica/ preserved on disk
 check ".mica/ still on disk" "$(test -d $PROJ_A/.mica && echo yes || echo no)" "yes"
-check "config.json still on disk" "$(test -f $PROJ_A/.mica/config.json && echo yes || echo no)" "yes"
+check ".config.json still on disk" "$(test -f $PROJ_A/.mica/.config.json && echo yes || echo no)" "yes"
 
 # ── 1d: Reconnect ─────────────────────────────────────────
 echo ""
@@ -85,7 +85,7 @@ CONN_ID=$(echo "$RESP" | json_get "['id']")
 check "Reconnect returns id" "$CONN_ID" "project-alpha"
 
 # Verify picks up existing config (name preserved)
-CONFIG_NAME=$(python3 -c "import json; print(json.load(open('$PROJ_A/.mica/config.json'))['name'])")
+CONFIG_NAME=$(python3 -c "import json; print(json.load(open('$PROJ_A/.mica/.config.json'))['name'])")
 check "Config name preserved" "$CONFIG_NAME" "Project Alpha"
 
 # ── 1e: Duplicate connection rejected ─────────────────────

@@ -34,6 +34,7 @@ interface CacheEntry {
 }
 
 interface ClassManifestEntry {
+  extension?: string;
   badge: string;
   system?: boolean;
   defaultTitle?: string;
@@ -42,26 +43,6 @@ interface ClassManifestEntry {
 // ── Constants ──────────────────────────────────────────────
 
 const CARD_CLASSES_DIR = path.resolve("card-classes");
-
-// Filename → card class mapping (convention-based)
-const FILENAME_CLASS_MAP: Record<string, string> = {
-  "_goal.md": "goal",
-  "_todo.md": "todo",
-  "_brief.md": "brief",
-  "_log.md": "log",
-  "_chat.md": "chat",
-  "_agent.md": "agent",
-  "_project.md": "simple-project",
-};
-
-// Extension → card class fallback
-const EXTENSION_CLASS_MAP: Record<string, string> = {
-  ".md": "markdown",
-  ".mmd": "mermaid",
-  ".txt": "text",
-  ".py": "text", // .py files render as text by default
-  ".html": "html",
-};
 
 // ── Frontmatter parsing ────────────────────────────────────
 
@@ -108,11 +89,17 @@ export class CardManager {
   private pool: WorkerPool;
   private sandboxManager: SandboxManager | null = null;
   private manifest: Record<string, ClassManifestEntry> = {};
+  private extensionMap: Map<string, string> = new Map(); // ".todo" → "todo"
 
   constructor(pool: WorkerPool, sandboxManager?: SandboxManager) {
     this.pool = pool;
     this.sandboxManager = sandboxManager ?? null;
     this.loadManifest();
+  }
+
+  /** Get all valid card extensions (for file validation and watching). */
+  getValidExtensions(): string[] {
+    return [...this.extensionMap.keys(), ".json"];
   }
 
   /** Get the worker pool for a project. Uses sandbox if available, else global pool. */
@@ -140,13 +127,21 @@ export class CardManager {
 
     // Merge project-level manifest on top (if it exists)
     if (projectPath) {
-      const projectManifestPath = path.join(projectPath, ".mica", "_card-classes", "_manifest.json");
+      const projectManifestPath = path.join(projectPath, ".mica", ".card-classes", "_manifest.json");
       try {
         const raw = fs.readFileSync(projectManifestPath, "utf-8");
         const projectManifest = JSON.parse(raw);
         this.manifest = { ...this.manifest, ...projectManifest };
       } catch {
         // No project manifest — that's fine
+      }
+    }
+
+    // Build extension → class lookup from manifest
+    this.extensionMap.clear();
+    for (const [className, entry] of Object.entries(this.manifest)) {
+      if (entry.extension) {
+        this.extensionMap.set(entry.extension, className);
       }
     }
   }
@@ -160,14 +155,9 @@ export class CardManager {
       return { cardClass: metadata.card, strippedContent, metadata };
     }
 
-    // 2. Check filename convention
-    if (FILENAME_CLASS_MAP[filename]) {
-      return { cardClass: FILENAME_CLASS_MAP[filename], strippedContent: content, metadata };
-    }
-
-    // 3. Extension fallback
+    // 2. Extension → class via manifest
     const ext = path.extname(filename);
-    const cardClass = EXTENSION_CLASS_MAP[ext] || "text";
+    const cardClass = this.extensionMap.get(ext) || "text";
     return { cardClass, strippedContent: content, metadata };
   }
 
@@ -178,8 +168,9 @@ export class CardManager {
     // Determine title
     let title = (metadata.title as string) || manifestEntry?.defaultTitle || "";
     if (!title) {
-      title = filename
-        .replace(/\.(txt|md|mmd|py|html)$/, "")
+      // Strip any registered extension for title humanization
+      const ext = path.extname(filename);
+      title = (ext ? filename.slice(0, -ext.length) : filename)
         .replace(/[-_]/g, " ")
         .replace(/\b\w/g, (c) => c.toUpperCase());
     }
@@ -204,7 +195,7 @@ export class CardManager {
   private getClassPath(className: string, projectPath?: string): string {
     // Check project-level card classes first
     if (projectPath) {
-      const projectClassPath = path.join(projectPath, ".mica", "_card-classes", className, "render.py");
+      const projectClassPath = path.join(projectPath, ".mica", ".card-classes", className, "render.py");
       if (fs.existsSync(projectClassPath)) {
         return projectClassPath;
       }
@@ -384,7 +375,7 @@ export class CardManager {
 
     for (const file of files) {
       // Skip chat history files
-      if (file.name === "_chat-history.json") continue;
+      if (file.name === ".chat-history.json") continue;
 
       const rendered = await this.renderCard(project, canvas, file.name, file.content);
       results.push({

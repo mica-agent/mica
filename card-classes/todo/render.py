@@ -388,8 +388,8 @@ def reassign(content, args):
                 f"Section: {item['section']}\n\n"
                 f"Please evaluate this task:\n"
                 f"1. If you can do it now using your tools (write files, create artifacts, etc.), DO IT immediately.\n"
-                f"2. If it's blocked or needs human input, move it to the Blocked section in _todo.md and explain what's needed.\n"
-                f"3. When done, mark it complete in _todo.md.\n\n"
+                f"2. If it's blocked or needs human input, move it to the Blocked section in _todo.todo and explain what's needed.\n"
+                f"3. When done, mark it complete in _todo.todo.\n\n"
                 f"Take action — don't just discuss."
             )
             return {

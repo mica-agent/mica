@@ -26,16 +26,16 @@ echo "  Found $FILE_COUNT files"
 
 # ── 2b: Write and read a brief ────────────────────────────
 echo ""
-echo "2b. Write and read _brief.md..."
-api_put "/projects/$PROJ_ID/canvases/workspace/files/_brief.md" \
+echo "2b. Write and read _brief.brief..."
+api_put "/projects/$PROJ_ID/canvases/workspace/files/_brief.brief" \
   '{"content":"You are a test agent. Be concise."}' >/dev/null
 
 # Read back via API
-CONTENT=$(api_get "/projects/$PROJ_ID/canvases/workspace/files/_brief.md" | json_get "['content']")
+CONTENT=$(api_get "/projects/$PROJ_ID/canvases/workspace/files/_brief.brief" | json_get "['content']")
 check "Read back matches" "$CONTENT" "You are a test agent. Be concise."
 
 # Verify on disk
-DISK_CONTENT=$(cat "$PROJ_DIR/.mica/workspace/_brief.md")
+DISK_CONTENT=$(cat "$PROJ_DIR/.mica/workspace/_brief.brief")
 check "File exists on disk" "$DISK_CONTENT" "You are a test agent. Be concise."
 
 # Write another file
@@ -64,7 +64,7 @@ check "Canvas dir created" "$(test -d $PROJ_DIR/.mica/architecture && echo yes |
 # Verify config updated
 HAS_CANVAS=$(python3 -c "
 import json
-config = json.load(open('$PROJ_DIR/.mica/config.json'))
+config = json.load(open('$PROJ_DIR/.mica/.config.json'))
 print('yes' if 'architecture' in config.get('canvases',[]) else 'no')
 ")
 check "Config includes new canvas" "$HAS_CANVAS" "yes"
@@ -75,9 +75,9 @@ HAS_ERROR=$(echo "$RESP" | json_has_key "error")
 check "Duplicate canvas rejected" "$HAS_ERROR" "yes"
 
 # Can write files to new canvas
-api_put "/projects/$PROJ_ID/canvases/architecture/files/_brief.md" \
+api_put "/projects/$PROJ_ID/canvases/architecture/files/_brief.brief" \
   '{"content":"Architecture agent brief."}' >/dev/null
-ARCH_CONTENT=$(api_get "/projects/$PROJ_ID/canvases/architecture/files/_brief.md" | json_get "['content']")
+ARCH_CONTENT=$(api_get "/projects/$PROJ_ID/canvases/architecture/files/_brief.brief" | json_get "['content']")
 check "Can write to new canvas" "$ARCH_CONTENT" "Architecture agent brief."
 
 # ── Cleanup ───────────────────────────────────────────────

@@ -1,5 +1,5 @@
 // ChatSidebar — owns the chat sidebar shell (header, input, pending states).
-// The _chat.md widget (render.py) is a pure message renderer hosted via WidgetRuntime.
+// The _chat.chat widget (render.py) is a pure message renderer hosted via WidgetRuntime.
 // Optimistic messages show the user's text immediately while the agent processes.
 // Real-time progress events stream from the server via WebSocket.
 
@@ -158,7 +158,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
   const loadChat = useCallback(async () => {
     try {
       const cards = await fetchCards(projectId, activeCanvas);
-      const chat = cards.find((c) => c.filename === "_chat.md");
+      const chat = cards.find((c) => c.filename === "_chat.chat");
       setChatCard(chat || null);
     } catch {
       setChatCard(null);
@@ -176,7 +176,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
   useEffect(() => {
     const unsub = on("file-changed", (msg) => {
       const m = msg as { project?: string; canvas?: string; filename?: string };
-      if (m.project === projectId && m.canvas === activeCanvas && m.filename === "_chat.md") {
+      if (m.project === projectId && m.canvas === activeCanvas && m.filename === "_chat.chat") {
         loadChat();
         // If this was a reactive agent update, transition out of working state
         if (turn === "agent-working" && !sending) {
@@ -221,7 +221,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
 
     (async () => {
       try {
-        await micaCall(projectId, activeCanvas, "_chat.md", "check_in", {});
+        await micaCall(projectId, activeCanvas, "_chat.chat", "check_in", {});
         if (!cancelled) {
           loadChat();
           showDoneStatus(false);
@@ -259,7 +259,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
     onAgentBusy?.(true);
 
     try {
-      const result = await micaCall(projectId, activeCanvas, "_chat.md", "send_message", { message: text }) as { filesChanged?: boolean } | undefined;
+      const result = await micaCall(projectId, activeCanvas, "_chat.chat", "send_message", { message: text }) as { filesChanged?: boolean } | undefined;
       setPending(null);
       loadChat();
       showDoneStatus(!!result?.filesChanged);
@@ -337,7 +337,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
             exports={chatCard.exports}
             project={projectId}
             canvas={activeCanvas}
-            filename="_chat.md"
+            filename="_chat.chat"
           />
         )}
 

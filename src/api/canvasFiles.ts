@@ -191,6 +191,22 @@ export async function fetchContextStats(project: string, canvas: CanvasId): Prom
   return res.json();
 }
 
+// ── Layout persistence (UI metadata, not a card) ────────────
+
+export async function fetchLayout(project: string, canvas: CanvasId): Promise<Record<string, unknown>> {
+  const res = await fetch(`${projectCanvasUrl(project, canvas)}/layout`);
+  if (!res.ok) return {};
+  return res.json();
+}
+
+export async function saveLayout(project: string, canvas: CanvasId, data: Record<string, unknown>): Promise<void> {
+  await fetch(`${projectCanvasUrl(project, canvas)}/layout`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
 export async function callCardExport(
   project: string,
   canvas: CanvasId,

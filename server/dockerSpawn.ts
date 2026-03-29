@@ -24,7 +24,7 @@ const BASE_IMAGE = "mica-sandbox:base";
 // Cache of already-verified image tags
 const imageCache = new Set<string>();
 
-// ── _brief.md dependency parsing ─────────────────────────────
+// ── _brief.brief dependency parsing ─────────────────────────────
 
 export interface SandboxDeps {
   apt: string[];
@@ -143,13 +143,13 @@ export async function createDockerSpawner(
   project: string,
   canvas: string
 ): Promise<(options: SpawnOptions) => SpawnedProcess> {
-  // Read _brief.md for dependency declarations
+  // Read _brief.brief for dependency declarations
   let deps: SandboxDeps = { apt: [], pip: [] };
   try {
-    const brief = await readCanvasFile(project, canvas, "_brief.md");
+    const brief = await readCanvasFile(project, canvas, "_brief.brief");
     deps = parseDependencies(brief.content);
   } catch {
-    // No _brief.md — use base image
+    // No _brief.brief — use base image
   }
 
   const imageTag = await getOrBuildImage(deps);

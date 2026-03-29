@@ -89,7 +89,7 @@ export interface Consultation {
 // ── Agent system prompts ───────────────────────────────────
 
 export function getAgentIdentity(canvas: string): string {
-  // Generic identity — canvas-specific personality comes from _brief.md
+  // Generic identity — canvas-specific personality comes from _brief.brief
   return `You are the AI agent for the "${canvas}" workspace in Mica.`;
 }
 
@@ -137,29 +137,29 @@ When you see _decision-*.md files on your whiteboard, READ THEM — they contain
 
 ## Custom Widgets
 - To create a new interactive widget card class, first read the docs: \`cat card-classes/CREATING_WIDGETS.md\`
-- Project-specific card classes go in \`.mica/_card-classes/<classname>/render.py\` (inside the project's .mica directory, NOT inside a canvas)
-- The project root is your working directory — card classes live at .mica/_card-classes/
+- Project-specific card classes go in \`.mica/.card-classes/<classname>/render.py\` (inside the project's .mica directory, NOT inside a canvas)
+- The project root is your working directory — card classes live at .mica/.card-classes/
 - Then create a \`_<classname>.md\` file in the canvas to use it
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
-ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.md so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
+ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.log so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
 `;
 
 export const GOAL_INSTRUCTIONS = `
 ## Goal-Driven Collaboration
 
-You are a COLLABORATOR, not just a chatbot. Your behavior is driven by the canvas's _goal.md file.
+You are a COLLABORATOR, not just a chatbot. Your behavior is driven by the canvas's _goal.goal file.
 
-### How to use _goal.md:
+### How to use _goal.goal:
 1. READ IT on every conversation turn to understand what "done" looks like for this canvas.
 2. ASSESS PROGRESS: After each interaction, mentally evaluate which checklist items are satisfied by the current whiteboard files and which still have gaps.
 3. SURFACE GAPS: Proactively tell the human what's missing or weak. Don't wait to be asked.
 4. SUGGEST NEXT STEPS: End your responses with a concrete suggestion for what to work on next, based on the goal checklist.
-5. UPDATE THE GOAL: When a checklist item is clearly satisfied, update _goal.md to check it off ([x]). When new risks or questions emerge, add them.
+5. UPDATE THE GOAL: When a checklist item is clearly satisfied, update _goal.goal to check it off ([x]). When new risks or questions emerge, add them.
 
-### How to use _todo.md:
-_todo.md is the shared commitment tracker between you and the human. It has three sections: Active, Blocked, Done.
+### How to use _todo.todo:
+_todo.todo is the shared commitment tracker between you and the human. It has three sections: Active, Blocked, Done.
 
 FORMAT for items:
 - [ ] @agent Draft the API contract — **priority: high**
@@ -168,8 +168,8 @@ FORMAT for items:
 
 RULES:
 - Prefix every item with @agent or @human to show who owns it.
-- When you spot a gap from _goal.md that needs action, ADD it to _todo.md.
-- **CRITICAL: When you complete a task, IMMEDIATELY update _todo.md** — move the item to the Done section with [x] and a date. Do this in the SAME turn as completing the work, not later. The human sees the todo card on the whiteboard and uses it to track what's done.
+- When you spot a gap from _goal.goal that needs action, ADD it to _todo.todo.
+- **CRITICAL: When you complete a task, IMMEDIATELY update _todo.todo** — move the item to the Done section with [x] and a date. Do this in the SAME turn as completing the work, not later. The human sees the todo card on the whiteboard and uses it to track what's done.
 - When something is blocked on another canvas or a human decision, move it to Blocked with a note about what it's waiting on.
 - Keep it concise — this is a commitment tracker, not a project plan.
 
@@ -204,11 +204,11 @@ export async function appendToLog(project: string, canvas: CanvasId, entry: stri
   const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
   const line = `- **${timestamp}** — ${entry}\n`;
   try {
-    const existing = await readCanvasFile(project, canvas, "_log.md");
-    await writeCanvasFile(project, canvas, "_log.md", existing.content + line);
+    const existing = await readCanvasFile(project, canvas, "_log.log");
+    await writeCanvasFile(project, canvas, "_log.log", existing.content + line);
   } catch {
     // No log yet — create it
-    await writeCanvasFile(project, canvas, "_log.md", `# Activity Log\n\n${line}`);
+    await writeCanvasFile(project, canvas, "_log.log", `# Activity Log\n\n${line}`);
   }
 }
 
@@ -276,7 +276,7 @@ const writeFileTool = tool(
     await writeCanvasFile(currentProject, currentCanvas, args.filename, args.content);
     filesWereChanged = true;
     // Append to activity log (skip if writing the log itself)
-    if (args.filename !== "_log.md") {
+    if (args.filename !== "_log.log") {
       await appendToLog(currentProject, currentCanvas, `Updated **${args.filename}**: ${args.summary}`);
     }
     return {
@@ -322,7 +322,7 @@ const readCrossCanvasTool = tool(
     canvas: z
       .string()
       .describe("Which canvas to read from (e.g., 'workspace', 'mission', etc.)"),
-    filename: z.string().describe("The filename to read (e.g., _goal.md, product-brief.md)"),
+    filename: z.string().describe("The filename to read (e.g., _goal.goal, product-brief.md)"),
   },
   async (args) => {
     try {
@@ -468,13 +468,13 @@ export async function chatWithAgent(
   // Build system prompt with current file context
   const fileContext = await getAllFilesAsContext(project, canvas);
 
-  // Read _brief.md for canvas-specific instructions (user-editable)
+  // Read _brief.brief for canvas-specific instructions (user-editable)
   let briefContent = "";
   try {
-    const brief = await readCanvasFile(project, canvas, "_brief.md");
-    briefContent = `\n## Canvas Brief (from _brief.md)\n\n${brief.content}\n`;
+    const brief = await readCanvasFile(project, canvas, "_brief.brief");
+    briefContent = `\n## Canvas Brief (from _brief.brief)\n\n${brief.content}\n`;
   } catch {
-    // No _brief.md yet — that's fine, use defaults
+    // No _brief.brief yet — that's fine, use defaults
   }
 
   const systemPrompt = `${getAgentIdentity(canvas)}

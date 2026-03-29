@@ -57,22 +57,22 @@ echo "3. Checking .mica/ structure..."
 for proj in hello-alpha hello-beta; do
   BASE=~/mica-projects/$proj
   check "$proj: .mica/ exists" "$(test -d $BASE/.mica && echo yes || echo no)" "yes"
-  check "$proj: config.json exists" "$(test -f $BASE/.mica/config.json && echo yes || echo no)" "yes"
+  check "$proj: .config.json exists" "$(test -f $BASE/.mica/.config.json && echo yes || echo no)" "yes"
   check "$proj: workspace/ dir exists" "$(test -d $BASE/.mica/workspace && echo yes || echo no)" "yes"
-  check "$proj: _brief.md seeded" "$(test -f $BASE/.mica/workspace/_brief.md && echo yes || echo no)" "yes"
-  check "$proj: _goal.md seeded" "$(test -f $BASE/.mica/workspace/_goal.md && echo yes || echo no)" "yes"
-  check "$proj: _todo.md seeded" "$(test -f $BASE/.mica/workspace/_todo.md && echo yes || echo no)" "yes"
+  check "$proj: _brief.brief seeded" "$(test -f $BASE/.mica/workspace/_brief.brief && echo yes || echo no)" "yes"
+  check "$proj: _goal.goal seeded" "$(test -f $BASE/.mica/workspace/_goal.goal && echo yes || echo no)" "yes"
+  check "$proj: _todo.todo seeded" "$(test -f $BASE/.mica/workspace/_todo.todo && echo yes || echo no)" "yes"
   check "$proj: git initialized" "$(test -d $BASE/.git && echo yes || echo no)" "yes"
 done
 
 # ── 4. Verify config.json contents ──────────────────────────
 echo ""
-echo "4. Checking config.json..."
+echo "4. Checking .config.json..."
 
-ALPHA_NAME=$(python3 -c "import json; print(json.load(open('$HOME/mica-projects/hello-alpha/.mica/config.json'))['name'])")
+ALPHA_NAME=$(python3 -c "import json; print(json.load(open('$HOME/mica-projects/hello-alpha/.mica/.config.json'))['name'])")
 check "Alpha config name" "$ALPHA_NAME" "Hello Alpha"
 
-BETA_NAME=$(python3 -c "import json; print(json.load(open('$HOME/mica-projects/hello-beta/.mica/config.json'))['name'])")
+BETA_NAME=$(python3 -c "import json; print(json.load(open('$HOME/mica-projects/hello-beta/.mica/.config.json'))['name'])")
 check "Beta config name" "$BETA_NAME" "Hello Beta"
 
 # ── 5. Verify canvas files via API ────────────────────────────
@@ -85,9 +85,9 @@ files = json.load(sys.stdin)
 print(','.join(sorted(f['name'] for f in files)))
 ")
 echo "  Alpha files: $ALPHA_FILES"
-# Should have at least _brief.md, _goal.md, _todo.md, _log.md
-check "Alpha has _brief.md" "$(echo $ALPHA_FILES | grep -c _brief.md)" "1"
-check "Alpha has _goal.md" "$(echo $ALPHA_FILES | grep -c _goal.md)" "1"
+# Should have at least _brief.brief, _goal.goal, _todo.todo, _log.log
+check "Alpha has _brief.brief" "$(echo $ALPHA_FILES | grep -c _brief.brief)" "1"
+check "Alpha has _goal.goal" "$(echo $ALPHA_FILES | grep -c _goal.goal)" "1"
 
 # ── 6. Write a unique file to each project (isolation test) ──
 echo ""

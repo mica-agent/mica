@@ -92,7 +92,7 @@ export default function AIChatPanel({ projectId, activeCanvas, canvases, canvasC
         const result = await chat(
           projectId,
           activeCanvas,
-          "Briefly assess the whiteboard against _goal.md and _todo.md. What's solid, what's the top priority to work on next? 2-3 sentences max."
+          "Briefly assess the whiteboard against _goal.goal and _todo.todo. What's solid, what's the top priority to work on next? 2-3 sentences max."
         );
         if (!cancelled) {
           checkedInCanvases.current.add(key);

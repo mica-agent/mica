@@ -9,6 +9,7 @@ import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
 import { readWorkspaceRegistry, getProjectPath } from "./projectConnection.js";
+import { getValidExtensions } from "./canvasFiles.js";
 
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
@@ -24,7 +25,6 @@ export interface ClassChangeEvent {
 
 const CARD_CLASSES_DIR = path.resolve("card-classes");
 const DEBOUNCE_MS = 300;
-const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json", ".html"];
 
 export class FileWatcher extends EventEmitter {
   private watchers: fs.FSWatcher[] = [];
@@ -75,7 +75,7 @@ export class FileWatcher extends EventEmitter {
         const entries = await fs.promises.readdir(dir);
         for (const entry of entries) {
           const ext = path.extname(entry);
-          if (VALID_EXTENSIONS.includes(ext) || entry === "_chat-history.json") {
+          if (getValidExtensions().includes(ext) && !entry.startsWith(".")) {
             files.add(entry);
           }
         }
@@ -96,10 +96,10 @@ export class FileWatcher extends EventEmitter {
         if (!filename) return;
         // Skip .git internals and hidden files
         if (filename.startsWith(".")) return;
-        // For _root canvas, skip subdirectories (canvas dirs, _card-classes)
+        // For _root canvas, skip subdirectories (canvas dirs, .card-classes)
         if (canvas === "_root" && !filename.includes(".")) return;
         const ext = path.extname(filename);
-        if (!VALID_EXTENSIONS.includes(ext) && filename !== "_chat-history.json") return;
+        if (!getValidExtensions().includes(ext)) return;
 
         // Debounce
         const debounceKey = `${project}/${canvas}/${filename}`;

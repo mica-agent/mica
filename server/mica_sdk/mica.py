@@ -164,7 +164,7 @@ def read_file(filename):
 
 
 def log(message):
-    """Append a message to the layer's _log.md."""
+    """Append a message to the canvas's _log.log."""
     return _send_rpc("log", {"message": message})
 
 

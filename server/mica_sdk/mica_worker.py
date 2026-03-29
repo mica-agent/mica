@@ -95,9 +95,9 @@ def load_class(class_name, class_path):
     module = importlib.util.module_from_spec(spec)
 
     # Apply import restriction for built-in card classes only.
-    # Project-scoped card classes (in _card-classes/) are user code and
+    # Project-scoped card classes (in .card-classes/) are user code and
     # get full module access. In PROD mode they run inside Docker anyway.
-    is_project_class = "_card-classes" in class_path
+    is_project_class = ".card-classes" in class_path
     old_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
     try:
         if not is_project_class:

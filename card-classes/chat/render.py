@@ -67,7 +67,7 @@ def render(content, config):
     """Render chat message history. The sidebar shell (ChatSidebar.tsx) owns
     the header and input — this widget only renders the message list."""
     # Load existing history
-    history_raw = mica.read_file("_chat-history.json")
+    history_raw = mica.read_file(".chat-history.json")
     messages = []
     if history_raw:
         try:
@@ -121,7 +121,7 @@ def check_in(content, args):
     agent_name = AGENT_NAMES.get(layer, "AI Agent")
 
     response = mica.agent.chat(
-        "Briefly assess the whiteboard against _goal.md and _todo.md. "
+        "Briefly assess the whiteboard against _goal.goal and _todo.todo. "
         "What's solid, what's the top priority to work on next? 2-3 sentences max."
     )
 
@@ -143,8 +143,8 @@ def _get_layer():
 
 
 def _append_history(layer, new_messages):
-    """Append messages to _chat-history.json."""
-    history_raw = mica.read_file("_chat-history.json")
+    """Append messages to .chat-history.json."""
+    history_raw = mica.read_file(".chat-history.json")
     messages = []
     if history_raw:
         try:
@@ -158,4 +158,4 @@ def _append_history(layer, new_messages):
     if len(messages) > 100:
         messages = messages[-100:]
 
-    mica.write_file("_chat-history.json", json.dumps(messages, indent=2))
+    mica.write_file(".chat-history.json", json.dumps(messages, indent=2))

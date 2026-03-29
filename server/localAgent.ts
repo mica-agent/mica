@@ -124,11 +124,11 @@ When creating files, use kebab-case names with descriptive titles:
 
 ## Custom Widgets
 - To create a new interactive widget card class, first read the docs: \`cat card-classes/CREATING_WIDGETS.md\`
-- Project-specific card classes go in \`.mica/_card-classes/<classname>/render.py\`
+- Project-specific card classes go in \`.mica/.card-classes/<classname>/render.py\`
 
 CRITICAL RULE: You MUST use the write_file tool to create any content. NEVER paste file content (markdown, mermaid, HTML, etc.) directly in your chat response. If the user asks you to create, generate, or write something, ALWAYS use write_file to save it as a file on the whiteboard. Your chat response should only describe what you did, not contain the file content itself.
 
-ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.md so the human can see what you did and why.
+ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.log so the human can see what you did and why.
 `;
 
 // ── Mermaid sanitization ─────────────────────────────────────
@@ -244,7 +244,7 @@ async function executeTool(
         }
         await writeCanvasFile(project, canvas, args.filename, content);
         filesChanged.value = true;
-        if (args.filename !== "_log.md") {
+        if (args.filename !== "_log.log") {
           await appendToLog(project, canvas, `Updated **${args.filename}**: ${args.summary || "(no summary)"}`);
         }
         return `File "${args.filename}" written to whiteboard.`;
@@ -286,10 +286,10 @@ export async function chatWithLocalAgent(
 
   let briefContent = "";
   try {
-    const brief = await readCanvasFile(project, canvas, "_brief.md");
-    briefContent = `\n## Canvas Brief (from _brief.md)\n\n${brief.content}\n`;
+    const brief = await readCanvasFile(project, canvas, "_brief.brief");
+    briefContent = `\n## Canvas Brief (from _brief.brief)\n\n${brief.content}\n`;
   } catch {
-    // No _brief.md yet
+    // No _brief.brief yet
   }
 
   const systemPrompt = `${getAgentIdentity(canvas)}

@@ -41,13 +41,9 @@ type ChatWithAgentFn = (
   onProgress?: (event: { type: string; tool?: string; description?: string }) => void,
 ) => Promise<{ message: string; filesChanged?: boolean; cost?: number }>;
 
-// ── Ignore list ──────────────────────────────────────────────
-
-const IGNORE_FILES = new Set([
-  "_chat-history.json",
-  "_log.md",
-  "config.json",
-]);
+// ── Ignore rules ────────────────────────────────────────────
+// Dot-prefixed files are internal data (not cards) — handled by naming convention.
+// _log.log is a system card but reacting to log changes creates feedback loops.
 
 // ── ReactiveAgent ────────────────────────────────────────────
 
@@ -71,7 +67,8 @@ export class ReactiveAgent {
   /** Called from file-watcher handler in index.ts */
   onFileChange(event: FileChangeEvent): void {
     // Skip ignored files
-    if (IGNORE_FILES.has(event.filename)) return;
+    if (event.filename.startsWith(".")) return;   // dot-prefix = internal data
+    if (event.filename === "_log.log") return;      // reacting to log changes creates loops
 
     // Skip agent-originated writes (feedback loop prevention)
     const writeKey = this.fileKey(event.project, event.canvas, event.filename);
@@ -149,7 +146,6 @@ export class ReactiveAgent {
       // List all files for context
       const allFiles = await listFiles(project, canvas);
       const fileList = allFiles
-        .filter((f) => f.name !== "_chat-history.json" && f.name !== "config.json")
         .map((f) => f.name)
         .join(", ");
 

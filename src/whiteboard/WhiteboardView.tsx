@@ -32,24 +32,8 @@ const DEFAULT_CARD_H = 280;
 const GRID_GAP = 16;
 const COLS = 3;
 
-/** Compute initial grid positions for all cards */
-function autoLayout(cards: RenderedCard[]): Map<string, CardLayout> {
-  const layouts = new Map<string, CardLayout>();
-  cards.forEach((card, i) => {
-    const col = i % COLS;
-    const row = Math.floor(i / COLS);
-    layouts.set(card.filename, {
-      x: col * (DEFAULT_CARD_W + GRID_GAP),
-      y: row * (DEFAULT_CARD_H + GRID_GAP),
-      w: DEFAULT_CARD_W,
-      h: DEFAULT_CARD_H,
-    });
-  });
-  return layouts;
-}
-
 // System files are identified by server metadata
-const SYSTEM_FILENAMES = ["_goal.md", "_todo.md", "_brief.md", "_log.md", "_chat.md"];
+const SYSTEM_FILENAMES = ["_goal.goal", "_todo.todo", "_brief.brief", "_log.log", "_chat.chat"];
 
 const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
   function WhiteboardView({ projectId, canvasId, canvasColor }, ref) {
@@ -102,7 +86,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
         return;
       }
       if (!layoutInitialized.current || cards.length !== cardLayouts.size) {
-        const allCards = cards.filter((c) => c.filename !== "_chat.md");
+        const allCards = cards.filter((c) => c.filename !== "_chat.chat");
         const existing = new Map(cardLayouts);
         // Keep existing positions, add new cards
         let nextIndex = existing.size;
@@ -154,8 +138,8 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
       }
     }, [projectId, canvasId]);
 
-    // Separate system cards from content cards (_chat.md is in sidebar, not here)
-    const systemCards = cards.filter((c) => c.meta.isSystem && c.filename !== "_chat.md");
+    // Separate system cards from content cards (_chat.chat is in sidebar, not here)
+    const systemCards = cards.filter((c) => c.meta.isSystem && c.filename !== "_chat.chat");
     const contentCards = cards.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
 
     // Order system cards: goal, todo, brief, log, chat
@@ -277,7 +261,7 @@ const WhiteboardView = forwardRef<WhiteboardHandle, Props>(
           ) : (
             /* Freeform layout — all cards absolutely positioned */
             <div className="wb-freeform">
-              {cards.filter((c) => c.filename !== "_chat.md").map((card) => {
+              {cards.filter((c) => c.filename !== "_chat.chat").map((card) => {
                 const layout = cardLayouts.get(card.filename);
                 if (!layout) return null;
                 return (

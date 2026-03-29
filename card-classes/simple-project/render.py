@@ -31,7 +31,7 @@ def render(content, config):
     children = config.get("children", [])
     children_json = html_module.escape(json.dumps(children))
 
-    # Render project description from _project.md content
+    # Render project description from _project.project content
     description_html = ""
     if content.strip():
         # Skip the first line if it's a heading matching the project name

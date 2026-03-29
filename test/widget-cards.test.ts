@@ -77,7 +77,7 @@ describe("Worker Pool", () => {
     const classPath = join(process.cwd(), "card-classes/mermaid/render.py");
     const result = await pool.render("mermaid", classPath, "flowchart TD\n    A --> B", {}, CTX);
     expect(result.html).toContain('class="mermaid"');
-    expect(result.html).toContain("A --&gt; B");
+    expect(result.html).toContain("A --> B");
   });
 
   it("renders a text card class", async () => {
@@ -122,7 +122,7 @@ describe("Worker Pool", () => {
   it("renders chat class with exports", async () => {
     const classPath = join(process.cwd(), "card-classes/chat/render.py");
     const result = await pool.render("chat", classPath, "", { canvas: "mission" }, CTX);
-    expect(result.html).toContain("chat-widget");
+    expect(result.html).toContain("chat-messages");
     expect(result.exports).toContain("send_message");
     expect(result.exports).toContain("check_in");
   });
@@ -161,7 +161,7 @@ describe("Card Manager", () => {
   afterAll(() => pool.stop());
 
   it("resolves markdown class from .md extension", async () => {
-    const result = await manager.renderCard("mission", "hello.md", "# Hi\nParagraph.");
+    const result = await manager.renderCard("test-project", "mission", "hello.md", "# Hi\nParagraph.");
     expect(result.html).toContain("<h1>Hi</h1>");
     expect(result.meta.cardClass).toBe("markdown");
     expect(result.meta.badge).toBe("MD");
@@ -169,48 +169,48 @@ describe("Card Manager", () => {
   });
 
   it("resolves mermaid class from .mmd extension", async () => {
-    const result = await manager.renderCard("mission", "diagram.mmd", "graph TD\n    X --> Y");
+    const result = await manager.renderCard("test-project", "mission", "diagram.mmd", "graph TD\n    X --> Y");
     expect(result.html).toContain("mermaid");
     expect(result.meta.cardClass).toBe("mermaid");
     expect(result.meta.badge).toBe("MMD");
   });
 
   it("resolves text class from .txt extension", async () => {
-    const result = await manager.renderCard("mission", "note.txt", "plain text");
+    const result = await manager.renderCard("test-project", "mission", "note.txt", "plain text");
     expect(result.html).toContain("card-text");
     expect(result.meta.cardClass).toBe("text");
     expect(result.meta.badge).toBe("TXT");
   });
 
-  it("resolves goal class from _goal.md filename", async () => {
-    const result = await manager.renderCard("mission", "_goal.md", "- [x] Done\n- [ ] Pending");
+  it("resolves goal class from _goal.goal filename", async () => {
+    const result = await manager.renderCard("test-project", "mission", "_goal.goal", "- [x] Done\n- [ ] Pending");
     expect(result.meta.cardClass).toBe("goal");
     expect(result.meta.badge).toBe("GOAL");
-    expect(result.meta.title).toBe("Canvas Goal");
+    expect(result.meta.title).toBe("Project Goal");
     expect(result.meta.isSystem).toBe(true);
     expect(result.html).toContain("card-goal");
   });
 
-  it("resolves todo class from _todo.md", async () => {
-    const result = await manager.renderCard("mission", "_todo.md", "## Active\n- [ ] A\n## Done\n- [x] B");
+  it("resolves todo class from _todo.todo", async () => {
+    const result = await manager.renderCard("test-project", "mission", "_todo.todo", "## Active\n- [ ] A\n## Done\n- [x] B");
     expect(result.meta.cardClass).toBe("todo");
     expect(result.meta.isSystem).toBe(true);
   });
 
-  it("resolves brief class from _brief.md", async () => {
-    const result = await manager.renderCard("mission", "_brief.md", "# Brief");
+  it("resolves brief class from _brief.brief", async () => {
+    const result = await manager.renderCard("test-project", "mission", "_brief.brief", "# Brief");
     expect(result.meta.cardClass).toBe("brief");
     expect(result.meta.isSystem).toBe(true);
   });
 
-  it("resolves log class from _log.md", async () => {
-    const result = await manager.renderCard("mission", "_log.md", "# Log");
+  it("resolves log class from _log.log", async () => {
+    const result = await manager.renderCard("test-project", "mission", "_log.log", "# Log");
     expect(result.meta.cardClass).toBe("log");
     expect(result.meta.isSystem).toBe(true);
   });
 
-  it("resolves chat class from _chat.md", async () => {
-    const result = await manager.renderCard("mission", "_chat.md", "");
+  it("resolves chat class from _chat.chat", async () => {
+    const result = await manager.renderCard("test-project", "mission", "_chat.chat", "");
     expect(result.meta.cardClass).toBe("chat");
     expect(result.meta.isSystem).toBe(true);
     expect(result.exports).toContain("send_message");
@@ -218,7 +218,7 @@ describe("Card Manager", () => {
 
   it("parses frontmatter and uses card: field", async () => {
     const content = "---\ncard: text\ntitle: Custom Title\n---\nBody text here";
-    const result = await manager.renderCard("mission", "custom.md", content);
+    const result = await manager.renderCard("test-project", "mission", "custom.md", content);
     expect(result.meta.cardClass).toBe("text");
     expect(result.html).toContain("card-text");
     expect(result.html).toContain("Body text here");
@@ -226,19 +226,19 @@ describe("Card Manager", () => {
   });
 
   it("generates title from filename for content cards", async () => {
-    const result = await manager.renderCard("mission", "my-cool-doc.md", "content");
+    const result = await manager.renderCard("test-project", "mission", "my-cool-doc.md", "content");
     expect(result.meta.title).toBe("My Cool Doc");
   });
 
   it("caches renders and invalidates on request", async () => {
-    await manager.renderCard("mission", "cache-test.md", "# Cache Test");
-    manager.invalidateCard("mission", "cache-test.md");
-    const r3 = await manager.renderCard("mission", "cache-test.md", "# Changed");
+    await manager.renderCard("test-project", "mission", "cache-test.md", "# Cache Test");
+    manager.invalidateCard("test-project", "mission", "cache-test.md");
+    const r3 = await manager.renderCard("test-project", "mission", "cache-test.md", "# Changed");
     expect(r3.html).toContain("Changed");
   });
 
   it("renders all cards in a canvas", async () => {
-    const cards = await manager.renderAllCards("mission");
+    const cards = await manager.renderAllCards("demo", "workspace");
     expect(cards.length).toBeGreaterThan(0);
     for (const card of cards) {
       expect(card.filename).toBeTruthy();
@@ -395,7 +395,7 @@ describe("Server Integration", () => {
     }>;
     expect(cards.length).toBeGreaterThan(0);
 
-    const goal = cards.find((c) => c.filename === "_goal.md");
+    const goal = cards.find((c) => c.filename === "_goal.goal");
     expect(goal).toBeDefined();
     expect(goal!.meta.cardClass).toBe("goal");
     expect(goal!.meta.isSystem).toBe(true);
@@ -460,7 +460,7 @@ describe("Server Integration", () => {
   }, 15000);
 
   it("returns error for non-existent export call", async () => {
-    const res = await fetch_("/api/canvases/mission/cards/_goal.md/call/nonexistent", {
+    const res = await fetch_("/api/canvases/mission/cards/_goal.goal/call/nonexistent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),

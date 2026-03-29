@@ -71,7 +71,7 @@ function releasePorts(projectId: string): void {
 
 async function readRuntimeConfig(projectPath: string): Promise<RuntimeConfig> {
   // Try .mica/config.json runtime section first
-  const micaConfigPath = join(projectPath, ".mica", "config.json");
+  const micaConfigPath = join(projectPath, ".mica", ".config.json");
   try {
     const raw = await readFile(micaConfigPath, "utf-8");
     const config = JSON.parse(raw);
@@ -121,10 +121,10 @@ export async function startProjectContainer(
   const projectPath = await getProjectPath(projectId);
   const runtime = await readRuntimeConfig(projectPath);
 
-  // Read deps from workspace _brief.md
+  // Read deps from workspace _brief.brief
   let deps: SandboxDeps = { apt: [], pip: [] };
   try {
-    const briefPath = join(projectPath, ".mica", "workspace", "_brief.md");
+    const briefPath = join(projectPath, ".mica", "workspace", "_brief.brief");
     if (existsSync(briefPath)) {
       const briefContent = await readFile(briefPath, "utf-8");
       deps = parseDependencies(briefContent);

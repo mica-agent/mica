@@ -46,7 +46,7 @@ def _render_messages(messages):
 def render(content, config):
     """Render agent chat message history. The sidebar shell (ChatSidebar.tsx)
     owns the header and input — this widget renders the message list."""
-    history_raw = mica.read_file("_chat-history.json")
+    history_raw = mica.read_file(".chat-history.json")
     messages = []
     if history_raw:
         try:
@@ -95,7 +95,7 @@ def send_message(content, args):
 def check_in(content, args):
     """Agent reviews the whiteboard on first visit."""
     response = mica.agent.chat(
-        "Briefly assess the whiteboard against _goal.md and _todo.md. "
+        "Briefly assess the whiteboard against _goal.goal and _todo.todo. "
         "What's solid, what's the top priority to work on next? 2-3 sentences max."
     )
 
@@ -111,8 +111,8 @@ def check_in(content, args):
 
 
 def _append_history(new_messages):
-    """Append messages to _chat-history.json."""
-    history_raw = mica.read_file("_chat-history.json")
+    """Append messages to .chat-history.json."""
+    history_raw = mica.read_file(".chat-history.json")
     messages = []
     if history_raw:
         try:
@@ -126,4 +126,4 @@ def _append_history(new_messages):
     if len(messages) > 100:
         messages = messages[-100:]
 
-    mica.write_file("_chat-history.json", json.dumps(messages, indent=2))
+    mica.write_file(".chat-history.json", json.dumps(messages, indent=2))

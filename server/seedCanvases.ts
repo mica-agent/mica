@@ -15,6 +15,7 @@ import {
   initMicaDir,
   readWorkspaceRegistry,
   migrateLegacyProjects,
+  migrateDataFileNames,
   type ConnectedProject,
   type MicaConfig,
 } from "./projectConnection.js";
@@ -29,9 +30,9 @@ const PROJECTS_DIR = process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-p
 // Files are written to .mica/ root (canvas = "_root") — the project card's children.
 
 const NEW_PROJECT_SEEDS: Record<string, string> = {
-  "_project.md": "", // Content will be generated with project name
+  "_project.project": "", // Content will be generated with project name
 
-  "_goal.md": `# Project Goal
+  "_goal.goal": `# Project Goal
 
 Define what this project aims to achieve.
 
@@ -43,7 +44,7 @@ Define what this project aims to achieve.
 - [ ] Scope is bounded — what's in v1 and what's deferred
 `,
 
-  "_brief.md": `# Agent Brief
+  "_brief.brief": `# Agent Brief
 
 ## Who You Are
 You are an AI collaborator for this project. You help the human think through problems, create artifacts, and make progress toward the project goal.
@@ -61,7 +62,7 @@ You are an AI collaborator for this project. You help the human think through pr
 <!-- - pip: pandas, requests -->
 `,
 
-  "_todo.md": `# To Do
+  "_todo.todo": `# To Do
 
 ## Active
 
@@ -70,10 +71,10 @@ You are an AI collaborator for this project. You help the human think through pr
 ## Done (recent)
 `,
 
-  "_log.md": `# Activity Log
+  "_log.log": `# Activity Log
 `,
 
-  "_chat.md": ``,
+  "_chat.chat": ``,
 
   // Sample content cards to demonstrate different card types
   "welcome.md": `# Welcome to Mica
@@ -122,7 +123,7 @@ export async function seedNewProject(
 
   // Write agentProvider to config if specified
   if (agentProvider && agentProvider !== "claude") {
-    const configPath = join(projectDir, ".mica", "config.json");
+    const configPath = join(projectDir, ".mica", ".config.json");
     try {
       const raw = await readFile(configPath, "utf-8");
       const micaConfig = JSON.parse(raw);
@@ -137,11 +138,11 @@ export async function seedNewProject(
   // Seed the _root canvas with starter files
   const existing = await listFiles(projectId, "_root");
   // Filter out config.json from the count — it's always present
-  const userFiles = existing.filter((f) => f.name !== "config.json");
+  const userFiles = existing.filter((f) => f.name !== ".config.json");
   if (userFiles.length === 0) {
     console.log(`[seed] Seeding project "${projectId}" with starter files...`);
     for (const [filename, content] of Object.entries(NEW_PROJECT_SEEDS)) {
-      const fileContent = filename === "_project.md" ? `# ${projectName}\n` : content;
+      const fileContent = filename === "_project.project" ? `# ${projectName}\n` : content;
       await writeCanvasFile(projectId, "_root", filename, fileContent);
     }
     console.log(
@@ -159,9 +160,12 @@ export async function initializeProjects(): Promise<void> {
 
   const registry = await readWorkspaceRegistry();
 
-  // If we already have connected projects, nothing to do
+  // If we already have connected projects, run migrations on each
   if (registry.projects.length > 0) {
     console.log(`[seed] Found ${registry.projects.length} connected project(s).`);
+    for (const project of registry.projects) {
+      await migrateDataFileNames(project.path);
+    }
     return;
   }
 

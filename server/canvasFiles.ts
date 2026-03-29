@@ -2,6 +2,7 @@
 // Projects are sovereign repos; Mica metadata lives in .mica/ inside each project.
 
 import { readdir, readFile, writeFile, unlink, mkdir, stat } from "fs/promises";
+import { readFileSync } from "fs";
 import { join, basename, extname } from "path";
 
 import {
@@ -25,7 +26,36 @@ export const validateProjectCanvas = validateConnected;
 export const addCanvasToProject = addConnectedCanvas;
 export const deleteProject = disconnectConnected;
 
-const VALID_EXTENSIONS = [".txt", ".md", ".mmd", ".py", ".json", ".html"];
+// ── Dynamic extension registry ──────────────────────────────
+// Valid extensions are derived from the card class manifest.
+// .json is always valid (for data files). Extensions are cached and
+// refreshed when getValidExtensions() is called.
+
+const MANIFEST_PATH = join(process.cwd(), "card-classes", "_manifest.json");
+let _cachedExtensions: string[] | null = null;
+
+export function getValidExtensions(): string[] {
+  if (_cachedExtensions) return _cachedExtensions;
+  try {
+    const raw = readFileSync(MANIFEST_PATH, "utf-8");
+    const manifest = JSON.parse(raw) as Record<string, { extension?: string }>;
+    const exts = new Set<string>();
+    for (const entry of Object.values(manifest)) {
+      if (entry.extension) exts.add(entry.extension);
+    }
+    exts.add(".json"); // Always valid for data files
+    _cachedExtensions = [...exts];
+    return _cachedExtensions;
+  } catch {
+    // Fallback if manifest unreadable
+    return [".txt", ".md", ".mmd", ".json", ".html", ".goal", ".todo", ".brief", ".log", ".chat", ".agent", ".canvas", ".project"];
+  }
+}
+
+/** Call when manifest changes to refresh the extension cache. */
+export function invalidateExtensionCache(): void {
+  _cachedExtensions = null;
+}
 
 export interface CanvasFile {
   name: string;
@@ -48,9 +78,10 @@ function validateFilename(filename: string): void {
     throw new Error(`Invalid filename: ${filename}`);
   }
   const ext = extname(filename);
-  if (!VALID_EXTENSIONS.includes(ext)) {
+  const validExts = getValidExtensions();
+  if (!validExts.includes(ext)) {
     throw new Error(
-      `Invalid extension: ${ext}. Must be one of: ${VALID_EXTENSIONS.join(", ")}`
+      `Invalid extension: ${ext}. Must be one of: ${validExts.join(", ")}`
     );
   }
 }
@@ -75,7 +106,7 @@ export async function listFiles(project: string, canvas: string): Promise<Canvas
   const files: CanvasFile[] = [];
   for (const name of entries) {
     const ext = extname(name);
-    if (!VALID_EXTENSIONS.includes(ext)) continue;
+    if (!getValidExtensions().includes(ext) || name.startsWith(".")) continue;
 
     const filepath = join(dir, name);
     const content = await readFile(filepath, "utf-8");

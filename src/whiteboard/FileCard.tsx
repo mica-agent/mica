@@ -53,7 +53,6 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
 
     const startX = e.clientX;
     const startY = e.clientY;
-    const rect = cardRef.current.getBoundingClientRect();
     const origLeft = cardRef.current.offsetLeft;
     const origTop = cardRef.current.offsetTop;
 
@@ -121,12 +120,12 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
     document.addEventListener("pointerup", onUp);
   }, [onResize]);
 
-  // For interactive cards, don't expand when clicking the body — only via header/footer
-  // Suppress expand after a drag gesture
-  const handleCardClick = isInteractive ? undefined : () => {
+  // Expand on header/footer click only — body is for text selection
+  const handleExpandClick = useCallback((e: React.MouseEvent) => {
     if (justDragged.current) return;
+    e.stopPropagation();
     onExpand();
-  };
+  }, [onExpand]);
 
   const flashClass = flash ? "wb-card--flash" : "";
   const renderingClass = rendering ? "wb-card--rendering" : "";
@@ -138,12 +137,12 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
       ref={cardRef}
       className={`wb-card ${cardClass} ${flashClass} ${renderingClass} ${resizedClass} ${draggingClass}`}
       style={{ "--canvas-color": canvasColor, ...cardStyle } as React.CSSProperties}
-      onClick={handleCardClick}
     >
       {rendering && <div className="wb-card-rendering-bar" />}
       <div
         className="wb-card-header"
         onPointerDown={onDragEnd ? handleDragStart : undefined}
+        onClick={!isInteractive ? handleExpandClick : undefined}
       >
         <span className="wb-card-type">{meta.badge}</span>
         <span className="wb-card-title">{meta.title}</span>
@@ -178,7 +177,7 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
           filename={filename}
         />
       </div>
-      <div className="wb-card-footer">
+      <div className="wb-card-footer" onClick={!isInteractive ? handleExpandClick : undefined}>
         <span className="wb-card-filename">{filename}</span>
         {(overflows || meta.cardClass === "mermaid") && (
           <span className="wb-card-expand-hint">

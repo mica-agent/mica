@@ -5,7 +5,7 @@
 // one per child card. Each child gets its own container, bridge, and script scope.
 
 import { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
-import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing } from "../api/canvasFiles";
+import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing, fetchLayout, saveLayout } from "../api/canvasFiles";
 import type { RenderedCard } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
 import WidgetRuntime from "./WidgetRuntime";
@@ -35,7 +35,21 @@ const GRID_GAP = 16;
 const FREEFORM_COLS = 3;
 
 // System files ordering
-const SYSTEM_ORDER = ["_goal.md", "_todo.md", "_brief.md", "_log.md"];
+const SYSTEM_ORDER = ["_goal.goal", "_todo.todo", "_brief.brief", "_log.log"];
+
+// ── Debounced layout save ───────────────────────────────
+let layoutSaveTimer: ReturnType<typeof setTimeout> | null = null;
+const LAYOUT_SAVE_DELAY = 500;
+
+function debouncedSaveLayout(projectId: string, mode: LayoutMode, layouts: Map<string, CardLayout>) {
+  if (layoutSaveTimer) clearTimeout(layoutSaveTimer);
+  layoutSaveTimer = setTimeout(() => {
+    saveLayout(projectId, "_root", {
+      mode,
+      cards: Object.fromEntries(layouts),
+    }).catch(() => {});
+  }, LAYOUT_SAVE_DELAY);
+}
 
 export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [parentCard, setParentCard] = useState<RenderedCard | null>(null);
@@ -53,6 +67,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("masonry");
   const [cardLayouts, setCardLayouts] = useState<Map<string, CardLayout>>(new Map());
   const layoutInitialized = useRef(false);
+  const layoutLoaded = useRef(false);
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -84,6 +99,22 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     return () => { if (onReloadRef) onReloadRef.current = null; };
   }, [onReloadRef, loadProjectCard]);
 
+  // ── Load persisted layout from server ───────────────────
+  useEffect(() => {
+    fetchLayout(projectId, "_root").then((data) => {
+      const d = data as { mode?: string; cards?: Record<string, CardLayout> };
+      if (d.mode === "freeform") setLayoutMode("freeform");
+      if (d.cards) {
+        const entries = Object.entries(d.cards) as [string, CardLayout][];
+        if (entries.length > 0) {
+          setCardLayouts(new Map(entries));
+          layoutInitialized.current = true;
+        }
+      }
+      layoutLoaded.current = true;
+    }).catch(() => { layoutLoaded.current = true; });
+  }, [projectId]);
+
   // ── Real-time updates via WebSocket ─────────────────────
 
   useEffect(() => {
@@ -106,9 +137,9 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       if (m.project !== projectId || m.canvas !== "_root") return;
 
       // Skip files that aren't child cards
-      if (m.filename === "_project.md" || m.filename === "_chat-history.json" || m.filename === "config.json") {
-        // If _project.md changed, refetch the parent card
-        if (m.filename === "_project.md") loadProjectCard();
+      if (m.filename === "_project.project" || m.filename === ".chat-history.json" || m.filename === ".config.json") {
+        // If _project.project changed, refetch the parent card
+        if (m.filename === "_project.project") loadProjectCard();
         return;
       }
 
@@ -200,7 +231,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Freeform layout management ─────────────────────────
 
-  const allNonChat = children.filter((c) => c.filename !== "_chat.md" && c.filename !== "_agent.md");
+  const allNonChat = children.filter((c) => c.filename !== "_chat.chat" && c.filename !== "_agent.agent");
 
   useEffect(() => {
     if (layoutMode !== "freeform") {
@@ -246,9 +277,15 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     });
   }, []);
 
+  // Persist layout state to server (debounced)
+  useEffect(() => {
+    if (!layoutLoaded.current) return; // Don't save until initial load completes
+    debouncedSaveLayout(projectId, layoutMode, cardLayouts);
+  }, [projectId, layoutMode, cardLayouts]);
+
   // ── Partition children into system vs content ───────────
 
-  const systemCards = children.filter((c) => c.meta.isSystem && c.filename !== "_chat.md" && c.filename !== "_agent.md");
+  const systemCards = children.filter((c) => c.meta.isSystem && c.filename !== "_chat.chat" && c.filename !== "_agent.agent");
   const allContent = children.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
   const diagramCards = allContent.filter((c) => c.meta.cardClass === "mermaid");
   const contentCards = allContent.filter((c) => c.meta.cardClass !== "mermaid");
@@ -280,7 +317,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
               exports={parentCard.exports}
               project={projectId}
               canvas="_root"
-              filename="_project.md"
+              filename="_project.project"
             />
           </div>
         )}

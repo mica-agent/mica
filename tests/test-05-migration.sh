@@ -21,8 +21,8 @@ fi
 echo "Setting up legacy structure..."
 LEGACY_PROJ_DIR="$LEGACY_DIR/test-legacy"
 mkdir -p "$LEGACY_PROJ_DIR/workspace"
-echo "Legacy brief content" > "$LEGACY_PROJ_DIR/workspace/_brief.md"
-echo "Legacy goal content" > "$LEGACY_PROJ_DIR/workspace/_goal.md"
+echo "Legacy brief content" > "$LEGACY_PROJ_DIR/workspace/_brief.brief"
+echo "Legacy goal content" > "$LEGACY_PROJ_DIR/workspace/_goal.goal"
 
 # Write a temporary _projects.json pointing to our test project
 cat > "$LEGACY_REGISTRY" << 'EOF'
@@ -53,14 +53,14 @@ if [ "$MIGRATED_COUNT" -gt 0 ]; then
 
   # Verify .mica/ structure
   check ".mica/ exists" "$(test -d $MIGRATE_TARGET/test-legacy/.mica && echo yes || echo no)" "yes"
-  check "config.json exists" "$(test -f $MIGRATE_TARGET/test-legacy/.mica/config.json && echo yes || echo no)" "yes"
+  check ".config.json exists" "$(test -f $MIGRATE_TARGET/test-legacy/.mica/.config.json && echo yes || echo no)" "yes"
 
   # Verify canvas files copied
   check "workspace/ copied" "$(test -d $MIGRATE_TARGET/test-legacy/.mica/workspace && echo yes || echo no)" "yes"
-  check "_brief.md migrated" "$(test -f $MIGRATE_TARGET/test-legacy/.mica/workspace/_brief.md && echo yes || echo no)" "yes"
+  check "_brief.brief migrated" "$(test -f $MIGRATE_TARGET/test-legacy/.mica/workspace/_brief.brief && echo yes || echo no)" "yes"
 
-  if [ -f "$MIGRATE_TARGET/test-legacy/.mica/workspace/_brief.md" ]; then
-    MIGRATED_CONTENT=$(cat "$MIGRATE_TARGET/test-legacy/.mica/workspace/_brief.md")
+  if [ -f "$MIGRATE_TARGET/test-legacy/.mica/workspace/_brief.brief" ]; then
+    MIGRATED_CONTENT=$(cat "$MIGRATE_TARGET/test-legacy/.mica/workspace/_brief.brief")
     check "Brief content preserved" "$MIGRATED_CONTENT" "Legacy brief content"
   fi
 

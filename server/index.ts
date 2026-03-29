@@ -451,22 +451,22 @@ app.get("/api/projects/:project/card", async (req, res) => {
       return;
     }
 
-    // Read _project.md from .mica/ root (canvas = "_root")
+    // Read _project.project from .mica/ root (canvas = "_root")
     let projectContent = "";
     try {
-      const f = await readCanvasFile(project, "_root", "_project.md");
+      const f = await readCanvasFile(project, "_root", "_project.project");
       projectContent = f.content;
     } catch {
-      // No _project.md yet — that's OK
+      // No _project.project yet — that's OK
     }
 
     // Get child card metadata (not rendered HTML)
     const files = await listFiles(project, "_root");
     const childMetas = [];
     for (const file of files) {
-      if (file.name === "_project.md") continue; // Skip the project card itself
-      if (file.name === "_chat-history.json") continue;
-      if (file.name === "config.json") continue;
+      if (file.name === "_project.project") continue; // Skip the project card itself
+      if (file.name === ".chat-history.json") continue;
+      if (file.name === ".config.json") continue;
       const meta = cardManager.resolveCardMeta(file.name, file.content);
       childMetas.push({
         filename: file.name,
@@ -479,7 +479,7 @@ app.get("/api/projects/:project/card", async (req, res) => {
 
     // Render the project card with children metadata in config
     const rendered = await cardManager.renderCard(
-      project, "_root", "_project.md", projectContent,
+      project, "_root", "_project.project", projectContent,
       { projectName: config.name, children: childMetas }
     );
     res.json(rendered);
@@ -495,9 +495,9 @@ app.get("/api/projects/:project/children", async (req, res) => {
     const files = await listFiles(project, "_root");
     const results = [];
     for (const file of files) {
-      if (file.name === "_project.md") continue;
-      if (file.name === "_chat-history.json") continue;
-      if (file.name === "config.json") continue;
+      if (file.name === "_project.project") continue;
+      if (file.name === ".chat-history.json") continue;
+      if (file.name === ".config.json") continue;
       const rendered = await cardManager.renderCard(project, "_root", file.name, file.content);
       results.push({ filename: file.name, ...rendered });
     }
@@ -559,6 +559,29 @@ app.delete("/api/projects/:project/canvases/:canvas/files/:filename", async (req
     res.json({ success: true });
   } catch (err: unknown) {
     res.status(404).json({ error: (err as Error).message });
+  }
+});
+
+// ── Layout persistence (UI metadata, not a card) ────────────
+app.get("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
+  const { project, canvas } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
+  try {
+    const file = await readCanvasFile(project, canvas, ".layout.json");
+    res.json(JSON.parse(file.content));
+  } catch {
+    res.json({});
+  }
+});
+
+app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
+  const { project, canvas } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
+  try {
+    await writeCanvasFile(project, canvas, ".layout.json", JSON.stringify(req.body, null, 2));
+    res.json({ success: true });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -629,10 +652,10 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
       const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
       const line = `- **${timestamp}** — ${args.message}\n`;
       try {
-        const existing = await readCanvasFile(project, canvas, "_log.md");
-        await writeCanvasFile(project, canvas, "_log.md", existing.content + line);
+        const existing = await readCanvasFile(project, canvas, "_log.log");
+        await writeCanvasFile(project, canvas, "_log.log", existing.content + line);
       } catch {
-        await writeCanvasFile(project, canvas, "_log.md", `# Activity Log\n\n${line}`);
+        await writeCanvasFile(project, canvas, "_log.log", `# Activity Log\n\n${line}`);
       }
       return { success: true };
     }
@@ -712,7 +735,7 @@ app.get("/api/projects/:project/canvases/:canvas/context-stats", async (req, res
 
     // Chat history size
     let chatHistoryChars = 0;
-    const chatFile = files.find((f) => f.name === "_chat-history.json");
+    const chatFile = files.find((f) => f.name === ".chat-history.json");
     if (chatFile) chatHistoryChars = chatFile.content.length;
 
     // Fixed system prompt ~2100 chars
@@ -915,33 +938,15 @@ function broadcast(msg: Record<string, unknown>) {
 
 // File watcher → re-render + broadcast
 fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {
+  // Dot-prefixed files are internal data — never reach here (filtered by fileWatcher)
+  // but guard just in case
+  if (event.filename.startsWith(".")) return;
+
   console.log(`[file-watcher] ${event.type}: ${event.project}/${event.canvas}/${event.filename}`);
 
   if (event.type === "deleted") {
     cardManager.invalidateCard(event.project, event.canvas, event.filename);
     broadcast({ type: "file-deleted", project: event.project, canvas: event.canvas, filename: event.filename });
-    return;
-  }
-
-  // Chat history is data, not a card — but when it changes, re-render _chat.md
-  // so the chat sidebar picks up new messages (e.g. from reactive agent)
-  if (event.filename === "_chat-history.json") {
-    cardManager.invalidateCard(event.project, event.canvas, "_chat.md");
-    try {
-      const file = await readCanvasFile(event.project, event.canvas, "_chat.md");
-      const rendered = await cardManager.renderCard(event.project, event.canvas, "_chat.md", file.content);
-      broadcast({
-        type: "file-changed",
-        project: event.project,
-        canvas: event.canvas,
-        filename: "_chat.md",
-        html: rendered.html,
-        exports: rendered.exports,
-        meta: rendered.meta,
-      });
-    } catch {
-      // _chat.md may not exist — that's fine
-    }
     return;
   }
 

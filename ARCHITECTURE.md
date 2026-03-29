@@ -31,22 +31,57 @@ my-project/
 ├── README.md
 ├── .git/
 └── .mica/                  ← Mica's footprint
-    ├── config.json         # Project manifest (agent provider, reactive settings, worker config)
-    ├── _project.md         # Project card (top-level canvas card)
-    ├── _brief.md           # Agent personality/instructions
-    ├── _goal.md            # Project objectives
-    ├── _todo.md            # Task tracker
-    ├── _log.md             # Activity log
-    ├── _chat.md            # Chat card
-    ├── _chat-history.json  # Chat persistence
-    └── _card-classes/      # Project-specific card classes
+    ├── .config.json        # Project manifest (agent provider, reactive settings, worker config)
+    ├── .chat-history.json  # Chat persistence
+    ├── .layout.json        # Card layout state
+    ├── _project.project    # Project card (top-level canvas card)
+    ├── _brief.brief        # Agent personality/instructions
+    ├── _goal.goal          # Project objectives
+    ├── _todo.todo          # Task tracker
+    ├── _log.log            # Activity log
+    ├── _chat.chat          # Chat card
+    └── .card-classes/      # Project-specific card classes
         └── my-widget/
             └── render.py
 ```
 
-The project card (`_project.md`) is the top-level canvas card — it's what you see when you open the project. Its children are the other files in `.mica/` (goal, todo, brief, log, chat, plus any user-created content cards). For complex projects, subdirectories can hold nested canvas cards with their own children.
+The project card (`_project.project`) is the top-level canvas card — it's what you see when you open the project. Its children are the other files in `.mica/` (goal, todo, brief, log, chat, plus any user-created content cards). For complex projects, subdirectories can hold nested canvas cards with their own children.
 
 **`.mica/` holds Mica metadata only** — agent briefs, goals, chat history, card state. The project's actual source code stays in the project root. Agents read/write both: project files for real work, `.mica/` files for coordination. In the card model (see SPEC.md), this metadata represents the serialized state of project-scoped cards.
+
+#### Three-tier file naming convention
+
+Files in `.mica/` follow a three-tier naming convention:
+
+| Prefix | Meaning | Visible to agents? | Examples |
+|--------|---------|-------------------|----------|
+| `.` (dot) | Internal data — not cards | No | `.config.json`, `.chat-history.json`, `.layout.json` |
+| `_` (underscore) | System card — seeded by Mica | Yes | `_goal.goal`, `_todo.todo`, `_brief.brief` |
+| (none) | User card — created by humans/agents | Yes | `notes.md`, `architecture.mmd`, `tasks.todo` |
+
+#### Extension-as-class convention
+
+The file extension determines the card class. Standard file formats keep standard extensions; Mica-native types use the class name as extension:
+
+| Class | Extension | Content format | Standard? |
+|-------|-----------|---------------|-----------|
+| `markdown` | `.md` | Markdown | Yes |
+| `mermaid` | `.mmd` | Mermaid syntax | Yes |
+| `text` | `.txt` | Plain text | Yes |
+| `html` | `.html` | HTML | Yes |
+| `goal` | `.goal` | Markdown | Mica-native |
+| `todo` | `.todo` | Markdown | Mica-native |
+| `brief` | `.brief` | Markdown | Mica-native |
+| `log` | `.log` | Markdown | Mica-native |
+| `chat` | `.chat` | Managed | Mica-native |
+| `agent` | `.agent` | Managed | Mica-native |
+| `canvas` | `.canvas` | Managed | Mica-native |
+| `simple-project` | `.project` | Markdown | Mica-native |
+| `terminal` | `.terminal` | Managed | Mica-native |
+
+The content format is independent of the extension. A `.todo` file contains markdown internally — the `todo` card class renders it with interactive checkboxes. The extension determines *behavior*, not format.
+
+Multiple cards of the same class are natural: `backend.todo` and `frontend.todo` are both rendered by the `todo` class. The `_` prefix on system cards is a convention, not a constraint.
 
 ### 3. Workspace Registry
 
@@ -97,11 +132,11 @@ Each project runs in its own Docker container. No cross-project interference.
 | `GET /api/projects/:id/container/logs` | Recent stdout/stderr |
 
 Container setup:
-- **Image**: `mica-sandbox:base` with dependencies parsed from `_brief.md`
+- **Image**: `mica-sandbox:base` with dependencies parsed from `_brief.brief`
 - **Volume**: Project repo mounted at `/workspace`
 - **Ports**: Dynamic allocation from 9000–9099 range
 - **Limits**: 1GB memory, 2 CPUs default
-- **Entrypoint**: From `.mica/config.json` runtime section, or auto-detected (app.py → python3, package.json → npm start)
+- **Entrypoint**: From `.mica/.config.json` runtime section, or auto-detected (app.py → python3, package.json → npm start)
 
 ### 6. Disconnecting
 
@@ -121,7 +156,9 @@ Card classes are Python `render.py` files that produce interactive HTML. They us
 | `@mica.export` | Exposes a server-side function callable from the browser |
 | `@mica.channel` | Opens a persistent bidirectional stream (for terminals, real-time data) |
 
-**Resolution order**: YAML frontmatter `card: name` → filename convention (`_goal.md` → goal) → extension fallback (`.md` → markdown).
+**Resolution order**: YAML frontmatter `card: name` → extension lookup via manifest (`.goal` → goal, `.md` → markdown) → fallback to `text`.
+
+The manifest (`card-classes/_manifest.json`) maps each card class to its extension. Valid file extensions are determined dynamically from the manifest at runtime — no hardcoded extension list.
 
 See `card-classes/CREATING_WIDGETS.md` for the full API reference for writing card classes.
 
@@ -197,25 +234,25 @@ Broadcasts are scoped to the current browser session. They are not persisted and
 Card classes live at three scopes. Resolution checks most specific first:
 
 ```
-Project .mica/_card-classes/  →  Workspace ~/.mica/card-classes/  →  Built-in card-classes/
+Project .mica/.card-classes/  →  Workspace ~/.mica/card-classes/  →  Built-in card-classes/
 ```
 
 | Scope | Location | Travels via | Use case |
 |-------|----------|-------------|----------|
-| **Project** | `.mica/_card-classes/{name}/` | git (shared with team) | Cards specific to this project |
+| **Project** | `.mica/.card-classes/{name}/` | git (shared with team) | Cards specific to this project |
 | **Workspace** | `~/.mica/card-classes/{name}/` | local to this machine | Cards shared across your projects |
 | **Built-in** | `card-classes/{name}/` | ships with Mica | Standard cards (markdown, chat, todo, etc.) |
 
 **Promotion is copying a directory.** A card class is just a folder with a `render.py`. No package manager, no registry, no install step.
 
-- Project → Workspace: `cp -r .mica/_card-classes/my-widget ~/.mica/card-classes/my-widget`
+- Project → Workspace: `cp -r .mica/.card-classes/my-widget ~/.mica/card-classes/my-widget`
 - Workspace → Built-in: contribute upstream to Mica
 
 **Top-level cards** at each scope are canvas cards:
 
 | Scope | Top-level card | Card class | What it shows |
 |-------|---------------|------------|---------------|
-| **Project** | `.mica/_project.md` | `project` | Project's child cards in a grid |
+| **Project** | `.mica/_project.project` | `simple-project` | Project's child cards in a grid |
 | **Workspace** | `~/.mica/_portfolio.md` | `portfolio` | Connected projects as child cards |
 | **User** | (future) | (future) | Cross-workspace, identity-level |
 
@@ -231,11 +268,12 @@ The hierarchy emerges naturally from card nesting:
 ```
 Portfolio card (workspace scope)
   └── Project card (project scope)
-        ├── _goal.md (simple card)
-        ├── _todo.md (simple card)
+        ├── _goal.goal (simple card)
+        ├── _todo.todo (simple card)
         ├── design.md (simple card)
+        ├── tasks.todo (simple card — second todo instance)
         └── Component A (canvas card)
-              ├── _goal.md
+              ├── _goal.goal
               └── api-spec.mmd
 ```
 
@@ -279,8 +317,8 @@ Card classes run in a pool of long-lived Python worker processes (configurable `
 
 Agents and users can create new card classes at runtime:
 
-1. Write a `render.py` file to `.mica/_card-classes/{name}/` in the project
-2. Create a `.md` file that references the class (via frontmatter `card: name` or filename convention `_{name}.md`)
+1. Write a `render.py` file to `.mica/.card-classes/{name}/` in the project
+2. Create a card file — either use the class name as extension (`mycard.{name}`) or use frontmatter `card: name` in a `.md` file
 3. The file watcher picks up the new class and renders it immediately
 
 See `card-classes/CREATING_WIDGETS.md` for the full API reference including all five communication patterns, HTML structure, external resource loading, and complete examples.
@@ -307,7 +345,7 @@ Mica can run agents against a local LLM instead of Claude, enabling fully offlin
 - Final turn forces a text response (no tools) to guarantee a reply
 
 **Agent routing** (`server/index.ts`):
-- `routedChat()` reads `agentProvider` from `.mica/config.json`
+- `routedChat()` reads `agentProvider` from `.mica/.config.json`
 - `"local"` → `chatWithLocalAgent()`, `"claude"` (default) → `chatWithAgent()`
 - UI toggle in `ProjectNav.tsx` sets `agentProvider` at project creation
 
@@ -329,10 +367,10 @@ Agents can react to human file edits and propose updates to related artifacts. T
 **Rate limiting:**
 - Per-canvas cooldown: 60s default (configurable via `config.reactive.cooldownMs`)
 - Per-canvas busy lock: skips events while an agent is already working on the canvas
-- Ignored files: `_chat-history.json`, `_log.md`, `config.json`
+- Ignored files: dot-prefixed files (`.chat-history.json`, `.config.json`, etc.) are skipped by naming convention; `_log.log` is explicitly skipped to avoid feedback loops
 - Deletes are skipped (triage only makes sense for content changes)
 
-**Configuration** (`.mica/config.json`):
+**Configuration** (`.mica/.config.json`):
 ```json
 {
   "reactive": {
@@ -398,8 +436,8 @@ Existing projects in `canvases/{project}/` can be migrated via `migrateLegacyPro
 1. For each project in `canvases/_projects.json`:
    - Create a new directory (default: `~/mica-projects/{id}/`)
    - Copy canvas metadata files into `.mica/{canvas}/`
-   - Copy `_card-classes/` if present
-   - Write `.mica/config.json`
+   - Copy `.card-classes/` if present
+   - Write `.mica/.config.json`
    - `git init` the new directory
    - Register in `workspaces.json`
 2. Original `canvases/` directory preserved as fallback
@@ -416,7 +454,7 @@ Existing projects in `canvases/{project}/` can be migrated via `migrateLegacyPro
 
 **Why per-project git?** Projects have their own commit history, branches, and workflow. Mica doesn't impose a shared repo or monorepo structure. Each project's version control is self-contained.
 
-**What about `.gitignore`?** Recommend adding `.mica/_chat-history.json` and `.mica/*/_chat-history.json` to the project's `.gitignore`. Everything else in `.mica/` (briefs, goals, todos, card layouts) should be committed — it's valuable shared project context.
+**What about `.gitignore`?** Recommend adding `.mica/.chat-history.json` and `.mica/*/.chat-history.json` to the project's `.gitignore`. Everything else in `.mica/` (briefs, goals, todos, card layouts) should be committed — it's valuable shared project context. Dot-prefixed data files (`.config.json`, `.layout.json`) are project config and should be committed; `.chat-history.json` is the exception since it's ephemeral conversation state.
 
 ## Security Model
 
@@ -452,7 +490,7 @@ Container properties:
 ### Two-phase runtime
 
 Follows the Codex model:
-1. **Setup phase**: container starts with network. Installs dependencies from `_brief.md`, caches CDN resources.
+1. **Setup phase**: container starts with network. Installs dependencies from `_brief.brief`, caches CDN resources.
 2. **Execute phase**: network is removed. Cards render offline. CDN resources served from cache. Agent API calls proxied through the Mica server.
 
 ### Browser-side defense (CSP)
@@ -464,7 +502,7 @@ Content Security Policy blocks `fetch()` to external origins from card JavaScrip
 
 ### Elastic worker pool
 
-Per-project workers with configurable warm/max policy (`.mica/config.json`):
+Per-project workers with configurable warm/max policy (`.mica/.config.json`):
 - `warm` (default 1): idle workers kept alive with hot card class cache
 - `max` (default 6): upper bound; additional workers spawn on demand, die after 30s idle
 - Memory pressure: when container exceeds 80% memory, idle workers beyond `warm` are evicted

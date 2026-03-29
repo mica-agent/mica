@@ -1,7 +1,7 @@
 // Project Connection — manages workspace registry and .mica/ lifecycle.
 // Projects are sovereign git repos; Mica connects to them via a .mica/ directory.
 
-import { readFile, writeFile, mkdir, readdir, stat } from "fs/promises";
+import { readFile, writeFile, mkdir, readdir, stat, unlink } from "fs/promises";
 import { join } from "path";
 import os from "os";
 import { existsSync } from "fs";
@@ -47,7 +47,7 @@ export interface MicaConfig {
 // ── Constants ──────────────────────────────────────────────
 
 const MICA_DIR = ".mica";
-const CONFIG_FILE = "config.json";
+const CONFIG_FILE = ".config.json";
 
 // Workspace registry lives in Mica's own directory
 const WORKSPACE_FILE = join(process.cwd(), "workspaces.json");
@@ -97,6 +97,77 @@ export async function getCanvasDir(projectId: string, canvas: string): Promise<s
   return join(micaDir, canvas);
 }
 
+// ── Dot-prefix Migration ──────────────────────────────────
+
+// Data file renames (dot-prefix convention)
+const DATA_RENAME_MAP: [string, string][] = [
+  ["config.json", ".config.json"],
+  ["_chat-history.json", ".chat-history.json"],
+  ["_layout.json", ".layout.json"],
+];
+
+// System card renames (extension-as-class convention)
+const CARD_RENAME_MAP: [string, string][] = [
+  ["_project.md", "_project.project"],
+  ["_goal.md", "_goal.goal"],
+  ["_todo.md", "_todo.todo"],
+  ["_brief.md", "_brief.brief"],
+  ["_log.md", "_log.log"],
+  ["_chat.md", "_chat.chat"],
+  ["_agent.md", "_agent.agent"],
+];
+
+const ALL_RENAME_MAP = [...DATA_RENAME_MAP, ...CARD_RENAME_MAP];
+
+/** Migrate old-named files to current conventions.
+ *  Runs in .mica/ root and all canvas subdirectories.
+ *  Also renames _card-classes/ → .card-classes/ if present. */
+export async function migrateDataFileNames(projectPath: string): Promise<void> {
+  const micaDir = join(projectPath, MICA_DIR);
+  if (!existsSync(micaDir)) return;
+
+  // Rename _card-classes/ → .card-classes/ at project level
+  const oldClassesDir = join(micaDir, "_card-classes");
+  const newClassesDir = join(micaDir, ".card-classes");
+  if (existsSync(oldClassesDir) && !existsSync(newClassesDir)) {
+    try {
+      const { rename } = await import("fs/promises");
+      await rename(oldClassesDir, newClassesDir);
+      console.log(`[migrate] Renamed _card-classes/ → .card-classes/ in ${micaDir}`);
+    } catch (err) {
+      console.warn(`[migrate] Failed to rename _card-classes/: ${(err as Error).message}`);
+    }
+  }
+
+  // Collect directories to scan: .mica/ itself + all canvas subdirs
+  const dirs = [micaDir];
+  try {
+    const entries = await readdir(micaDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith(".")) {
+        dirs.push(join(micaDir, entry.name));
+      }
+    }
+  } catch { /* empty */ }
+
+  for (const dir of dirs) {
+    for (const [oldName, newName] of ALL_RENAME_MAP) {
+      const oldPath = join(dir, oldName);
+      const newPath = join(dir, newName);
+      if (existsSync(oldPath) && !existsSync(newPath)) {
+        try {
+          const content = await readFile(oldPath, "utf-8");
+          await writeFile(newPath, content, "utf-8");
+          await unlink(oldPath);
+          console.log(`[migrate] Renamed ${oldName} → ${newName} in ${dir}`);
+        } catch (err) {
+          console.warn(`[migrate] Failed to rename ${oldName} in ${dir}: ${(err as Error).message}`);
+        }
+      }
+    }
+  }
+}
+
 // ── Project Connection ─────────────────────────────────────
 
 /** Connect an existing directory/repo to Mica */
@@ -130,6 +201,9 @@ export async function connectProject(
   // Check if .mica/ already exists (reconnecting)
   const micaDir = join(absPath, MICA_DIR);
   let config: MicaConfig;
+
+  // Migrate old-named data files to dot-prefix convention
+  await migrateDataFileNames(absPath);
 
   if (existsSync(join(micaDir, CONFIG_FILE))) {
     // Reconnecting — read existing config
@@ -332,13 +406,13 @@ export async function migrateLegacyProjects(
       }
     }
 
-    // Also copy _card-classes if they exist
-    const legacyClasses = join(legacyDir, "_card-classes");
+    // Also copy .card-classes if they exist
+    const legacyClasses = join(legacyDir, ".card-classes");
     if (existsSync(legacyClasses)) {
       const classNames = await readdir(legacyClasses);
       for (const cls of classNames) {
         const srcClass = join(legacyClasses, cls);
-        const dstClass = join(micaDir, "_card-classes", cls);
+        const dstClass = join(micaDir, ".card-classes", cls);
         await mkdir(dstClass, { recursive: true });
         const classFiles = await readdir(srcClass);
         for (const file of classFiles) {

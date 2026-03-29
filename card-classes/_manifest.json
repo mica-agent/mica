@@ -1,56 +1,68 @@
 {
   "markdown": {
+    "extension": ".md",
     "badge": "MD",
     "defaultTitle": ""
   },
   "mermaid": {
+    "extension": ".mmd",
     "badge": "MMD",
     "defaultTitle": ""
   },
   "text": {
+    "extension": ".txt",
     "badge": "TXT",
     "defaultTitle": ""
   },
   "html": {
+    "extension": ".html",
     "badge": "HTML",
     "defaultTitle": ""
   },
   "goal": {
+    "extension": ".goal",
     "badge": "GOAL",
     "system": true,
     "defaultTitle": "Project Goal"
   },
   "todo": {
+    "extension": ".todo",
     "badge": "TODO",
     "system": true,
     "defaultTitle": "To Do"
   },
   "brief": {
+    "extension": ".brief",
     "badge": "BRIEF",
     "system": true,
     "defaultTitle": "Agent Brief"
   },
   "log": {
+    "extension": ".log",
     "badge": "LOG",
     "system": true,
     "defaultTitle": "Activity Log"
   },
   "chat": {
+    "extension": ".chat",
     "badge": "CHAT",
     "system": true,
     "defaultTitle": "Chat"
   },
   "agent": {
+    "extension": ".agent",
     "badge": "AGENT",
     "system": true,
     "defaultTitle": "Agent"
   },
   "canvas": {
+    "extension": ".canvas",
     "badge": "CANVAS",
     "system": true,
     "defaultTitle": "Canvas"
   },
   "simple-project": {
+    "extension": ".project",
     "badge": "PROJECT",
     "system": true,
     "defaultTitle": "Project"
