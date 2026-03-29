@@ -609,7 +609,9 @@ app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, 
 
 // ── Widget Card System ──────────────────────────────────────
 
-const workerPool = new WorkerPool({ warm: 2, max: 8, pythonPath: "/usr/bin/python3", label: "global" });
+// Legacy Python worker pool — warm: 0 since card classes now run in V8 isolates.
+// Retained for SandboxManager compatibility; will be removed in a future cleanup.
+const workerPool = new WorkerPool({ warm: 0, max: 0, label: "global" });
 const sandboxManager = new SandboxManager();
 setAgentSandboxManager(sandboxManager);
 setContainerSandboxManager(sandboxManager);
