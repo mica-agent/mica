@@ -17,8 +17,15 @@ import {
   writeCanvasFile,
 } from "../canvasFiles.js";
 import { getProjectPath } from "../projectConnection.js";
-import { createDockerSpawner } from "../dockerSpawn.js";
+import { createAgentSpawner } from "../dockerSpawn.js";
 import { readMicaConfig } from "../projectConnection.js";
+import type { SandboxManager } from "../projectSandbox.js";
+
+// Module-level sandbox manager reference
+let _sandboxManager: SandboxManager | null = null;
+export function setSandboxManager(sm: SandboxManager): void {
+  _sandboxManager = sm;
+}
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -143,8 +150,11 @@ ${fileContext || "(no files yet)"}`;
     settingSources: ["user" as const],
   };
 
-  // Always run in a Docker container with project repo mounted
-  options.spawnClaudeCodeProcess = await createDockerSpawner(project, canvas);
+  // Run inside the shared project container
+  if (_sandboxManager) {
+    const containerName = await _sandboxManager.getContainerName(project);
+    options.spawnClaudeCodeProcess = createAgentSpawner(containerName, project, canvas);
+  }
 
   try {
     let currentStep = -1;

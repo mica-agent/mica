@@ -15,6 +15,7 @@ import {
   resetAll,
   getAgentMeta,
   setAgentWriteHook,
+  setAgentSandboxManager,
 } from "./agents.js";
 import type { CanvasId } from "./agents.js";
 import {
@@ -41,6 +42,7 @@ import {
   stopProjectContainer,
   getContainerStatus,
   getContainerLogs,
+  setSandboxManager as setContainerSandboxManager,
 } from "./projectContainer.js";
 import { initializeProjects, seedNewProject } from "./seedCanvases.js";
 import { WorkerPool } from "./workerPool.js";
@@ -52,6 +54,7 @@ import { chatWithLocalAgent, setLocalAgentWriteHook, resetLocalCanvas, resetAllL
 import { stopLlamaServer } from "./llamaServer.js";
 import { TerminalChannelManager } from "./terminalChannel.js";
 import { AgentChannelManager } from "./agentChannel.js";
+import { setSandboxManager as setSubagentSandboxManager } from "./agentProviders/claudeCode.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3001");
 
@@ -608,6 +611,9 @@ app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, 
 
 const workerPool = new WorkerPool({ warm: 2, max: 8, pythonPath: "/usr/bin/python3", label: "global" });
 const sandboxManager = new SandboxManager();
+setAgentSandboxManager(sandboxManager);
+setContainerSandboxManager(sandboxManager);
+setSubagentSandboxManager(sandboxManager);
 const cardManager = new CardManager(workerPool, sandboxManager);
 const fileWatcher = new FileWatcher();
 // Routed chat function — picks Claude or local agent based on project config

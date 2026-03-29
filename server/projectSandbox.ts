@@ -114,6 +114,14 @@ export class SandboxManager {
     }
   }
 
+  /** Get the container name for a project (ensures container is running). */
+  async getContainerName(projectId: string): Promise<string> {
+    await this.getPool(projectId); // ensures container + pool are up
+    const sandbox = this.sandboxes.get(projectId);
+    if (!sandbox) throw new Error(`No sandbox for project: ${projectId}`);
+    return sandbox.containerName;
+  }
+
   /** Get or create a sandbox for a project. Verifies liveness before returning. */
   async getPool(projectId: string): Promise<WorkerPool> {
     // First call: clean up containers from previous server runs
@@ -225,7 +233,10 @@ export class SandboxManager {
     const mounts = await getProjectMounts(projectId);
     const memory = config.memory ?? "1g";
 
-    // Phase 1: Start container WITH network (for dependency installation)
+    // Single container for all project operations:
+    // - Card workers (network-isolated via unshare --net)
+    // - Agent subprocesses (full network for Claude API)
+    // - App runtime (serves on exposed ports)
     const dockerArgs = [
       "run", "-d",
       "--name", containerName,
@@ -237,6 +248,11 @@ export class SandboxManager {
     // Shared project mounts (project repo, card-classes, SDK)
     for (const vol of mounts.volumes) {
       dockerArgs.push("-v", vol);
+    }
+
+    // Expose a port range for app runtime (8080-8089 inside → 9000-9009 on host)
+    for (let i = 0; i < 10; i++) {
+      dockerArgs.push("-p", `${9000 + i}:${8080 + i}`);
     }
 
     dockerArgs.push(
@@ -258,16 +274,10 @@ export class SandboxManager {
       throw err;
     }
 
-    // Phase 2: Install dependencies (two-phase runtime)
+    // Phase 2: Install dependencies
     await this.installDeps(containerName, projectId);
-
-    // Phase 3: Remove network access (execute phase — no egress)
-    try {
-      await execFileAsync("docker", ["network", "disconnect", "bridge", containerName], { timeout: 10000 });
-      console.log(`[sandbox] Network removed from ${containerName} — now isolated (${memory} RAM)`);
-    } catch (err) {
-      console.warn(`[sandbox] Failed to disconnect network for "${projectId}":`, (err as Error).message);
-    }
+    // Network stays connected — card workers are isolated via unshare --net,
+    // while agents and app runtime need network access in the same container.
   }
 
   /** Install Python dependencies inside container (runs during setup phase with network). */

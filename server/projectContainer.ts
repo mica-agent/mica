@@ -1,13 +1,14 @@
-// Per-project container isolation — runs each project's app in its own Docker container.
-// Reuses image-building infrastructure from dockerSpawn.ts.
+// Per-project app runtime — runs the user's app inside the shared project container.
+// Uses `docker exec` on the sandbox container (managed by SandboxManager),
+// rather than creating a separate container.
 
-import { execFile, execSync } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
-import { getProjectPath, type ConnectedProject, getProjectConfig } from "./projectConnection.js";
-import { parseDependencies, getOrBuildImage, type SandboxDeps } from "./dockerSpawn.js";
+import { getProjectPath } from "./projectConnection.js";
+import type { SandboxManager } from "./projectSandbox.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,11 +22,11 @@ export interface RuntimeConfig {
 }
 
 export interface ContainerInfo {
-  containerId: string;
   containerName: string;
   projectId: string;
   ports: Array<{ container: number; host: number }>;
   status: "running" | "starting" | "stopped";
+  pid?: string;
 }
 
 export interface ContainerStatus {
@@ -36,35 +37,19 @@ export interface ContainerStatus {
   memoryUsage?: string;
 }
 
-// ── Port Allocator ─────────────────────────────────────────
+// ── Port Mapping ──────────────────────────────────────────
+// Ports 8080-8089 inside the container are mapped to 9000-9009 on the host
+// (configured in projectSandbox.ts when the container starts).
 
-const PORT_RANGE = { start: 9000, end: 9099 };
-const allocatedPorts = new Map<string, number[]>(); // projectId → host ports
+const PORT_BASE_CONTAINER = 8080;
+const PORT_BASE_HOST = 9000;
 
-function allocatePorts(projectId: string, count: number): number[] {
-  // Collect all allocated ports
-  const used = new Set<number>();
-  for (const ports of allocatedPorts.values()) {
-    for (const p of ports) used.add(p);
+function mapPort(containerPort: number): number {
+  const offset = containerPort - PORT_BASE_CONTAINER;
+  if (offset < 0 || offset >= 10) {
+    throw new Error(`Container port ${containerPort} outside mapped range ${PORT_BASE_CONTAINER}-${PORT_BASE_CONTAINER + 9}`);
   }
-
-  const allocated: number[] = [];
-  for (let p = PORT_RANGE.start; p <= PORT_RANGE.end && allocated.length < count; p++) {
-    if (!used.has(p)) {
-      allocated.push(p);
-    }
-  }
-
-  if (allocated.length < count) {
-    throw new Error(`Not enough ports available (need ${count}, found ${allocated.length})`);
-  }
-
-  allocatedPorts.set(projectId, allocated);
-  return allocated;
-}
-
-function releasePorts(projectId: string): void {
-  allocatedPorts.delete(projectId);
+  return PORT_BASE_HOST + offset;
 }
 
 // ── Runtime Config ─────────────────────────────────────────
@@ -96,16 +81,18 @@ async function readRuntimeConfig(projectPath: string): Promise<RuntimeConfig> {
     return { entrypoint: "npm start", ports: [3000] };
   }
 
-  // Default: sleep (user can exec into container)
+  // Default: no-op
   return { entrypoint: "sleep infinity", ports: [] };
 }
 
-// ── Container State ────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────
 
-const containers = new Map<string, ContainerInfo>();
+const appProcesses = new Map<string, ContainerInfo>();
+let _sandboxManager: SandboxManager | null = null;
 
-function containerName(projectId: string): string {
-  return `mica-app-${projectId}`;
+/** Set the SandboxManager so we can get the shared container name. */
+export function setSandboxManager(sm: SandboxManager): void {
+  _sandboxManager = sm;
 }
 
 // ── Operations ─────────────────────────────────────────────
@@ -113,112 +100,88 @@ function containerName(projectId: string): string {
 export async function startProjectContainer(
   projectId: string
 ): Promise<ContainerInfo> {
-  // Stop existing if running
+  if (!_sandboxManager) {
+    throw new Error("SandboxManager not set — call setSandboxManager() first");
+  }
+
+  // Stop existing app process if running
   try {
     await stopProjectContainer(projectId);
   } catch { /* not running */ }
 
+  const containerName = await _sandboxManager.getContainerName(projectId);
   const projectPath = await getProjectPath(projectId);
   const runtime = await readRuntimeConfig(projectPath);
 
-  // Read deps from workspace _brief.brief
-  let deps: SandboxDeps = { apt: [], pip: [] };
-  try {
-    const briefPath = join(projectPath, ".mica", "workspace", "_brief.brief");
-    if (existsSync(briefPath)) {
-      const briefContent = await readFile(briefPath, "utf-8");
-      deps = parseDependencies(briefContent);
-    }
-  } catch { /* no brief */ }
-
-  const imageTag = await getOrBuildImage(deps);
-  const name = containerName(projectId);
-  const containerPorts = runtime.ports || [];
-  const hostPorts = containerPorts.length > 0
-    ? allocatePorts(projectId, containerPorts.length)
-    : [];
-
-  const dockerArgs = [
-    "run", "-d",
-    "--name", name,
-    "--network", "bridge",
-    "--memory", "1g",
-    "--cpus", "2.0",
-    "-v", `${projectPath}:/workspace:rw`,
-    "-w", runtime.workdir || "/workspace",
+  // Build docker exec command
+  const execArgs = [
+    "exec", "-d",
+    "-w", runtime.workdir || projectPath,
   ];
-
-  // Port mappings
-  for (let i = 0; i < containerPorts.length; i++) {
-    dockerArgs.push("-p", `${hostPorts[i]}:${containerPorts[i]}`);
-  }
 
   // Environment variables
   if (runtime.env) {
     for (const [key, value] of Object.entries(runtime.env)) {
-      dockerArgs.push("-e", `${key}=${value}`);
+      execArgs.push("-e", `${key}=${value}`);
     }
   }
 
-  // Image + entrypoint
-  dockerArgs.push("--entrypoint", "/bin/bash");
-  dockerArgs.push(imageTag);
-  dockerArgs.push("-c", runtime.entrypoint || "sleep infinity");
+  execArgs.push(containerName, "/bin/bash", "-c", runtime.entrypoint || "sleep infinity");
 
-  const { stdout } = await execFileAsync("docker", dockerArgs);
-  const containerId = stdout.trim().slice(0, 12);
+  await execFileAsync("docker", execArgs);
 
+  const containerPorts = runtime.ports || [];
   const info: ContainerInfo = {
-    containerId,
-    containerName: name,
+    containerName,
     projectId,
-    ports: containerPorts.map((cp, i) => ({ container: cp, host: hostPorts[i] })),
+    ports: containerPorts.map((cp) => ({ container: cp, host: mapPort(cp) })),
     status: "running",
   };
 
-  containers.set(projectId, info);
-  console.log(`[container] Started ${name} (${containerId}) for project "${projectId}"`);
+  appProcesses.set(projectId, info);
+  console.log(`[app] Started app in ${containerName} for "${projectId}" (ports: ${containerPorts.join(", ") || "none"})`);
 
   return info;
 }
 
 export async function stopProjectContainer(projectId: string): Promise<void> {
-  const name = containerName(projectId);
+  if (!_sandboxManager) return;
 
   try {
-    await execFileAsync("docker", ["stop", "-t", "10", name]);
-  } catch { /* may not be running */ }
+    const containerName = await _sandboxManager.getContainerName(projectId);
+    // Kill the app process (pkill the entrypoint), not the container itself
+    await execFileAsync("docker", [
+      "exec", containerName, "pkill", "-f", "app.py|npm start|http.server",
+    ], { timeout: 5000 });
+  } catch { /* process may not be running */ }
 
-  try {
-    await execFileAsync("docker", ["rm", "-f", name]);
-  } catch { /* may not exist */ }
-
-  releasePorts(projectId);
-  containers.delete(projectId);
-  console.log(`[container] Stopped ${name}`);
+  appProcesses.delete(projectId);
+  console.log(`[app] Stopped app for "${projectId}"`);
 }
 
 export async function getContainerStatus(
   projectId: string
 ): Promise<ContainerStatus> {
-  const name = containerName(projectId);
+  if (!_sandboxManager) {
+    return { running: false, status: "no sandbox manager", ports: [] };
+  }
 
   try {
+    const containerName = await _sandboxManager.getContainerName(projectId);
     const { stdout } = await execFileAsync("docker", [
       "inspect",
       "--format",
       "{{.State.Status}}|{{.State.StartedAt}}|{{.HostConfig.Memory}}",
-      name,
+      containerName,
     ]);
 
     const [status, startedAt, memory] = stdout.trim().split("|");
-    const running = status === "running";
-    const cached = containers.get(projectId);
+    const cached = appProcesses.get(projectId);
 
     return {
-      running,
+      running: status === "running",
       status,
-      uptime: running ? startedAt : undefined,
+      uptime: status === "running" ? startedAt : undefined,
       ports: cached?.ports || [],
       memoryUsage: memory,
     };
@@ -235,12 +198,14 @@ export async function getContainerLogs(
   projectId: string,
   tail: number = 100
 ): Promise<string> {
-  const name = containerName(projectId);
+  if (!_sandboxManager) return "(No sandbox manager)";
+
   try {
+    const containerName = await _sandboxManager.getContainerName(projectId);
     const { stdout, stderr } = await execFileAsync("docker", [
       "logs",
       "--tail", String(tail),
-      name,
+      containerName,
     ]);
     return stdout + stderr;
   } catch (err) {

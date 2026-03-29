@@ -39,12 +39,16 @@ export function localSpawnFn(pythonPath: string, workerPath: string): SpawnWorke
   });
 }
 
-/** Spawn a worker inside a Docker container via `docker exec`. */
+/** Spawn a worker inside a Docker container via `docker exec`.
+ *  Uses `unshare --net` to isolate card workers from the network —
+ *  each worker runs in its own network namespace with loopback only.
+ *  This allows the container itself to keep bridge network for agents/apps. */
 export function dockerSpawnFn(containerName: string, workerPath: string): SpawnWorkerFn {
   return () => spawn("docker", [
     "exec", "-i",
     "--env", "PYTHONDONTWRITEBYTECODE=1",
     containerName,
+    "unshare", "--net",
     "python3", "-u", workerPath,
   ], {
     stdio: ["pipe", "pipe", "pipe"],

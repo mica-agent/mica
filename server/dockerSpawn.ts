@@ -11,18 +11,15 @@
 
 import { spawn, execSync } from "child_process";
 import { createHash } from "crypto";
-import { writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { writeFileSync, unlinkSync } from "fs";
 import { join, resolve } from "path";
 import { tmpdir } from "os";
 import { fileURLToPath } from "url";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
-import { readCanvasFile, getProjectConfig } from "./canvasFiles.js";
 import { getProjectPath } from "./projectConnection.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = join(__filename, "..");
-
-const SESSIONS_ROOT = join(process.cwd(), ".sessions");
 export const SANDBOX_IMAGE = "mica-sandbox:base";
 export const CARD_CLASSES_DIR = resolve("card-classes");
 export const SDK_DIR = join(__dirname, "mica_sdk");
@@ -157,58 +154,20 @@ export async function getOrBuildImage(deps: SandboxDeps): Promise<string> {
   return tag;
 }
 
-// ── DEV/PROD mode check ──────────────────────────────────────
-
-export async function isDockerEnabled(project: string): Promise<boolean> {
-  // Per-project override
-  const config = await getProjectConfig(project);
-  if (config && "sandbox" in config) {
-    return (config as any).sandbox === "docker";
-  }
-  // Global switch
-  return process.env.MICA_MODE === "prod";
-}
-
 // ── Docker spawner factory ───────────────────────────────────
+// Runs the Claude Agent SDK CLI inside the shared project container
+// via `docker exec`, not `docker run`. The container is managed by
+// SandboxManager and shared with card workers and app runtime.
 
-export async function createDockerSpawner(
+export function createAgentSpawner(
+  containerName: string,
   project: string,
-  canvas: string
-): Promise<(options: SpawnOptions) => SpawnedProcess> {
-  // Read _brief.brief for dependency declarations
-  let deps: SandboxDeps = { apt: [], pip: [] };
-  try {
-    const brief = await readCanvasFile(project, canvas, "_brief.brief");
-    deps = parseDependencies(brief.content);
-  } catch {
-    // No _brief.brief — use base image
-  }
-
-  const imageTag = await getOrBuildImage(deps);
-  const mounts = await getProjectMounts(project);
-  const sessionDir = join(SESSIONS_ROOT, project, canvas);
-
-  // Ensure session directory exists
-  mkdirSync(sessionDir, { recursive: true });
-
+  canvas: string,
+): (options: SpawnOptions) => SpawnedProcess {
   return (spawnOpts: SpawnOptions): SpawnedProcess => {
-    const containerName = `mica-sandbox-${project}-${canvas}-${Date.now()}`;
-
     const dockerArgs = [
-      "run", "--rm", "-i",
-      "--name", containerName,
-      "--network", "bridge",
-      "--memory", "512m",
-      "--cpus", "1.0",
+      "exec", "-i",
     ];
-
-    // Shared project mounts
-    for (const vol of mounts.volumes) {
-      dockerArgs.push("-v", vol);
-    }
-    // Agent-specific: session persistence
-    dockerArgs.push("-v", `${sessionDir}:/home/sandbox/.claude:rw`);
-    dockerArgs.push("-w", mounts.workdir);
 
     // Forward environment variables (auth tokens, etc.)
     for (const [key, value] of Object.entries(spawnOpts.env)) {
@@ -217,7 +176,7 @@ export async function createDockerSpawner(
       }
     }
 
-    dockerArgs.push(imageTag);
+    dockerArgs.push(containerName);
 
     // Append the original command and args
     dockerArgs.push(spawnOpts.command, ...spawnOpts.args);
@@ -226,12 +185,11 @@ export async function createDockerSpawner(
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    // Wire abort signal to kill the container
+    // Wire abort signal
     if (spawnOpts.signal) {
       const onAbort = () => {
-        try {
-          execSync(`docker kill ${containerName}`, { stdio: "ignore" });
-        } catch { /* container may already be gone */ }
+        // Kill the exec'd process, not the container
+        proc.kill("SIGTERM");
       };
       spawnOpts.signal.addEventListener("abort", onAbort, { once: true });
       proc.on("exit", () => {
@@ -241,7 +199,7 @@ export async function createDockerSpawner(
 
     // Log stderr for debugging
     proc.stderr?.on("data", (data: Buffer) => {
-      console.error(`[sandbox:${project}/${canvas}] ${data.toString().trim()}`);
+      console.error(`[agent:${project}/${canvas}] ${data.toString().trim()}`);
     });
 
     return proc as unknown as SpawnedProcess;

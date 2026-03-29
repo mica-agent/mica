@@ -10,7 +10,8 @@ import { z } from "zod/v4";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { createDockerSpawner } from "./dockerSpawn.js";
+import { createAgentSpawner } from "./dockerSpawn.js";
+import type { SandboxManager } from "./projectSandbox.js";
 import {
   listFiles,
   readCanvasFile,
@@ -21,6 +22,12 @@ import {
   invalidateExtensionCache,
 } from "./canvasFiles.js";
 import { readMicaConfig, getProjectPath } from "./projectConnection.js";
+
+// ── Sandbox manager for container access ──────────────────
+let _sandboxManager: SandboxManager | null = null;
+export function setAgentSandboxManager(sm: SandboxManager): void {
+  _sandboxManager = sm;
+}
 
 // ── Write hook for reactive agent ──────────────────────────
 // Called before agent writes a file — allows ReactiveAgent to suppress feedback loops.
@@ -543,8 +550,11 @@ ${fileContext}`;
     options.resume = canvasSessions[sKey];
   }
 
-  // Always sandbox Bash execution in Docker container
-  options.spawnClaudeCodeProcess = await createDockerSpawner(project, canvas);
+  // Run inside the shared project container
+  if (_sandboxManager) {
+    const containerName = await _sandboxManager.getContainerName(project);
+    options.spawnClaudeCodeProcess = createAgentSpawner(containerName, project, canvas);
+  }
 
   // Emit initial "thinking" event so the UI knows we're active immediately
   onProgress?.({ type: "thinking", description: "Thinking..." });
