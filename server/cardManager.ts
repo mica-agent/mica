@@ -126,12 +126,21 @@ export class CardManager {
     }
 
     // Merge project-level manifest on top (if it exists)
+    // Deep-merge per entry so project overrides don't drop built-in fields like `extension`
     if (projectPath) {
       const projectManifestPath = path.join(projectPath, ".mica", ".card-classes", "_manifest.json");
       try {
         const raw = fs.readFileSync(projectManifestPath, "utf-8");
-        const projectManifest = JSON.parse(raw);
-        this.manifest = { ...this.manifest, ...projectManifest };
+        const projectManifest = JSON.parse(raw) as Record<string, ClassManifestEntry>;
+        for (const [className, projectEntry] of Object.entries(projectManifest)) {
+          const builtIn = this.manifest[className];
+          if (builtIn) {
+            // Merge: project fields override, but keep built-in fields the project didn't specify
+            this.manifest[className] = { ...builtIn, ...projectEntry };
+          } else {
+            this.manifest[className] = projectEntry;
+          }
+        }
       } catch {
         // No project manifest — that's fine
       }
