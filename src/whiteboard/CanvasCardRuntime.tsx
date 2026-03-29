@@ -334,6 +334,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
             <WidgetRuntime
               html={parentCard.html}
               exports={parentCard.exports}
+              dependencies={parentCard.dependencies}
               project={projectId}
               canvas="_root"
               filename="_project.project"
@@ -379,6 +380,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
                     filename={card.filename}
                     html={card.html}
                     exports={card.exports}
+                    dependencies={card.dependencies}
                     meta={card.meta}
                     projectId={projectId}
                     canvasId="_root"
@@ -400,6 +402,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
                 filename={card.filename}
                 html={card.html}
                 exports={card.exports}
+                dependencies={card.dependencies}
                 meta={card.meta}
                 projectId={projectId}
                 canvasId="_root"
@@ -421,6 +424,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
                     filename={card.filename}
                     html={card.html}
                     exports={card.exports}
+                    dependencies={card.dependencies}
                     meta={card.meta}
                     projectId={projectId}
                     canvasId="_root"

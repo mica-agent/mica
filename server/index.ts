@@ -1089,6 +1089,7 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
       filename: event.filename,
       html: rendered.html,
       exports: rendered.exports,
+      dependencies: rendered.dependencies,
       meta: rendered.meta,
     });
   } catch (err) {

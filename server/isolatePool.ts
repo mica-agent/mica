@@ -18,9 +18,15 @@ const __dirname = path.dirname(__filename);
 
 // ── Types ──────────────────────────────────────────────────
 
+export interface CardDependencies {
+  scripts?: string[];
+  styles?: string[];
+}
+
 export interface RenderResult {
   html: string;
   exports: string[];
+  dependencies?: CardDependencies;
 }
 
 export interface RpcHandler {
@@ -35,6 +41,7 @@ interface LoadedClass {
   isolate: ivm.Isolate;
   context: ivm.Context;
   exportNames: string[];
+  dependencies?: CardDependencies;
 }
 
 // ── SDK & library source cache ─────────────────────────────
@@ -128,6 +135,13 @@ function transformCardSource(source: string): { script: string; exportNames: str
     (_match, name) => { exportNames.push(name); return `function ${name}`; }
   );
 
+  // 7. export const dependencies = { ... }
+  let hasDependencies = false;
+  transformed = transformed.replace(
+    /export\s+const\s+dependencies\s*=/g,
+    () => { hasDependencies = true; return `const dependencies =`; }
+  );
+
   // Build the IIFE that collects exports into globalThis.__card
   const assignments = [];
   if (defaultName) {
@@ -135,6 +149,9 @@ function transformCardSource(source: string): { script: string; exportNames: str
   }
   for (const name of exportNames) {
     assignments.push(`  __card['${name}'] = ${name};`);
+  }
+  if (hasDependencies) {
+    assignments.push(`  __card.dependencies = dependencies;`);
   }
 
   const script = `(function() {
@@ -217,10 +234,21 @@ export class IsolatePool {
       throw new Error(`Card class "${className}" has no render function (export default function render(content, config) {...})`);
     }
 
-    const loaded: LoadedClass = { isolate, context, exportNames };
+    // Extract dependencies (optional)
+    let dependencies: CardDependencies | undefined;
+    const depsJson = await context.eval(
+      `globalThis.__card.dependencies ? JSON.stringify(globalThis.__card.dependencies) : null`,
+      { copy: true }
+    ) as string | null;
+    if (depsJson) {
+      dependencies = JSON.parse(depsJson);
+    }
+
+    const loaded: LoadedClass = { isolate, context, exportNames, dependencies };
     this.classes.set(className, loaded);
 
-    console.log(`[isolate-pool:${this.label}] Loaded class "${className}" with exports: [${exportNames.join(", ")}]`);
+    const depsInfo = dependencies ? ` deps: ${(dependencies.scripts?.length || 0)}js+${(dependencies.styles?.length || 0)}css` : "";
+    console.log(`[isolate-pool:${this.label}] Loaded class "${className}" with exports: [${exportNames.join(", ")}]${depsInfo}`);
     return loaded;
   }
 
@@ -287,7 +315,7 @@ export class IsolatePool {
       { copy: true, timeout: 30000 }
     ) as string;
 
-    return { html: html || "", exports: loaded.exportNames };
+    return { html: html || "", exports: loaded.exportNames, dependencies: loaded.dependencies };
   }
 
   /**

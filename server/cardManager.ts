@@ -8,7 +8,7 @@
 import path from "path";
 import fs from "fs";
 import { WorkerPool, type RenderResult } from "./workerPool.js";
-import { IsolatePool, type RenderResult as IsolateRenderResult } from "./isolatePool.js";
+import { IsolatePool, type RenderResult as IsolateRenderResult, type CardDependencies } from "./isolatePool.js";
 import type { SandboxManager } from "./projectSandbox.js";
 import {
   readCanvasFile,
@@ -31,6 +31,7 @@ export interface CardMeta {
 interface CacheEntry {
   html: string;
   exports: string[];
+  dependencies?: CardDependencies;
   meta: CardMeta;
   mtime: number;
 }
@@ -239,7 +240,7 @@ export class CardManager {
     filename: string,
     content: string,
     config?: Record<string, unknown>
-  ): Promise<{ html: string; exports: string[]; meta: CardMeta }> {
+  ): Promise<{ html: string; exports: string[]; dependencies?: CardDependencies; meta: CardMeta }> {
     const key = this.cacheKey(project, canvas, filename);
     let projectPath: string | undefined;
     try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
@@ -268,11 +269,12 @@ export class CardManager {
         this.cache.set(key, {
           html: result.html,
           exports: result.exports,
+          dependencies: result.dependencies,
           meta,
           mtime: Date.now(),
         });
 
-        return { html: result.html, exports: result.exports, meta };
+        return { html: result.html, exports: result.exports, dependencies: result.dependencies, meta };
       } catch (err) {
         const msg = (err as Error).message;
         const isTimeout = msg.includes("timed out") || msg.includes("pool exhausted");

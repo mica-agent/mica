@@ -2,10 +2,16 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { CanvasId, CardMeta } from "../api/canvasFiles";
 import WidgetRuntime from "./WidgetRuntime";
 
+interface CardDependencies {
+  scripts?: string[];
+  styles?: string[];
+}
+
 interface Props {
   filename: string;
   html: string;
   exports: string[];
+  dependencies?: CardDependencies;
   meta: CardMeta;
   projectId: string;
   canvasId: CanvasId;
@@ -24,7 +30,7 @@ interface Props {
 const MIN_WIDTH = 200;
 const MIN_HEIGHT = 120;
 
-export default function FileCard({ filename, html, exports: exportFns, meta, projectId, canvasId, canvasColor, rendering, flash, resizable, cardStyle, onEdit, onDelete, onExpand, onResize, onDragEnd }: Props) {
+export default function FileCard({ filename, html, exports: exportFns, dependencies, meta, projectId, canvasId, canvasColor, rendering, flash, resizable, cardStyle, onEdit, onDelete, onExpand, onResize, onDragEnd }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
@@ -172,6 +178,7 @@ export default function FileCard({ filename, html, exports: exportFns, meta, pro
         <WidgetRuntime
           html={html}
           exports={exportFns}
+          dependencies={dependencies}
           project={projectId}
           canvas={canvasId}
           filename={filename}

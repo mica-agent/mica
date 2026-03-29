@@ -393,9 +393,51 @@ export default function render(content, config) {
 }
 ```
 
-### External Scripts and Stylesheets
+### Declaring Dependencies (Recommended)
 
-You can include CDN scripts. The WidgetRuntime guarantees that **all external `<script src="...">` tags are fully loaded** before any inline `<script>` blocks execute.
+Card classes that use third-party libraries should declare them via an `export const dependencies` alongside the render function. This tells the runtime to **preload scripts and styles before injecting the HTML**, guaranteeing that libraries are fully loaded AND their CSS is applied when your inline scripts execute.
+
+```javascript
+export const dependencies = {
+  scripts: [
+    "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js",
+    "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js",
+  ],
+  styles: [
+    "https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css",
+  ],
+};
+
+export default function render(content, config) {
+  // xterm.js and its CSS are guaranteed loaded and applied
+  return `
+    <div id="term" style="height:260px;"></div>
+    <script>
+      const term = new Terminal();
+      term.open(container.querySelector('#term'));
+      mica.onDestroy(() => term.dispose());
+    </script>
+  `;
+}
+```
+
+**Why use `dependencies` instead of `<script src>` in HTML?**
+
+| | `dependencies` export | `<script src>` in HTML |
+|---|---|---|
+| **Loading order** | Loaded before HTML is injected | Discovered after HTML is parsed |
+| **CSS timing** | CSS is guaranteed applied before scripts run | CSS may not be applied (browser timing issue) |
+| **Library CSS** | Use `<link>` normally — no need to inline | Must inline library CSS as `<style>` to avoid timing issues |
+| **Deduplication** | From declared list (reliable) | From HTML parsing (fragile) |
+| **Preloading** | Server knows deps at class load time | Only discovered at render time |
+
+**For card classes that use libraries with their own CSS (xterm.js, CodeMirror, Toast UI Editor, etc.), `dependencies` is strongly recommended.** It eliminates the CSS timing hack that previously required inlining entire library stylesheets.
+
+See `card-classes/markdown/render.js` for a full example using Toast UI Editor with declared dependencies.
+
+### External Scripts and Stylesheets (Legacy / Simple)
+
+You can also include CDN scripts directly in the HTML. The WidgetRuntime guarantees that **all external `<script src="...">` tags are fully loaded** before any inline `<script>` blocks execute. This approach still works and is fine for libraries that don't have CSS timing issues.
 
 ```html
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
