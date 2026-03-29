@@ -291,7 +291,7 @@ Rendered cards get a `mica` bridge object with five communication patterns:
 | Bidirectional channel | `mica.openChannel(fn, args)` | Terminal PTY, streaming data |
 | Widget broadcast | `mica.broadcast(event, data)` | Cross-card coordination |
 
-Server-side export handlers can call back into Mica: `mica.write()`, `mica.read_file()`, `mica.emit()`, `mica.agent.chat()`.
+Server-side export handlers can call back into Mica: `mica.write()`, `mica.readFile()`, `mica.writeFile()`, `mica.emit()`, `mica.agent.chat()`.
 
 #### 7.8 V8 Isolate Pool
 
@@ -409,9 +409,9 @@ Containers are simple blast radius boundaries — filesystem scoping and resourc
 | `server/llamaServer.ts` | llama-server singleton lifecycle (start, health check, stop) |
 | `server/localAgent.ts` | Local LLM agent with tool loop, XML fallback parsing, mermaid sanitization |
 | `server/reactiveAgent.ts` | Two-phase reactive agent (triage → reaction) with cooldowns |
-| `server/cardManager.ts` | Card rendering dispatch through sandbox/global worker pools |
-| `server/isolatePool.ts` | V8 isolate pool — creates, caches, and evicts isolated-vm contexts for card classes |
-| `server/mica.js` | Bridge API injected into each V8 isolate (mica.read, mica.write, mica.emit, etc.) |
+| `server/cardManager.ts` | Card rendering dispatch through V8 isolate pool |
+| `server/isolatePool.ts` | V8 isolate pool — creates, caches, and disposes isolated-vm contexts for card classes |
+| `server/mica_sdk/mica.js` | Bridge API injected into each V8 isolate (mica.write, mica.readFile, mica.emit, etc.) |
 | `src/api/projectGit.ts` | Frontend git API client |
 | `src/api/projectContainer.ts` | Frontend container API client |
 
@@ -423,7 +423,7 @@ Containers are simple blast radius boundaries — filesystem scoping and resourc
 | `server/seedCanvases.ts` | `seedNewProject()` accepts `agentProvider`, writes to config |
 | `server/index.ts` | Agent routing (`routedChat`), reactive agent integration, llama-server shutdown hook |
 | `server/agents.ts` | Read from repo root + `.mica/`, exported shared prompts for local agent reuse |
-| `server/workerPool.ts` | V8 isolate pool management, idle eviction, file-change invalidation |
+| `server/workerPool.ts` | Legacy Python worker pool (retained for sandbox manager compatibility, warm=0) |
 | `server/fileWatcher.ts` | Watch project root + `.mica/`, skip `.git/` |
 | `server/dockerSpawn.ts` | Export `parseDependencies` and `getOrBuildImage` for reuse |
 | `src/ProjectNav.tsx` | Agent provider toggle (Claude / Local) in project creation UI |
@@ -504,14 +504,18 @@ Card classes declare network access in their manifest:
 
 ```json
 {
-  "name": "my-widget",
-  "network": ["https://api.example.com"]
+  "my-widget": {
+    "extension": ".my-widget",
+    "badge": "WIDGET",
+    "network": true
+  }
 }
 ```
 
-- **Default: deny all.** Cards with no `network` field cannot make any outbound requests
-- Allowed origins are proxied through the Mica server — the isolate never makes network calls directly
-- Built-in card classes inherit server trust (no restrictions)
+- **Default: deny all.** Cards with no `network` field (or `network: false`) cannot make any outbound requests
+- Cards with `network: true` can call `mica.fetch(url, options)` — requests are proxied through the Mica server
+- The V8 isolate itself has no network primitives; `mica.fetch()` is an RPC call to the host
+- Cards with network access are surfaced in the UI so users know which cards can reach the internet
 
 ### Agent trust model
 

@@ -4,27 +4,124 @@ Card classes define how files render as interactive widgets on the Mica whiteboa
 
 ## Directory Structure
 
-**Built-in classes** live in `card-classes/`:
+A card class is a directory containing a `render.js` file. That's it — no package.json, no build step, no registration beyond the manifest.
+
+### Built-in classes
+
+Ship with Mica in `card-classes/`:
+
 ```
 card-classes/
-  chat/render.js
-  todo/render.js
-  markdown/render.js
+├── _manifest.json          # Maps class name → extension + metadata
+├── CREATING_CARDS.md       # This file
+├── markdown/
+│   └── render.js           # export default function render(content, config) → HTML
+├── todo/
+│   └── render.js           # render + 5 async exports (toggle, add_item, etc.)
+├── chat/
+│   └── render.js           # render + 2 exports (send_message, check_in)
+├── agent/
+│   ├── render.js           # render + 1 export (select_provider)
+│   └── providers.json      # Agent provider registry (auto-injected into isolate)
+├── terminal/
+│   └── render.js           # render only (PTY handled Node-side)
+├── simple-project/
+│   └── render.js           # Canvas card — render + 1 export (create_file)
+├── canvas/
+│   └── render.js           # Base canvas card with data-slot markers
+├── goal/
+│   └── render.js           # Markdown + progress bar
+├── brief/
+│   └── render.js           # Markdown render
+├── log/
+│   └── render.js           # Markdown render
+├── mermaid/
+│   └── render.js           # Raw mermaid syntax (rendered browser-side)
+├── html/
+│   └── render.js           # Raw HTML passthrough
+└── text/
+    └── render.js           # Escaped plain text in <pre>
 ```
 
-**Project-specific classes** live in `.mica/.card-classes/` inside the project repo:
+### Project-specific classes
+
+Live in `.mica/.card-classes/` inside the project repo. Shared with the team via git.
+
 ```
 my-project/
-  .mica/
-    .card-classes/
-      my-widget/
-        render.js          # required
-      _manifest.json       # optional: badge/title metadata
-    workspace/
-      dashboard.my-widget  # triggers the card class (extension = class name)
+├── src/                          # Project's own files (untouched)
+├── .git/
+└── .mica/
+    ├── .card-classes/
+    │   ├── _manifest.json        # Project manifest (merged on top of built-in)
+    │   ├── dashboard/
+    │   │   └── render.js         # Custom dashboard card class
+    │   └── data-table/
+    │       └── render.js         # Custom data table card class
+    ├── _project.project          # Uses simple-project class
+    ├── _todo.todo                # Uses todo class
+    ├── overview.dashboard        # Uses project's dashboard class (extension match)
+    └── sales.data-table          # Uses project's data-table class
 ```
 
-Project classes override built-in classes of the same name.
+### Workspace-scope classes
+
+Local to this machine, shared across your projects. Live in `~/.mica/card-classes/`:
+
+```
+~/.mica/
+└── card-classes/
+    └── pomodoro/
+        └── render.js             # Available in all your projects
+```
+
+### Resolution order
+
+When Mica needs to render a card class, it checks (most specific first):
+
+```
+Project .mica/.card-classes/{name}/  →  Workspace ~/.mica/card-classes/{name}/  →  Built-in card-classes/{name}/
+```
+
+A project class overrides a built-in class of the same name. This lets you customize built-in cards per-project without forking.
+
+### Promotion
+
+Promotion is copying a directory:
+
+- Project → Workspace: `cp -r .mica/.card-classes/my-widget ~/.mica/card-classes/my-widget`
+- Workspace → Built-in: contribute upstream to Mica
+
+### What goes in the directory
+
+The only required file is `render.js`. Optional sibling files:
+
+| File | Purpose |
+|------|---------|
+| `render.js` | **Required.** The card class module — render function + exports |
+| `providers.json` | Data file auto-injected into the V8 isolate as `globalThis.__providers` |
+| `*.json` | Any JSON data file — injected if the isolate pool detects it |
+
+Card classes do NOT have their own `package.json` or `node_modules`. Server-side libraries (like `marked` for markdown) are provided by the isolate pool. Browser-side libraries are loaded via CDN `<script src>` tags in the HTML output.
+
+## Runtime Environment
+
+Card classes run in **V8 isolates** — lightweight, sandboxed JavaScript contexts with zero OS access. This means:
+
+- **No `require()` or `import`** — you cannot import npm packages or Node.js modules
+- **No `fs`, `net`, `child_process`, `process`** — no OS-level APIs
+- **No `fetch` or `XMLHttpRequest`** — no direct network access (use `mica.fetch()` with `network: true` in manifest)
+- **The `mica` bridge is your only way out** — all interaction with the outside world goes through `mica.*` functions
+
+**What IS available:**
+- All JavaScript built-ins: `JSON`, `Math`, `Date`, `RegExp`, `Map`, `Set`, `Promise`, `Array`, etc.
+- String template literals for HTML generation
+- The `marked` library (auto-injected for card classes that reference it) for markdown → HTML conversion
+- Any data files in the card class directory (e.g., `providers.json`) are auto-injected as globals
+
+The render function is synchronous — it returns an HTML string. Export functions can be `async` and use `await mica.write()`, `await mica.agent.chat()`, etc.
+
+---
 
 ## How Files Map to Card Classes
 
