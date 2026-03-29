@@ -274,21 +274,52 @@ export class IsolatePool {
     const handler = this.rpcHandler;
     const ctx = requestContext;
 
-    // Create a reference to the handler that the isolate can call.
-    // The isolate uses `__mica_rpc.applySyncPromise(...)` to synchronously
-    // wait for the async handler to complete.
-    const handlerRef = new ivm.Reference(function (method: string, argsJson: string) {
+    // Async RPC bridge using deferred pattern.
+    // Each RPC call gets a unique ID. The isolate creates a native Promise
+    // and stores its resolve/reject in a map. The host calls __mica_rpc_resolve
+    // or __mica_rpc_reject when the async operation completes.
+    // This avoids applySyncPromise (deadlocks) and Promise cloning issues.
+
+    let rpcIdCounter = 0;
+
+    // Host-side: receives (method, argsJson, rpcId), calls handler, then resolves
+    const dispatchRef = new ivm.Reference(function (method: string, argsJson: string, rpcId: number) {
       const args = JSON.parse(argsJson);
-      return handler(method, args, ctx).then(result =>
-        new ivm.ExternalCopy(result === undefined ? null : result).copyInto()
+      handler(method, args, ctx).then(
+        (result) => {
+          const val = result === undefined ? null : result;
+          loaded.context.evalSync(
+            `globalThis.__mica_rpc_settle(${rpcId}, ${JSON.stringify(val)}, null)`,
+          );
+        },
+        (err) => {
+          loaded.context.evalSync(
+            `globalThis.__mica_rpc_settle(${rpcId}, null, ${JSON.stringify(String((err as Error).message || err))})`,
+          );
+        }
       );
     });
-    await loaded.context.global.set("__mica_rpc_ref", handlerRef);
+    await loaded.context.global.set("__mica_rpc_dispatch", dispatchRef);
 
-    // Set up a wrapper in the isolate that calls the reference synchronously
+    // Isolate-side: __mica_rpc returns a native Promise, __mica_rpc_settle resolves it
     await loaded.context.eval(`
+      globalThis.__mica_rpc_pending = new Map();
+      globalThis.__mica_rpc_id = 0;
+
       globalThis.__mica_rpc = function(method, args) {
-        return __mica_rpc_ref.applySyncPromise(undefined, [method, JSON.stringify(args)]);
+        return new Promise((resolve, reject) => {
+          const id = ++globalThis.__mica_rpc_id;
+          globalThis.__mica_rpc_pending.set(id, { resolve, reject });
+          __mica_rpc_dispatch.applyIgnored(undefined, [method, JSON.stringify(args), id]);
+        });
+      };
+
+      globalThis.__mica_rpc_settle = function(id, result, error) {
+        const pending = globalThis.__mica_rpc_pending.get(id);
+        if (!pending) return;
+        globalThis.__mica_rpc_pending.delete(id);
+        if (error) pending.reject(new Error(error));
+        else pending.resolve(result);
       };
     `);
   }
