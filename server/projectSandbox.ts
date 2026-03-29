@@ -243,6 +243,7 @@ export class SandboxManager {
       "--network", "bridge",
       "--memory", memory,
       "--cpus", "2.0",
+      "--cap-add", "SYS_ADMIN",  // required for unshare --net in card workers
     ];
 
     // Shared project mounts (project repo, card-classes, SDK)
