@@ -939,6 +939,31 @@ pre.mermaid svg {
   transition: opacity 0.2s;
 }
 
+/* Loading skeleton shown while declared dependencies are downloading */
+.widget-deps-loading {
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.widget-deps-skeleton {
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%);
+  background-size: 200% 100%;
+  animation: widget-skeleton-pulse 1.5s ease-in-out infinite;
+  width: 100%;
+}
+
+.widget-deps-skeleton--short { width: 40%; }
+.widget-deps-skeleton--med { width: 70%; }
+
+@keyframes widget-skeleton-pulse {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 /* Expanded view: widget fills available space */
 .wb-expanded-body .widget-runtime {
   width: 100%;

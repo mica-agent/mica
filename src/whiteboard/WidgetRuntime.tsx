@@ -96,6 +96,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
   const prevHtmlRef = useRef<string>("");
   const bridgeRef = useRef<ReturnType<typeof createBridge> | null>(null);
   const [activeCalls, setActiveCalls] = useState(0);
+  const [loadingDeps, setLoadingDeps] = useState(false);
 
   // Only re-run when html changes
   useEffect(() => {
@@ -233,12 +234,17 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
       }
     };
 
-    // If there are declared dependencies, preload them first, then render.
+    // If there are declared dependencies, show loading skeleton, preload, then render.
     // Otherwise, render immediately (backward compatible).
     if (declaredScripts.length > 0 || declaredStyles.length > 0) {
-      preloadDeps().then(continueRender).catch((err) => {
+      setLoadingDeps(true);
+      preloadDeps().then(() => {
+        setLoadingDeps(false);
+        continueRender();
+      }).catch((err) => {
         console.error("[widget-runtime] Dependency preload failed:", err);
-        continueRender(); // Still try to render
+        setLoadingDeps(false);
+        continueRender();
       });
     } else {
       continueRender();
@@ -255,6 +261,13 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
   return (
     <div ref={containerRef} className={`widget-runtime ${activeCalls > 0 ? "widget-runtime--busy" : ""}`}>
       {activeCalls > 0 && <div className="widget-activity-indicator" />}
+      {loadingDeps && (
+        <div className="widget-deps-loading">
+          <div className="widget-deps-skeleton" />
+          <div className="widget-deps-skeleton widget-deps-skeleton--short" />
+          <div className="widget-deps-skeleton widget-deps-skeleton--med" />
+        </div>
+      )}
     </div>
   );
 }
