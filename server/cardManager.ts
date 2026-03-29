@@ -8,6 +8,7 @@
 import path from "path";
 import fs from "fs";
 import { WorkerPool, type RenderResult } from "./workerPool.js";
+import { IsolatePool, type RenderResult as IsolateRenderResult } from "./isolatePool.js";
 import type { SandboxManager } from "./projectSandbox.js";
 import {
   readCanvasFile,
@@ -23,6 +24,7 @@ export interface CardMeta {
   title: string;
   badge: string;
   isSystem: boolean;
+  network: boolean;
   config: Record<string, unknown>;
 }
 
@@ -38,6 +40,7 @@ interface ClassManifestEntry {
   badge: string;
   system?: boolean;
   defaultTitle?: string;
+  network?: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────────
@@ -87,19 +90,31 @@ function parseFrontmatter(raw: string): ParsedFile {
 export class CardManager {
   private cache: Map<string, CacheEntry> = new Map();
   private pool: WorkerPool;
+  private isolatePool: IsolatePool;
   private sandboxManager: SandboxManager | null = null;
   private manifest: Record<string, ClassManifestEntry> = {};
   private extensionMap: Map<string, string> = new Map(); // ".todo" → "todo"
 
   constructor(pool: WorkerPool, sandboxManager?: SandboxManager) {
     this.pool = pool;
+    this.isolatePool = new IsolatePool();
     this.sandboxManager = sandboxManager ?? null;
     this.loadManifest();
+  }
+
+  /** Set the RPC handler for the V8 isolate pool. */
+  setIsolateRpcHandler(handler: import("./isolatePool.js").RpcHandler) {
+    this.isolatePool.setRpcHandler(handler);
   }
 
   /** Get all valid card extensions (for file validation and watching). */
   getValidExtensions(): string[] {
     return [...this.extensionMap.keys(), ".json"];
+  }
+
+  /** Check if a card class has network permission (manifest `network: true`). */
+  hasNetworkPermission(cardClass: string): boolean {
+    return this.manifest[cardClass]?.network === true;
   }
 
   /** Get the worker pool for a project. Uses sandbox if available, else global pool. */
@@ -195,22 +210,23 @@ export class CardManager {
       title,
       badge: manifestEntry?.badge || cardClass.toUpperCase(),
       isSystem,
+      network: manifestEntry?.network === true,
       config: metadata as Record<string, unknown>,
     };
   }
 
   // ── Rendering ──────────────────────────────────────────
 
+  /**
+   * Resolve the class file path for a card class.
+   * Project-level classes take priority over built-in classes.
+   */
   private getClassPath(className: string, projectPath?: string): string {
-    // Check project-level card classes first
     if (projectPath) {
-      const projectClassPath = path.join(projectPath, ".mica", ".card-classes", className, "render.py");
-      if (fs.existsSync(projectClassPath)) {
-        return projectClassPath;
-      }
+      const projectJs = path.join(projectPath, ".mica", ".card-classes", className, "render.js");
+      if (fs.existsSync(projectJs)) return projectJs;
     }
-    // Fall back to built-in card classes
-    return path.join(CARD_CLASSES_DIR, className, "render.py");
+    return path.join(CARD_CLASSES_DIR, className, "render.js");
   }
 
   private cacheKey(project: string, canvas: string, filename: string): string {
@@ -239,17 +255,13 @@ export class CardManager {
       return { html, exports: [], meta };
     }
 
-    // Retry renders up to 3 times (workers may be temporarily busy with exports)
-    const pool = await this.getPool(project);
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const result = await pool.render(
-          cardClass,
-          classPath,
-          strippedContent,
-          { ...metadata, ...(config || {}), project, canvas, filename },
-          { project, canvas, filename }
+        const renderConfig = { ...metadata, ...(config || {}), project, canvas, filename };
+        const requestContext = { project, canvas, filename };
+        const result = await this.isolatePool.render(
+          cardClass, classPath, strippedContent, renderConfig, requestContext
         );
 
         // Cache the result
@@ -295,13 +307,8 @@ export class CardManager {
       throw new Error(`Card class "${cardClass}" not found`);
     }
 
-    const pool = await this.getPool(project);
-    return pool.callExport(
-      cardClass,
-      classPath,
-      fn,
-      strippedContent,
-      args,
+    return this.isolatePool.callExport(
+      cardClass, classPath, fn, strippedContent, args,
       { project, canvas, filename }
     );
   }
@@ -413,6 +420,7 @@ export class CardManager {
 
   invalidateClass(className: string) {
     this.pool.invalidateClass(className);
+    this.isolatePool.invalidateClass(className);
     // Clear all cached cards of this class
     for (const [key, entry] of this.cache) {
       if (entry.meta.cardClass === className) {

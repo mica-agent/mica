@@ -267,6 +267,8 @@ export function broadcast(event: string, data: Record<string, unknown> = {}): vo
  * This is what WidgetRuntime injects into widget scripts.
  */
 export function createBridge(project: string, canvas: CanvasId, filename: string) {
+  const destroyCallbacks: Array<() => void> = [];
+
   return {
     call: (fn: string, args: Record<string, unknown> = {}) =>
       call(project, canvas, filename, fn, args),
@@ -278,6 +280,17 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
       openChannel(project, canvas, filename, fn, args),
     broadcast: (event: string, data: Record<string, unknown> = {}) =>
       broadcast(event, data),
+    /** Register a cleanup callback. Called when the card is removed or before DOM replacement. */
+    onDestroy: (fn: () => void) => {
+      destroyCallbacks.push(fn);
+    },
+    /** Execute and clear all registered destroy callbacks. */
+    _runDestroy: () => {
+      for (const cb of destroyCallbacks) {
+        try { cb(); } catch (e) { console.error("[mica-bridge] onDestroy error:", e); }
+      }
+      destroyCallbacks.length = 0;
+    },
   };
 }
 

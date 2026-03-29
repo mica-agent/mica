@@ -157,8 +157,8 @@ export class FileWatcher extends EventEmitter {
       // Watch top-level card-classes directory for new class dirs
       const watcher = fs.watch(CARD_CLASSES_DIR, { recursive: true }, (eventType, filename) => {
         if (!filename) return;
-        // Only care about render.py files
-        if (!filename.endsWith("render.py") && !filename.endsWith("_manifest.json")) return;
+        // Only care about render.js files and manifest
+        if (!filename.endsWith("render.js") && !filename.endsWith("_manifest.json")) return;
 
         const parts = filename.split(path.sep);
         if (parts.length < 2) return;

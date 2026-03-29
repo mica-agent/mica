@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import mermaid from "mermaid";
+import morphdom from "morphdom";
 import type { CanvasId } from "../api/canvasFiles";
 import { createBridge } from "../api/micaSocket";
 
@@ -36,6 +37,7 @@ const loadedExternalStyles = new Set<string>();
 export default function WidgetRuntime({ html, exports: exportFns, project, canvas, filename }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const prevHtmlRef = useRef<string>("");
+  const bridgeRef = useRef<ReturnType<typeof createBridge> | null>(null);
   const [activeCalls, setActiveCalls] = useState(0);
 
   // Only re-run when html changes
@@ -44,8 +46,34 @@ export default function WidgetRuntime({ html, exports: exportFns, project, canva
     if (!el) return;
     if (html === prevHtmlRef.current) return;
 
-    el.innerHTML = html;
+    // Run destroy callbacks from previous render before updating DOM
+    if (bridgeRef.current) {
+      bridgeRef.current._runDestroy();
+    }
+
+    const isFirstRender = prevHtmlRef.current === "";
     prevHtmlRef.current = html;
+
+    if (isFirstRender) {
+      // First render: inject directly (morphdom needs an existing DOM to diff against)
+      el.innerHTML = html;
+    } else {
+      // Re-render: use morphdom to diff-patch the DOM.
+      // This preserves mounted library instances (Three.js canvases, xterm terminals)
+      // across content updates, since unchanged DOM nodes are left in place.
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = html;
+      morphdom(el, wrapper, {
+        childrenOnly: true,
+        onBeforeElUpdated(fromEl, toEl) {
+          // Don't update script tags — they've already been executed
+          if (fromEl.tagName === "SCRIPT") return false;
+          // Don't update elements with data-morphdom-skip
+          if (fromEl.hasAttribute("data-morphdom-skip")) return false;
+          return true;
+        },
+      });
+    }
 
     // Hoist <link rel="stylesheet"> to <head> and track load promises
     const cssLoads: Promise<void>[] = [];
@@ -82,9 +110,10 @@ export default function WidgetRuntime({ html, exports: exportFns, project, canva
       link.remove();
     });
 
-    // Build mica bridge — WebSocket-based with all 4 patterns
+    // Build mica bridge — WebSocket-based with all 5 patterns + onDestroy
     // Wrap call() to track in-flight exports for the activity indicator
     const baseBridge = createBridge(project, canvas, filename);
+    bridgeRef.current = baseBridge;
     const micaBridge = {
       ...baseBridge,
       call: async (fn: string, args: Record<string, unknown> = {}) => {
@@ -173,6 +202,12 @@ export default function WidgetRuntime({ html, exports: exportFns, project, canva
       // HMR / re-mount: fix already-rendered SVGs
       fixMermaidSvgs(el);
     }
+    // Cleanup on unmount: run destroy callbacks
+    return () => {
+      if (bridgeRef.current) {
+        bridgeRef.current._runDestroy();
+      }
+    };
   }, [html, project, canvas, filename]);
 
   return (

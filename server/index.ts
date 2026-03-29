@@ -694,12 +694,47 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
       broadcast({ type: args.event as string, ...(args.data as Record<string, unknown> || {}) });
       return { success: true };
     }
+    case "fetch": {
+      // Network-gated: only cards with `network: true` in manifest can fetch.
+      // Resolve card class from filename to check permission.
+      const url = args.url as string;
+      if (!url) throw new Error("mica.fetch(): url is required");
+
+      let fileContent = "";
+      try {
+        const f = await readCanvasFile(project, canvas, context.filename);
+        fileContent = f.content;
+      } catch { /* empty */ }
+      const { cardClass } = cardManager.resolveCardClass(context.filename, fileContent);
+      if (!cardManager.hasNetworkPermission(cardClass)) {
+        throw new Error(
+          `mica.fetch() denied: card class "${cardClass}" does not have network permission. ` +
+          `Add "network": true to the manifest entry to enable.`
+        );
+      }
+
+      // Proxy the fetch through the server
+      const fetchOpts = args.options as Record<string, unknown> || {};
+      const response = await fetch(url, {
+        method: (fetchOpts.method as string) || "GET",
+        headers: (fetchOpts.headers as Record<string, string>) || {},
+        body: fetchOpts.body ? String(fetchOpts.body) : undefined,
+      });
+      const body = await response.text();
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        body,
+      };
+    }
     default:
       throw new Error(`Unknown RPC method: ${method}`);
   }
 };
 workerPool.setRpcHandler(rpcHandler);
 sandboxManager.setRpcHandler(rpcHandler);
+cardManager.setIsolateRpcHandler(rpcHandler);
 
 // Get all rendered cards for a canvas
 app.get("/api/projects/:project/canvases/:canvas/cards", async (req, res) => {

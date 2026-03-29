@@ -1,8 +1,9 @@
 /**
- * WorkerPool — Manages a pool of long-lived Python mica_worker.py processes.
+ * WorkerPool — Legacy Python worker pool.
  *
- * Each worker communicates via JSON lines on stdin/stdout.
- * Workers cache loaded card classes in-process for fast re-renders.
+ * DEPRECATED: Card classes now run in V8 isolates (see isolatePool.ts).
+ * This module is retained for backward compatibility with the sandbox manager
+ * and will be removed in a future cleanup pass.
  */
 
 import { ChildProcess, spawn } from "child_process";
@@ -39,20 +40,17 @@ export function localSpawnFn(pythonPath: string, workerPath: string): SpawnWorke
   });
 }
 
-/** Spawn a worker inside a Docker container via `docker exec`.
- *  Uses `unshare --net` to isolate card workers from the network —
- *  each worker runs in its own network namespace with loopback only.
- *  This allows the container itself to keep bridge network for agents/apps.
- *  Runs as root for unshare, then drops to sandbox user for the worker. */
+/** Spawn a Python worker inside a Docker container via `docker exec`.
+ *  Note: This is the legacy Python worker spawn, kept for backward compatibility
+ *  during the migration to V8 isolates. New card classes use render.js and run
+ *  in V8 isolates on the host, not in the container. */
 export function dockerSpawnFn(containerName: string, workerPath: string): SpawnWorkerFn {
   return () => spawn("docker", [
     "exec", "-i",
-    "--user", "root",
+    "--user", "sandbox",
     "--env", "PYTHONDONTWRITEBYTECODE=1",
     containerName,
-    "unshare", "--net", "--",
-    "su", "-s", "/bin/sh", "sandbox", "-c",
-    `python3 -u ${workerPath}`,
+    "python3", "-u", workerPath,
   ], {
     stdio: ["pipe", "pipe", "pipe"],
   });

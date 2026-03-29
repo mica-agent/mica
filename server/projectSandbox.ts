@@ -18,7 +18,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { WorkerPool, dockerSpawnFn, localSpawnFn, buildWorkerEnv, type WorkerPoolOptions, type RpcHandler } from "./workerPool.js";
 import { getProjectPath, getProjectConfig } from "./projectConnection.js";
-import { getProjectMounts, SANDBOX_IMAGE, CARD_CLASSES_DIR, SDK_DIR } from "./dockerSpawn.js";
+import { getProjectMounts, SANDBOX_IMAGE } from "./dockerSpawn.js";
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -41,7 +41,6 @@ interface ProjectSandboxInfo {
 
 // ── Constants ──────────────────────────────────────────────
 
-const WORKER_PATH = path.join(SDK_DIR, "mica_worker.py");
 const CONTAINER_PREFIX = "mica-project-";
 
 // Backoff: 5s, 10s, 20s, 40s, 60s cap
@@ -234,16 +233,16 @@ export class SandboxManager {
     const memory = config.memory ?? "1g";
 
     // Single container for all project operations:
-    // - Card workers (network-isolated via unshare --net)
     // - Agent subprocesses (full network for Claude API)
     // - App runtime (serves on exposed ports)
+    // Cards run in V8 isolates on the host — no card workers in the container.
+    // Container's job: blast radius (filesystem scoping) + resource limits.
     const dockerArgs = [
       "run", "-d",
       "--name", containerName,
       "--network", "bridge",
       "--memory", memory,
       "--cpus", "2.0",
-      "--cap-add", "SYS_ADMIN",  // required for unshare --net in card workers
     ];
 
     // Shared project mounts (project repo, card-classes, SDK)
@@ -261,7 +260,6 @@ export class SandboxManager {
       "-e", `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       "-e", `HOME=/home/sandbox`,
       "-e", `TERM=xterm-256color`,
-      "-e", `PYTHONPATH=${SDK_DIR}`,
       "--entrypoint", "sleep",
       SANDBOX_IMAGE,
       "infinity",
@@ -275,28 +273,8 @@ export class SandboxManager {
       throw err;
     }
 
-    // Phase 2: Install dependencies
-    await this.installDeps(containerName, projectId);
-    // Network stays connected — card workers are isolated via unshare --net,
-    // while agents and app runtime need network access in the same container.
-  }
-
-  /** Install Python dependencies inside container (runs during setup phase with network). */
-  private async installDeps(containerName: string, projectId: string): Promise<void> {
-    const coreDeps = ["markdown"];
-
-    if (coreDeps.length === 0) return;
-
-    try {
-      console.log(`[sandbox] Installing dependencies in ${containerName}: ${coreDeps.join(", ")}`);
-      await execFileAsync("docker", [
-        "exec", containerName,
-        "pip", "install", "--break-system-packages", "--quiet",
-        ...coreDeps,
-      ], { timeout: 60000 });
-    } catch (err) {
-      console.warn(`[sandbox] Dependency install failed for "${projectId}":`, (err as Error).message);
-    }
+    // No setup phase needed — card classes run in V8 isolates on the host,
+    // not in the container. Container is just blast radius for agents/apps.
   }
 
   /**

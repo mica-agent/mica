@@ -1,8 +1,7 @@
 FROM node:20-slim
 
-# System basics
+# System basics — Python removed (card classes run in V8 isolates on the host)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv \
     curl git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

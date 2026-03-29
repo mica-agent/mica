@@ -145,12 +145,12 @@ When you see _decision-*.md files on your whiteboard, READ THEM — they contain
 
 ## Custom Card Classes
 - To create a new card class, first read the docs: \`cat card-classes/CREATING_CARDS.md\`
-- Card classes are Python render.py files. Use write_file with a .card-classes/ path:
-  1. write_file with filename \`.card-classes/<classname>/render.py\` — the render code
+- Card classes are JavaScript render.js files. Use write_file with a .card-classes/ path:
+  1. write_file with filename \`.card-classes/<classname>/render.js\` — the render code
   2. write_file with filename \`.card-classes/_manifest.json\` — register extension/badge metadata
 - The file extension IS the card class. To use your new class, create a card file with a matching extension:
   e.g., for class "dashboard" → write_file \`my-dashboard.dashboard\` to place it on the whiteboard
-- Look at existing card classes for patterns: \`ls card-classes/\` and \`cat card-classes/<name>/render.py\`
+- Look at existing card classes for patterns: \`ls card-classes/\` and \`cat card-classes/<name>/render.js\`
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
@@ -272,12 +272,12 @@ const readFileTool = tool(
 
 const writeFileTool = tool(
   "write_file",
-  "Create or update a file. For canvas cards, use a simple filename (e.g., notes.md). For card classes, use a path like .card-classes/my-widget/render.py",
+  "Create or update a file. For canvas cards, use a simple filename (e.g., notes.md). For card classes, use a path like .card-classes/my-widget/render.js",
   {
     filename: z
       .string()
       .describe(
-        "Filename or path. Canvas cards: 'user-persona.md'. Card classes: '.card-classes/my-widget/render.py' or '.card-classes/_manifest.json'"
+        "Filename or path. Canvas cards: 'user-persona.md'. Card classes: '.card-classes/my-widget/render.js' or '.card-classes/_manifest.json'"
       ),
     content: z.string().describe("The file content"),
     summary: z.string().describe("One-line summary of what you did and why (for the activity log)"),
