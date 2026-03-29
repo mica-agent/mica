@@ -1,25 +1,57 @@
 /**
- * dockerSpawn — Docker-based sandboxing for agent Bash execution (PROD mode).
+ * dockerSpawn — Docker-based sandboxing for all container operations.
  *
- * When MICA_MODE=prod, the Claude Agent SDK's CLI process is spawned inside
- * a Docker container instead of locally. MCP tools still run server-side —
- * only Bash tool execution is sandboxed.
+ * Provides shared container configuration (image, mounts) and the
+ * spawner factory for Claude Agent SDK subprocess containers.
  *
- * The container mounts only the relevant project/canvas directory and has
- * outbound HTTP access (for pip install, API calls, etc.).
+ * Two container systems use this shared config:
+ * - Card workers (projectSandbox.ts): long-lived, network-isolated after setup
+ * - Agent subprocesses (this file): ephemeral, network-connected for API access
  */
 
 import { spawn, execSync } from "child_process";
 import { createHash } from "crypto";
 import { writeFileSync, mkdirSync, unlinkSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { tmpdir } from "os";
+import { fileURLToPath } from "url";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { readCanvasFile, getProjectConfig } from "./canvasFiles.js";
-import { getProjectPath, getCanvasDir } from "./projectConnection.js";
+import { getProjectPath } from "./projectConnection.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = join(__filename, "..");
 
 const SESSIONS_ROOT = join(process.cwd(), ".sessions");
-const BASE_IMAGE = "mica-sandbox:base";
+export const SANDBOX_IMAGE = "mica-sandbox:base";
+export const CARD_CLASSES_DIR = resolve("card-classes");
+export const SDK_DIR = join(__dirname, "mica_sdk");
+
+// ── Shared project mount config ─────────────────────────────
+// Single source of truth for how project files are mounted into containers.
+
+export interface ProjectMounts {
+  projectPath: string;
+  volumes: string[];     // Docker -v args (pairs: mount spec)
+  workdir: string;
+}
+
+/**
+ * Get the standard Docker volume mounts for a project.
+ * Used by both card worker containers and agent subprocess containers.
+ */
+export async function getProjectMounts(projectId: string): Promise<ProjectMounts> {
+  const projectPath = await getProjectPath(projectId);
+  return {
+    projectPath,
+    volumes: [
+      `${projectPath}:${projectPath}:rw`,
+      `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
+      `${SDK_DIR}:${SDK_DIR}:ro`,
+    ],
+    workdir: projectPath,
+  };
+}
 
 // Cache of already-verified image tags
 const imageCache = new Set<string>();
@@ -153,7 +185,7 @@ export async function createDockerSpawner(
   }
 
   const imageTag = await getOrBuildImage(deps);
-  const canvasDir = await getCanvasDir(project, canvas);
+  const mounts = await getProjectMounts(project);
   const sessionDir = join(SESSIONS_ROOT, project, canvas);
 
   // Ensure session directory exists
@@ -168,10 +200,15 @@ export async function createDockerSpawner(
       "--network", "bridge",
       "--memory", "512m",
       "--cpus", "1.0",
-      "-v", `${canvasDir}:/workspace:rw`,
-      "-v", `${sessionDir}:/home/sandbox/.claude:rw`,
-      "-w", "/workspace",
     ];
+
+    // Shared project mounts
+    for (const vol of mounts.volumes) {
+      dockerArgs.push("-v", vol);
+    }
+    // Agent-specific: session persistence
+    dockerArgs.push("-v", `${sessionDir}:/home/sandbox/.claude:rw`);
+    dockerArgs.push("-w", mounts.workdir);
 
     // Forward environment variables (auth tokens, etc.)
     for (const [key, value] of Object.entries(spawnOpts.env)) {

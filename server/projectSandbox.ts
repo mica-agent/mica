@@ -18,6 +18,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { WorkerPool, dockerSpawnFn, localSpawnFn, buildWorkerEnv, type WorkerPoolOptions, type RpcHandler } from "./workerPool.js";
 import { getProjectPath, getProjectConfig } from "./projectConnection.js";
+import { getProjectMounts, SANDBOX_IMAGE, CARD_CLASSES_DIR, SDK_DIR } from "./dockerSpawn.js";
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -40,9 +41,6 @@ interface ProjectSandboxInfo {
 
 // ── Constants ──────────────────────────────────────────────
 
-const SANDBOX_IMAGE = "mica-sandbox:base";
-const CARD_CLASSES_DIR = path.resolve("card-classes");
-const SDK_DIR = path.join(__dirname, "mica_sdk");
 const WORKER_PATH = path.join(SDK_DIR, "mica_worker.py");
 const CONTAINER_PREFIX = "mica-project-";
 
@@ -224,7 +222,7 @@ export class SandboxManager {
       await execFileAsync("docker", ["rm", "-f", containerName], { timeout: 10000 });
     } catch { /* not running */ }
 
-    const projectPath = await getProjectPath(projectId);
+    const mounts = await getProjectMounts(projectId);
     const memory = config.memory ?? "1g";
 
     // Phase 1: Start container WITH network (for dependency installation)
@@ -234,10 +232,15 @@ export class SandboxManager {
       "--network", "bridge",
       "--memory", memory,
       "--cpus", "2.0",
-      "-v", `${projectPath}:${projectPath}:rw`,
-      "-v", `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
-      "-v", `${SDK_DIR}:${SDK_DIR}:ro`,
-      "-w", projectPath,
+    ];
+
+    // Shared project mounts (project repo, card-classes, SDK)
+    for (const vol of mounts.volumes) {
+      dockerArgs.push("-v", vol);
+    }
+
+    dockerArgs.push(
+      "-w", mounts.workdir,
       "-e", `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       "-e", `HOME=/home/sandbox`,
       "-e", `TERM=xterm-256color`,
@@ -245,7 +248,7 @@ export class SandboxManager {
       "--entrypoint", "sleep",
       SANDBOX_IMAGE,
       "infinity",
-    ];
+    );
 
     try {
       await execFileAsync("docker", dockerArgs, { timeout: 30000 });

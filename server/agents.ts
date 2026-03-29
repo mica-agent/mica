@@ -10,7 +10,7 @@ import { z } from "zod/v4";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { isDockerEnabled, createDockerSpawner } from "./dockerSpawn.js";
+import { createDockerSpawner } from "./dockerSpawn.js";
 import {
   listFiles,
   readCanvasFile,
@@ -543,10 +543,8 @@ ${fileContext}`;
     options.resume = canvasSessions[sKey];
   }
 
-  // PROD mode: sandbox Bash execution in Docker container
-  if (await isDockerEnabled(project)) {
-    options.spawnClaudeCodeProcess = await createDockerSpawner(project, canvas);
-  }
+  // Always sandbox Bash execution in Docker container
+  options.spawnClaudeCodeProcess = await createDockerSpawner(project, canvas);
 
   // Emit initial "thinking" event so the UI knows we're active immediately
   onProgress?.({ type: "thinking", description: "Thinking..." });

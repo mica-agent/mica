@@ -16,8 +16,8 @@ import {
   listFiles,
   writeCanvasFile,
 } from "../canvasFiles.js";
-import { getProjectPath, getCanvasDir } from "../projectConnection.js";
-import { isDockerEnabled, createDockerSpawner } from "../dockerSpawn.js";
+import { getProjectPath } from "../projectConnection.js";
+import { createDockerSpawner } from "../dockerSpawn.js";
 import { readMicaConfig } from "../projectConnection.js";
 
 // ── Types ──────────────────────────────────────────────────
@@ -143,10 +143,8 @@ ${fileContext || "(no files yet)"}`;
     settingSources: ["user" as const],
   };
 
-  // Docker sandbox if enabled
-  if (await isDockerEnabled(project)) {
-    options.spawnClaudeCodeProcess = await createDockerSpawner(project, canvas);
-  }
+  // Always run in a Docker container with project repo mounted
+  options.spawnClaudeCodeProcess = await createDockerSpawner(project, canvas);
 
   try {
     let currentStep = -1;
