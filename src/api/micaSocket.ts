@@ -149,6 +149,23 @@ function handleMessage(msg: Record<string, unknown>): void {
   }
 }
 
+/** Wait for the WebSocket to be open (up to 5s). */
+function waitForConnection(): Promise<void> {
+  if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("WebSocket connection timeout")), 5000);
+    const check = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        clearTimeout(timeout);
+        resolve();
+      } else {
+        setTimeout(check, 50);
+      }
+    };
+    check();
+  });
+}
+
 function sendMsg(msg: Record<string, unknown>): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     throw new Error("WebSocket not connected");
@@ -162,7 +179,7 @@ function sendMsg(msg: Record<string, unknown>): void {
  * Pattern 1: Request/response call to a Python @mica.export function.
  * Returns a Promise that resolves with the function's return value.
  */
-export function call(
+export async function call(
   project: string,
   canvas: CanvasId,
   filename: string,
@@ -170,6 +187,7 @@ export function call(
   args: Record<string, unknown> = {},
   timeoutMs = 300000
 ): Promise<unknown> {
+  await waitForConnection();
   const id = nextId();
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -193,7 +211,9 @@ export function send(
   fn: string,
   args: Record<string, unknown> = {}
 ): void {
-  sendMsg({ type: "send", project, canvas, filename, fn, args });
+  waitForConnection().then(() => {
+    sendMsg({ type: "send", project, canvas, filename, fn, args });
+  }).catch((err) => console.error("[mica-socket] send failed:", err));
 }
 
 /**
@@ -237,7 +257,14 @@ export function openChannel(
   };
 
   activeChannels.set(id, handle);
-  sendMsg({ type: "channel_open", id, project, canvas, filename, fn, args });
+  // Defer the open message until WebSocket is connected
+  waitForConnection().then(() => {
+    sendMsg({ type: "channel_open", id, project, canvas, filename, fn, args });
+  }).catch((err) => {
+    console.error("[mica-socket] channel open failed:", err);
+    activeChannels.delete(id);
+    handle.onClose?.();
+  });
 
   return {
     id,
@@ -259,7 +286,9 @@ export function openChannel(
  * Other widgets receive this via mica.on(event, callback).
  */
 export function broadcast(event: string, data: Record<string, unknown> = {}): void {
-  sendMsg({ type: "broadcast", event, data });
+  waitForConnection().then(() => {
+    sendMsg({ type: "broadcast", event, data });
+  }).catch((err) => console.error("[mica-socket] broadcast failed:", err));
 }
 
 /**
