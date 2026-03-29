@@ -16,7 +16,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import path from "path";
 import { fileURLToPath } from "url";
-import { WorkerPool, dockerSpawnFn, localSpawnFn, buildWorkerEnv, type WorkerPoolOptions, type RpcHandler } from "./workerPool.js";
+import { WorkerPool, type RpcHandler } from "./workerPool.js";
 import { getProjectPath, getProjectConfig } from "./projectConnection.js";
 import { getProjectMounts, SANDBOX_IMAGE } from "./dockerSpawn.js";
 
@@ -188,22 +188,16 @@ export class SandboxManager {
         });
         throw err;
       }
-
-      pool = new WorkerPool({
-        warm,
-        max,
-        spawnFn: dockerSpawnFn(containerName, WORKER_PATH),
-        label: projectId,
-      });
-    } else {
-      const workerPath = path.join(__dirname, "mica_sdk", "mica_worker.py");
-      pool = new WorkerPool({
-        warm,
-        max,
-        spawnFn: localSpawnFn("/usr/bin/python3", workerPath),
-        label: projectId,
-      });
     }
+
+    // Card classes run in V8 isolates on the host, not in the container.
+    // The worker pool is retained with warm=0 for interface compatibility
+    // (SandboxManager.getPool() is still called by cardManager for channels).
+    pool = new WorkerPool({
+      warm: 0,
+      max: 0,
+      label: projectId,
+    });
 
     if (this.rpcHandler) pool.setRpcHandler(this.rpcHandler);
     await pool.start();
