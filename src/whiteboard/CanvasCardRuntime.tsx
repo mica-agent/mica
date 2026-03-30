@@ -453,6 +453,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
                   filename={card.filename}
                   html={card.html}
                   exports={card.exports}
+                  dependencies={card.dependencies}
                   meta={card.meta}
                   projectId={projectId}
                   canvasId="_root"
