@@ -29,6 +29,7 @@ export interface RenderedCard {
   filename: string;
   html: string;
   exports: string[];
+  dependencies?: { scripts?: string[]; styles?: string[] };
   meta: CardMeta;
 }
 

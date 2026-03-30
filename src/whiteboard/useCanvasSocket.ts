@@ -44,6 +44,7 @@ export function useCanvasSocket(projectId: string, canvasId: CanvasId): UseCanva
         filename?: string;
         html?: string;
         exports?: string[];
+        dependencies?: { scripts?: string[]; styles?: string[] };
         meta?: CardMeta;
       };
       if (m.project && m.project !== projectId) return;
@@ -56,6 +57,7 @@ export function useCanvasSocket(projectId: string, canvasId: CanvasId): UseCanva
             filename: m.filename!,
             html: m.html!,
             exports: m.exports || [],
+            dependencies: m.dependencies,
             meta: m.meta!,
           };
           if (existing >= 0) {
