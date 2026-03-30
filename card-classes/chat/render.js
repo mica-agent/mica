@@ -1,7 +1,10 @@
 /**
  * Chat card class — renders chat message history.
- * The sidebar shell (ChatSidebar.tsx) owns the header and input —
- * this widget only renders the message list.
+ *
+ * This is a RENDER-ONLY card class. It produces static HTML of the message
+ * history for display in the canvas grid view. The actual chat interaction
+ * (sending messages, receiving responses) is handled by ChatChannelManager
+ * on the server and ChatSidebar.tsx on the client — no V8 isolate involved.
  *
  * Uses the `marked` library (injected by the isolate pool).
  */
@@ -9,13 +12,6 @@
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
 }
-
-const AGENT_NAMES = {
-  mission: "Mission Strategist",
-  experience: "Experience Designer",
-  architecture: "System Architect",
-  implementation: "Implementation Engineer",
-};
 
 function renderMessages(messages) {
   const parts = [];
@@ -56,7 +52,6 @@ function renderMessages(messages) {
 
 export default function render(content, config) {
   // Chat history is pre-loaded by cardManager and passed via config.
-  // (RPC is not available during render — applySyncPromise would deadlock.)
   const historyRaw = config.__chatHistory || null;
   let messages = [];
   if (historyRaw) {
@@ -75,58 +70,4 @@ export default function render(content, config) {
     })();
     </script>
   `;
-}
-
-export async function send_message(content, args, mica) {
-  const message = args.message || "";
-  const agentName = "AI Agent";
-
-  const response = await mica.agent.chat(message);
-
-  const filesChanged = response?.filesChanged || false;
-  await appendHistory(mica, [
-    { role: "user", content: message },
-    { role: "assistant", content: response?.message || "", agent: response?.agentName || agentName, filesChanged },
-  ]);
-
-  return {
-    message: response?.message || "",
-    agent: response?.agentName || agentName,
-    filesChanged: response?.filesChanged || false,
-  };
-}
-
-export async function check_in(content, args, mica) {
-  const agentName = "AI Agent";
-
-  const response = await mica.agent.chat(
-    "Briefly assess the whiteboard against _goal.goal and _todo.todo. " +
-    "What's solid, what's the top priority to work on next? 2-3 sentences max."
-  );
-
-  await appendHistory(mica, [
-    { role: "assistant", content: response?.message || "", agent: response?.agentName || agentName },
-  ]);
-
-  return {
-    message: response?.message || "",
-    agent: response?.agentName || agentName,
-  };
-}
-
-async function appendHistory(mica, newMessages) {
-  const historyRaw = await mica.readFile(".chat-history.json");
-  let messages = [];
-  if (historyRaw) {
-    try { messages = JSON.parse(historyRaw); } catch { messages = []; }
-  }
-
-  messages.push(...newMessages);
-
-  // Keep last 100 messages
-  if (messages.length > 100) {
-    messages = messages.slice(-100);
-  }
-
-  await mica.writeFile(".chat-history.json", JSON.stringify(messages, null, 2));
 }

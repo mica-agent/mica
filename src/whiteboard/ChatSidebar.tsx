@@ -1,13 +1,11 @@
 // ChatSidebar — owns the chat sidebar shell (header, input, pending states).
-// The _chat.chat widget (render.py) is a pure message renderer hosted via WidgetRuntime.
-// Optimistic messages show the user's text immediately while the agent processes.
-// Real-time progress events stream from the server via WebSocket.
+// Uses a persistent channel to the ChatChannelManager for agent communication.
+// No V8 isolate involvement — agent calls happen directly in Node.
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { CanvasId, RenderedCard, CanvasFile } from "../api/canvasFiles";
-import { fetchCards, fetchFiles } from "../api/canvasFiles";
-import { call as micaCall, on } from "../api/micaSocket";
-import WidgetRuntime from "./WidgetRuntime";
+import type { CanvasId, CanvasFile } from "../api/canvasFiles";
+import { fetchFiles } from "../api/canvasFiles";
+import { openChannel, on, type Channel } from "../api/micaSocket";
 
 interface Props {
   projectId: string;
@@ -17,10 +15,13 @@ interface Props {
   onAgentBusy?: (busy: boolean) => void;
 }
 
-interface PendingMessage {
-  text: string;
-  status: "sending" | "error";
-  error?: string;
+interface ChatMessage {
+  role: string;
+  content: string;
+  agent?: string;
+  filesChanged?: boolean;
+  reactive?: boolean;
+  trigger?: string;
 }
 
 interface ProgressEntry {
@@ -40,7 +41,6 @@ function agentIcon(canvas: string): string {
   return "\u25cb";
 }
 
-// Human-friendly tool names
 function toolLabel(tool: string): string {
   const labels: Record<string, string> = {
     Bash: "Running command",
@@ -51,20 +51,21 @@ function toolLabel(tool: string): string {
     Grep: "Searching code",
     "mica-tools": "Using whiteboard tools",
   };
-  // MCP tool names come as "server:tool_name"
   if (tool.startsWith("mica-tools")) return "Using whiteboard tools";
   return labels[tool] || `Using ${tool}`;
+}
+
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 type TurnState = "your-turn" | "agent-working" | "agent-done" | "agent-done-files";
 
 export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFilesChanged, onAgentBusy }: Props) {
-  const [chatCard, setChatCard] = useState<RenderedCard | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [inputValue, setInputValue] = useState("");
   const [sending, setSending] = useState(false);
-  const [pending, setPending] = useState<PendingMessage | null>(null);
-  const [checkingIn, setCheckingIn] = useState(false);
   const [turn, setTurn] = useState<TurnState>("your-turn");
   const [currentTool, setCurrentTool] = useState<string | null>(null);
   const [progressLog, setProgressLog] = useState<ProgressEntry[]>([]);
@@ -72,10 +73,10 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
   const [elapsed, setElapsed] = useState(0);
   const [contextFiles, setContextFiles] = useState<CanvasFile[]>([]);
   const [showContext, setShowContext] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const pendingRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
-  const checkedInCanvases = useRef<Set<string>>(new Set());
+  const channelRef = useRef<Channel | null>(null);
   const progressIdRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -92,13 +93,10 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
 
   // Scroll chat to bottom when messages change
   useEffect(() => {
-    if (!chatCard) return;
-    // Wait for WidgetRuntime to inject HTML and browser to lay out
     requestAnimationFrame(() => {
-      const runtime = bodyRef.current?.querySelector(".widget-runtime");
-      if (runtime) runtime.scrollTop = runtime.scrollHeight;
+      if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
     });
-  }, [chatCard]);
+  }, [messages]);
 
   // Fetch context files for the tooltip
   useEffect(() => {
@@ -107,7 +105,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
       .catch(() => setContextFiles([]));
   }, [projectId, activeCanvas]);
 
-  // Refresh context files when agent finishes (it may have created files)
+  // Refresh context files when agent finishes
   useEffect(() => {
     if (turn === "agent-done" || turn === "agent-done-files") {
       fetchFiles(projectId, activeCanvas)
@@ -116,33 +114,12 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
     }
   }, [turn, projectId, activeCanvas]);
 
-  // Scroll progress log when new entries arrive
+  // Scroll progress log
   useEffect(() => {
     if (logExpanded) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [progressLog, logExpanded]);
 
-  // Listen for agent progress events from the server
-  useEffect(() => {
-    const unsub = on("agent-progress", (msg) => {
-      const m = msg as { project?: string; canvas?: string; event?: string; tool?: string; description?: string };
-      if (m.project !== projectId || m.canvas !== activeCanvas) return;
-
-      if (m.event === "thinking") {
-        setCurrentTool("Thinking...");
-      } else if (m.event === "tool_start" && m.tool) {
-        const summary = toolLabel(m.tool);
-        const detail = m.description || summary;
-        setCurrentTool(summary);
-        setProgressLog((prev) => [
-          ...prev,
-          { id: ++progressIdRef.current, text: detail, ts: Date.now() },
-        ]);
-      }
-    });
-    return unsub;
-  }, [projectId, activeCanvas]);
-
-  // Listen for reactive agent events (agent noticed a file change)
+  // Listen for reactive agent events
   useEffect(() => {
     const unsubReactive = on("reactive-started", (msg) => {
       const m = msg as { project?: string; canvas?: string; filename?: string };
@@ -155,132 +132,100 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
     return unsubReactive;
   }, [projectId, activeCanvas, onAgentBusy]);
 
-  const loadChat = useCallback(async () => {
-    try {
-      const cards = await fetchCards(projectId, activeCanvas);
-      const chat = cards.find((c) => c.filename === "_chat.chat");
-      setChatCard(chat || null);
-    } catch {
-      setChatCard(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId, activeCanvas]);
-
+  // Open channel to ChatChannelManager
   useEffect(() => {
-    setLoading(true);
-    loadChat();
-  }, [loadChat]);
+    const ch = openChannel(projectId, activeCanvas, "_chat.chat", "chat_session", {});
+    channelRef.current = ch;
 
-  // Listen for file changes to refresh chat card
-  useEffect(() => {
-    const unsub = on("file-changed", (msg) => {
-      const m = msg as { project?: string; canvas?: string; filename?: string };
-      if (m.project === projectId && m.canvas === activeCanvas && m.filename === "_chat.chat") {
-        loadChat();
-        // If this was a reactive agent update, transition out of working state
-        if (turn === "agent-working" && !sending) {
-          setTurn("agent-done");
+    ch.onData((data) => {
+      const msg = data as Record<string, unknown>;
+
+      switch (msg.type) {
+        case "history":
+          setMessages(msg.messages as ChatMessage[]);
+          setLoading(false);
+          break;
+
+        case "user":
+          setMessages((prev) => [...prev, { role: "user", content: msg.content as string }]);
+          break;
+
+        case "thinking":
+          setTurn("agent-working");
+          setCurrentTool("Thinking...");
+          setProgressLog([]);
+          setLogExpanded(false);
+          onAgentBusy?.(true);
+          break;
+
+        case "progress": {
+          const tool = msg.tool as string;
+          const description = msg.description as string;
+          if (tool) {
+            const summary = toolLabel(tool);
+            setCurrentTool(summary);
+            setProgressLog((prev) => [
+              ...prev,
+              { id: ++progressIdRef.current, text: description || summary, ts: Date.now() },
+            ]);
+          }
+          break;
+        }
+
+        case "assistant": {
+          const content = msg.content as string;
+          const agent = msg.agent as string || "AI Agent";
+          const filesChanged = msg.filesChanged as boolean || false;
+          setMessages((prev) => [...prev, { role: "assistant", content, agent, filesChanged }]);
+          setSending(false);
+          setTurn(filesChanged ? "agent-done-files" : "agent-done");
           setCurrentTool(null);
           onAgentBusy?.(false);
+          if (filesChanged) onFilesChanged?.();
           setTimeout(() => inputRef.current?.focus(), 100);
+          break;
         }
+
+        case "error":
+          setError(msg.error as string);
+          setSending(false);
+          setTurn("your-turn");
+          setCurrentTool(null);
+          onAgentBusy?.(false);
+          break;
       }
     });
-    return unsub;
-  }, [projectId, activeCanvas, loadChat, turn, sending, onAgentBusy]);
 
-  const showDoneStatus = useCallback((filesChanged: boolean) => {
-    setTurn(filesChanged ? "agent-done-files" : "agent-done");
-    setCurrentTool(null);
-    // Auto-focus the input so the user knows it's their turn
-    setTimeout(() => inputRef.current?.focus(), 100);
-  }, []);
+    ch.onClose(() => {
+      channelRef.current = null;
+    });
 
-  // Auto check-in: when entering a canvas for the first time with no messages
-  useEffect(() => {
-    if (!chatCard || loading) return;
-    const key = `${projectId}/${activeCanvas}`;
-    if (checkedInCanvases.current.has(key)) return;
+    return () => {
+      ch.close();
+      channelRef.current = null;
+    };
+  }, [projectId, activeCanvas, onFilesChanged, onAgentBusy]);
 
-    // Check if the widget rendered any messages (data attribute from render.py)
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(chatCard.html, "text/html");
-    const msgs = doc.querySelector(".chat-messages");
-    if (msgs?.getAttribute("data-has-messages") === "true") {
-      checkedInCanvases.current.add(key);
-      return;
-    }
-
-    let cancelled = false;
-    checkedInCanvases.current.add(key);
-    setCheckingIn(true);
-    setTurn("agent-working");
-    setProgressLog([]);
-    onAgentBusy?.(true);
-
-    (async () => {
-      try {
-        await micaCall(projectId, activeCanvas, "_chat.chat", "check_in", {});
-        if (!cancelled) {
-          loadChat();
-          showDoneStatus(false);
-          onFilesChanged?.();
-        }
-      } catch {
-        if (!cancelled) setTurn("your-turn");
-      } finally {
-        if (!cancelled) {
-          setCheckingIn(false);
-          onAgentBusy?.(false);
-        }
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [chatCard, loading, projectId, activeCanvas, loadChat, onFilesChanged, onAgentBusy, showDoneStatus]);
-
-  // Scroll pending messages into view
-  useEffect(() => {
-    if (pending) pendingRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [pending]);
-
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(() => {
     const text = inputValue.trim();
-    if (!text || sending) return;
+    if (!text || sending || !channelRef.current) return;
 
     setInputValue("");
     setSending(true);
-    setPending({ text, status: "sending" });
+    setError(null);
     setTurn("agent-working");
     setProgressLog([]);
     setLogExpanded(false);
     setCurrentTool(null);
     onAgentBusy?.(true);
 
-    try {
-      const result = await micaCall(projectId, activeCanvas, "_chat.chat", "send_message", { message: text }) as { filesChanged?: boolean } | undefined;
-      setPending(null);
-      loadChat();
-      showDoneStatus(!!result?.filesChanged);
-      onFilesChanged?.();
-    } catch (err) {
-      console.error("Chat send failed:", err);
-      setPending({ text, status: "error", error: (err as Error).message });
-      setTurn("your-turn");
-      setProgressLog([]);
-    } finally {
-      setSending(false);
-      onAgentBusy?.(false);
-      inputRef.current?.focus();
-    }
-  }, [inputValue, sending, projectId, activeCanvas, loadChat, onFilesChanged, onAgentBusy, showDoneStatus]);
+    channelRef.current.send({ message: text });
+  }, [inputValue, sending, onAgentBusy]);
 
   const isAgentTurn = turn === "agent-working";
   const isYourTurn = turn === "your-turn" || turn === "agent-done" || turn === "agent-done-files";
   const stepCount = progressLog.length;
 
-  // Clear "done" badge when user starts typing
   const handleInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setInputValue(e.target.value);
     if (turn === "agent-done" || turn === "agent-done-files") {
@@ -289,6 +234,27 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
       setLogExpanded(false);
     }
   }, [turn]);
+
+  // Render messages as HTML
+  const messagesHtml = messages.map((msg, i) => {
+    if (msg.role === "user") {
+      return `<div class="chat-msg chat-msg--user" key="${i}"><div class="chat-msg-body">${escapeHtml(msg.content)}</div></div>`;
+    }
+    // Simple markdown-like rendering for assistant messages
+    const body = msg.content
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\n/g, "<br>");
+    const agent = escapeHtml(msg.agent || "");
+    const badge = msg.filesChanged ? '<span class="chat-action-badge">whiteboard updated</span>' : '';
+    const reactiveClass = msg.reactive ? ' chat-msg--reactive' : '';
+    let triggerBadge = '';
+    if (msg.reactive && msg.trigger) {
+      triggerBadge = `<span class="chat-action-badge chat-action-badge--reactive">noticed change in ${escapeHtml(msg.trigger)}</span>`;
+    }
+    return `<div class="chat-msg chat-msg--assistant${reactiveClass}"><div class="chat-msg-header">${agent}${triggerBadge}${badge}</div><div class="chat-msg-body">${body}</div></div>`;
+  }).join("");
 
   return (
     <div
@@ -325,50 +291,29 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
       </div>
 
       <div className="chat-sidebar-body" ref={bodyRef}>
-        {loading && !chatCard && (
+        {loading && (
           <div className="chat-sidebar-loading">Loading chat...</div>
         )}
-        {!loading && !chatCard && (
-          <div className="chat-sidebar-empty">No chat card found for this canvas.</div>
+        {!loading && messages.length === 0 && (
+          <div className="chat-sidebar-empty">Send a message to start collaborating.</div>
         )}
-        {chatCard && (
-          <WidgetRuntime
-            html={chatCard.html}
-            exports={chatCard.exports}
-            project={projectId}
-            canvas={activeCanvas}
-            filename="_chat.chat"
-          />
+        {!loading && messages.length > 0 && (
+          <div className="chat-messages" dangerouslySetInnerHTML={{ __html: messagesHtml }} />
         )}
 
-        {/* Typing indicator during auto check-in (hide once user sends a message) */}
-        {checkingIn && turn === "agent-working" && !pending && (
+        {error && (
           <div className="chat-pending">
-            <div className="chat-pending-typing">
-              <span /><span /><span />
-              <span className="chat-pending-status">Reviewing whiteboard...</span>
-            </div>
-          </div>
-        )}
-
-        {/* Optimistic pending messages — shown immediately while agent processes */}
-        {pending && (
-          <div className="chat-pending" ref={pendingRef}>
-            <div className="chat-pending-user">{pending.text}</div>
-            {pending.status === "error" && (
-              <div className="chat-pending-error">
-                <span>Timed out — the agent took too long to respond.</span>
-                <div className="chat-pending-error-actions">
-                  <button onClick={() => { setPending(null); setInputValue(pending.text); }}>Edit</button>
-                  <button onClick={() => { setPending(null); }}>Dismiss</button>
-                </div>
+            <div className="chat-pending-error">
+              <span>{error}</span>
+              <div className="chat-pending-error-actions">
+                <button onClick={() => setError(null)}>Dismiss</button>
               </div>
-            )}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Turn indicator — always visible, shows whose turn it is */}
+      {/* Turn indicator */}
       <div className={`chat-turn chat-turn--${turn}`}>
         {turn === "agent-working" && (
           <button
@@ -410,7 +355,6 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
           </div>
         )}
 
-        {/* Expandable activity log */}
         {logExpanded && progressLog.length > 0 && (
           <div className="chat-progress-log">
             {progressLog.map((entry) => (
@@ -424,7 +368,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
         )}
       </div>
 
-      {/* Input — visually activates on your turn */}
+      {/* Input */}
       <div className={`chat-sidebar-input ${isYourTurn ? "chat-sidebar-input--active" : ""}`}>
         <input
           ref={inputRef}
