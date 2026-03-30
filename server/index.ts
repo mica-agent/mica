@@ -733,17 +733,17 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
     }
     case "exec": {
       const { execFile } = await import("child_process");
-      const { resolve: resolvePath } = await import("path");
       const command = args.command as string;
       if (!command) throw new Error("mica.exec(): command is required");
       const projectPath = await getProjectPath(project);
-      const cwd = args.cwd
-        ? resolvePath(projectPath, args.cwd as string)
-        : projectPath;
-      if (!cwd.startsWith(projectPath)) throw new Error("mica.exec(): cwd must be within project");
+      const containerName = await sandboxManager.getContainerName(project);
+      const cwd = args.cwd ? String(args.cwd) : projectPath;
       const timeout = Math.min((args.timeout as number) || 30000, 300000);
       return new Promise((resolve) => {
-        execFile("/bin/bash", ["-c", command], { cwd, timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+        execFile("docker", [
+          "exec", "-w", cwd, containerName,
+          "/bin/bash", "-c", command,
+        ], { timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
           resolve({
             stdout: stdout || "",
             stderr: stderr || "",
@@ -967,6 +967,8 @@ wss.on("connection", (ws) => {
           // Terminal cards: handle PTY directly in Node (bypass Python worker)
           const fname = filename as string;
           if (fname.endsWith(".terminal")) {
+            const containerName = await sandboxManager.getContainerName(project as string);
+            const projectPath = await getProjectPath(project as string);
             terminalManager.open(
               id as string,
               project as string, canvas as string, fname,
@@ -981,7 +983,8 @@ wss.on("connection", (ws) => {
                   ws.send(JSON.stringify({ type: "channel_close", id }));
                 }
                 wsChannels.get(ws)?.delete(id as string);
-              }
+              },
+              { shell: "docker", args: ["exec", "-it", containerName, "/bin/bash", "--login"], cwd: projectPath },
             );
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(id as string);
@@ -1035,7 +1038,10 @@ wss.on("connection", (ws) => {
           }
 
           // Any card can open a shell channel via mica.openChannel('shell', {})
+          // Runs inside the project container for sandboxing.
           if ((fn as string) === "shell") {
+            const containerName = await sandboxManager.getContainerName(project as string);
+            const projectPath = await getProjectPath(project as string);
             terminalManager.open(
               id as string,
               project as string, canvas as string, fname,
@@ -1050,7 +1056,8 @@ wss.on("connection", (ws) => {
                   ws.send(JSON.stringify({ type: "channel_close", id }));
                 }
                 wsChannels.get(ws)?.delete(id as string);
-              }
+              },
+              { shell: "docker", args: ["exec", "-it", containerName, "/bin/bash", "--login"], cwd: projectPath },
             );
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(id as string);
@@ -1197,10 +1204,45 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
 });
 
 // Card class changes → invalidate + re-render all instances
-fileWatcher.on("class-change", (event: { className: string }) => {
+fileWatcher.on("class-change", async (event: { className: string }) => {
   console.log(`[file-watcher] Card class changed: ${event.className}`);
   cardManager.invalidateClass(event.className);
-  // TODO: re-render all instances of this class and broadcast
+
+  // Re-render all cards that use this class across all projects/canvases
+  try {
+    const projects = await listProjects();
+    for (const project of projects) {
+      const config = await getProjectConfig(project.id);
+      const canvases = config?.canvases || ["_root"];
+      for (const canvas of canvases) {
+        const files = await listFiles(project.id, canvas);
+        for (const file of files) {
+          if (file.name.startsWith(".")) continue;
+          const { cardClass } = cardManager.resolveCardClass(file.name, file.content);
+          if (cardClass === event.className) {
+            try {
+              const rendered = await cardManager.renderCard(project.id, canvas, file.name, file.content);
+              console.log(`[file-watcher] Re-rendered ${project.id}/${canvas}/${file.name} (class: ${event.className})`);
+              broadcast({
+                type: "file-changed",
+                project: project.id,
+                canvas,
+                filename: file.name,
+                html: rendered.html,
+                exports: rendered.exports,
+                dependencies: rendered.dependencies,
+                meta: rendered.meta,
+              });
+            } catch (err) {
+              console.error(`[file-watcher] Re-render failed for ${file.name}:`, (err as Error).message);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[file-watcher] Class re-render sweep failed:`, (err as Error).message);
+  }
 });
 
 // Start everything

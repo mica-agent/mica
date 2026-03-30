@@ -49,10 +49,10 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
       `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
       `${SDK_DIR}:${SDK_DIR}:ro`,
       `${NODE_MODULES_DIR}:${NODE_MODULES_DIR}:ro`,
-      // Mount only credential files read-only — NOT the entire .claude dir.
-      // Claude Code needs a writable .claude/ for runtime state (sessions,
-      // session-env, backups, etc.) but auth creds must stay read-only.
-      `${process.env.HOME}/.claude/.credentials.json:/home/sandbox/.claude/.credentials.json:ro`,
+      // Mount credential file read-write so the agent can refresh OAuth tokens.
+      // Settings and config stay read-only. The rest of .claude/ is writable
+      // inside the container for runtime state (sessions, session-env, etc.).
+      `${process.env.HOME}/.claude/.credentials.json:/home/sandbox/.claude/.credentials.json:rw`,
       `${process.env.HOME}/.claude/settings.json:/home/sandbox/.claude/settings.json:ro`,
       `${process.env.HOME}/.claude.json:/home/sandbox/.claude.json:ro`,
     ],

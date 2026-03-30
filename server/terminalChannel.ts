@@ -56,6 +56,7 @@ export class TerminalChannelManager {
     args: Record<string, unknown>,
     onData: (data: unknown) => void,
     onClose: () => void,
+    spawnOverride?: { shell: string; args: string[]; cwd?: string },
   ): void {
     const key = this.sessionKey(project, canvas, filename);
     const existing = this.sessions.get(key);
@@ -92,14 +93,16 @@ export class TerminalChannelManager {
       LINES: String(rows),
     };
 
-    const shell = process.env.SHELL || "/bin/bash";
+    const shell = spawnOverride?.shell || process.env.SHELL || "/bin/bash";
+    const shellArgs = spawnOverride?.args || ["--login"];
+    const cwd = spawnOverride?.cwd || process.env.HOME || "/";
 
-    const ptyProcess = pty.spawn(shell, ["--login"], {
+    const ptyProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
       cols,
       rows,
       env,
-      cwd: process.env.HOME || "/",
+      cwd,
     });
 
     const session: TerminalSession = {
@@ -136,7 +139,7 @@ export class TerminalChannelManager {
       this.sessions.delete(key);
     });
 
-    console.log(`[terminal] Opened PTY session ${key} via channel ${channelId} (${cols}x${rows}, shell=${shell})`);
+    console.log(`[terminal] Opened PTY session ${key} via channel ${channelId} (${cols}x${rows}, shell=${shell} ${shellArgs.join(' ')})`);
   }
 
   /**
