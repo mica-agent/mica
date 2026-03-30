@@ -174,9 +174,8 @@ export function createAgentSpawner(
   return (spawnOpts: SpawnOptions): SpawnedProcess => {
     const dockerArgs = [
       "exec", "-i",
-      // Run as the same UID as the host user so the agent can read mounted credentials
-      // and project files. The container itself is the blast radius.
-      "--user", String(process.getuid?.() || 1000),
+      // Container runs as 'sandbox' (UID 1000), matching the host user.
+      // No --user override needed — inherits the container's default user.
     ];
 
     // Forward environment variables (auth tokens, etc.)
