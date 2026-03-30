@@ -132,6 +132,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
         filename?: string;
         html?: string;
         exports?: string[];
+        dependencies?: RenderedCard["dependencies"];
         meta?: RenderedCard["meta"];
       };
       if (m.project !== projectId || m.canvas !== "_root") return;
@@ -154,6 +155,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
             filename: m.filename!,
             html: m.html!,
             exports: m.exports || [],
+            dependencies: m.dependencies,
             meta: m.meta!,
           };
           const idx = prev.findIndex((c) => c.filename === m.filename);

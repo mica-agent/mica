@@ -183,9 +183,11 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
           Array.from(oldScript.attributes).forEach((attr) => {
             newScript.setAttribute(attr.name, attr.value);
           });
+          // Wrap in try-catch so a single card's script failure doesn't crash the page
           newScript.textContent =
-            `(function(mica, container) {${oldScript.textContent}})(` +
-            `document.currentScript.__mica, document.currentScript.parentElement);`;
+            `try{(function(mica, container) {${oldScript.textContent}})(` +
+            `document.currentScript.__mica, document.currentScript.parentElement);}` +
+            `catch(e){console.error("[widget-runtime] Script error in ${filename}:",e);}`;
           oldScript.remove();
           (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
           el.appendChild(newScript);
