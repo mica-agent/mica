@@ -79,6 +79,11 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
   const channelRef = useRef<Channel | null>(null);
   const progressIdRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
+  // Stable refs for callbacks to avoid useEffect re-runs
+  const onFilesChangedRef = useRef(onFilesChanged);
+  onFilesChangedRef.current = onFilesChanged;
+  const onAgentBusyRef = useRef(onAgentBusy);
+  onAgentBusyRef.current = onAgentBusy;
 
   // Elapsed time counter while agent is working
   useEffect(() => {
@@ -127,10 +132,10 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
       setTurn("agent-working");
       setCurrentTool(`Analyzing changes to ${m.filename || "file"}...`);
       setProgressLog([]);
-      onAgentBusy?.(true);
+      onAgentBusyRef.current?.(true);
     });
     return unsubReactive;
-  }, [projectId, activeCanvas, onAgentBusy]);
+  }, [projectId, activeCanvas]);
 
   // Open channel to ChatChannelManager
   useEffect(() => {
@@ -157,7 +162,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
           setCurrentTool("Thinking...");
           setProgressLog([]);
           setLogExpanded(false);
-          onAgentBusy?.(true);
+          onAgentBusyRef.current?.(true);
           break;
 
         case "progress": {
@@ -182,8 +187,8 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
           setSending(false);
           setTurn(filesChanged ? "agent-done-files" : "agent-done");
           setCurrentTool(null);
-          onAgentBusy?.(false);
-          if (filesChanged) onFilesChanged?.();
+          onAgentBusyRef.current?.(false);
+          if (filesChanged) onFilesChangedRef.current?.();
           setTimeout(() => inputRef.current?.focus(), 100);
           break;
         }
@@ -193,7 +198,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
           setSending(false);
           setTurn("your-turn");
           setCurrentTool(null);
-          onAgentBusy?.(false);
+          onAgentBusyRef.current?.(false);
           break;
       }
     });
@@ -206,7 +211,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
       ch.close();
       channelRef.current = null;
     };
-  }, [projectId, activeCanvas, onFilesChanged, onAgentBusy]);
+  }, [projectId, activeCanvas]);
 
   const handleSend = useCallback(() => {
     const text = inputValue.trim();
@@ -219,11 +224,11 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
     setProgressLog([]);
     setLogExpanded(false);
     setCurrentTool(null);
-    onAgentBusy?.(true);
+    onAgentBusyRef.current?.(true);
 
     console.log("[chat-sidebar] Sending message via channel:", text);
     channelRef.current.send({ message: text });
-  }, [inputValue, sending, onAgentBusy]);
+  }, [inputValue, sending]);
 
   const isAgentTurn = turn === "agent-working";
   const isYourTurn = turn === "your-turn" || turn === "agent-done" || turn === "agent-done-files";
