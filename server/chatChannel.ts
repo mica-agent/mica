@@ -113,6 +113,13 @@ export class ChatChannelManager {
     console.log(`[chat] Received data on channel ${channelId}:`, JSON.stringify(msg).slice(0, 100));
     if (!message) return;
 
+    // If an agent call is already in progress, ignore new messages.
+    // The UI should prevent this, but guard against it server-side too.
+    if (session.busy) {
+      console.log(`[chat] Session ${key} is busy, ignoring message`);
+      return;
+    }
+
     // Parse session key back to (project, canvas, filename)
     const parts = key.split("/");
     const project = parts[0];
