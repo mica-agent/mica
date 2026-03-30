@@ -174,8 +174,11 @@ export function createAgentSpawner(
     ];
 
     // Forward environment variables (auth tokens, etc.)
+    // Filter out CLAUDECODE — it prevents the CLI from running inside the container
+    // (the host sets CLAUDECODE=1 to detect nested sessions, but the container is independent)
+    const blockedEnv = new Set(["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]);
     for (const [key, value] of Object.entries(spawnOpts.env)) {
-      if (value !== undefined) {
+      if (value !== undefined && !blockedEnv.has(key)) {
         dockerArgs.push("-e", `${key}=${value}`);
       }
     }

@@ -134,11 +134,13 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
 
   // Open channel to ChatChannelManager
   useEffect(() => {
+    console.log("[chat-sidebar] Opening channel to _chat.chat");
     const ch = openChannel(projectId, activeCanvas, "_chat.chat", "chat_session", {});
     channelRef.current = ch;
 
     ch.onData((data) => {
       const msg = data as Record<string, unknown>;
+      console.log("[chat-sidebar] Channel data:", msg.type, msg.type === "history" ? `(${(msg.messages as unknown[])?.length} msgs)` : "");
 
       switch (msg.type) {
         case "history":
@@ -219,6 +221,7 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
     setCurrentTool(null);
     onAgentBusy?.(true);
 
+    console.log("[chat-sidebar] Sending message via channel:", text);
     channelRef.current.send({ message: text });
   }, [inputValue, sending, onAgentBusy]);
 

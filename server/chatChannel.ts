@@ -110,6 +110,7 @@ export class ChatChannelManager {
 
     const msg = data as Record<string, unknown>;
     const message = msg.message as string;
+    console.log(`[chat] Received data on channel ${channelId}:`, JSON.stringify(msg).slice(0, 100));
     if (!message) return;
 
     // Parse session key back to (project, canvas, filename)
@@ -132,6 +133,7 @@ export class ChatChannelManager {
     session.busy = true;
     this.broadcastToSession(session, { type: "thinking" });
 
+    console.log(`[chat] Calling agent for session ${key}: "${message.slice(0, 50)}"`);
     try {
       const response = await this.chatFn(project, canvas, message, undefined, (evt) => {
         // Stream progress events to all attached channels
