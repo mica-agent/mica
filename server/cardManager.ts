@@ -272,9 +272,11 @@ export class CardManager {
       try {
         const renderConfig = { ...metadata, ...(config || {}), ...extraConfig, project, canvas, filename };
         const requestContext = { project, canvas, filename };
+        console.log(`[card-manager] Rendering ${filename} (class=${cardClass})...`);
         const result = await this.isolatePool.render(
           cardClass, classPath, strippedContent, renderConfig, requestContext
         );
+        console.log(`[card-manager] Rendered ${filename} (${result.html.length} chars)`);
 
         // Cache the result
         this.cache.set(key, {
