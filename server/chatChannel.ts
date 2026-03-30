@@ -114,11 +114,14 @@ export class ChatChannelManager {
     if (!message) return;
 
     // If an agent call is already in progress, ignore new messages.
-    // The UI should prevent this, but guard against it server-side too.
     if (session.busy) {
       console.log(`[chat] Session ${key} is busy, ignoring message`);
       return;
     }
+
+    // Mark busy IMMEDIATELY (synchronous) before any async work,
+    // so concurrent sendData calls are blocked.
+    session.busy = true;
 
     // Parse session key back to (project, canvas, filename)
     const parts = key.split("/");
@@ -126,6 +129,7 @@ export class ChatChannelManager {
     const canvas = parts[1];
 
     if (!this.chatFn) {
+      session.busy = false;
       this.broadcastToSession(session, { type: "error", error: "No agent configured" });
       return;
     }
@@ -135,9 +139,6 @@ export class ChatChannelManager {
 
     // Append user message to history
     await this.appendHistory(project, canvas, [{ role: "user", content: message }]);
-
-    // Mark busy and broadcast thinking state
-    session.busy = true;
     this.broadcastToSession(session, { type: "thinking" });
 
     console.log(`[chat] Calling agent for session ${key}: "${message.slice(0, 50)}"`);
