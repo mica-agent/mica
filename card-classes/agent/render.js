@@ -130,10 +130,20 @@ export default function render(content, config) {
 <div style="font-family:'Inter',system-ui,sans-serif;background:#111827;border-radius:8px;padding:14px;color:#f9fafb;height:260px;box-sizing:border-box;display:flex;flex-direction:column;">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-shrink:0;">
     <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#6b7280;">${providerName}</span>
-    <span id="cc-status" style="font-size:10px;font-weight:600;color:${st.color};">${st.label}</span>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button id="debug-toggle" style="font-size:9px;color:#4b5563;background:none;border:1px solid #374151;border-radius:3px;padding:1px 6px;cursor:pointer;">Debug</button>
+      <span id="cc-status" style="font-size:10px;font-weight:600;color:${st.color};">${st.label}</span>
+    </div>
   </div>
   <div id="cc-phase" style="font-size:12px;font-weight:600;color:#9ca3af;margin-bottom:8px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${phase}</div>
   <div id="cc-steps" style="flex:1;overflow-y:auto;min-height:0;">${stepsHtml(plan)}</div>
+  <div id="cc-debug" style="display:none;flex:1;min-height:0;margin-bottom:4px;flex-direction:column;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <span style="font-size:9px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;">Debug Log</span>
+      <button id="debug-clear" style="font-size:9px;color:#4b5563;background:none;border:none;cursor:pointer;">Clear</button>
+    </div>
+    <div id="debug-log" style="flex:1;overflow-y:auto;background:#0d1117;border:1px solid #1f2937;border-radius:4px;padding:6px;font-family:'Fira Code','Cascadia Code',monospace;font-size:10px;line-height:1.5;color:#8b949e;white-space:pre-wrap;word-break:break-all;"></div>
+  </div>
   <div id="cc-action" style="flex-shrink:0;">${actionHtml(action, blocker, status)}</div>
   <div id="cc-bottom" style="flex-shrink:0;margin-top:6px;">
     <div style="display:flex;gap:6px;">
@@ -260,6 +270,42 @@ export default function render(content, config) {
     attachRunListener();
   }
 
+  let debugVisible = false;
+
+  function appendDebug(text) {
+    const log = container.querySelector('#debug-log');
+    if (!log) return;
+    const line = document.createElement('div');
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const isStderr = text.startsWith('[stderr]');
+    line.style.color = isStderr ? '#f87171' : '#8b949e';
+    line.textContent = ts + ' ' + text;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function toggleDebug() {
+    debugVisible = !debugVisible;
+    const dbg = container.querySelector('#cc-debug');
+    const steps = container.querySelector('#cc-steps');
+    const btn = container.querySelector('#debug-toggle');
+    if (dbg) dbg.style.display = debugVisible ? 'flex' : 'none';
+    if (steps) steps.style.display = debugVisible ? 'none' : 'block';
+    if (btn) {
+      btn.style.color = debugVisible ? '#4ade80' : '#4b5563';
+      btn.style.borderColor = debugVisible ? '#4ade80' : '#374151';
+    }
+  }
+
+  // Wire up debug toggle + clear
+  const debugBtn = container.querySelector('#debug-toggle');
+  if (debugBtn) debugBtn.addEventListener('click', toggleDebug);
+  const clearBtn = container.querySelector('#debug-clear');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    const log = container.querySelector('#debug-log');
+    if (log) log.innerHTML = '';
+  });
+
   function handleMsg(msg) {
     switch (msg.type) {
       case 'status':      setStatus(msg.value);                    break;
@@ -268,9 +314,11 @@ export default function render(content, config) {
       case 'action':      showAction(msg.text);                    break;
       case 'blocked':     showBlocker(msg.question);               break;
       case 'unblocked':   setStatus('in_progress'); showAction(''); startSpinner('Continuing...'); break;
+      case 'debug':       appendDebug(msg.text);                   break;
       case 'done':
         stopSpinner(); activeChannel = null; setStatus('done'); showAction(''); showStartArea(); break;
       case 'error':
+        appendDebug('[error] ' + (msg.message || 'Unknown error'));
         stopSpinner(); activeChannel = null; setStatus('error'); showAction(msg.message || 'An error occurred.'); showStartArea(); break;
     }
   }

@@ -191,10 +191,38 @@ These are available on the `mica` object passed to export functions:
 | `await mica.write(content)` | Overwrite this card's file content |
 | `await mica.writeFile(filename, content)` | Write to any file in the current canvas |
 | `await mica.readFile(filename)` | Read a file from the current canvas (returns `string` or `null`) |
+| `await mica.exec(command, options?)` | Run a shell command. Returns `{ stdout, stderr, exitCode }`. Options: `{ cwd?, timeout? }`. cwd defaults to project root, timeout defaults to 30s (max 300s) |
 | `await mica.log(message)` | Append a message to the canvas's `_log.log` |
 | `await mica.emit(event, data)` | Broadcast an event to all connected browser widgets |
 | `await mica.fetch(url, options)` | Fetch a URL via server proxy (requires `network: true` in manifest) |
 | `await mica.agent.chat(message)` | Send a message to the canvas's AI agent (returns response dict) |
+
+### Shell Access
+
+Cards have full access to the project filesystem and shell via `mica.exec()`:
+
+```javascript
+export async function list_files(content, args, mica) {
+  const result = await mica.exec('find . -maxdepth 2 -type f -not -path "*/.git/*" -not -path "*/node_modules/*"');
+  return result.stdout.split('\n').filter(Boolean);
+}
+
+export async function read_file(content, args, mica) {
+  const result = await mica.exec(`cat ${JSON.stringify(args.path)}`);
+  return { content: result.stdout, error: result.exitCode !== 0 ? result.stderr : null };
+}
+```
+
+For interactive/streaming shell access from the browser, use `mica.openChannel('shell')`:
+
+```javascript
+// In widget <script>:
+const ch = mica.openChannel('shell', { cols: 80, rows: 24 });
+ch.onData((data) => term.write(data.output));  // PTY output
+ch.send({ input: 'npm test\n' });               // send input
+ch.send({ resize: true, cols: 120, rows: 40 }); // resize
+mica.onDestroy(() => ch.close());
+```
 
 ### Network Access
 

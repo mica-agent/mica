@@ -49,8 +49,11 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
       `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
       `${SDK_DIR}:${SDK_DIR}:ro`,
       `${NODE_MODULES_DIR}:${NODE_MODULES_DIR}:ro`,
-      // Mount host's Claude auth credentials so the agent CLI can authenticate
-      `${process.env.HOME}/.claude:/home/sandbox/.claude:ro`,
+      // Mount only credential files read-only — NOT the entire .claude dir.
+      // Claude Code needs a writable .claude/ for runtime state (sessions,
+      // session-env, backups, etc.) but auth creds must stay read-only.
+      `${process.env.HOME}/.claude/.credentials.json:/home/sandbox/.claude/.credentials.json:ro`,
+      `${process.env.HOME}/.claude/settings.json:/home/sandbox/.claude/settings.json:ro`,
       `${process.env.HOME}/.claude.json:/home/sandbox/.claude.json:ro`,
     ],
     workdir: projectPath,
@@ -170,6 +173,7 @@ export function createAgentSpawner(
   containerName: string,
   project: string,
   canvas: string,
+  onStderr?: (line: string) => void,
 ): (options: SpawnOptions) => SpawnedProcess {
   return (spawnOpts: SpawnOptions): SpawnedProcess => {
     const dockerArgs = [
@@ -211,9 +215,11 @@ export function createAgentSpawner(
       });
     }
 
-    // Log stderr for debugging
+    // Log stderr for debugging + forward to caller if requested
     proc.stderr?.on("data", (data: Buffer) => {
-      console.error(`[agent:${project}/${canvas}] ${data.toString().trim()}`);
+      const line = data.toString().trim();
+      console.error(`[agent:${project}/${canvas}] ${line}`);
+      onStderr?.(line);
     });
 
     return proc as unknown as SpawnedProcess;

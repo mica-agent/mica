@@ -28,7 +28,7 @@ import {
   getProjectConfig,
   validateProjectCanvas,
 } from "./canvasFiles.js";
-import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig } from "./projectConnection.js";
+import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath } from "./projectConnection.js";
 import {
   getGitStatus,
   gitCommit,
@@ -731,6 +731,27 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
         body,
       };
     }
+    case "exec": {
+      const { execFile } = await import("child_process");
+      const { resolve: resolvePath } = await import("path");
+      const command = args.command as string;
+      if (!command) throw new Error("mica.exec(): command is required");
+      const projectPath = await getProjectPath(project);
+      const cwd = args.cwd
+        ? resolvePath(projectPath, args.cwd as string)
+        : projectPath;
+      if (!cwd.startsWith(projectPath)) throw new Error("mica.exec(): cwd must be within project");
+      const timeout = Math.min((args.timeout as number) || 30000, 300000);
+      return new Promise((resolve) => {
+        execFile("/bin/bash", ["-c", command], { cwd, timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+          resolve({
+            stdout: stdout || "",
+            stderr: stderr || "",
+            exitCode: err && "code" in err ? (err as { code?: number }).code ?? 1 : 0,
+          });
+        });
+      });
+    }
     default:
       throw new Error(`Unknown RPC method: ${method}`);
   }
@@ -870,6 +891,24 @@ wss.on("connection", (ws) => {
   ws.on("error", (err) => {
     console.error("[websocket] Connection error:", err.message);
     wsClients.delete(ws);
+    // Clean up channels — error may fire without a subsequent close event
+    const channels = wsChannels.get(ws);
+    if (channels) {
+      for (const channelId of channels) {
+        if (terminalManager.has(channelId)) {
+          terminalManager.close(channelId);
+        } else if (agentManager.has(channelId)) {
+          agentManager.close(channelId);
+        } else if (chatManager.has(channelId)) {
+          chatManager.close(channelId);
+        } else {
+          const pool = channelPools.get(channelId) || workerPool;
+          pool.closeChannel(channelId);
+          channelPools.delete(channelId);
+        }
+      }
+      wsChannels.delete(ws);
+    }
   });
 
   // ── Full WebSocket message router ──
@@ -995,6 +1034,29 @@ wss.on("connection", (ws) => {
             break;
           }
 
+          // Any card can open a shell channel via mica.openChannel('shell', {})
+          if ((fn as string) === "shell") {
+            terminalManager.open(
+              id as string,
+              project as string, canvas as string, fname,
+              (args || {}) as Record<string, unknown>,
+              (data) => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "channel_data", id, data }));
+                }
+              },
+              () => {
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "channel_close", id }));
+                }
+                wsChannels.get(ws)?.delete(id as string);
+              }
+            );
+            if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
+            wsChannels.get(ws)!.add(id as string);
+            break;
+          }
+
           // Resolve the pool for this project so we can track it for data/close routing
           let pool: WorkerPool = workerPool;
           if (sandboxManager) {
@@ -1055,6 +1117,8 @@ wss.on("connection", (ws) => {
           terminalManager.close(cid);
         } else if (agentManager.has(cid)) {
           agentManager.close(cid);
+        } else if (chatManager.has(cid)) {
+          chatManager.close(cid);
         } else {
           const pool = channelPools.get(cid) || workerPool;
           pool.closeChannel(cid);

@@ -49,6 +49,14 @@ const mica = {
     return __mica_rpc("fetch", { url, options: options || {} });
   },
 
+  /**
+   * Run a shell command on the host. Returns { stdout, stderr, exitCode }.
+   * cwd defaults to project root. timeout defaults to 30s (max 300s).
+   */
+  exec(command, options) {
+    return __mica_rpc("exec", { command, cwd: (options && options.cwd) || "", timeout: (options && options.timeout) || 30000 });
+  },
+
   /** Bridge to the canvas's AI agent. */
   agent: {
     /** Send a message to the canvas's AI agent. Returns response dict. */

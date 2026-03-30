@@ -153,7 +153,9 @@ ${fileContext || "(no files yet)"}`;
   // Run inside the shared project container
   if (_sandboxManager) {
     const containerName = await _sandboxManager.getContainerName(project);
-    options.spawnClaudeCodeProcess = createAgentSpawner(containerName, project, canvas);
+    options.spawnClaudeCodeProcess = createAgentSpawner(containerName, project, canvas, (line) => {
+      sendToClient({ type: "debug", text: `[stderr] ${line}` });
+    });
   }
 
   try {
@@ -164,6 +166,18 @@ ${fileContext || "(no files yet)"}`;
       options: options as Options,
     })) {
       const msg = message as Record<string, unknown>;
+
+      // Forward all raw SDK messages as debug events
+      try {
+        const debugText = msg.type === "assistant" && msg.message
+          ? `[${msg.type}] ${((msg.message as { content?: Array<Record<string, unknown>> }).content || [])
+              .map((b: Record<string, unknown>) => b.type === "text" ? b.text : b.type === "tool_use" ? `tool_use: ${b.name}` : b.type)
+              .join(" | ").slice(0, 500)}`
+          : msg.type === "result" && "result" in msg
+          ? `[result] ${String((msg as Record<string, unknown>).result || "").slice(0, 500)}`
+          : `[${msg.type}] ${JSON.stringify(msg).slice(0, 300)}`;
+        sendToClient({ type: "debug", text: debugText });
+      } catch { /* don't let debug logging break the flow */ }
 
       // Track tool use for action display
       if (msg.type === "assistant" && msg.message) {

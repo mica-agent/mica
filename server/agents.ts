@@ -137,19 +137,92 @@ These are the connective tissue between canvases. They capture:
 
 When you see _decision-*.md files on your whiteboard, READ THEM — they contain agreements with other canvases that constrain your work.
 
-## Shell Execution
-- You have access to Bash for running shell commands (install packages, run scripts, execute code, etc.)
-- Use this when tasks require code execution, data processing, or system commands
-- Working directory is the project root
-- Keep commands focused and safe — avoid destructive operations unless explicitly asked
+## Shell Execution (Your Agent Tools)
+- You have access to Bash for running shell commands directly (install packages, inspect files, etc.)
+- This is YOUR tool as an agent — do NOT confuse it with the card bridge
+- Card classes access the shell via \`mica.exec()\` in their export functions, NOT via your Bash tool
+- When building a card that needs to run commands, write export functions that call \`mica.exec()\`
 
 ## Custom Card Classes
-- To create a new card class, first read the docs: \`cat card-classes/CREATING_CARDS.md\`
-- Card classes are JavaScript render.js files. Use write_file with a .card-classes/ path:
-  1. write_file with filename \`.card-classes/<classname>/render.js\` — the render code
-  2. write_file with filename \`.card-classes/_manifest.json\` — register extension/badge metadata
-- The file extension IS the card class. To use your new class, create a card file with a matching extension:
-  e.g., for class "dashboard" → write_file \`my-dashboard.dashboard\` to place it on the whiteboard
+
+Card classes are interactive widgets on the whiteboard. Each is a directory with a \`render.js\` file.
+
+### How to create one (3 steps):
+
+**Step 1:** Write the render.js to \`.card-classes/<classname>/render.js\`:
+
+\`\`\`javascript
+// .card-classes/file-browser/render.js
+export default function render(content, config) {
+  // content = the card file's text content
+  // config = { project, canvas, filename }
+  // Returns HTML string with <style> and <script> blocks
+  return \\\`
+    <div style="padding:16px;font-family:sans-serif;">
+      <div id="output">Loading...</div>
+    </div>
+    <script>
+      // 'mica' and 'container' are injected automatically
+      // mica.call(fn, args) → calls an export function
+      // container.querySelector(...) → scoped DOM queries
+      const data = await mica.call('get_data', {});
+      container.querySelector('#output').textContent = JSON.stringify(data);
+    </script>
+  \\\`;
+}
+
+// Named exports are callable from browser via mica.call()
+// They run server-side and have access to the full mica bridge
+export async function get_data(content, args, mica) {
+  // Use mica.exec() for filesystem/shell access:
+  const result = await mica.exec('ls -la ' + (args.dir || '.'));
+  return { files: result.stdout, error: result.exitCode !== 0 ? result.stderr : null };
+}
+\`\`\`
+
+**Step 2:** Register in \`.card-classes/_manifest.json\`:
+\`\`\`json
+{
+  "file-browser": {
+    "extension": ".file-browser",
+    "badge": "FILES",
+    "defaultTitle": "File Browser"
+  }
+}
+\`\`\`
+
+**Step 3:** Create a card file with matching extension to place it on the whiteboard:
+\`write_file\` with filename \`my-files.file-browser\` (content can be empty or initial data).
+
+### Server bridge in export functions:
+- \`await mica.write(content)\` — update this card's file
+- \`await mica.readFile(filename)\` — read a canvas file
+- \`await mica.writeFile(filename, content)\` — write a canvas file
+- \`await mica.exec(command, { cwd?, timeout? })\` — run a shell command, returns \`{ stdout, stderr, exitCode }\`. cwd defaults to project root. Use this for filesystem access (ls, cat, find, etc.)
+- \`await mica.fetch(url, opts)\` — HTTP request (requires \`network: true\` in manifest)
+- \`await mica.agent.chat(message)\` — send a message to the AI agent
+- \`await mica.log(message)\` — append to activity log
+- \`await mica.emit(event, data)\` — broadcast to all widgets
+
+### Interactive shell channel (browser-side):
+Cards can open an interactive shell for streaming/long-running processes:
+\`\`\`javascript
+const ch = mica.openChannel('shell', { cols: 80, rows: 24 });
+ch.onData((data) => console.log(data.output));  // PTY output
+ch.send({ input: 'npm test\\n' });               // send input
+ch.send({ resize: true, cols: 120, rows: 40 }); // resize
+ch.close();                                       // close when done
+\`\`\`
+
+### Key rules:
+- render.js runs in a V8 isolate — NO require/import, NO fs/net/fetch. Use \`mica.*\` bridge only
+- render() is synchronous, returns HTML string. Exports can be async
+- Use \`mica.exec()\` for filesystem access — e.g. \`mica.exec('find . -maxdepth 2 -type f')\`
+- Use inline styles (not <style> rules) for widget layout to avoid conflicts
+- Use fixed pixel heights (not 100%) — card body max-height is 280px, use ≤260px
+- \`container.querySelector()\` not \`document.querySelector()\` for DOM scoping
+- For CDN libraries, use \`export const dependencies = { scripts: [...], styles: [...] }\`
+- Register cleanup with \`mica.onDestroy(() => ...)\` for libraries that allocate resources
 - Look at existing card classes for patterns: \`ls card-classes/\` and \`cat card-classes/<name>/render.js\`
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
@@ -523,8 +596,6 @@ ${fileContext}`;
 
   let resultText = "";
   let cost = 0;
-  let sessionId: string | undefined;
-  const sKey = sessionKey(project, canvas);
 
   // Resolve model: per-agent config > project default > fallback
   const micaConfig = await readMicaConfig(project);
@@ -538,19 +609,17 @@ ${fileContext}`;
     tools: ["Bash"], // enable shell execution for code generation
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
-    persistSession: true,
     maxTurns: 5,
     model,
     settings: { forceLoginMethod: "claudeai" as const },
     settingSources: ["user" as const],
   };
 
-  // Resume existing session for this canvas if we have one
-  if (canvasSessions[sKey]) {
-    options.resume = canvasSessions[sKey];
-  }
-
-  // Run inside the shared project container
+  // Run inside the shared project container.
+  // NOTE: Session resume is disabled because the container mounts ~/.claude
+  // as read-only (to protect auth credentials), so session files can't be
+  // written. The system prompt includes full file context and chat history
+  // is managed separately by ChatChannelManager, so continuity is maintained.
   if (_sandboxManager) {
     const containerName = await _sandboxManager.getContainerName(project);
     options.spawnClaudeCodeProcess = createAgentSpawner(containerName, project, canvas);
@@ -564,10 +633,6 @@ ${fileContext}`;
     options: options as import("@anthropic-ai/claude-agent-sdk").Options,
   })) {
     const msg = message as SDKMessage;
-
-    if (msg.type === "system" && "subtype" in msg && msg.subtype === "init") {
-      sessionId = msg.session_id;
-    }
 
     // Emit progress events for tool use
     if (onProgress) {
@@ -598,11 +663,6 @@ ${fileContext}`;
       resultText = result.result || resultText;
       cost = result.total_cost_usd || 0;
     }
-  }
-
-  // Save session for continuity
-  if (sessionId) {
-    canvasSessions[sKey] = sessionId;
   }
 
   return {

@@ -55,6 +55,7 @@ export class ChatChannelManager {
   private channelToSession: Map<string, string> = new Map();
   private chatFn: ChatFn | null = null;
   private broadcast: BroadcastFn | null = null;
+  private messageQueues: Map<string, string[]> = new Map(); // session key → queued messages
 
   private sessionKey(project: string, canvas: string, filename: string): string {
     return `${project}/${canvas}/${filename}`;
@@ -113,9 +114,15 @@ export class ChatChannelManager {
     console.log(`[chat] Received data on channel ${channelId}:`, JSON.stringify(msg).slice(0, 100));
     if (!message) return;
 
-    // If an agent call is already in progress, ignore new messages.
+    // If an agent call is already in progress, queue the message.
     if (session.busy) {
-      console.log(`[chat] Session ${key} is busy, ignoring message`);
+      let queue = this.messageQueues.get(key);
+      if (!queue) {
+        queue = [];
+        this.messageQueues.set(key, queue);
+      }
+      queue.push(message);
+      console.log(`[chat] Session ${key} is busy, queued message (${queue.length} pending)`);
       return;
     }
 
@@ -167,6 +174,10 @@ export class ChatChannelManager {
       const agentName = response.agentName || "AI Agent";
       const filesChanged = response.filesChanged || false;
 
+      if (!response.message) {
+        console.warn(`[chat] Agent returned empty response for session ${key}`);
+      }
+
       // Broadcast assistant response to all channels
       this.broadcastToSession(session, {
         type: "assistant",
@@ -181,12 +192,36 @@ export class ChatChannelManager {
       ]);
 
     } catch (err) {
+      console.error(`[chat] Agent error for session ${key}:`, (err as Error).message);
       this.broadcastToSession(session, {
         type: "error",
         error: (err as Error).message,
       });
     } finally {
       session.busy = false;
+
+      // Process next queued message if any
+      const queue = this.messageQueues.get(key);
+      if (queue && queue.length > 0) {
+        // Take only the LAST queued message — intermediate ones are stale
+        const lastMessage = queue[queue.length - 1];
+        const skipped = queue.length - 1;
+        queue.length = 0;
+        if (skipped > 0) {
+          console.log(`[chat] Skipping ${skipped} stale queued messages for session ${key}`);
+        }
+        // Find a channel ID that maps to this session and re-dispatch
+        let dispatchChannel: string | null = null;
+        this.channelToSession.forEach((sKey, chId) => {
+          if (!dispatchChannel && sKey === key) dispatchChannel = chId;
+        });
+        if (dispatchChannel) {
+          console.log(`[chat] Processing queued message for session ${key}: "${lastMessage.slice(0, 50)}"`);
+          const chId = dispatchChannel;
+          // Use setImmediate to avoid deep recursion
+          setImmediate(() => this.sendData(chId, { message: lastMessage }));
+        }
+      }
     }
   }
 
@@ -205,8 +240,14 @@ export class ChatChannelManager {
     session.channels.delete(channelId);
     console.log(`[chat] Detached channel ${channelId} from session ${key} (${session.channels.size} remaining)`);
 
-    // Clean up session if no channels and not busy
-    if (session.channels.size === 0 && !session.busy) {
+    // Clean up session if no channels remain
+    if (session.channels.size === 0) {
+      if (session.busy) {
+        console.warn(`[chat] Last channel detached while session ${key} was busy — forcing busy=false`);
+        session.busy = false;
+      }
+      // Clear any queued messages — no channels to receive responses
+      this.messageQueues.delete(key);
       this.sessions.delete(key);
     }
   }
@@ -223,13 +264,25 @@ export class ChatChannelManager {
       console.log(`[chat] Shutdown: closed session ${key}`);
     }
     this.sessions.clear();
+    this.messageQueues.clear();
   }
 
   // ── Internal helpers ──────────────────────────────────────
 
   private broadcastToSession(session: ChatSession, msg: unknown): void {
-    for (const ch of session.channels.values()) {
-      ch.onData(msg);
+    const staleChannels: string[] = [];
+    for (const [channelId, ch] of session.channels) {
+      try {
+        ch.onData(msg);
+      } catch (err) {
+        console.warn(`[chat] Stale channel ${channelId}, removing:`, (err as Error).message);
+        staleChannels.push(channelId);
+      }
+    }
+    // Remove stale channels outside the iteration
+    for (const channelId of staleChannels) {
+      session.channels.delete(channelId);
+      this.channelToSession.delete(channelId);
     }
   }
 
