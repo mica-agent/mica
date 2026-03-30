@@ -56,7 +56,7 @@ import { TerminalChannelManager } from "./terminalChannel.js";
 import { AgentChannelManager } from "./agentChannel.js";
 import { setSandboxManager as setSubagentSandboxManager } from "./agentProviders/claudeCode.js";
 
-const PORT = parseInt(process.env.MICA_PORT || "3001");
+const PORT = parseInt(process.env.MICA_PORT || "3002");
 
 // ── Global error handlers — prevent process crashes ─────
 process.on("unhandledRejection", (reason) => {

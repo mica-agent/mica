@@ -288,14 +288,16 @@ export class IsolatePool {
       handler(method, args, ctx).then(
         (result) => {
           const val = result === undefined ? null : result;
-          loaded.context.evalSync(
+          // Use eval (async), not evalSync — the isolate is busy awaiting the Promise,
+          // so evalSync would deadlock. eval queues the settle for when the isolate yields.
+          loaded.context.eval(
             `globalThis.__mica_rpc_settle(${rpcId}, ${JSON.stringify(val)}, null)`,
-          );
+          ).catch(() => {});
         },
         (err) => {
-          loaded.context.evalSync(
+          loaded.context.eval(
             `globalThis.__mica_rpc_settle(${rpcId}, null, ${JSON.stringify(String((err as Error).message || err))})`,
-          );
+          ).catch(() => {});
         }
       );
     });
