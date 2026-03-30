@@ -51,6 +51,7 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
       `${NODE_MODULES_DIR}:${NODE_MODULES_DIR}:ro`,
       // Mount host's Claude auth credentials so the agent CLI can authenticate
       `${process.env.HOME}/.claude:/home/sandbox/.claude:ro`,
+      `${process.env.HOME}/.claude.json:/home/sandbox/.claude.json:ro`,
     ],
     workdir: projectPath,
   };
@@ -173,6 +174,9 @@ export function createAgentSpawner(
   return (spawnOpts: SpawnOptions): SpawnedProcess => {
     const dockerArgs = [
       "exec", "-i",
+      // Run as the same UID as the host user so the agent can read mounted credentials
+      // and project files. The container itself is the blast radius.
+      "--user", String(process.getuid?.() || 1000),
     ];
 
     // Forward environment variables (auth tokens, etc.)
@@ -184,6 +188,8 @@ export function createAgentSpawner(
         dockerArgs.push("-e", `${key}=${value}`);
       }
     }
+    // Point HOME to the sandbox user dir where credentials are mounted
+    dockerArgs.push("-e", "HOME=/home/sandbox");
 
     dockerArgs.push(containerName);
 

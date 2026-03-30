@@ -550,10 +550,8 @@ ${fileContext}`;
     options.resume = canvasSessions[sKey];
   }
 
-  // Run inside the shared project container (if available and not nested in Claude Code).
-  // When running inside a Claude Code session (dev environment), the container's claude CLI
-  // can't authenticate — run locally on the host instead, where claude auth already works.
-  if (_sandboxManager && !process.env.CLAUDECODE) {
+  // Run inside the shared project container
+  if (_sandboxManager) {
     const containerName = await _sandboxManager.getContainerName(project);
     options.spawnClaudeCodeProcess = createAgentSpawner(containerName, project, canvas);
   }
