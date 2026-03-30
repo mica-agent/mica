@@ -49,6 +49,8 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
       `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
       `${SDK_DIR}:${SDK_DIR}:ro`,
       `${NODE_MODULES_DIR}:${NODE_MODULES_DIR}:ro`,
+      // Mount host's Claude auth credentials so the agent CLI can authenticate
+      `${process.env.HOME}/.claude:/home/sandbox/.claude:ro`,
     ],
     workdir: projectPath,
   };
