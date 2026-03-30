@@ -269,11 +269,15 @@ export function openChannel(
   return {
     id,
     send: (data: unknown) => {
-      sendMsg({ type: "channel_data", id, data });
+      waitForConnection().then(() => {
+        sendMsg({ type: "channel_data", id, data });
+      }).catch((err) => console.error("[mica-socket] channel send failed:", err));
     },
     close: () => {
-      sendMsg({ type: "channel_close", id });
       activeChannels.delete(id);
+      waitForConnection().then(() => {
+        sendMsg({ type: "channel_close", id });
+      }).catch(() => {});
       handle.onClose?.();
     },
     onData: (cb) => { handle.onData = cb; },
