@@ -6,6 +6,24 @@
 
 This is analogous to `.vscode/` or `.github/` — a lightweight footprint that enhances but doesn't own. See [SPEC.md](SPEC.md) for the product definition and card model.
 
+## Key Design Tenets
+
+These principles guide all architectural decisions in Mica.
+
+**1. Understand root cause before coding.** Read the docs. Trace the lifecycle. Draw the state diagram. Don't guess at fixes — diagnose. If we're playing whack-a-mole, the mental model is wrong.
+
+**2. Infrastructure provides pipes, not policy.** The framework doesn't define what "chat" or "terminal" means. It provides connections, state management, and lifecycle events. Card code implements the semantics of its own backend. Adding a new card type should never require changes to framework code.
+
+**3. Don't constrain the user's tools.** Let Claude Code, plugins, and user settings work as designed. The container is a blast radius boundary — it limits what things can touch, not what features are available. Don't second-guess the security models of integrated tools.
+
+**4. Lifecycle bound to explicit user intent.** Sessions start when a user creates a card file and end when a user deletes it. Don't infer teardown from transport state (connection count hitting zero, WebSocket disconnects). These are transient events, not user intent.
+
+**5. One mechanism, not per-type special cases.** Prefer a single unified model (one ChannelManager, one expansion mechanism, one card class system) over growing if/else chains with type-specific logic. When a pattern emerges across card types, extract it into infrastructure.
+
+**6. Card class is the unit of extension.** Adding a new AI agent, visualization, or interactive widget should be a new `render.js` file — not new TypeScript modules, not new server routes, not new React components. The card class system is the extension point.
+
+**7. Transport-agnostic infrastructure.** The ChannelManager doesn't know about WebSockets. The card class system doesn't know about React. Each layer can evolve independently. See [ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md) for deep dives on subsystem design.
+
 ---
 
 ## How It Works
