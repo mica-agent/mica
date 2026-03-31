@@ -134,22 +134,35 @@ function chatCardHtml(provider, label, color, icon) {
         break;
       case 'thinking':
         busy = true;
-        setStatus('Thinking...');
         sendBtn.disabled = true;
+        const thinkEl = document.createElement('div');
+        thinkEl.id = 'thinking-indicator';
+        thinkEl.style.cssText = 'align-self:flex-start;background:rgba(255,255,255,0.06);border-radius:12px 12px 12px 4px;padding:10px 16px;';
+        thinkEl.innerHTML = '<span style="color:#8b949e;font-size:13px;letter-spacing:2px;" class="thinking-dots">...</span>';
+        messagesEl.appendChild(thinkEl);
+        scrollToBottom();
         break;
       case 'progress':
-        if (data.description) setStatus(data.description);
+        if (data.description) {
+          setStatus(data.description);
+          const ind = messagesEl.querySelector('#thinking-indicator .thinking-dots');
+          if (ind) ind.textContent = data.description;
+        }
         break;
       case 'assistant':
         busy = false;
         setStatus('');
         sendBtn.disabled = false;
+        const thinkInd = messagesEl.querySelector('#thinking-indicator');
+        if (thinkInd) thinkInd.remove();
         addMessage('assistant', data.content, data.agent);
         break;
       case 'error':
         busy = false;
         setStatus('');
         sendBtn.disabled = false;
+        const errThink = messagesEl.querySelector('#thinking-indicator');
+        if (errThink) errThink.remove();
         addMessage('assistant', 'Error: ' + (data.error || 'Unknown error'), 'System');
         break;
     }
