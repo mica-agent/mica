@@ -95,7 +95,7 @@ export class ChannelManager {
    */
   /** Check if a handler is registered for a card class. */
   hasHandler(cardClass: string): boolean {
-    return this.handlerFactories.has(cardClass);
+    return this.factories.has(cardClass);
   }
 
   resolveCardClass(filename: string): string {
@@ -212,8 +212,8 @@ export class ChannelManager {
     }
 
     if (!session) {
-      // Resolve card class from filename (or use fn override)
-      const cardClass = fn || this.resolveCardClass(filename);
+      // Resolve card class from filename extension
+      const cardClass = this.resolveCardClass(filename);
       const factory = this.factories.get(cardClass);
       if (!factory) {
         throw new Error(`No handler registered for card class: ${cardClass}`);
