@@ -24,6 +24,7 @@ export default function ExpandedCardView({ filename, html, exports: exportFns, m
   const dragStart = useRef({ x: 0, y: 0 });
   const translateStart = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
+  const svgCloneRef = useRef<HTMLDivElement>(null);
 
   // Close on Escape
   useEffect(() => {
@@ -33,6 +34,25 @@ export default function ExpandedCardView({ filename, html, exports: exportFns, m
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // For mermaid cards: clone the already-rendered SVG from the inline card
+  // instead of re-rendering via WidgetRuntime (which causes mermaid state conflicts).
+  useEffect(() => {
+    if (!isMermaid || !svgCloneRef.current) return;
+    // Find the inline card's rendered SVG by filename
+    const inlineCard = document.querySelector(`[data-filename="${CSS.escape(filename)}"] .wb-card-body svg`);
+    if (inlineCard) {
+      const clone = inlineCard.cloneNode(true) as SVGElement;
+      clone.setAttribute("width", "100%");
+      clone.removeAttribute("height");
+      clone.style.maxWidth = "none";
+      svgCloneRef.current.innerHTML = "";
+      svgCloneRef.current.appendChild(clone);
+    } else {
+      // Fallback: if we can't find the SVG, show a message
+      svgCloneRef.current.innerHTML = '<div style="color:#8b949e;padding:20px;text-align:center;">Diagram preview not available</div>';
+    }
+  }, [isMermaid, filename]);
 
   // Zoom via mouse wheel
   const handleWheel = useCallback((e: React.WheelEvent) => {
@@ -114,13 +134,7 @@ export default function ExpandedCardView({ filename, html, exports: exportFns, m
               className="wb-panzoom-inner"
               style={{ transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})` }}
             >
-              <WidgetRuntime
-                html={html}
-                exports={exportFns}
-                project={projectId}
-                canvas={canvasId}
-                filename={filename}
-              />
+              <div ref={svgCloneRef} style={{ width: "100%" }} />
             </div>
           </div>
         ) : (

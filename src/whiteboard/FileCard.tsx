@@ -141,6 +141,7 @@ export default function FileCard({ filename, html, exports: exportFns, dependenc
   return (
     <div
       ref={cardRef}
+      data-filename={filename}
       className={`wb-card ${cardClass} ${flashClass} ${renderingClass} ${resizedClass} ${draggingClass}`}
       style={{ "--canvas-color": canvasColor, ...cardStyle } as React.CSSProperties}
     >

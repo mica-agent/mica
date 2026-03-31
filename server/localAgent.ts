@@ -1,6 +1,6 @@
-// LocalAgent — agent implementation using llama-server's OpenAI-compatible API.
-// Mirrors chatWithAgent() from agents.ts but uses HTTP calls instead of Claude Agent SDK.
-// Supports tool calling (list_files, read_file, write_file, delete_file) with a loop.
+// LocalAgent — agent implementation using any OpenAI-compatible API (llama-server, ollama, etc).
+// Mirrors chatWithAgent() from agents.ts: same tools, same system prompt structure, same
+// progress events. Uses HTTP calls to an OpenAI-compatible endpoint instead of Claude Agent SDK.
 
 import {
   listFiles,
@@ -11,14 +11,13 @@ import {
 } from "./canvasFiles.js";
 import {
   getAgentIdentity,
+  TOOL_INSTRUCTIONS,
   GOAL_INSTRUCTIONS,
   describeToolUse,
   appendToLog,
-  getAgentMeta,
-  setAgentWriteHook,
 } from "./agents.js";
 import type { AgentResponse, CanvasId, ProgressCallback } from "./agents.js";
-import { readMicaConfig } from "./projectConnection.js";
+import { readMicaConfig, getProjectPath } from "./projectConnection.js";
 import { ensureLlamaServer } from "./llamaServer.js";
 
 // ── Types ────────────────────────────────────────────────────
@@ -47,7 +46,8 @@ interface ChatCompletionResponse {
   }>;
 }
 
-// ── Tool definitions (OpenAI format) ─────────────────────────
+// ── Tool definitions (OpenAI function-calling format) ────────
+// Same tools as the Claude agent's MCP server, translated to OpenAI format.
 
 const TOOLS = [
   {
@@ -76,7 +76,7 @@ const TOOLS = [
     type: "function" as const,
     function: {
       name: "write_file",
-      description: "Create or update a file on the whiteboard. Use .md for rich content, .mmd for mermaid diagrams, .txt for simple notes.",
+      description: "Create or update a file on the whiteboard. Use .md for rich content, .mmd for mermaid diagrams, .html for interactive widgets, .txt for simple notes.",
       parameters: {
         type: "object",
         properties: {
@@ -103,37 +103,40 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "list_cross_canvas",
+      description: "List files on another canvas's whiteboard.",
+      parameters: {
+        type: "object",
+        properties: {
+          canvas: { type: "string", description: "Canvas name to list files from" },
+        },
+        required: ["canvas"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "read_cross_canvas",
+      description: "Read a file from another canvas's whiteboard.",
+      parameters: {
+        type: "object",
+        properties: {
+          canvas: { type: "string", description: "Canvas name" },
+          filename: { type: "string", description: "Filename to read" },
+        },
+        required: ["canvas", "filename"],
+      },
+    },
+  },
 ];
 
-// ── Local tool instructions (no cross-canvas, no Bash) ───────
-
-const LOCAL_TOOL_INSTRUCTIONS = `
-You have access to tools for managing files on the shared whiteboard.
-
-## Your Canvas's Whiteboard
-- list_files: See what files exist on your whiteboard
-- read_file: Read a specific file's content
-- write_file: Create or update a file (this is how you create artifacts)
-- delete_file: Remove a file
-
-When creating files, use kebab-case names with descriptive titles:
-- .md for rich content (personas, briefs, analyses, decisions)
-- .mmd for mermaid diagrams (flowcharts, architecture, sequences) — write RAW mermaid syntax, never wrap in \`\`\`mermaid code fences. If a node label contains parentheses, braces, or angle brackets, wrap the label in quotes: A["Label (with parens)"]
-- .html for interactive widgets, styled documents, or visual layouts
-- .txt for simple notes and lists
-
-## Custom Card Classes
-- To create a new card class, first read the docs: \`cat card-classes/CREATING_CARDS.md\`
-- Project-specific card classes go in \`.mica/.card-classes/<classname>/render.js\`
-
-CRITICAL RULE: You MUST use the write_file tool to create any content. NEVER paste file content (markdown, mermaid, HTML, etc.) directly in your chat response. If the user asks you to create, generate, or write something, ALWAYS use write_file to save it as a file on the whiteboard. Your chat response should only describe what you did, not contain the file content itself.
-
-ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.log so the human can see what you did and why.
-`;
-
 // ── Mermaid sanitization ─────────────────────────────────────
-// Local models often put parentheses/braces inside node labels without quoting,
-// which breaks mermaid parsing. E.g. `G[Video (480p)]` → `G["Video (480p)"]`
+// Local models often produce node labels with unquoted special chars.
+// E.g. `G[Video (480p)]` → `G["Video (480p)"]`
 
 function sanitizeMermaid(content: string): string {
   return content.replace(
@@ -143,13 +146,12 @@ function sanitizeMermaid(content: string): string {
 }
 
 // ── Parse text-embedded tool calls ───────────────────────────
-// Some models fall back to generating tool calls as XML in content instead of
-// using the tool_calls array. This parser handles the common format:
+// Fallback for models that embed tool calls as XML in content instead of
+// using the tool_calls array:
 //   <tool_call><function=name><parameter=key>value</parameter>...</function></tool_call>
 
 function parseTextToolCalls(text: string): ToolCall[] {
   const calls: ToolCall[] = [];
-  // Match <tool_call>...</tool_call> blocks (or <function=...> at top level)
   const toolCallPattern = /<(?:tool_call|function=(\w+))>([\s\S]*?)(?:<\/(?:tool_call|function)>)/gi;
   let match: RegExpExecArray | null;
   let idCounter = 0;
@@ -158,7 +160,6 @@ function parseTextToolCalls(text: string): ToolCall[] {
     let block = match[2];
     let funcName = match[1] || "";
 
-    // If we matched <tool_call>, look for <function=name> inside
     if (!funcName) {
       const funcMatch = /<function=(\w+)>([\s\S]*?)(?:<\/function>|$)/i.exec(block);
       if (funcMatch) {
@@ -168,7 +169,6 @@ function parseTextToolCalls(text: string): ToolCall[] {
     }
     if (!funcName) continue;
 
-    // Extract parameters
     const args: Record<string, string> = {};
     const paramPattern = /<parameter=(\w+)>\n?([\s\S]*?)\n?<\/parameter>/gi;
     let pMatch: RegExpExecArray | null;
@@ -189,16 +189,15 @@ function parseTextToolCalls(text: string): ToolCall[] {
 // ── Conversation memory per canvas ───────────────────────────
 
 const canvasHistories = new Map<string, OpenAIMessage[]>();
+const MAX_HISTORY_MESSAGES = 20;
 
 function historyKey(project: string, canvas: string): string {
   return `${project}/${canvas}`;
 }
 
 // ── Agent write hook reference ───────────────────────────────
-// Set by index.ts via setAgentWriteHook — we call it before writing files
 let onAgentWrite: ((project: string, canvas: string, filename: string) => void) | null = null;
 
-/** Register the agent write hook (called from index.ts setup) */
 export function setLocalAgentWriteHook(hook: (project: string, canvas: string, filename: string) => void): void {
   onAgentWrite = hook;
 }
@@ -237,7 +236,18 @@ async function executeTool(
       case "write_file": {
         onAgentWrite?.(project, canvas, args.filename);
         let content = args.content;
-        // Strip markdown code fences from .mmd files — models often wrap mermaid in ```mermaid
+        // Handle .card-classes/ routing (same as Claude agent)
+        if (args.filename.startsWith(".card-classes/")) {
+          const projectPath = await getProjectPath(project);
+          const fs = await import("fs");
+          const path = await import("path");
+          const fullPath = path.join(projectPath, ".mica", args.filename);
+          await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+          await fs.promises.writeFile(fullPath, content, "utf-8");
+          filesChanged.value = true;
+          return `Card class file "${args.filename}" written.`;
+        }
+        // Strip markdown fences from .mmd files and sanitize
         if (args.filename.endsWith(".mmd")) {
           content = content.replace(/^```(?:mermaid)?\s*\n?/i, "").replace(/\n?```\s*$/, "");
           content = sanitizeMermaid(content);
@@ -256,6 +266,19 @@ async function executeTool(
         filesChanged.value = true;
         await appendToLog(project, canvas, `Deleted **${args.filename}**: ${args.reason || "(no reason)"}`);
         return `File "${args.filename}" deleted.`;
+      }
+
+      case "list_cross_canvas": {
+        const files = await listFiles(project, args.canvas);
+        const listing = files
+          .map((f) => `${f.name} (${f.type}, modified ${f.modifiedAt})`)
+          .join("\n");
+        return `[${args.canvas} canvas files]\n${listing || "(No files)"}`;
+      }
+
+      case "read_cross_canvas": {
+        const file = await readCanvasFile(project, args.canvas, args.filename);
+        return `[From ${args.canvas} canvas — ${args.filename}]\n\n${file.content}`;
       }
 
       default:
@@ -292,14 +315,21 @@ export async function chatWithLocalAgent(
     // No _brief.brief yet
   }
 
+  // Use the same TOOL_INSTRUCTIONS as the Claude agent for consistency
   const systemPrompt = `${getAgentIdentity(canvas)}
 ${briefContent}
-${LOCAL_TOOL_INSTRUCTIONS}
+${TOOL_INSTRUCTIONS}
 ${GOAL_INSTRUCTIONS}
 
 ## Current Whiteboard Files (${canvas} canvas)
 
 ${fileContext}`;
+
+  // Resolve model: per-agent config > project default > fallback
+  const micaConfig = await readMicaConfig(project);
+  const model = micaConfig?.agents?.[canvas]?.model
+    || micaConfig?.model
+    || "nemotron-nano-30b";
 
   // Get or create conversation history
   const key = historyKey(project, canvas);
@@ -309,7 +339,7 @@ ${fileContext}`;
     canvasHistories.set(key, history);
   }
 
-  // Update system prompt (always index 0) or insert it
+  // Update system prompt (always index 0)
   if (history.length > 0 && history[0].role === "system") {
     history[0] = { role: "system", content: systemPrompt };
   } else {
@@ -319,10 +349,10 @@ ${fileContext}`;
   // Append user message
   history.push({ role: "user", content: userMessage });
 
-  // Trim history if too long (keep system + last 20 messages)
-  if (history.length > 22) {
+  // Trim history if too long (keep system + last N messages)
+  if (history.length > MAX_HISTORY_MESSAGES + 2) {
     const system = history[0];
-    history = [system, ...history.slice(-20)];
+    history = [system, ...history.slice(-(MAX_HISTORY_MESSAGES))];
     canvasHistories.set(key, history);
   }
 
@@ -338,7 +368,7 @@ ${fileContext}`;
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "nemotron-nano-30b",
+          model,
           messages: history,
           tools: TOOLS,
           tool_choice: "auto",
@@ -356,7 +386,7 @@ ${fileContext}`;
     } catch (err) {
       const errMsg = (err as Error).message;
       console.error("[local-agent] API call failed:", errMsg);
-      // If it's a parse error (likely from broken tool call in history), try to recover
+      // If history has a broken assistant message with tool_calls, recover
       if (errMsg.includes("parse") && history.length > 2) {
         const lastMsg = history[history.length - 1];
         if (lastMsg.role === "assistant" && lastMsg.tool_calls) {
@@ -366,7 +396,7 @@ ${fileContext}`;
           continue;
         }
       }
-      resultText = `I encountered an error communicating with the local model. Please try again.`;
+      resultText = "I encountered an error communicating with the local model. Please try again.";
       break;
     }
 
@@ -378,30 +408,25 @@ ${fileContext}`;
 
     const assistantMsg = choice.message;
 
-    // Detect truncation — if finish_reason is "length", the response was cut off.
-    // Tool call JSON may be incomplete, so discard tool_calls and ask model to summarize.
+    // Detect truncation — if finish_reason is "length", tool call JSON may be incomplete
     if (choice.finish_reason === "length" && assistantMsg.tool_calls?.length) {
       console.warn("[local-agent] Response truncated mid-tool-call, discarding broken tool calls");
-      // Keep any partial text content, drop broken tool calls
       history.push({
         role: "assistant",
         content: assistantMsg.content || "I was trying to use a tool but my response was truncated. Let me try a shorter approach.",
       });
-      // Continue loop — model will try again (hopefully without hitting the limit)
       continue;
     }
 
-    // If no tool calls in the API response, check if the model embedded them as text
+    // If no tool calls in the API response, check for text-embedded XML tool calls
     if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
       const textToolCalls = parseTextToolCalls(assistantMsg.content || "");
       if (textToolCalls.length > 0) {
-        // Model fell back to text-based tool calls — execute them
         console.warn(`[local-agent] Parsed ${textToolCalls.length} text-embedded tool call(s)`);
         assistantMsg.tool_calls = textToolCalls;
-        // Strip the XML from content for cleaner history
         assistantMsg.content = (assistantMsg.content || "").replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "").trim() || null;
       } else {
-        // No tool calls — we're done
+        // No tool calls — done
         history.push({ role: "assistant", content: assistantMsg.content });
         resultText = assistantMsg.content || "";
         break;
@@ -430,7 +455,6 @@ ${fileContext}`;
 
       const result = await executeTool(project, canvas, toolName, toolArgs, filesChanged);
 
-      // Append tool result to history
       history.push({
         role: "tool",
         tool_call_id: toolCall.id,
@@ -438,18 +462,17 @@ ${fileContext}`;
       });
     }
 
-    // If this was the last turn, let the model respond without tools
+    // If this was the last turn, force a text response (no tools)
     if (turn === maxTurns - 1) {
       try {
         const finalRes = await fetch(`${baseUrl}/v1/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "nemotron-nano-30b",
+            model,
             messages: history,
             temperature: 0.7,
             max_tokens: 8192,
-            // No tools — force a text response
           }),
         });
         if (finalRes.ok) {
@@ -466,7 +489,6 @@ ${fileContext}`;
     }
   }
 
-  // Fallback for empty responses — don't send blank messages to the UI
   if (!resultText.trim()) {
     resultText = "I wasn't able to generate a response. Please try again.";
   }

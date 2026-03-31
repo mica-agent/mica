@@ -57,6 +57,10 @@ import { AgentChannelManager } from "./agentChannel.js";
 import { ChatChannelManager } from "./chatChannel.js";
 import { setExecutor as setSubagentExecutor } from "./agentProviders/claudeCode.js";
 import { ProjectExecutor } from "./projectExecutor.js";
+import { ClaudeProvider } from "./agentProviders/claude.js";
+import { LocalProvider } from "./agentProviders/local.js";
+import { registerProvider, getProvider } from "./agentCore/registry.js";
+import { resolveAgentProvider } from "./agentCore/config.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
@@ -621,12 +625,21 @@ setContainerExecutor(executor);
 setSubagentExecutor(executor);
 const cardManager = new CardManager(workerPool, sandboxManager);
 const fileWatcher = new FileWatcher();
-// Routed chat function — picks Claude or local agent based on project config
+
+// ── Agent provider registry ──────────────────────────────────
+const claudeProvider = new ClaudeProvider(executor);
+const localProvider = new LocalProvider();
+registerProvider(claudeProvider);
+registerProvider(localProvider);
+
+// Routed chat function — picks provider based on project config
 const routedChat: typeof chatWithAgent = async (project, canvas, message, image?, onProgress?, resumeSessionId?) => {
-  const config = await readMicaConfig(project);
-  if (config?.agentProvider === "local") {
-    return chatWithLocalAgent(project, canvas, message, image, onProgress);
+  const providerName = await resolveAgentProvider(project);
+  const provider = getProvider(providerName);
+  if (provider) {
+    return provider.chat(project, canvas, message, image, onProgress, resumeSessionId);
   }
+  // Fallback to Claude if provider not found
   return chatWithAgent(project, canvas, message, image, onProgress, resumeSessionId);
 };
 
@@ -638,6 +651,8 @@ const writeHook = (project: string, canvas: string, filename: string) => {
 };
 setAgentWriteHook(writeHook);
 setLocalAgentWriteHook(writeHook);
+claudeProvider.setWriteHook(writeHook);
+localProvider.setWriteHook(writeHook);
 
 // RPC handler: Python card classes can call mica.write(), mica.agent.chat(), etc.
 const rpcHandler = async (method: string, args: Record<string, unknown>, context: { project: string; canvas: string; filename: string }) => {
@@ -1142,6 +1157,14 @@ function broadcast(msg: Record<string, unknown>) {
 agentManager.setBroadcast(broadcast);
 chatManager.setChatFn(routedChat);
 chatManager.setBroadcast(broadcast);
+
+// Register provider-specific chat functions for card-based agents
+chatManager.setProviderChatFn("claude", (project, canvas, message, image?, onProgress?, resumeSessionId?) =>
+  claudeProvider.chat(project, canvas, message, image, onProgress, resumeSessionId)
+);
+chatManager.setProviderChatFn("local", (project, canvas, message, image?, onProgress?) =>
+  localProvider.chat(project, canvas, message, image, onProgress)
+);
 
 // File watcher → re-render + broadcast
 fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {

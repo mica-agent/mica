@@ -244,9 +244,11 @@ export class SandboxManager {
       dockerArgs.push("-v", vol);
     }
 
-    // Expose a port range for app runtime (8080-8089 inside → 9000-9009 on host)
+    // Expose a port range for app runtime (8080-8089 inside → dynamic host range)
+    // Each project gets a 10-port block: project 0 → 9000-9009, project 1 → 9010-9019, etc.
+    const portOffset = this.sandboxes.size * 10;
     for (let i = 0; i < 10; i++) {
-      dockerArgs.push("-p", `${9000 + i}:${8080 + i}`);
+      dockerArgs.push("-p", `${9000 + portOffset + i}:${8080 + i}`);
     }
 
     dockerArgs.push(

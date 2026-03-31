@@ -38,6 +38,7 @@ interface ChannelHandle {
 interface ChatSession {
   channels: Map<string, ChannelHandle>;
   busy: boolean;  // is an agent call in progress?
+  provider?: string;  // provider override from channel open args (for card-based agents)
 }
 
 interface ChatMessage {
@@ -55,6 +56,7 @@ export class ChatChannelManager {
   private sessions: Map<string, ChatSession> = new Map();
   private channelToSession: Map<string, string> = new Map();
   private chatFn: ChatFn | null = null;
+  private providerChatFns: Map<string, ChatFn> = new Map(); // provider name → chat function
   private broadcast: BroadcastFn | null = null;
   private messageQueues: Map<string, string[]> = new Map(); // session key → queued messages
   private agentSessionIds: Map<string, string> = new Map(); // session key → SDK session ID (persists across channel reconnects)
@@ -65,6 +67,11 @@ export class ChatChannelManager {
 
   setChatFn(fn: ChatFn): void {
     this.chatFn = fn;
+  }
+
+  /** Register a chat function for a specific provider (used by card-based agents). */
+  setProviderChatFn(provider: string, fn: ChatFn): void {
+    this.providerChatFns.set(provider, fn);
   }
 
   setBroadcast(fn: BroadcastFn): void {
@@ -88,7 +95,7 @@ export class ChatChannelManager {
     let session = this.sessions.get(key);
 
     if (!session) {
-      session = { channels: new Map(), busy: false };
+      session = { channels: new Map(), busy: false, provider: _args.provider as string | undefined };
       this.sessions.set(key, session);
     }
 
@@ -137,7 +144,12 @@ export class ChatChannelManager {
     const project = parts[0];
     const canvas = parts[1];
 
-    if (!this.chatFn) {
+    // Resolve chat function: provider-specific (from card args) or default (from project config)
+    const chatFn = session.provider
+      ? this.providerChatFns.get(session.provider) || this.chatFn
+      : this.chatFn;
+
+    if (!chatFn) {
       session.busy = false;
       this.broadcastToSession(session, { type: "error", error: "No agent configured" });
       return;
@@ -153,7 +165,7 @@ export class ChatChannelManager {
     const resumeId = this.agentSessionIds.get(key);
     console.log(`[chat] Calling agent for session ${key}: "${message.slice(0, 50)}"${resumeId ? ` (resuming ${resumeId.slice(0, 8)}...)` : ""}`);
     try {
-      const response = await this.chatFn(project, canvas, message, undefined, (evt) => {
+      const response = await chatFn(project, canvas, message, undefined, (evt) => {
         // Stream progress events to all attached channels
         this.broadcastToSession(session!, {
           type: "progress",

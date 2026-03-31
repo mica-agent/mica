@@ -1,9 +1,8 @@
 // WidgetRuntime — renders server-produced HTML inside a card.
 // Provides the `mica` bridge (call, send, on, openChannel) for interactive widgets.
-// Initializes mermaid.js for any <pre class="mermaid"> elements in the output.
+// Card classes handle their own rendering (e.g., mermaid.js) via inline <script> blocks.
 
 import { useEffect, useRef, useState } from "react";
-import mermaid from "mermaid";
 // morphdom removed — innerHTML replacement is safer with React's lifecycle.
 // TODO: Re-evaluate morphdom for preserving mounted library instances once
 // we add proper lifecycle coordination between React and widget scripts.
@@ -22,20 +21,6 @@ interface Props {
   project: string;
   canvas: CanvasId;
   filename: string;
-}
-
-// Initialize mermaid once
-mermaid.initialize({ startOnLoad: false, theme: "dark", maxTextSize: 100000, flowchart: { useMaxWidth: true }, sequence: { useMaxWidth: true } });
-
-/** Force mermaid SVGs to fill their container width */
-function fixMermaidSvgs(el: HTMLElement) {
-  el.querySelectorAll("pre.mermaid svg").forEach((svg) => {
-    const s = svg as SVGElement;
-    s.setAttribute("width", "100%");
-    s.removeAttribute("height");
-    s.style.maxWidth = "none";
-    s.style.width = "100%";
-  });
 }
 
 // Track globally loaded external scripts and stylesheets
@@ -209,20 +194,8 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
         executeInlineScripts();
       }
 
-      // Initialize mermaid diagrams
-      const mermaidEls = el.querySelectorAll("pre.mermaid:not(.mermaid-rendered)");
-      if (mermaidEls.length > 0) {
-        mermaid.run({ nodes: mermaidEls as unknown as ArrayLike<HTMLElement> })
-          .then(() => {
-            mermaidEls.forEach((pre) => pre.classList.add("mermaid-rendered"));
-            fixMermaidSvgs(el);
-          })
-          .catch((err) => {
-            console.error("[mermaid] render failed:", err);
-          });
-      } else {
-        fixMermaidSvgs(el);
-      }
+      // Mermaid rendering is handled by the mermaid card class itself (via inline <script>),
+      // not by WidgetRuntime. Card classes own their own rendering lifecycle.
     };
 
     // If there are declared dependencies, show loading skeleton, preload, then render.

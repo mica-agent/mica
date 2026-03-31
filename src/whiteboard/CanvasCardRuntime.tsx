@@ -204,6 +204,16 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     await saveFile(projectId, "_root", name, "");
   }, [projectId]);
 
+  const createClaudeChat = useCallback(async () => {
+    const name = `chat-${Date.now().toString(36)}.claude-chat`;
+    await saveFile(projectId, "_root", name, "");
+  }, [projectId]);
+
+  const createLlamaChat = useCallback(async () => {
+    const name = `chat-${Date.now().toString(36)}.llama-chat`;
+    await saveFile(projectId, "_root", name, "");
+  }, [projectId]);
+
   const createAgent = useCallback(async () => {
     const name = `agent-${Date.now().toString(36)}.agent`;
     const initialState = JSON.stringify({
@@ -353,6 +363,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
             <button className="wb-btn wb-btn--tool" onClick={() => setDrawingMode(true)}>Draw</button>
             <span className="wb-toolbar-divider" />
             <button className="wb-btn wb-btn--tool" onClick={createTerminal}>+ Terminal</button>
+            <button className="wb-btn wb-btn--tool" onClick={createClaudeChat}>+ Claude Chat</button>
+            <button className="wb-btn wb-btn--tool" onClick={createLlamaChat}>+ Llama Chat</button>
             <button className="wb-btn wb-btn--tool" onClick={createAgent}>+ Agent</button>
           </div>
           <div className="wb-toolbar-right">

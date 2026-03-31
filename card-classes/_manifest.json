@@ -72,5 +72,17 @@
     "badge": "PROJECT",
     "system": true,
     "defaultTitle": "Project"
+  },
+  "claude-chat": {
+    "extension": ".claude-chat",
+    "badge": "CLAUDE",
+    "system": false,
+    "defaultTitle": "Claude Chat"
+  },
+  "llama-chat": {
+    "extension": ".llama-chat",
+    "badge": "LLAMA",
+    "system": false,
+    "defaultTitle": "Llama Chat"
   }
 }
