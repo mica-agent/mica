@@ -165,7 +165,7 @@ function chatCardHtml(provider, label, color, icon) {
   });
 
   ch.onClose(() => {
-    setStatus('Disconnected');
+    /* Channel may reopen on re-render — don't show permanent error */
   });
 
   // Send message

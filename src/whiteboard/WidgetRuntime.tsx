@@ -214,13 +214,22 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
       continueRender();
     }
 
-    // Cleanup on unmount
+    // Cleanup on unmount only — NOT on re-render.
+    // The prevHtmlRef guard above ensures we don't re-execute when html is unchanged,
+    // but the effect cleanup would still destroy channels on dependency reference changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [html, project, canvas, filename]);
+
+  // Hard destroy on unmount — component permanently removed (card deleted, project switch).
+  // This destroys persistent channels and sends channel_close to the server.
+  // Distinct from _runDestroy() which is a soft detach (re-render lifecycle).
+  useEffect(() => {
     return () => {
       if (bridgeRef.current) {
-        bridgeRef.current._runDestroy();
+        bridgeRef.current._hardDestroy();
       }
     };
-  }, [html, project, canvas, filename, dependencies]);
+  }, []);
 
   return (
     <div ref={outerRef} className={`widget-runtime ${activeCalls > 0 ? "widget-runtime--busy" : ""}`}>

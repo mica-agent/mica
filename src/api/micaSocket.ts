@@ -1,11 +1,18 @@
 /**
- * MicaSocket — WebSocket manager for widget ↔ Python communication.
+ * MicaSocket — WebSocket manager for widget ↔ server communication.
  *
- * Supports four patterns:
+ * Supports five patterns:
  *   1. call(fn, args) → Promise<result>         Request/response
  *   2. send(fn, args)                           Fire-and-forget to server
  *   3. on(event, callback)                      Server-pushed events
- *   4. openChannel(fn, args) → Channel          Bidirectional stream
+ *   4. openChannel(fn, args) → Channel          Bidirectional stream (persistent)
+ *   5. broadcast(event, data)                   Widget-to-widget events
+ *
+ * Channel persistence:
+ *   Channels are keyed by (project/canvas/filename/fn). Calling openChannel()
+ *   for the same card and function returns the existing channel with swapped
+ *   callbacks — no close/reopen cycle. Channels survive re-renders and WS
+ *   reconnects. Only ch.destroy() (card file deleted) sends channel_close.
  */
 
 export type CanvasId = string;
@@ -33,14 +40,27 @@ function nextId(): string {
   return `mc-${++idCounter}-${Date.now()}`;
 }
 
+// ── Persistent channel registry ─────────────────────────────
+// Channels keyed by purpose (project/canvas/filename/fn), not by random ID.
+// Survives re-renders and WS reconnects.
+
+interface PersistentChannel {
+  id: string;
+  handle: ChannelHandle;
+  openParams: { project: string; canvas: string; filename: string; fn: string; args: Record<string, unknown> };
+}
+
+const channelRegistry = new Map<string, PersistentChannel>();
+
+function channelKey(project: string, canvas: string, filename: string, fn: string): string {
+  return `${project}/${canvas}/${filename}/${fn}`;
+}
+
 // ── Connection management ────────────────────────────────────
 
 export function connect(url?: string): void {
   if (ws && ws.readyState === WebSocket.OPEN) return;
 
-  // Connect directly to the API server's WebSocket endpoint.
-  // In dev, the API runs on port 3002 — connecting directly avoids the extra
-  // hop through Vite's WS proxy, which is slow through VS Code port forwarding.
   const apiPort = import.meta.env.VITE_MICA_WS_PORT || "3002";
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   wsUrl = url || `${protocol}//${location.hostname}:${apiPort}/ws/cards`;
@@ -48,6 +68,16 @@ export function connect(url?: string): void {
 
   ws.onopen = () => {
     console.log("[mica-socket] Connected");
+    // Reattach all persistent channels — server sessions may still be alive
+    for (const [, info] of channelRegistry) {
+      const newId = nextId();
+      activeChannels.delete(info.id);
+      info.id = newId;
+      activeChannels.set(newId, info.handle);
+      try {
+        sendMsg({ type: "channel_open", id: newId, ...info.openParams });
+      } catch { /* WS may not be ready yet */ }
+    }
   };
 
   ws.onclose = () => {
@@ -59,10 +89,17 @@ export function connect(url?: string): void {
       pending.reject(new Error("WebSocket disconnected"));
       pendingCalls.delete(id);
     }
-    // Close all channels
+    // Soft-close non-persistent channels only.
+    // Persistent channels stay in registry and reattach on reconnect.
     for (const [id, ch] of activeChannels) {
-      ch.onClose?.();
-      activeChannels.delete(id);
+      let isPersistent = false;
+      for (const info of channelRegistry.values()) {
+        if (info.id === id) { isPersistent = true; break; }
+      }
+      if (!isPersistent) {
+        ch.onClose?.();
+        activeChannels.delete(id);
+      }
     }
     reconnectTimer = setTimeout(() => connect(wsUrl), 2000);
   };
@@ -87,7 +124,6 @@ function handleMessage(msg: Record<string, unknown>): void {
   const id = msg.id as string | undefined;
 
   switch (type) {
-    // ── Request/response result ──
     case "result": {
       const pending = id ? pendingCalls.get(id) : undefined;
       if (pending) {
@@ -108,7 +144,6 @@ function handleMessage(msg: Record<string, unknown>): void {
       break;
     }
 
-    // ── Server → widget stream ──
     case "stream": {
       const pending = id ? pendingCalls.get(id) : undefined;
       if (pending && (pending as unknown as { onStream?: (data: unknown) => void }).onStream) {
@@ -127,7 +162,6 @@ function handleMessage(msg: Record<string, unknown>): void {
       break;
     }
 
-    // ── Bidirectional channel ──
     case "channel_data": {
       const ch = id ? activeChannels.get(id) : undefined;
       if (ch) ch.onData?.(msg.data);
@@ -137,13 +171,20 @@ function handleMessage(msg: Record<string, unknown>): void {
     case "channel_close": {
       const ch = id ? activeChannels.get(id) : undefined;
       if (ch) {
-        ch.onClose?.();
+        // Server closed the channel (session destroyed, file deleted).
+        // Remove from both maps.
         activeChannels.delete(id!);
+        for (const [key, info] of channelRegistry) {
+          if (info.id === id) {
+            channelRegistry.delete(key);
+            break;
+          }
+        }
+        ch.onClose?.();
       }
       break;
     }
 
-    // ── Server-pushed events (broadcasts) ──
     default: {
       const listeners = eventListeners.get(type);
       if (listeners) {
@@ -180,10 +221,6 @@ function sendMsg(msg: Record<string, unknown>): void {
 
 // ── Public API ──────────────────────────────────────────────
 
-/**
- * Pattern 1: Request/response call to a Python @mica.export function.
- * Returns a Promise that resolves with the function's return value.
- */
 export async function call(
   project: string,
   canvas: CanvasId,
@@ -199,16 +236,11 @@ export async function call(
       pendingCalls.delete(id);
       reject(new Error(`Call to ${fn} timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-
     pendingCalls.set(id, { resolve, reject, timeout });
     sendMsg({ type: "call", id, project, canvas, filename, fn, args });
   });
 }
 
-/**
- * Pattern 2: Fire-and-forget send to server.
- * No response expected.
- */
 export function send(
   project: string,
   canvas: CanvasId,
@@ -221,10 +253,6 @@ export function send(
   }).catch((err) => console.error("[mica-socket] send failed:", err));
 }
 
-/**
- * Pattern 3: Subscribe to server-pushed events.
- * Returns an unsubscribe function.
- */
 export function on(event: string, callback: (data: unknown) => void): () => void {
   if (!eventListeners.has(event)) {
     eventListeners.set(event, new Set());
@@ -236,13 +264,21 @@ export function on(event: string, callback: (data: unknown) => void): () => void
 }
 
 /**
- * Pattern 4: Open a bidirectional channel to a Python handler.
- * Returns a Channel object for sending data and receiving callbacks.
+ * Pattern 4: Open a persistent bidirectional channel.
+ *
+ * Channels are keyed by (project/canvas/filename/fn). If one already exists
+ * for this key, the existing channel is returned with swapped callbacks.
+ * No close/reopen message is sent to the server.
+ *
+ * ch.close()   = SOFT detach. Nulls callbacks. Channel stays in registry.
+ *                Next openChannel() with same key reattaches instantly.
+ * ch.destroy() = HARD close. Removes from registry. Sends channel_close to server.
  */
 export interface Channel {
   id: string;
   send: (data: unknown) => void;
   close: () => void;
+  destroy: () => void;
   onData: (cb: (data: unknown) => void) => void;
   onClose: (cb: () => void) => void;
 }
@@ -254,20 +290,51 @@ export function openChannel(
   fn: string,
   args: Record<string, unknown> = {}
 ): Channel {
-  const id = nextId();
+  const key = channelKey(project, canvas, filename, fn);
 
-  const handle: ChannelHandle = {
-    onData: null,
-    onClose: null,
-  };
+  // Reattach to existing channel if one exists for this key
+  const existing = channelRegistry.get(key);
+  if (existing && activeChannels.has(existing.id)) {
+    const handle = existing.handle;
+    return {
+      id: existing.id,
+      send: (data: unknown) => {
+        waitForConnection().then(() => {
+          sendMsg({ type: "channel_data", id: existing.id, data });
+        }).catch((err) => console.error("[mica-socket] channel send failed:", err));
+      },
+      close: () => {
+        // Soft detach — null callbacks, keep in registry
+        handle.onData = null;
+        handle.onClose = null;
+      },
+      destroy: () => {
+        // Hard close — remove from everything, notify server
+        activeChannels.delete(existing.id);
+        channelRegistry.delete(key);
+        waitForConnection().then(() => {
+          sendMsg({ type: "channel_close", id: existing.id });
+        }).catch(() => {});
+        handle.onClose?.();
+      },
+      onData: (cb) => { handle.onData = cb; },
+      onClose: (cb) => { handle.onClose = cb; },
+    };
+  }
+
+  // New channel
+  const id = nextId();
+  const handle: ChannelHandle = { onData: null, onClose: null };
 
   activeChannels.set(id, handle);
-  // Defer the open message until WebSocket is connected
+  channelRegistry.set(key, { id, handle, openParams: { project, canvas, filename, fn, args } });
+
   waitForConnection().then(() => {
     sendMsg({ type: "channel_open", id, project, canvas, filename, fn, args });
   }).catch((err) => {
     console.error("[mica-socket] channel open failed:", err);
     activeChannels.delete(id);
+    channelRegistry.delete(key);
     handle.onClose?.();
   });
 
@@ -279,7 +346,14 @@ export function openChannel(
       }).catch((err) => console.error("[mica-socket] channel send failed:", err));
     },
     close: () => {
+      // Soft detach — null callbacks, keep in registry
+      handle.onData = null;
+      handle.onClose = null;
+    },
+    destroy: () => {
+      // Hard close — remove from everything, notify server
       activeChannels.delete(id);
+      channelRegistry.delete(key);
       waitForConnection().then(() => {
         sendMsg({ type: "channel_close", id });
       }).catch(() => {});
@@ -290,10 +364,6 @@ export function openChannel(
   };
 }
 
-/**
- * Pattern 5: Broadcast an event to all connected widgets.
- * Other widgets receive this via mica.on(event, callback).
- */
 export function broadcast(event: string, data: Record<string, unknown> = {}): void {
   waitForConnection().then(() => {
     sendMsg({ type: "broadcast", event, data });
@@ -302,7 +372,6 @@ export function broadcast(event: string, data: Record<string, unknown> = {}): vo
 
 /**
  * Create a scoped mica bridge for a specific widget instance.
- * This is what WidgetRuntime injects into widget scripts.
  */
 export function createBridge(project: string, canvas: CanvasId, filename: string) {
   const destroyCallbacks: Array<() => void> = [];
@@ -318,16 +387,35 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
       openChannel(project, canvas, filename, fn, args),
     broadcast: (event: string, data: Record<string, unknown> = {}) =>
       broadcast(event, data),
-    /** Register a cleanup callback. Called when the card is removed or before DOM replacement. */
+    /** Register a cleanup callback for soft destroy (re-render). */
     onDestroy: (fn: () => void) => {
       destroyCallbacks.push(fn);
     },
-    /** Execute and clear all registered destroy callbacks. */
+    /** Soft destroy — re-render lifecycle. Runs onDestroy callbacks (which call ch.close() = detach). */
     _runDestroy: () => {
       for (const cb of destroyCallbacks) {
         try { cb(); } catch (e) { console.error("[mica-bridge] onDestroy error:", e); }
       }
       destroyCallbacks.length = 0;
+    },
+    /** Hard destroy — component permanently removed. Destroys all channels for this card. */
+    _hardDestroy: () => {
+      // Run soft destroy first (onDestroy callbacks)
+      for (const cb of destroyCallbacks) {
+        try { cb(); } catch (e) { console.error("[mica-bridge] onDestroy error:", e); }
+      }
+      destroyCallbacks.length = 0;
+      // Then destroy all persistent channels belonging to this card
+      const prefix = `${project}/${canvas}/${filename}/`;
+      for (const [key, info] of channelRegistry) {
+        if (key.startsWith(prefix)) {
+          activeChannels.delete(info.id);
+          channelRegistry.delete(key);
+          waitForConnection().then(() => {
+            sendMsg({ type: "channel_close", id: info.id });
+          }).catch(() => {});
+        }
+      }
     },
   };
 }

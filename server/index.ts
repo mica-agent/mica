@@ -52,15 +52,16 @@ import { SandboxManager } from "./projectSandbox.js";
 import { ReactiveAgent } from "./reactiveAgent.js";
 import { chatWithLocalAgent, setLocalAgentWriteHook, resetLocalCanvas, resetAllLocal } from "./localAgent.js";
 import { stopLlamaServer } from "./llamaServer.js";
-import { TerminalChannelManager } from "./terminalChannel.js";
 import { AgentChannelManager } from "./agentChannel.js";
-import { ChatChannelManager } from "./chatChannel.js";
 import { setExecutor as setSubagentExecutor } from "./agentProviders/claudeCode.js";
 import { ProjectExecutor } from "./projectExecutor.js";
 import { ClaudeProvider } from "./agentProviders/claude.js";
 import { LocalProvider } from "./agentProviders/local.js";
 import { registerProvider, getProvider } from "./agentCore/registry.js";
 import { resolveAgentProvider } from "./agentCore/config.js";
+import { ChannelManager } from "./channelManager.js";
+import { createChatHandler } from "./channelHandlers/chat.js";
+import { createTerminalHandler } from "./channelHandlers/terminal.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
@@ -858,10 +859,16 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel IDs
-const channelPools = new Map<string, WorkerPool>(); // channelId → pool that owns it
-const terminalManager = new TerminalChannelManager(); // Node-side PTY sessions
-const agentManager = new AgentChannelManager(); // Node-side agent sessions
-const chatManager = new ChatChannelManager();   // Node-side chat sessions
+const channelPools = new Map<string, WorkerPool>(); // channelId → pool that owns it (Python channels)
+const agentManager = new AgentChannelManager(); // Agent card sessions (complex task protocol, kept separate)
+
+// Unified channel manager — handles chat, terminal, and future card types.
+// Transport-agnostic: index.ts is the WebSocket adapter.
+const channelManager = new ChannelManager();
+channelManager.registerHandler("chat", createChatHandler);
+channelManager.registerHandler("claude-chat", createChatHandler);
+channelManager.registerHandler("llama-chat", createChatHandler);
+channelManager.registerHandler("terminal", createTerminalHandler);
 
 wss.on("error", (err) => {
   console.error("[websocket-server] Error:", (err as Error).message);
@@ -870,18 +877,18 @@ wss.on("error", (err) => {
 wss.on("connection", (ws) => {
   wsClients.add(ws);
 
-  ws.on("close", () => {
+  // Clean up channels when WebSocket disconnects.
+  // channelManager.detach() is a soft close — sessions stay alive for reconnect.
+  // Agent and Python channels get hard-closed (they don't use the unified manager yet).
+  const cleanupWsChannels = () => {
     wsClients.delete(ws);
-    // Clean up any channels owned by this client
     const channels = wsChannels.get(ws);
     if (channels) {
       for (const channelId of channels) {
-        if (terminalManager.has(channelId)) {
-          terminalManager.close(channelId);
+        if (channelManager.has(channelId)) {
+          channelManager.detach(channelId); // soft — session stays alive
         } else if (agentManager.has(channelId)) {
           agentManager.close(channelId);
-        } else if (chatManager.has(channelId)) {
-          chatManager.close(channelId);
         } else {
           const pool = channelPools.get(channelId) || workerPool;
           pool.closeChannel(channelId);
@@ -890,29 +897,12 @@ wss.on("connection", (ws) => {
       }
       wsChannels.delete(ws);
     }
-  });
+  };
 
+  ws.on("close", cleanupWsChannels);
   ws.on("error", (err) => {
     console.error("[websocket] Connection error:", err.message);
-    wsClients.delete(ws);
-    // Clean up channels — error may fire without a subsequent close event
-    const channels = wsChannels.get(ws);
-    if (channels) {
-      for (const channelId of channels) {
-        if (terminalManager.has(channelId)) {
-          terminalManager.close(channelId);
-        } else if (agentManager.has(channelId)) {
-          agentManager.close(channelId);
-        } else if (chatManager.has(channelId)) {
-          chatManager.close(channelId);
-        } else {
-          const pool = channelPools.get(channelId) || workerPool;
-          pool.closeChannel(channelId);
-          channelPools.delete(channelId);
-        }
-      }
-      wsChannels.delete(ws);
-    }
+    cleanupWsChannels();
   });
 
   // ── Full WebSocket message router ──
@@ -968,133 +958,62 @@ wss.on("connection", (ws) => {
       // Pattern 5: Bidirectional channel — open
       case "channel_open": {
         try {
-          // Terminal cards: handle PTY directly in Node (bypass Python worker)
           const fname = filename as string;
-          if (fname.endsWith(".terminal")) {
-            const shellOverride = await executor.getContainerShell(project as string);
-            terminalManager.open(
-              id as string,
-              project as string, canvas as string, fname,
-              (args || {}) as Record<string, unknown>,
-              (data) => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "channel_data", id, data }));
-                }
-              },
-              () => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "channel_close", id }));
-                }
-                wsChannels.get(ws)?.delete(id as string);
-              },
-              shellOverride,
-            );
-            if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
-            wsChannels.get(ws)!.add(id as string);
-            break;
-          }
+          const channelArgs = (args || {}) as Record<string, unknown>;
+          const cid = id as string;
+          const proj = project as string;
+          const canv = canvas as string;
 
-          // Agent cards: handle session directly in Node (bypass Python worker)
+          const onData = (data: unknown) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "channel_data", id, data }));
+            }
+          };
+          const onClose = () => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "channel_close", id }));
+            }
+            wsChannels.get(ws)?.delete(cid);
+          };
+
+          // Agent cards have a complex task protocol — keep separate for now
           if (fname.endsWith(".agent")) {
-            agentManager.open(
-              id as string,
-              project as string, canvas as string, fname,
-              (args || {}) as Record<string, unknown>,
-              (data) => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "channel_data", id, data }));
-                }
-              },
-              () => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "channel_close", id }));
-                }
-                wsChannels.get(ws)?.delete(id as string);
-              }
-            );
+            agentManager.open(cid, proj, canv, fname, channelArgs, onData, onClose);
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
-            wsChannels.get(ws)!.add(id as string);
+            wsChannels.get(ws)!.add(cid);
             break;
           }
 
-          // Chat cards: handle session directly in Node (no V8 isolate for agent calls)
-          if (fname.endsWith(".chat")) {
-            chatManager.open(
-              id as string,
-              project as string, canvas as string, fname,
-              (args || {}) as Record<string, unknown>,
-              (data) => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "channel_data", id, data }));
-                }
-              },
-              () => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "channel_close", id }));
-                }
-                wsChannels.get(ws)?.delete(id as string);
-              }
-            );
+          // Terminal cards need shell override from project container
+          if (fname.endsWith(".terminal") || (fn as string) === "shell") {
+            const shellOverride = await executor.getContainerShell(proj);
+            channelArgs.spawnOverride = shellOverride;
+          }
+
+          // Try the unified channel manager (chat, terminal, and future types)
+          const cardClass = channelManager.resolveCardClass(fname);
+          if (channelManager.hasHandler(cardClass)) {
+            await channelManager.open(cid, proj, canv, fname, fn as string, channelArgs, onData, onClose);
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
-            wsChannels.get(ws)!.add(id as string);
+            wsChannels.get(ws)!.add(cid);
             break;
           }
 
-          // Any card can open a shell channel via mica.openChannel('shell', {})
-          // Runs inside the project container for sandboxing.
-          if ((fn as string) === "shell") {
-            const shellOverride = await executor.getContainerShell(project as string);
-            terminalManager.open(
-              id as string,
-              project as string, canvas as string, fname,
-              (args || {}) as Record<string, unknown>,
-              (data) => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "channel_data", id, data }));
-                }
-              },
-              () => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(JSON.stringify({ type: "channel_close", id }));
-                }
-                wsChannels.get(ws)?.delete(id as string);
-              },
-              shellOverride,
-            );
-            if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
-            wsChannels.get(ws)!.add(id as string);
-            break;
-          }
-
-          // Resolve the pool for this project so we can track it for data/close routing
+          // Fallback: Python worker pool (legacy card classes with @mica.channel)
           let pool: WorkerPool = workerPool;
           if (sandboxManager) {
-            try { pool = await sandboxManager.getPool(project as string); } catch { /* fallback */ }
+            try { pool = await sandboxManager.getPool(proj); } catch { /* fallback */ }
           }
-          channelPools.set(id as string, pool);
+          channelPools.set(cid, pool);
 
           await cardManager.openChannel(
-            id as string,
-            project as string, canvas as string, fname,
-            fn as string, (args || {}) as Record<string, unknown>,
-            // onData: forward Python → this browser client
-            (data) => {
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "channel_data", id, data }));
-              }
-            },
-            // onClose: notify browser, clean up tracking
-            () => {
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "channel_close", id }));
-              }
-              wsChannels.get(ws)?.delete(id as string);
-              channelPools.delete(id as string);
-            }
+            cid, proj, canv, fname,
+            fn as string, channelArgs,
+            onData,
+            () => { onClose(); channelPools.delete(cid); }
           );
-          // Track this channel for cleanup on disconnect
           if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
-          wsChannels.get(ws)!.add(id as string);
+          wsChannels.get(ws)!.add(cid);
         } catch (err) {
           console.error(`[ws] channel_open error for ${project}/${canvas}/${filename}#${fn}:`, (err as Error).message);
           channelPools.delete(id as string);
@@ -1103,15 +1022,13 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Pattern 5: Bidirectional channel — data (browser → Node or Python)
+      // Pattern 5: Bidirectional channel — data
       case "channel_data": {
         const cid = id as string;
-        if (terminalManager.has(cid)) {
-          terminalManager.sendData(cid, (msg as { data?: unknown }).data);
+        if (channelManager.has(cid)) {
+          channelManager.sendData(cid, (msg as { data?: unknown }).data);
         } else if (agentManager.has(cid)) {
           agentManager.sendData(cid, (msg as { data?: unknown }).data);
-        } else if (chatManager.has(cid)) {
-          chatManager.sendData(cid, (msg as { data?: unknown }).data);
         } else {
           const pool = channelPools.get(cid) || workerPool;
           pool.sendChannelData(cid, (msg as { data?: unknown }).data);
@@ -1119,15 +1036,13 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Pattern 5: Bidirectional channel — close (browser → Node or Python)
+      // Pattern 5: Bidirectional channel — close (hard destroy from browser)
       case "channel_close": {
         const cid = id as string;
-        if (terminalManager.has(cid)) {
-          terminalManager.close(cid);
+        if (channelManager.has(cid)) {
+          channelManager.detach(cid);
         } else if (agentManager.has(cid)) {
           agentManager.close(cid);
-        } else if (chatManager.has(cid)) {
-          chatManager.close(cid);
         } else {
           const pool = channelPools.get(cid) || workerPool;
           pool.closeChannel(cid);
@@ -1155,16 +1070,6 @@ function broadcast(msg: Record<string, unknown>) {
 
 // Wire broadcast for agent lifecycle events
 agentManager.setBroadcast(broadcast);
-chatManager.setChatFn(routedChat);
-chatManager.setBroadcast(broadcast);
-
-// Register provider-specific chat functions for card-based agents
-chatManager.setProviderChatFn("claude", (project, canvas, message, image?, onProgress?, resumeSessionId?) =>
-  claudeProvider.chat(project, canvas, message, image, onProgress, resumeSessionId)
-);
-chatManager.setProviderChatFn("local", (project, canvas, message, image?, onProgress?) =>
-  localProvider.chat(project, canvas, message, image, onProgress)
-);
 
 // File watcher → re-render + broadcast
 fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {
@@ -1176,6 +1081,8 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
 
   if (event.type === "deleted") {
     cardManager.invalidateCard(event.project, event.canvas, event.filename);
+    // Destroy any channel session for this card file (tenet #4: lifecycle bound to user intent)
+    channelManager.destroySession(event.project, event.canvas, event.filename);
     broadcast({ type: "file-deleted", project: event.project, canvas: event.canvas, filename: event.filename });
     return;
   }
@@ -1289,8 +1196,7 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
   const shutdown = async () => {
     console.log("\n[shutdown] Stopping agents, terminals, sandboxes, worker pool, and llama-server...");
     agentManager.closeAll();
-    chatManager.closeAll();
-    terminalManager.closeAll();
+    channelManager.destroyAll();
     await stopLlamaServer();
     await sandboxManager.stopAll();
     await workerPool.stop();

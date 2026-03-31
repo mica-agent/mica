@@ -102,11 +102,15 @@ export class ChatChannelManager {
     session.channels.set(channelId, { onData, onClose });
     this.channelToSession.set(channelId, key);
 
-    // Replay message history to the new channel
+    console.log(`[chat] Attached channel ${channelId} to session ${key} (${session.channels.size} channels)`);
+
+    // Replay message history to the new channel.
+    // NOTE: This is async — a channel_close may arrive during the await.
+    // The channel is already registered above so sendData() works even if
+    // loadHistory is slow. If the channel is closed during the await,
+    // the onData call below will harmlessly send to a detached channel.
     const messages = await this.loadHistory(project, canvas);
     onData({ type: "history", messages });
-
-    console.log(`[chat] Attached channel ${channelId} to session ${key} (${session.channels.size} channels)`);
   }
 
   /**
@@ -260,15 +264,15 @@ export class ChatChannelManager {
     session.channels.delete(channelId);
     console.log(`[chat] Detached channel ${channelId} from session ${key} (${session.channels.size} remaining)`);
 
-    // Clean up session if no channels remain
+    // When the last channel detaches, keep the session alive (don't delete it).
+    // Chat cards can detach/reattach during re-render cycles, and deleting the
+    // session would lose the provider and busy state. Sessions are lightweight
+    // (just a Map + flags) so keeping them around is fine.
     if (session.channels.size === 0) {
       if (session.busy) {
-        console.warn(`[chat] Last channel detached while session ${key} was busy — forcing busy=false`);
-        session.busy = false;
+        console.warn(`[chat] Last channel detached while session ${key} was busy — keeping session alive`);
       }
-      // Clear any queued messages — no channels to receive responses
       this.messageQueues.delete(key);
-      this.sessions.delete(key);
     }
   }
 

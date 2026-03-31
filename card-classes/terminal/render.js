@@ -8,7 +8,7 @@ const XTERM_CSS = ".xterm{cursor:text;position:relative;user-select:none;-ms-use
 
 export default function render(content, config) {
   return `
-<div style="display:flex;flex-direction:column;height:260px;background:#0d1117;border-radius:6px;overflow:hidden;font-family:monospace;">
+<div style="display:flex;flex-direction:column;height:100%;min-height:260px;background:#0d1117;border-radius:6px;overflow:hidden;font-family:monospace;">
   <div style="display:flex;align-items:center;gap:6px;padding:8px 12px;background:#161b22;border-bottom:1px solid #30363d;flex-shrink:0;">
     <span style="width:12px;height:12px;border-radius:50%;background:#ff5f57;display:inline-block;"></span>
     <span style="width:12px;height:12px;border-radius:50%;background:#febc2e;display:inline-block;"></span>

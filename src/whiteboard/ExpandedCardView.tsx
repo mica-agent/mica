@@ -119,7 +119,7 @@ export default function ExpandedCardView({ filename, meta, canvasColor, onClose,
   return (
     <div className="wb-expanded-overlay" onClick={onClose}>
       <div
-        className={`wb-expanded-card ${showPanZoom ? "wb-expanded-card--full" : ""}`}
+        className="wb-expanded-card wb-expanded-card--full"
         style={{ "--canvas-color": canvasColor } as React.CSSProperties}
         onClick={(e) => e.stopPropagation()}
       >

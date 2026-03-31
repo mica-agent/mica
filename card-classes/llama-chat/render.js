@@ -155,7 +155,7 @@ function chatCardHtml(provider, label, color, icon) {
     }
   });
 
-  ch.onClose(() => { setStatus('Disconnected'); });
+  ch.onClose(() => { /* Channel may reopen on re-render — don't show permanent error */ });
 
   function send() {
     const text = inputEl.value.trim();
