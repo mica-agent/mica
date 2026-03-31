@@ -139,8 +139,13 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
       // Skip files that aren't child cards
       if (m.filename === "_project.project" || m.filename === ".chat-history.json" || m.filename === ".config.json") {
-        // If _project.project changed, refetch the parent card
-        if (m.filename === "_project.project") loadProjectCard();
+        // If _project.project changed, refetch ONLY the parent card (not children).
+        // Children are kept in sync via WebSocket events. Refetching children via HTTP
+        // can race with WebSocket updates and cause cards to briefly unmount, destroying
+        // persistent channel sessions.
+        if (m.filename === "_project.project") {
+          fetchProjectCard(projectId).then(setParentCard).catch(() => {});
+        }
         return;
       }
 
