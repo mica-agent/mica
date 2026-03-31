@@ -304,9 +304,9 @@ export function openChannel(
         }).catch((err) => console.error("[mica-socket] channel send failed:", err));
       },
       close: () => {
-        // Soft detach — null callbacks, keep in registry
-        handle.onData = null;
-        handle.onClose = null;
+        // Soft detach — no-op for persistent channels.
+        // Callbacks stay active so data continues flowing even if the
+        // card script doesn't re-run (same HTML, prevHtmlRef guard).
       },
       destroy: () => {
         // Hard close — remove from everything, notify server
@@ -346,9 +346,9 @@ export function openChannel(
       }).catch((err) => console.error("[mica-socket] channel send failed:", err));
     },
     close: () => {
-      // Soft detach — null callbacks, keep in registry
-      handle.onData = null;
-      handle.onClose = null;
+      // Soft detach — no-op for persistent channels.
+      // Callbacks stay active so data continues flowing even if the
+      // card script doesn't re-run (same HTML, prevHtmlRef guard).
     },
     destroy: () => {
       // Hard close — remove from everything, notify server
