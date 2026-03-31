@@ -143,6 +143,10 @@ export default function ChatSidebar({ projectId, activeCanvas, canvasColor, onFi
     const ch = openChannel(projectId, activeCanvas, "_chat.chat", "chat_session", {});
     channelRef.current = ch;
 
+    // For persistent channels that were already attached, the server won't
+    // re-send history (onAttach already fired). Request it explicitly.
+    ch.send({ type: "request_history" });
+
     ch.onData((data) => {
       const msg = data as Record<string, unknown>;
       console.log("[chat-sidebar] Channel data:", msg.type, msg.type === "history" ? `(${(msg.messages as unknown[])?.length} msgs)` : "");

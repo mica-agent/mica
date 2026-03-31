@@ -160,6 +160,17 @@ export function createChatHandler(
 
     onData(clientId: string, data: unknown): void {
       const msg = data as Record<string, unknown>;
+
+      // Handle history request (persistent channel reattach)
+      if (msg.type === "request_history") {
+        loadHistory().then((messages) => {
+          ctx.sendTo(clientId, { type: "history", messages });
+        }).catch(() => {
+          ctx.sendTo(clientId, { type: "history", messages: [] });
+        });
+        return;
+      }
+
       const message = msg.message as string;
       if (!message) return;
       console.log(`[chat-handler] Received message from ${clientId}: "${message.slice(0, 50)}"`);
