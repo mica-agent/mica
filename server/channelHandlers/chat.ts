@@ -113,6 +113,7 @@ export function createChatHandler(
       const filesChanged = response.filesChanged ?? false;
 
       // Broadcast assistant response
+      console.log(`[chat-handler] Agent responded (${response.message?.length || 0} chars, filesChanged=${filesChanged})`);
       ctx.broadcast({
         type: "assistant",
         content: response.message,
@@ -161,6 +162,7 @@ export function createChatHandler(
       const msg = data as Record<string, unknown>;
       const message = msg.message as string;
       if (!message) return;
+      console.log(`[chat-handler] Received message from ${clientId}: "${message.slice(0, 50)}"`);
 
       if (busy) {
         messageQueue.push(message);
