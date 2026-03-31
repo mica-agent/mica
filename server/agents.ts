@@ -10,8 +10,7 @@ import { z } from "zod/v4";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { createAgentSpawner } from "./dockerSpawn.js";
-import type { SandboxManager } from "./projectSandbox.js";
+import type { ProjectExecutor } from "./projectExecutor.js";
 import {
   listFiles,
   readCanvasFile,
@@ -23,10 +22,10 @@ import {
 } from "./canvasFiles.js";
 import { readMicaConfig, getProjectPath } from "./projectConnection.js";
 
-// ── Sandbox manager for container access ──────────────────
-let _sandboxManager: SandboxManager | null = null;
-export function setAgentSandboxManager(sm: SandboxManager): void {
-  _sandboxManager = sm;
+// ── Project executor for container access ──────────────────
+let _executor: ProjectExecutor | null = null;
+export function setAgentExecutor(exec: ProjectExecutor): void {
+  _executor = exec;
 }
 
 // ── Write hook for reactive agent ──────────────────────────
@@ -86,6 +85,7 @@ export interface AgentResponse {
   consultation?: Consultation | null;
   filesChanged?: boolean;
   cost?: number;
+  sessionId?: string;
 }
 
 export interface Consultation {
@@ -565,7 +565,8 @@ export async function chatWithAgent(
   canvas: CanvasId,
   userMessage: string,
   _imageBase64?: string,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  resumeSessionId?: string,
 ): Promise<AgentResponse> {
   // Set current project+canvas for tool callbacks
   currentProject = project;
@@ -596,6 +597,10 @@ ${fileContext}`;
 
   let resultText = "";
   let cost = 0;
+  let sessionId: string | undefined;
+
+  // Resolve project path for cwd
+  const projectPath = await getProjectPath(project);
 
   // Resolve model: per-agent config > project default > fallback
   const micaConfig = await readMicaConfig(project);
@@ -605,6 +610,7 @@ ${fileContext}`;
 
   const options: Record<string, unknown> = {
     systemPrompt,
+    cwd: projectPath,
     mcpServers: { "mica-tools": createMicaToolServer() },
     tools: ["Bash"], // enable shell execution for code generation
     permissionMode: "bypassPermissions",
@@ -612,17 +618,13 @@ ${fileContext}`;
     maxTurns: 5,
     model,
     settings: { forceLoginMethod: "claudeai" as const },
-    settingSources: ["user" as const],
+    settingSources: ["user" as const, "project" as const],
+    ...(resumeSessionId ? { resume: resumeSessionId } : {}),
   };
 
   // Run inside the shared project container.
-  // NOTE: Session resume is disabled because the container mounts ~/.claude
-  // as read-only (to protect auth credentials), so session files can't be
-  // written. The system prompt includes full file context and chat history
-  // is managed separately by ChatChannelManager, so continuity is maintained.
-  if (_sandboxManager) {
-    const containerName = await _sandboxManager.getContainerName(project);
-    options.spawnClaudeCodeProcess = createAgentSpawner(containerName, project, canvas);
+  if (_executor) {
+    options.spawnClaudeCodeProcess = await _executor.createAgentSpawner(project, canvas);
   }
 
   // Emit initial "thinking" event so the UI knows we're active immediately
@@ -662,6 +664,7 @@ ${fileContext}`;
       const result = msg as SDKResultSuccess;
       resultText = result.result || resultText;
       cost = result.total_cost_usd || 0;
+      sessionId = result.session_id;
     }
   }
 
@@ -671,6 +674,7 @@ ${fileContext}`;
     consultation: pendingConsultation ? { ...pendingConsultation } : null,
     filesChanged: filesWereChanged,
     cost,
+    sessionId,
   };
 }
 

@@ -34,20 +34,31 @@
 		"vscode": {
 			"extensions": [
 				"anthropic.claude-code"
-			]
+			],
+			"settings": {
+				"remote.localPortHost": "allInterfaces"
+			}
 		}
 	},
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	"forwardPorts": [5173, 8080],
+	"forwardPorts": [3002, 5173, 9000, 9090],
 	"portsAttributes": {
+		"3002": {
+			"label": "Mica API",
+			"onAutoForward": "silent"
+		},
 		"5173": {
 			"label": "Mica Dev",
-			"onAutoForward": "notify"
+			"onAutoForward": "silent"
 		},
-		"8080": {
-			"label": "Mica Demos",
-			"onAutoForward": "notify"
+		"9000": {
+			"label": "Project App",
+			"onAutoForward": "silent"
+		},
+		"9090": {
+			"label": "Project App Alt",
+			"onAutoForward": "silent"
 		}
 	},
 

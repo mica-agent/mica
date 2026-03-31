@@ -8,7 +8,7 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import { existsSync } from "fs";
 import { getProjectPath } from "./projectConnection.js";
-import type { SandboxManager } from "./projectSandbox.js";
+import type { ProjectExecutor } from "./projectExecutor.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -88,11 +88,11 @@ async function readRuntimeConfig(projectPath: string): Promise<RuntimeConfig> {
 // ── State ─────────────────────────────────────────────────
 
 const appProcesses = new Map<string, ContainerInfo>();
-let _sandboxManager: SandboxManager | null = null;
+let _executor: ProjectExecutor | null = null;
 
-/** Set the SandboxManager so we can get the shared container name. */
-export function setSandboxManager(sm: SandboxManager): void {
-  _sandboxManager = sm;
+/** Set the ProjectExecutor for container access. */
+export function setContainerExecutor(exec: ProjectExecutor): void {
+  _executor = exec;
 }
 
 // ── Operations ─────────────────────────────────────────────
@@ -100,8 +100,8 @@ export function setSandboxManager(sm: SandboxManager): void {
 export async function startProjectContainer(
   projectId: string
 ): Promise<ContainerInfo> {
-  if (!_sandboxManager) {
-    throw new Error("SandboxManager not set — call setSandboxManager() first");
+  if (!_executor) {
+    throw new Error("ProjectExecutor not set — call setContainerExecutor() first");
   }
 
   // Stop existing app process if running
@@ -109,26 +109,14 @@ export async function startProjectContainer(
     await stopProjectContainer(projectId);
   } catch { /* not running */ }
 
-  const containerName = await _sandboxManager.getContainerName(projectId);
+  const containerName = await _executor.getContainerName(projectId);
   const projectPath = await getProjectPath(projectId);
   const runtime = await readRuntimeConfig(projectPath);
 
-  // Build docker exec command
-  const execArgs = [
-    "exec", "-d",
-    "-w", runtime.workdir || projectPath,
-  ];
-
-  // Environment variables
-  if (runtime.env) {
-    for (const [key, value] of Object.entries(runtime.env)) {
-      execArgs.push("-e", `${key}=${value}`);
-    }
-  }
-
-  execArgs.push(containerName, "/bin/bash", "-c", runtime.entrypoint || "sleep infinity");
-
-  await execFileAsync("docker", execArgs);
+  await _executor.execDetached(projectId, runtime.entrypoint || "sleep infinity", {
+    cwd: runtime.workdir || projectPath,
+    env: runtime.env,
+  });
 
   const containerPorts = runtime.ports || [];
   const info: ContainerInfo = {
@@ -145,14 +133,10 @@ export async function startProjectContainer(
 }
 
 export async function stopProjectContainer(projectId: string): Promise<void> {
-  if (!_sandboxManager) return;
+  if (!_executor) return;
 
   try {
-    const containerName = await _sandboxManager.getContainerName(projectId);
-    // Kill the app process (pkill the entrypoint), not the container itself
-    await execFileAsync("docker", [
-      "exec", containerName, "pkill", "-f", "app.py|npm start|http.server",
-    ], { timeout: 5000 });
+    await _executor.execCapture(projectId, ["pkill", "-f", "app.py|npm start|http.server"], { timeout: 5000 });
   } catch { /* process may not be running */ }
 
   appProcesses.delete(projectId);
@@ -162,12 +146,12 @@ export async function stopProjectContainer(projectId: string): Promise<void> {
 export async function getContainerStatus(
   projectId: string
 ): Promise<ContainerStatus> {
-  if (!_sandboxManager) {
-    return { running: false, status: "no sandbox manager", ports: [] };
+  if (!_executor) {
+    return { running: false, status: "no executor", ports: [] };
   }
 
   try {
-    const containerName = await _sandboxManager.getContainerName(projectId);
+    const containerName = await _executor.getContainerName(projectId);
     const { stdout } = await execFileAsync("docker", [
       "inspect",
       "--format",
@@ -198,10 +182,10 @@ export async function getContainerLogs(
   projectId: string,
   tail: number = 100
 ): Promise<string> {
-  if (!_sandboxManager) return "(No sandbox manager)";
+  if (!_executor) return "(No executor)";
 
   try {
-    const containerName = await _sandboxManager.getContainerName(projectId);
+    const containerName = await _executor.getContainerName(projectId);
     const { stdout, stderr } = await execFileAsync("docker", [
       "logs",
       "--tail", String(tail),

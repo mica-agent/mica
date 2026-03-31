@@ -15,7 +15,7 @@ import {
   resetAll,
   getAgentMeta,
   setAgentWriteHook,
-  setAgentSandboxManager,
+  setAgentExecutor,
 } from "./agents.js";
 import type { CanvasId } from "./agents.js";
 import {
@@ -28,7 +28,7 @@ import {
   getProjectConfig,
   validateProjectCanvas,
 } from "./canvasFiles.js";
-import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath } from "./projectConnection.js";
+import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig } from "./projectConnection.js";
 import {
   getGitStatus,
   gitCommit,
@@ -42,7 +42,7 @@ import {
   stopProjectContainer,
   getContainerStatus,
   getContainerLogs,
-  setSandboxManager as setContainerSandboxManager,
+  setContainerExecutor,
 } from "./projectContainer.js";
 import { initializeProjects, seedNewProject } from "./seedCanvases.js";
 import { WorkerPool } from "./workerPool.js";
@@ -55,7 +55,8 @@ import { stopLlamaServer } from "./llamaServer.js";
 import { TerminalChannelManager } from "./terminalChannel.js";
 import { AgentChannelManager } from "./agentChannel.js";
 import { ChatChannelManager } from "./chatChannel.js";
-import { setSandboxManager as setSubagentSandboxManager } from "./agentProviders/claudeCode.js";
+import { setExecutor as setSubagentExecutor } from "./agentProviders/claudeCode.js";
+import { ProjectExecutor } from "./projectExecutor.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
@@ -614,18 +615,19 @@ app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, 
 // Retained for SandboxManager compatibility; will be removed in a future cleanup.
 const workerPool = new WorkerPool({ warm: 0, max: 0, label: "global" });
 const sandboxManager = new SandboxManager();
-setAgentSandboxManager(sandboxManager);
-setContainerSandboxManager(sandboxManager);
-setSubagentSandboxManager(sandboxManager);
+const executor = new ProjectExecutor(sandboxManager);
+setAgentExecutor(executor);
+setContainerExecutor(executor);
+setSubagentExecutor(executor);
 const cardManager = new CardManager(workerPool, sandboxManager);
 const fileWatcher = new FileWatcher();
 // Routed chat function — picks Claude or local agent based on project config
-const routedChat: typeof chatWithAgent = async (project, canvas, message, image?, onProgress?) => {
+const routedChat: typeof chatWithAgent = async (project, canvas, message, image?, onProgress?, resumeSessionId?) => {
   const config = await readMicaConfig(project);
   if (config?.agentProvider === "local") {
     return chatWithLocalAgent(project, canvas, message, image, onProgress);
   }
-  return chatWithAgent(project, canvas, message, image, onProgress);
+  return chatWithAgent(project, canvas, message, image, onProgress, resumeSessionId);
 };
 
 const reactiveAgent = new ReactiveAgent(routedChat, broadcast);
@@ -732,24 +734,11 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
       };
     }
     case "exec": {
-      const { execFile } = await import("child_process");
       const command = args.command as string;
       if (!command) throw new Error("mica.exec(): command is required");
-      const projectPath = await getProjectPath(project);
-      const containerName = await sandboxManager.getContainerName(project);
-      const cwd = args.cwd ? String(args.cwd) : projectPath;
-      const timeout = Math.min((args.timeout as number) || 30000, 300000);
-      return new Promise((resolve) => {
-        execFile("docker", [
-          "exec", "-w", cwd, containerName,
-          "/bin/bash", "-c", command,
-        ], { timeout, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-          resolve({
-            stdout: stdout || "",
-            stderr: stderr || "",
-            exitCode: err && "code" in err ? (err as { code?: number }).code ?? 1 : 0,
-          });
-        });
+      return executor.exec(project, command, {
+        cwd: args.cwd ? String(args.cwd) : undefined,
+        timeout: (args.timeout as number) || undefined,
       });
     }
     default:
@@ -967,8 +956,7 @@ wss.on("connection", (ws) => {
           // Terminal cards: handle PTY directly in Node (bypass Python worker)
           const fname = filename as string;
           if (fname.endsWith(".terminal")) {
-            const containerName = await sandboxManager.getContainerName(project as string);
-            const projectPath = await getProjectPath(project as string);
+            const shellOverride = await executor.getContainerShell(project as string);
             terminalManager.open(
               id as string,
               project as string, canvas as string, fname,
@@ -984,7 +972,7 @@ wss.on("connection", (ws) => {
                 }
                 wsChannels.get(ws)?.delete(id as string);
               },
-              { shell: "docker", args: ["exec", "-it", containerName, "/bin/bash", "--login"], cwd: projectPath },
+              shellOverride,
             );
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(id as string);
@@ -1040,8 +1028,7 @@ wss.on("connection", (ws) => {
           // Any card can open a shell channel via mica.openChannel('shell', {})
           // Runs inside the project container for sandboxing.
           if ((fn as string) === "shell") {
-            const containerName = await sandboxManager.getContainerName(project as string);
-            const projectPath = await getProjectPath(project as string);
+            const shellOverride = await executor.getContainerShell(project as string);
             terminalManager.open(
               id as string,
               project as string, canvas as string, fname,
@@ -1057,7 +1044,7 @@ wss.on("connection", (ws) => {
                 }
                 wsChannels.get(ws)?.delete(id as string);
               },
-              { shell: "docker", args: ["exec", "-it", containerName, "/bin/bash", "--login"], cwd: projectPath },
+              shellOverride,
             );
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(id as string);

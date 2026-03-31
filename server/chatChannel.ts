@@ -25,7 +25,8 @@ export type ChatFn = (
   message: string,
   image?: string,
   onProgress?: (evt: { type: string; tool?: string; description?: string; elapsed?: number }) => void,
-) => Promise<{ message: string; filesChanged?: boolean; agentName?: string }>;
+  resumeSessionId?: string,
+) => Promise<{ message: string; filesChanged?: boolean; agentName?: string; sessionId?: string }>;
 
 export type BroadcastFn = (msg: Record<string, unknown>) => void;
 
@@ -56,6 +57,7 @@ export class ChatChannelManager {
   private chatFn: ChatFn | null = null;
   private broadcast: BroadcastFn | null = null;
   private messageQueues: Map<string, string[]> = new Map(); // session key → queued messages
+  private agentSessionIds: Map<string, string> = new Map(); // session key → SDK session ID (persists across channel reconnects)
 
   private sessionKey(project: string, canvas: string, filename: string): string {
     return `${project}/${canvas}/${filename}`;
@@ -148,7 +150,8 @@ export class ChatChannelManager {
     await this.appendHistory(project, canvas, [{ role: "user", content: message }]);
     this.broadcastToSession(session, { type: "thinking" });
 
-    console.log(`[chat] Calling agent for session ${key}: "${message.slice(0, 50)}"`);
+    const resumeId = this.agentSessionIds.get(key);
+    console.log(`[chat] Calling agent for session ${key}: "${message.slice(0, 50)}"${resumeId ? ` (resuming ${resumeId.slice(0, 8)}...)` : ""}`);
     try {
       const response = await this.chatFn(project, canvas, message, undefined, (evt) => {
         // Stream progress events to all attached channels
@@ -169,7 +172,12 @@ export class ChatChannelManager {
           description: evt.description,
           elapsed: evt.elapsed,
         });
-      });
+      }, resumeId);
+
+      // Store the SDK session ID for conversation continuity (persists across reconnects)
+      if (response.sessionId) {
+        this.agentSessionIds.set(key, response.sessionId);
+      }
 
       const agentName = response.agentName || "AI Agent";
       const filesChanged = response.filesChanged || false;

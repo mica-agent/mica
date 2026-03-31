@@ -38,7 +38,12 @@ function nextId(): string {
 export function connect(url?: string): void {
   if (ws && ws.readyState === WebSocket.OPEN) return;
 
-  wsUrl = url || `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/cards`;
+  // Connect directly to the API server's WebSocket endpoint.
+  // In dev, the API runs on port 3002 — connecting directly avoids the extra
+  // hop through Vite's WS proxy, which is slow through VS Code port forwarding.
+  const apiPort = import.meta.env.VITE_MICA_WS_PORT || "3002";
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  wsUrl = url || `${protocol}//${location.hostname}:${apiPort}/ws/cards`;
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {

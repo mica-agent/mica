@@ -49,11 +49,10 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
       `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
       `${SDK_DIR}:${SDK_DIR}:ro`,
       `${NODE_MODULES_DIR}:${NODE_MODULES_DIR}:ro`,
-      // Mount credential file read-write so the agent can refresh OAuth tokens.
-      // Settings and config stay read-only. The rest of .claude/ is writable
-      // inside the container for runtime state (sessions, session-env, etc.).
-      `${process.env.HOME}/.claude/.credentials.json:/home/sandbox/.claude/.credentials.json:rw`,
-      `${process.env.HOME}/.claude/settings.json:/home/sandbox/.claude/settings.json:ro`,
+      // Mount the full ~/.claude/ directory so Claude Code CLI works as designed:
+      // credentials (rw for OAuth refresh), settings, plugins, session persistence, auto-memory.
+      // The container is the blast radius boundary, not the settings filter.
+      `${process.env.HOME}/.claude:/home/sandbox/.claude:rw`,
       `${process.env.HOME}/.claude.json:/home/sandbox/.claude.json:ro`,
     ],
     workdir: projectPath,

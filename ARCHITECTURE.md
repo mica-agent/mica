@@ -132,11 +132,43 @@ Each project runs in its own Docker container. The container is a **blast radius
 | `GET /api/projects/:id/container/logs` | Recent stdout/stderr |
 
 Container setup:
-- **Volume**: Project repo mounted at `/workspace`
+- **Image**: `mica-sandbox:base` (built from `docker/agent-sandbox/`)
+- **User**: `sandbox` (UID 1000, non-root)
+- **HOME**: `/home/sandbox`
 - **Ports**: Dynamic allocation from 9000–9099 range
 - **Limits**: 1GB memory, 2 CPUs default
 - **Network**: Containers keep network access (agents need it for API calls, tool use, etc.)
 - **No special capabilities**: No `SYS_ADMIN`, no two-phase runtime, no Python dependency install phase
+
+#### Container volume mounts
+
+All mounts are defined in `server/dockerSpawn.ts` (`getProjectMounts()`):
+
+| Host path | Container path | Mode | Purpose |
+|-----------|---------------|------|---------|
+| `~/.claude/` | `/home/sandbox/.claude/` | rw | Claude Code state — credentials, settings, sessions, plugins, memory |
+| `{project-path}/` | `{project-path}/` | rw | Project repo (1:1 path mapping so agent file paths match host) |
+| `card-classes/` | `card-classes/` | ro | Built-in card class definitions |
+| `server/mica_sdk/` | `server/mica_sdk/` | ro | Python SDK for card class exports |
+| `node_modules/` | `node_modules/` | ro | Node packages (Claude Agent SDK CLI available inside container) |
+
+The `~/.claude/` mount gives the Claude Code CLI subprocess full access to the user's Claude environment:
+- **Authentication**: `.credentials.json` (rw — OAuth tokens need refresh)
+- **User settings**: `settings.json` (plugins, preferences, permissions)
+- **Plugin blocklist**: `plugins/blocklist.json`
+- **Session persistence**: `projects/<sanitized-cwd>/` (conversation transcripts for `resume`)
+- **Auto-memory**: `projects/<sanitized-cwd>/memory/` (learned project context)
+
+The container is the blast radius boundary — not the settings filter. Claude Code works exactly as designed; the container limits *what files and network it can reach*, not what SDK features are available.
+
+#### Container environment
+
+| Variable | Value | Purpose |
+|----------|-------|---------|
+| `HOME` | `/home/sandbox` | Points Claude Code to mounted `~/.claude/` |
+| `PATH` | Standard Linux paths | Shell command resolution |
+| `TERM` | `xterm-256color` | Terminal rendering |
+| Auth tokens | Forwarded from host | SDK env vars (filtered: `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` are blocked) |
 
 ### 6. Disconnecting
 
@@ -486,7 +518,7 @@ Card classes are code — they run JavaScript on the server (in V8 isolates) and
 
 | Layer | What it protects | Mechanism |
 |-------|-----------------|-----------|
-| **Container** | Blast radius — filesystem scoping + resource limits | Docker: project dir (rw), no `~/.ssh`/`~/.aws`/other projects. 1GB mem, 2 CPU default |
+| **Container** | Blast radius — filesystem scoping + resource limits | Docker: project dir (rw), `~/.claude/` (rw for agent functionality), no `~/.ssh`/`~/.aws`/other projects. 1GB mem, 2 CPU default |
 | **V8 isolate** | Card sandboxing — zero OS access | `isolated-vm`: 32MB heap, no `require`/`import`/`process`/`fs`. Only the `mica.*` bridge is available |
 | **Mica server** | Network policy + proxy | Per-card network permissions, CDN allowlist proxy, agent API proxy |
 
@@ -520,6 +552,35 @@ Card classes declare network access in their manifest:
 ### Agent trust model
 
 Agents (Claude, local LLM) run inside the per-project container with full power — same trust model as Claude Code. They can read/write files, run shell commands, and make network requests within the container's blast radius. The container limits *what they can touch*, not *what they can do*.
+
+### Claude Code integration and `~/.claude/`
+
+The Claude Agent SDK spawns a **Claude Code CLI** subprocess for each agent call. The CLI reads from `~/.claude/` on every startup for authentication, settings, and session state. Mica mounts the host's `~/.claude/` into the container so Claude Code works identically to running on the host.
+
+**What `~/.claude/` contains and why it's mounted:**
+
+| Data | Path | Why the agent needs it |
+|------|------|----------------------|
+| OAuth credentials | `.credentials.json` | Authentication with Claude API (rw — tokens refresh) |
+| User settings | `settings.json` | Plugins, preferences, permissions, model config |
+| Plugin blocklist | `plugins/blocklist.json` | Safety blocklist fetched from Anthropic |
+| Marketplace cache | `cache/` | Cached marketplace manifests for plugins |
+| Session transcripts | `projects/<key>/*.jsonl` | Conversation history for `resume` (multi-turn continuity) |
+| Auto-memory | `projects/<key>/memory/` | Learned project context across conversations |
+| Feature flags | `statsig/` | A/B test flags for Claude Code features |
+
+**What is NOT mounted:**
+
+| Data | Why excluded |
+|------|-------------|
+| `~/.ssh/` | No SSH key access — agents use HTTPS for git |
+| `~/.aws/`, `~/.config/gcloud/` | No cloud credentials beyond Claude API |
+| Other project dirs | Each container sees only its own project |
+| Host system files | Container runs as non-root `sandbox` user |
+
+**Design rationale:** The SDK's own documentation suggests `persistSession: false` and `settingSources: []` for ephemeral container deployments. Mica takes a different approach: mount `~/.claude/` so the user's full Claude Code environment is available — plugins, settings, session resume, auto-memory. The container enforces the blast radius (filesystem + resource limits), not the settings filter. This follows Mica's principle: *don't constrain the user's tools, protect them if things go awry.*
+
+**Session isolation by project:** The SDK keys session storage by `cwd`. Each project's agent runs with `cwd` set to the project path, so sessions are stored at `~/.claude/projects/<sanitized-project-path>/`. Different projects have separate session directories automatically.
 
 ### Browser-side defense (CSP)
 
