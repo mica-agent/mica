@@ -502,11 +502,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       {expandedCard && (
         <ExpandedCardView
           filename={expandedCard.filename}
-          html={expandedCard.html}
-          exports={expandedCard.exports}
           meta={expandedCard.meta}
-          projectId={projectId}
-          canvasId="_root"
           canvasColor={canvasColor}
           onClose={() => setExpandedCard(null)}
           onEdit={() => { handleEdit(expandedCard.filename); setExpandedCard(null); }}
