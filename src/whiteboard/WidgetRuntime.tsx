@@ -220,13 +220,15 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [html, project, canvas, filename]);
 
-  // Hard destroy on unmount — component permanently removed (card deleted, project switch).
-  // This destroys persistent channels and sends channel_close to the server.
-  // Distinct from _runDestroy() which is a soft detach (re-render lifecycle).
+  // Soft destroy on unmount — detach callbacks but keep channels alive.
+  // Hard destroy (channel_close) is ONLY triggered by the server when the
+  // card file is deleted (tenet #4: lifecycle bound to user intent).
+  // React unmounts happen for many reasons (project switch, parent re-render)
+  // that are NOT card deletion — we must not kill channels for those.
   useEffect(() => {
     return () => {
       if (bridgeRef.current) {
-        bridgeRef.current._hardDestroy();
+        bridgeRef.current._runDestroy();
       }
     };
   }, []);
