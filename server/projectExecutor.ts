@@ -18,6 +18,11 @@ import type { SandboxManager } from "./projectSandbox.js";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { getProjectPath } from "./projectConnection.js";
 import { CONTAINER_PROJECT_DIR } from "./dockerSpawn.js";
+import { resolve } from "path";
+
+// Host → container path mappings for translating SDK-provided paths
+const HOST_NODE_MODULES = resolve("node_modules");
+const CONTAINER_NODE_MODULES = "/opt/mica/node_modules";
 
 const execFileAsync = promisify(execFile);
 
@@ -101,7 +106,14 @@ export class ProjectExecutor {
       dockerArgs.push("-e", "HOME=/home/sandbox");
 
       dockerArgs.push(containerName);
-      dockerArgs.push(spawnOpts.command, ...spawnOpts.args);
+
+      // Rewrite host paths to container paths.
+      // The SDK passes host-absolute paths (e.g., /workspaces/mica/node_modules/...)
+      // which don't exist inside the container — they're mounted at /opt/mica/...
+      const rewritePath = (p: string): string =>
+        p.startsWith(HOST_NODE_MODULES) ? p.replace(HOST_NODE_MODULES, CONTAINER_NODE_MODULES) : p;
+
+      dockerArgs.push(rewritePath(spawnOpts.command), ...spawnOpts.args.map(rewritePath));
 
       const proc = spawn("docker", dockerArgs, {
         stdio: ["pipe", "pipe", "pipe"],
