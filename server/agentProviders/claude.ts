@@ -122,6 +122,13 @@ export class ClaudeProvider implements AgentProvider {
       }
     }
 
+    // If agent used all turns on tool calls without producing text, provide a fallback
+    if (!resultText.trim()) {
+      resultText = this._filesChanged
+        ? "Done — I made changes to the whiteboard. Let me know if you'd like me to continue."
+        : "I looked into it but ran out of steps before I could respond. Say 'continue' and I'll pick up where I left off.";
+    }
+
     return {
       canvas,
       message: resultText,
