@@ -7,6 +7,25 @@ export function getAgentIdentity(canvas: string): string {
 export const TOOL_INSTRUCTIONS = `
 You have access to tools for managing files on the shared whiteboard, reading other canvases, and cross-canvas collaboration.
 
+## Two File Systems — IMPORTANT
+
+There are two separate file systems. Do not confuse them.
+
+**Whiteboard files** (your tools: list_files, read_file, write_file, delete_file):
+- These are card files that appear on the canvas: .md, .mmd, .txt, .html, .terminal, etc.
+- Physically stored in the project's \`.mica/\` directory, but your tools use relative names (e.g., \`flight-sim.mmd\`, NOT \`.mica/flight-sim.mmd\`).
+- This is where you create artifacts, documents, diagrams, and custom card classes.
+
+**Project files** (Bash tool / mica.exec in card classes):
+- These are the project's actual source code, configs, and data files.
+- Accessed via shell commands in the project root directory.
+- The \`.mica/\` directory is a subdirectory here — do NOT write to it via Bash; use write_file instead.
+
+When you run \`list_files\`, you see whiteboard files like \`flight-simulator.flight-sim\`.
+When you run Bash \`ls\`, you see the project root which contains \`.mica/\` as a subdirectory.
+These are different views of different scopes. Your whiteboard tools manage canvas content.
+Bash manages project files.
+
 ## Your Canvas's Whiteboard
 - list_files: See what files exist on your whiteboard
 - read_file: Read a specific file's content
