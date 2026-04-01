@@ -85,6 +85,12 @@ export class FileWatcher extends EventEmitter {
       this.knownFiles.set(key, files);
 
       this.watchDirectory(dir, projectId, canvas, projectPath);
+
+      // Watch project card classes (.mica/.card-classes/) for render.js and manifest changes.
+      // The main watcher skips dot-prefixed directories, so .card-classes needs its own watcher.
+      if (canvas === "_root") {
+        this.watchProjectCardClasses(path.join(dir, ".card-classes"), projectId);
+      }
     } catch (err) {
       console.warn(`[file-watcher] Could not watch ${dir}: ${(err as Error).message}`);
     }
@@ -185,6 +191,44 @@ export class FileWatcher extends EventEmitter {
       this.watchers.push(watcher);
     } catch (err) {
       console.warn(`[file-watcher] Could not watch card-classes: ${(err as Error).message}`);
+    }
+  }
+
+  /** Watch project-specific card classes (.mica/.card-classes/) for render.js and manifest edits. */
+  private watchProjectCardClasses(dir: string, projectId: string): void {
+    try {
+      // Ensure dir exists
+      if (!fs.existsSync(dir)) return;
+
+      const watcher = fs.watch(dir, { recursive: true }, (eventType, filename) => {
+        if (!filename) return;
+        if (!filename.endsWith("render.js") && !filename.endsWith("_manifest.json")) return;
+
+        const parts = filename.split(path.sep);
+        if (parts.length < 2 && !filename.endsWith("_manifest.json")) return;
+        const className = parts[0];
+
+        const key = `project-class/${projectId}/${className}`;
+        const existing = this.debounceTimers.get(key);
+        if (existing) clearTimeout(existing);
+
+        this.debounceTimers.set(
+          key,
+          setTimeout(() => {
+            this.debounceTimers.delete(key);
+            console.log(`[file-watcher] Project card class changed: ${projectId}/.card-classes/${className}`);
+            this.emit("class-change", { type: "class-changed", className } as ClassChangeEvent);
+          }, DEBOUNCE_MS)
+        );
+      });
+
+      watcher.on("error", (err: Error) => {
+        console.warn(`[file-watcher] Project card-classes watch error for ${projectId}:`, err.message);
+      });
+
+      this.watchers.push(watcher);
+    } catch {
+      // .card-classes may not exist yet — that's fine
     }
   }
 
