@@ -72,7 +72,7 @@ export class ClaudeProvider implements AgentProvider {
       tools: ["Bash"],
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
-      maxTurns: 5,
+      maxTurns: 10,
       model,
       settings: { forceLoginMethod: "claudeai" as const },
       settingSources: ["user" as const, "project" as const],
