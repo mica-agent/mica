@@ -40,22 +40,28 @@ export interface ProjectMounts {
 // Node modules path — mounted so agent CLI (claude-agent-sdk) is available inside container
 const NODE_MODULES_DIR = resolve("node_modules");
 
+// Container-internal paths — isolate from host paths for blast radius containment.
+// The project, card-classes, and SDK are mounted at fixed paths inside the container
+// so cards/agents can't discover or traverse host filesystem structure.
+export const CONTAINER_PROJECT_DIR = "/project";
+const CONTAINER_CARD_CLASSES = "/opt/mica/card-classes";
+const CONTAINER_SDK = "/opt/mica/mica_sdk";
+const CONTAINER_NODE_MODULES = "/opt/mica/node_modules";
+
 export async function getProjectMounts(projectId: string): Promise<ProjectMounts> {
   const projectPath = await getProjectPath(projectId);
   return {
     projectPath,
     volumes: [
-      `${projectPath}:${projectPath}:rw`,
-      `${CARD_CLASSES_DIR}:${CARD_CLASSES_DIR}:ro`,
-      `${SDK_DIR}:${SDK_DIR}:ro`,
-      `${NODE_MODULES_DIR}:${NODE_MODULES_DIR}:ro`,
-      // Mount the full ~/.claude/ directory so Claude Code CLI works as designed:
-      // credentials (rw for OAuth refresh), settings, plugins, session persistence, auto-memory.
-      // The container is the blast radius boundary, not the settings filter.
+      `${projectPath}:${CONTAINER_PROJECT_DIR}:rw`,
+      `${CARD_CLASSES_DIR}:${CONTAINER_CARD_CLASSES}:ro`,
+      `${SDK_DIR}:${CONTAINER_SDK}:ro`,
+      `${NODE_MODULES_DIR}:${CONTAINER_NODE_MODULES}:ro`,
+      // ~/.claude/ for Claude Code CLI: credentials, settings, plugins, sessions.
       `${process.env.HOME}/.claude:/home/sandbox/.claude:rw`,
       `${process.env.HOME}/.claude.json:/home/sandbox/.claude.json:ro`,
     ],
-    workdir: projectPath,
+    workdir: CONTAINER_PROJECT_DIR,
   };
 }
 

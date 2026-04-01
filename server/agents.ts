@@ -21,6 +21,7 @@ import {
   invalidateExtensionCache,
 } from "./canvasFiles.js";
 import { readMicaConfig, getProjectPath } from "./projectConnection.js";
+import { CONTAINER_PROJECT_DIR } from "./dockerSpawn.js";
 
 // ── Project executor for container access ──────────────────
 let _executor: ProjectExecutor | null = null;
@@ -599,9 +600,6 @@ ${fileContext}`;
   let cost = 0;
   let sessionId: string | undefined;
 
-  // Resolve project path for cwd
-  const projectPath = await getProjectPath(project);
-
   // Resolve model: per-agent config > project default > fallback
   const micaConfig = await readMicaConfig(project);
   const model = micaConfig?.agents?.[canvas]?.model
@@ -610,7 +608,7 @@ ${fileContext}`;
 
   const options: Record<string, unknown> = {
     systemPrompt,
-    cwd: projectPath,
+    cwd: CONTAINER_PROJECT_DIR,
     mcpServers: { "mica-tools": createMicaToolServer() },
     tools: ["Bash"], // enable shell execution for code generation
     permissionMode: "bypassPermissions",

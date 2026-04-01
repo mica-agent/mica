@@ -15,7 +15,8 @@ import { resolveModel } from "../agentCore/config.js";
 import { describeToolUse, appendToLog, getAgentMeta } from "../agentCore/logging.js";
 import { executeTool, type ToolContext } from "../agentCore/toolLogic.js";
 import { MICA_TOOLS } from "../agentCore/toolSchema.js";
-import { getProjectPath, readMicaConfig } from "../projectConnection.js";
+import { getProjectPath } from "../projectConnection.js";
+import { CONTAINER_PROJECT_DIR } from "../dockerSpawn.js";
 import {
   listFiles,
   readCanvasFile,
@@ -60,14 +61,13 @@ export class ClaudeProvider implements AgentProvider {
   ): Promise<AgentResponse> {
     const systemPrompt = await buildSystemPrompt(project, canvas);
     const model = await resolveModel(project, canvas, this.defaultModel);
-    const projectPath = await getProjectPath(project);
 
     // MCP tool server wrapping the shared tool logic
     const mcpServer = this.createMcpToolServer(project, canvas);
 
     const options: Record<string, unknown> = {
       systemPrompt,
-      cwd: projectPath,
+      cwd: CONTAINER_PROJECT_DIR,
       mcpServers: { "mica-tools": mcpServer },
       tools: ["Bash"],
       permissionMode: "bypassPermissions",

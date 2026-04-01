@@ -17,6 +17,7 @@ import { promisify } from "util";
 import type { SandboxManager } from "./projectSandbox.js";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { getProjectPath } from "./projectConnection.js";
+import { CONTAINER_PROJECT_DIR } from "./dockerSpawn.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -35,8 +36,7 @@ export class ProjectExecutor {
     opts?: { cwd?: string; timeout?: number },
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const containerName = await this.sandboxManager.getContainerName(project);
-    const projectPath = await getProjectPath(project);
-    const cwd = opts?.cwd || projectPath;
+    const cwd = opts?.cwd || CONTAINER_PROJECT_DIR;
     const timeout = Math.min(opts?.timeout || 30000, 300000);
 
     return new Promise((resolve) => {
@@ -65,11 +65,10 @@ export class ProjectExecutor {
     cwd: string;
   }> {
     const containerName = await this.sandboxManager.getContainerName(project);
-    const projectPath = await getProjectPath(project);
     return {
       shell: "docker",
       args: ["exec", "-it", containerName, "/bin/bash", "--login"],
-      cwd: projectPath,
+      cwd: CONTAINER_PROJECT_DIR,
     };
   }
 
@@ -142,9 +141,8 @@ export class ProjectExecutor {
     opts?: { cwd?: string; env?: Record<string, string> },
   ): Promise<void> {
     const containerName = await this.sandboxManager.getContainerName(project);
-    const projectPath = await getProjectPath(project);
 
-    const dockerArgs = ["exec", "-d", "-w", opts?.cwd || projectPath];
+    const dockerArgs = ["exec", "-d", "-w", opts?.cwd || CONTAINER_PROJECT_DIR];
     if (opts?.env) {
       for (const [key, value] of Object.entries(opts.env)) {
         dockerArgs.push("-e", `${key}=${value}`);
