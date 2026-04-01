@@ -1,4 +1,16 @@
 import { readCanvasFile, getAllFilesAsContext } from "../canvasFiles.js";
+import { readFileSync } from "fs";
+import { resolve } from "path";
+
+// Load CREATING_CARDS.md once at startup — this is the agent's complete
+// reference for building card classes. Injected into every system prompt
+// so the agent always has it in context (not optional reading via cat).
+let _cardClassDocs = "";
+try {
+  _cardClassDocs = readFileSync(resolve("card-classes/CREATING_CARDS.md"), "utf-8");
+} catch {
+  console.warn("[systemPrompt] Could not load CREATING_CARDS.md");
+}
 
 export function getAgentIdentity(canvas: string): string {
   return `You are the AI agent for the "${canvas}" workspace in Mica.`;
@@ -65,88 +77,6 @@ When you see _decision-*.md files on your whiteboard, READ THEM — they contain
 - Card classes access the shell via \`mica.exec()\` in their export functions, NOT via your Bash tool
 - When building a card that needs to run commands, write export functions that call \`mica.exec()\`
 
-## Custom Card Classes
-
-Card classes are interactive widgets on the whiteboard. Each is a directory with a \`render.js\` file.
-
-### How to create one (3 steps):
-
-**Step 1:** Write the render.js to \`.card-classes/<classname>/render.js\`:
-
-\`\`\`javascript
-// .card-classes/file-browser/render.js
-export default function render(content, config) {
-  // content = the card file's text content
-  // config = { project, canvas, filename }
-  // Returns HTML string with <style> and <script> blocks
-  return \\\`
-    <div style="padding:16px;font-family:sans-serif;">
-      <div id="output">Loading...</div>
-    </div>
-    <script>
-      // 'mica' and 'container' are injected automatically
-      // mica.call(fn, args) → calls an export function
-      // container.querySelector(...) → scoped DOM queries
-      const data = await mica.call('get_data', {});
-      container.querySelector('#output').textContent = JSON.stringify(data);
-    </script>
-  \\\`;
-}
-
-// Named exports are callable from browser via mica.call()
-// They run server-side and have access to the full mica bridge
-export async function get_data(content, args, mica) {
-  // Use mica.exec() for filesystem/shell access:
-  const result = await mica.exec('ls -la ' + (args.dir || '.'));
-  return { files: result.stdout, error: result.exitCode !== 0 ? result.stderr : null };
-}
-\`\`\`
-
-**Step 2:** Register in \`.card-classes/_manifest.json\`:
-\`\`\`json
-{
-  "file-browser": {
-    "extension": ".file-browser",
-    "badge": "FILES",
-    "defaultTitle": "File Browser"
-  }
-}
-\`\`\`
-
-**Step 3:** Create a card file with matching extension to place it on the whiteboard:
-\`write_file\` with filename \`my-files.file-browser\` (content can be empty or initial data).
-
-### Server bridge in export functions:
-- \`await mica.write(content)\` — update this card's file
-- \`await mica.readFile(filename)\` — read a canvas file
-- \`await mica.writeFile(filename, content)\` — write a canvas file
-- \`await mica.exec(command, { cwd?, timeout? })\` — run a shell command, returns \`{ stdout, stderr, exitCode }\`. cwd defaults to project root. Use this for filesystem access (ls, cat, find, etc.)
-- \`await mica.fetch(url, opts)\` — HTTP request (requires \`network: true\` in manifest)
-- \`await mica.agent.chat(message)\` — send a message to the AI agent
-- \`await mica.log(message)\` — append to activity log
-- \`await mica.emit(event, data)\` — broadcast to all widgets
-
-### Interactive shell channel (browser-side):
-Cards can open an interactive shell for streaming/long-running processes:
-\`\`\`javascript
-const ch = mica.openChannel('shell', { cols: 80, rows: 24 });
-ch.onData((data) => console.log(data.output));  // PTY output
-ch.send({ input: 'npm test\\n' });               // send input
-ch.send({ resize: true, cols: 120, rows: 40 }); // resize
-ch.close();                                       // close when done
-\`\`\`
-
-### Key rules:
-- render.js runs in a V8 isolate — NO require/import, NO fs/net/fetch. Use \`mica.*\` bridge only
-- render() is synchronous, returns HTML string. Exports can be async
-- Use \`mica.exec()\` for filesystem access — e.g. \`mica.exec('find . -maxdepth 2 -type f')\`
-- Use inline styles (not <style> rules) for widget layout to avoid conflicts
-- Use fixed pixel heights (not 100%) — card body max-height is 280px, use ≤260px
-- \`container.querySelector()\` not \`document.querySelector()\` for DOM scoping
-- For CDN libraries, use \`export const dependencies = { scripts: [...], styles: [...] }\`
-- Register cleanup with \`mica.onDestroy(() => ...)\` for libraries that allocate resources
-- Look at existing card classes for patterns: \`ls card-classes/\` and \`cat card-classes/<name>/render.js\`
-
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
 ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.log so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
@@ -205,11 +135,16 @@ export async function buildSystemPrompt(project: string, canvas: string): Promis
     // No _brief.brief yet
   }
 
+  // Build the card class reference section
+  const cardClassRef = _cardClassDocs
+    ? `\n## Card Class Authoring Reference\n\nThe following is the complete guide for creating custom card classes. Follow it exactly when building cards.\n\n${_cardClassDocs}\n`
+    : "";
+
   return `${getAgentIdentity(canvas)}
 ${briefContent}
 ${TOOL_INSTRUCTIONS}
 ${GOAL_INSTRUCTIONS}
-
+${cardClassRef}
 ## Current Whiteboard Files (${canvas} canvas)
 
 ${fileContext}`;
