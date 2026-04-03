@@ -1,5 +1,9 @@
 /**
- * FileWatcher — Watches project .mica/ directories and card-classes for changes.
+ * FileWatcher — Watches project directories for card file changes and card-classes for updates.
+ *
+ * Card files live at {project}/{canvas}/ (project root level).
+ * Infrastructure (.chat-history.json, .layout.json) lives in {project}/.mica/{canvas}/.
+ * Card classes live in {project}/.mica/card-classes/ and the built-in card-classes/.
  *
  * Emits events when files are created, modified, or deleted.
  * Debounces rapid changes (300ms per file).
@@ -61,9 +65,10 @@ export class FileWatcher extends EventEmitter {
   }
 
   private async watchProjectCanvas(projectId: string, projectPath: string, canvas: string): Promise<void> {
+    // Card files live at project root level, not inside .mica/
     const dir = canvas === "_root"
-      ? path.join(projectPath, ".mica")
-      : path.join(projectPath, ".mica", canvas);
+      ? projectPath
+      : path.join(projectPath, canvas);
     const key = `${projectId}/${canvas}`;
 
     try {
@@ -87,9 +92,8 @@ export class FileWatcher extends EventEmitter {
       this.watchDirectory(dir, projectId, canvas, projectPath);
 
       // Watch project card classes (.mica/.card-classes/) for render.js and manifest changes.
-      // The main watcher skips dot-prefixed directories, so .card-classes needs its own watcher.
       if (canvas === "_root") {
-        this.watchProjectCardClasses(path.join(dir, ".card-classes"), projectId);
+        this.watchProjectCardClasses(path.join(projectPath, ".mica", ".card-classes"), projectId);
       }
     } catch (err) {
       console.warn(`[file-watcher] Could not watch ${dir}: ${(err as Error).message}`);

@@ -46,7 +46,7 @@ interface LoadedClass {
 
 // ── SDK & library source cache ─────────────────────────────
 
-const SDK_PATH = path.join(__dirname, "mica_sdk", "mica.js");
+const SDK_PATH = path.join(__dirname, "mica_bridge", "mica.js");
 const libCache = new Map<string, string>();
 
 function getCachedSource(key: string, filePath: string, transform?: (src: string) => string): string {

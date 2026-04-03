@@ -15,7 +15,19 @@ export default function render(content, config) {
     <span style="width:12px;height:12px;border-radius:50%;background:#28c840;display:inline-block;"></span>
     <span style="color:#8b949e;font-size:12px;margin-left:8px;">bash</span>
   </div>
-  <div id="term" style="flex:1;min-height:0;padding:4px;"></div>
+  <div id="term" style="flex:1;min-height:0;padding:4px;position:relative;">
+    <div id="reconnect-banner" style="
+      display:none;position:absolute;inset:0;z-index:10;
+      background:rgba(13,17,23,0.92);
+      display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+    ">
+      <div style="color:#f87171;font-size:13px;font-weight:600;">Session disconnected</div>
+      <button id="reconnect-btn" style="
+        background:#238636;color:#fff;border:none;border-radius:6px;
+        padding:6px 16px;font-size:12px;cursor:pointer;font-family:inherit;
+      ">Reconnect</button>
+    </div>
+  </div>
 </div>
 
 <style>${XTERM_CSS}</style>
@@ -46,27 +58,132 @@ export default function render(content, config) {
   term.open(termEl);
   fitAddon.fit();
 
-  const ch = mica.openChannel('pty_session', { cols: term.cols, rows: term.rows });
+  const banner = container.querySelector('#reconnect-banner');
+  const reconnectBtn = container.querySelector('#reconnect-btn');
+  let ch = null;
+  let heartbeatInterval = null;
+  let heartbeatTimeout = null;
+  let connected = false;
+  let reconnecting = false;
 
-  ch.onData((data) => {
-    if (data.output !== undefined) term.write(data.output);
-  });
+  function showBanner() {
+    banner.style.display = 'flex';
+    connected = false;
+  }
 
-  ch.onClose(() => {
-    term.write('\\r\\n\\x1b[90m[session closed]\\x1b[0m\\r\\n');
-  });
+  function hideBanner() {
+    banner.style.display = 'none';
+  }
 
-  term.onData((input) => { ch.send({ input }); });
+  function stopHeartbeat() {
+    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+    if (heartbeatTimeout) { clearTimeout(heartbeatTimeout); heartbeatTimeout = null; }
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    heartbeatInterval = setInterval(() => {
+      if (!ch || !connected) return;
+      try {
+        ch.send({ ping: true });
+      } catch(e) {
+        // WS disconnected — show banner immediately, stop pinging
+        term.write('\\r\\n\\x1b[90m[connection lost]\\x1b[0m\\r\\n');
+        showBanner();
+        stopHeartbeat();
+        return;
+      }
+      // If no pong within 5s, show banner
+      heartbeatTimeout = setTimeout(() => {
+        if (connected) {
+          term.write('\\r\\n\\x1b[90m[connection lost]\\x1b[0m\\r\\n');
+          showBanner();
+          stopHeartbeat();
+        }
+      }, 5000);
+    }, 10000); // ping every 10s
+  }
+
+  function openSession() {
+    hideBanner();
+    ch = mica.openChannel('pty_session', { cols: term.cols, rows: term.rows });
+    connected = true;
+
+    ch.onData((data) => {
+      if (data.pong) {
+        // Heartbeat response — clear the timeout
+        if (heartbeatTimeout) { clearTimeout(heartbeatTimeout); heartbeatTimeout = null; }
+        if (data.ptyAlive === false) {
+          // Server is up but PTY is dead
+          term.write('\\r\\n\\x1b[90m[session ended]\\x1b[0m\\r\\n');
+          showBanner();
+          stopHeartbeat();
+        }
+        return;
+      }
+      if (data.output !== undefined) term.write(data.output);
+    });
+
+    ch.onClose(() => {
+      if (reconnecting) return;
+      stopHeartbeat();
+      if (connected) {
+        term.write('\\r\\n\\x1b[90m[session disconnected]\\x1b[0m\\r\\n');
+      }
+      showBanner();
+    });
+
+    startHeartbeat();
+  }
+
+  let reconnectAttempt = 0;
+
+  function attemptReconnect() {
+    reconnecting = true;
+    stopHeartbeat();
+    if (ch) { ch.destroy(); ch = null; }
+    reconnecting = false;
+    term.clear();
+    reconnectBtn.textContent = 'Connecting...';
+    reconnectBtn.disabled = true;
+
+    // Delay to let server process close and WS reconnect
+    const delay = Math.min(1000 * (reconnectAttempt + 1), 5000);
+    setTimeout(() => {
+      openSession();
+      // Check if it worked after a few seconds
+      setTimeout(() => {
+        if (!connected) {
+          reconnectAttempt++;
+          reconnectBtn.textContent = 'Retry';
+          reconnectBtn.disabled = false;
+          banner.style.display = 'flex';
+        } else {
+          reconnectAttempt = 0;
+          reconnectBtn.textContent = 'Reconnect';
+          reconnectBtn.disabled = false;
+        }
+      }, 3000);
+    }, delay);
+  }
+
+  reconnectBtn.addEventListener('click', attemptReconnect);
+
+  // Initial connection
+  openSession();
+
+  term.onData((input) => { if (ch) ch.send({ input }); });
 
   term.onResize((size) => {
-    ch.send({ resize: true, cols: size.cols, rows: size.rows });
+    if (ch) ch.send({ resize: true, cols: size.cols, rows: size.rows });
   });
 
   const ro = new ResizeObserver(() => fitAddon.fit());
   ro.observe(termEl);
 
   mica.onDestroy(() => {
-    ch.close();
+    stopHeartbeat();
+    if (ch) ch.close();
     ro.disconnect();
     term.dispose();
   });

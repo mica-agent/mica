@@ -48,7 +48,11 @@ export function createTerminalHandler(
 
     const shell = spawnOverride?.shell || process.env.SHELL || "/bin/bash";
     const shellArgs = spawnOverride?.args || ["--login"];
-    const cwd = spawnOverride?.cwd || process.env.HOME || "/";
+    // When spawning docker exec, cwd is the host-side working directory for the
+    // docker process itself — use HOME, not the container-internal path.
+    const cwd = (spawnOverride?.shell === "docker")
+      ? (process.env.HOME || "/")
+      : (spawnOverride?.cwd || process.env.HOME || "/");
 
     ptyProcess = pty.spawn(shell, shellArgs, {
       name: "xterm-256color",
@@ -122,10 +126,17 @@ export function createTerminalHandler(
       }
     },
 
-    onData(_clientId: string, data: unknown): void {
+    onData(clientId: string, data: unknown): void {
+      const msg = data as Record<string, unknown>;
+
+      // Heartbeat — always respond even if PTY is dead
+      if (msg.ping) {
+        ctx.sendTo(clientId, { pong: true, ptyAlive: !!ptyProcess });
+        return;
+      }
+
       if (!ptyProcess) return;
 
-      const msg = data as Record<string, unknown>;
       if (msg.input !== undefined) {
         ptyProcess.write(msg.input as string);
       } else if (msg.resize) {

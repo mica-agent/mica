@@ -1,5 +1,5 @@
 // Seed starter files for new projects and handle initialization.
-// In the project-first model, seeding creates .mica/ inside a project directory.
+// Card files are created at the project root. Infrastructure stays in .mica/.
 
 import { existsSync } from "fs";
 import { readFile, writeFile as writeFileFs, mkdir } from "fs/promises";
@@ -27,7 +27,7 @@ import os from "os";
 const PROJECTS_DIR = process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-projects");
 
 // ── Seed content for a new project ──────────────────────────
-// Files are written to .mica/ root (canvas = "_root") — the project card's children.
+// Card files are written to the project root (canvas = "_root").
 
 const NEW_PROJECT_SEEDS: Record<string, string> = {
   "_project.project": "", // Content will be generated with project name
@@ -73,8 +73,6 @@ You are an AI collaborator for this project. You help the human think through pr
 
   "_log.log": `# Activity Log
 `,
-
-  "_chat.chat": ``,
 
   // Sample content cards to demonstrate different card types
   "welcome.md": `# Welcome to Mica
@@ -146,7 +144,7 @@ export async function seedNewProject(
       await writeCanvasFile(projectId, "_root", filename, fileContent);
     }
     console.log(
-      `[seed] Created ${Object.keys(NEW_PROJECT_SEEDS).length} files in ${projectDir}/.mica/`
+      `[seed] Created ${Object.keys(NEW_PROJECT_SEEDS).length} files in ${projectDir}/`
     );
   }
 

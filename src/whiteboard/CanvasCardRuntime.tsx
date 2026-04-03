@@ -267,7 +267,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Freeform layout management ─────────────────────────
 
-  const allNonChat = children.filter((c) => c.filename !== "_chat.chat");
+  const allNonChat = children;
 
   useEffect(() => {
     if (layoutMode !== "freeform") {
@@ -321,7 +321,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Partition children into system vs content ───────────
 
-  const systemCards = children.filter((c) => c.meta.isSystem && c.filename !== "_chat.chat");
+  const systemCards = children.filter((c) => c.meta.isSystem);
   const allContent = children.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
   const diagramCards = allContent.filter((c) => c.meta.cardClass === "mermaid");
   const contentCards = allContent.filter((c) => c.meta.cardClass !== "mermaid");

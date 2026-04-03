@@ -1,7 +1,7 @@
 FROM nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6
 
 # Install sudo and create vscode user with sudo access
-RUN apt-get update && apt-get install -y sudo && rm -rf /var/lib/apt/lists/* && \
+RUN apt-get update && apt-get install -y sudo lsof net-tools procps && rm -rf /var/lib/apt/lists/* && \
     if id -u 1000 >/dev/null 2>&1; then \
         existing_user=$(getent passwd 1000 | cut -d: -f1) && \
         usermod -l vscode -d /home/vscode -m "$existing_user" && \

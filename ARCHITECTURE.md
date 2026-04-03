@@ -41,35 +41,41 @@ This does three things:
 2. Initializes git if the directory isn't already a repo
 3. Registers the project in `workspaces.json` (Mica's side)
 
-### 2. The `.mica/` Directory
+### 2. Project Layout
 
 ```
 my-project/
-├── src/                    ← project's own files (untouched)
-├── README.md
 ├── .git/
-└── .mica/                  ← Mica's footprint
-    ├── .config.json        # Project manifest (agent provider, reactive settings, worker config)
-    ├── .chat-history.json  # Chat persistence
-    ├── .layout.json        # Card layout state
-    ├── _project.project    # Project card (top-level canvas card)
-    ├── _brief.brief        # Agent personality/instructions
-    ├── _goal.goal          # Project objectives
-    ├── _todo.todo          # Task tracker
-    ├── _log.log            # Activity log
-    ├── _chat.chat          # Chat card
-    └── .card-classes/      # Project-specific card classes
-        └── my-widget/
-            └── render.js
+├── .mica/                  ← infrastructure (config, chat history, layout, card classes)
+│   ├── .config.json        # Project manifest (agent provider, reactive settings)
+│   ├── .chat-history.json  # Chat persistence
+│   ├── .layout.json        # Card layout state
+│   └── .card-classes/      # Project-specific card class definitions
+│       └── my-widget/
+│           └── render.js
+│
+├── _project.project        ← root canvas card (what you see when you open the project)
+├── _goal.goal              ← system cards (seeded by Mica)
+├── _brief.brief
+├── _todo.todo
+├── _log.log
+├── welcome.md              ← user/agent-created cards
+├── architecture.mmd
+└── research/               ← nested canvas (a card that contains cards)
+    ├── _project.project
+    ├── hypotheses.md
+    └── findings.md
 ```
 
-The project card (`_project.project`) is the top-level canvas card — it's what you see when you open the project. Its children are the other files in `.mica/` (goal, todo, brief, log, chat, plus any user-created content cards). For complex projects, subdirectories can hold nested canvas cards with their own children.
+**Card files live at the project root** — they are the work, not metadata. System cards (`_` prefix), user-created cards, and nested canvases (subdirectories) are all visible and first-class in the project directory.
 
-**`.mica/` holds Mica metadata only** — agent briefs, goals, chat history, card state. The project's actual source code stays in the project root. Agents read/write both: project files for real work, `.mica/` files for coordination. In the card model (see SPEC.md), this metadata represents the serialized state of project-scoped cards.
+**`.mica/` holds infrastructure only** — agent config, chat history, layout state, and custom card class definitions. This is the machinery, not the work.
+
+For nested canvases, the canvas directory is at the project root (`research/`) and its infrastructure is at `.mica/research/` (for `.chat-history.json`, `.layout.json`, etc.).
 
 #### Three-tier file naming convention
 
-Files in `.mica/` follow a three-tier naming convention:
+Card files follow a three-tier naming convention:
 
 | Prefix | Meaning | Visible to agents? | Examples |
 |--------|---------|-------------------|----------|
@@ -167,7 +173,7 @@ All mounts are defined in `server/dockerSpawn.ts` (`getProjectMounts()`):
 | `~/.claude/` | `/home/sandbox/.claude/` | rw | Claude Code state — credentials, settings, sessions, plugins, memory |
 | `{project-path}/` | `{project-path}/` | rw | Project repo (1:1 path mapping so agent file paths match host) |
 | `card-classes/` | `card-classes/` | ro | Built-in card class definitions |
-| `server/mica_sdk/` | `server/mica_sdk/` | ro | Python SDK for card class exports |
+| `server/mica_bridge/` | `/opt/mica/mica_bridge/` | ro | Mica bridge API (mica.js) for V8 isolates |
 | `node_modules/` | `node_modules/` | ro | Node packages (Claude Agent SDK CLI available inside container) |
 
 The `~/.claude/` mount gives the Claude Code CLI subprocess full access to the user's Claude environment:
@@ -302,7 +308,7 @@ Project .mica/.card-classes/  →  Workspace ~/.mica/card-classes/  →  Built-i
 
 | Scope | Top-level card | Card class | What it shows |
 |-------|---------------|------------|---------------|
-| **Project** | `.mica/_project.project` | `simple-project` | Project's child cards in a grid |
+| **Project** | `_project.project` (project root) | `simple-project` | Project's child cards in a grid |
 | **Workspace** | `~/.mica/_portfolio.md` | `portfolio` | Connected projects as child cards |
 | **User** | (future) | (future) | Cross-workspace, identity-level |
 
@@ -366,7 +372,7 @@ Card classes run in a pool of V8 isolates managed by `isolated-vm`. Each isolate
 
 Agents and users can create new card classes at runtime:
 
-1. Write a `render.js` file to `.mica/.card-classes/{name}/` in the project
+1. Write a `render.js` file to `.mica/.card-classes/{name}/` in the project (via the agent's `write_file` tool with `.card-classes/` prefix)
 2. Create a card file — either use the class name as extension (`mycard.{name}`) or use frontmatter `card: name` in a `.md` file
 3. The file watcher picks up the new class and renders it immediately
 
@@ -461,7 +467,7 @@ Containers are simple blast radius boundaries — filesystem scoping and resourc
 | `server/reactiveAgent.ts` | Two-phase reactive agent (triage → reaction) with cooldowns |
 | `server/cardManager.ts` | Card rendering dispatch through V8 isolate pool |
 | `server/isolatePool.ts` | V8 isolate pool — creates, caches, and disposes isolated-vm contexts for card classes |
-| `server/mica_sdk/mica.js` | Bridge API injected into each V8 isolate (mica.write, mica.readFile, mica.emit, etc.) |
+| `server/mica_bridge/mica.js` | Bridge API injected into each V8 isolate (mica.write, mica.readFile, mica.emit, etc.) |
 | `src/api/projectGit.ts` | Frontend git API client |
 | `src/api/projectContainer.ts` | Frontend container API client |
 
@@ -497,7 +503,7 @@ Existing projects in `canvases/{project}/` can be migrated via `migrateLegacyPro
 
 ## Design Decisions
 
-**Why `.mica/` inside the project?** So the project carries its Mica context with it. Clone the repo and Mica can reconnect with all card state intact. Team members share briefs, goals, and todos through git. This is the "project" persistence tier (see SPEC.md §2.4).
+**Why card files at the project root?** Cards are the work, not metadata. They should be visible, navigable, and first-class — not hidden inside a dot-directory. `.mica/` holds infrastructure (config, chat history, layout, card class definitions). Card files live alongside everything else in the project.
 
 **Why `workspaces.json` outside projects?** The workspace is a local concern — which projects *this* Mica instance is connected to. Different machines can have different workspace compositions. This is the "workspace" persistence tier. Cross-project cards (like the portfolio view) live here.
 
@@ -507,7 +513,7 @@ Existing projects in `canvases/{project}/` can be migrated via `migrateLegacyPro
 
 **Why per-project git?** Projects have their own commit history, branches, and workflow. Mica doesn't impose a shared repo or monorepo structure. Each project's version control is self-contained.
 
-**What about `.gitignore`?** Recommend adding `.mica/.chat-history.json` and `.mica/*/.chat-history.json` to the project's `.gitignore`. Everything else in `.mica/` (briefs, goals, todos, card layouts) should be committed — it's valuable shared project context. Dot-prefixed data files (`.config.json`, `.layout.json`) are project config and should be committed; `.chat-history.json` is the exception since it's ephemeral conversation state.
+**What about `.gitignore`?** Recommend adding `.mica/.chat-history.json` and `.mica/*/.chat-history.json` to the project's `.gitignore`. Card files (at project root) and `.mica/` infrastructure (`.config.json`, `.layout.json`, `.card-classes/`) should be committed — it's valuable shared project context. `.chat-history.json` is the exception since it's ephemeral conversation state.
 
 ## Security Model
 

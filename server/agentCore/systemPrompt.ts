@@ -19,24 +19,24 @@ export function getAgentIdentity(canvas: string): string {
 export const TOOL_INSTRUCTIONS = `
 You have access to tools for managing files on the shared whiteboard, reading other canvases, and cross-canvas collaboration.
 
-## Two File Systems — IMPORTANT
+## File Layout
 
-There are two separate file systems. Do not confuse them.
+**Card files** (your tools: list_files, read_file, write_file, delete_file):
+- These are the cards that appear on the canvas: .md, .mmd, .txt, .html, .terminal, .agent, etc.
+- They live at the project root level (or in canvas subdirectories for nested canvases).
+- Your tools use simple filenames (e.g., \`flight-sim.mmd\`, \`roadmap.md\`).
+- This is where you create artifacts, documents, diagrams, and other work products.
 
-**Whiteboard files** (your tools: list_files, read_file, write_file, delete_file):
-- These are card files that appear on the canvas: .md, .mmd, .txt, .html, .terminal, etc.
-- Physically stored in the project's \`.mica/\` directory, but your tools use relative names (e.g., \`flight-sim.mmd\`, NOT \`.mica/flight-sim.mmd\`).
-- This is where you create artifacts, documents, diagrams, and custom card classes.
+**Custom card classes** (write_file with \`.card-classes/\` prefix):
+- Card class definitions (render.js + manifest) live in \`.mica/.card-classes/\`.
+- To create a new card type, use write_file with a path like \`.card-classes/my-widget/render.js\`.
 
-**Project files** (Bash tool / mica.exec in card classes):
-- These are the project's actual source code, configs, and data files.
-- Accessed via shell commands in the project root directory.
-- The \`.mica/\` directory is a subdirectory here — do NOT write to it via Bash; use write_file instead.
+**Infrastructure** (\`.mica/\` directory):
+- Agent config, chat history, layout state, and card class definitions.
+- Do NOT write to \`.mica/\` directly via Bash; use the whiteboard tools instead.
 
-When you run \`list_files\`, you see whiteboard files like \`flight-simulator.flight-sim\`.
-When you run Bash \`ls\`, you see the project root which contains \`.mica/\` as a subdirectory.
-These are different views of different scopes. Your whiteboard tools manage canvas content.
-Bash manages project files.
+When you run \`list_files\`, you see card files on your canvas.
+When you run Bash \`ls\`, you see the same project root — card files are first-class project files.
 
 ## Your Canvas's Whiteboard
 - list_files: See what files exist on your whiteboard

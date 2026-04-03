@@ -18,6 +18,7 @@ layers/
 !.vscode/extensions.json
 .idea
 .claude/
+.mica-pids/
 .DS_Store
 *.suo
 *.ntvs*

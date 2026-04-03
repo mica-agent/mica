@@ -1,5 +1,7 @@
-// Canvas file management — filesystem CRUD scoped to {project}/.mica/{canvas}/
-// Projects are sovereign repos; Mica metadata lives in .mica/ inside each project.
+// Canvas file management — filesystem CRUD for card and infrastructure files.
+// Card files (*.md, *.goal, *.agent, etc.) live at {project}/{canvas}/.
+// Infrastructure files (.chat-history.json, .layout.json, etc.) live in {project}/.mica/{canvas}/.
+// Card classes live in {project}/.mica/card-classes/.
 
 import { readdir, readFile, writeFile, unlink, mkdir, stat } from "fs/promises";
 import { readFileSync } from "fs";
@@ -8,6 +10,7 @@ import { join, basename, extname } from "path";
 import {
   getProjectPath,
   getCanvasDir,
+  getInfraDir,
   listProjects as listConnectedProjects,
   getProjectConfig as getConnectedConfig,
   validateProjectCanvas as validateConnected,
@@ -45,7 +48,7 @@ export function getValidExtensions(projectPath?: string): string[] {
     }
   } catch {
     // Fallback if manifest unreadable
-    for (const e of [".txt", ".md", ".mmd", ".html", ".goal", ".todo", ".brief", ".log", ".chat", ".agent", ".canvas", ".project"]) {
+    for (const e of [".txt", ".md", ".mmd", ".html", ".goal", ".todo", ".brief", ".log", ".agent", ".canvas", ".project"]) {
       exts.add(e);
     }
   }
@@ -99,11 +102,24 @@ function validateFilename(filename: string, projectPath?: string): void {
   }
 }
 
-// ── File operations (project-scoped, resolves via .mica/) ───
+// ── File operations ────────────────────────────────────────
+// Card files (*.md, *.goal, etc.) live at project root level.
+// Infrastructure files (dot-prefixed: .chat-history.json, .layout.json) live in .mica/.
+
+/** Resolve the directory for a file — infrastructure (.dot files) goes to .mica/, cards go to project root */
+async function resolveFileDir(project: string, canvas: string, filename: string): Promise<string> {
+  if (filename.startsWith(".")) {
+    return getInfraDir(project, canvas);
+  }
+  return getCanvasDir(project, canvas);
+}
 
 export async function ensureCanvasDir(project: string, canvas: string): Promise<string> {
   const dir = await getCanvasDir(project, canvas);
   await mkdir(dir, { recursive: true });
+  // Also ensure infra dir exists (for .chat-history.json etc.)
+  const infraDir = await getInfraDir(project, canvas);
+  await mkdir(infraDir, { recursive: true });
   return dir;
 }
 
@@ -149,7 +165,7 @@ export async function readCanvasFile(
   let projectPath: string | undefined;
   try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   validateFilename(filename, projectPath);
-  const dir = await getCanvasDir(project, canvas);
+  const dir = await resolveFileDir(project, canvas, filename);
   const filepath = join(dir, filename);
   const content = await readFile(filepath, "utf-8");
   const stats = await stat(filepath);
@@ -170,7 +186,8 @@ export async function writeCanvasFile(
   let projectPath: string | undefined;
   try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   validateFilename(filename, projectPath);
-  const dir = await ensureCanvasDir(project, canvas);
+  const dir = await resolveFileDir(project, canvas, filename);
+  await mkdir(dir, { recursive: true });
   await writeFile(join(dir, filename), content, "utf-8");
 }
 
@@ -182,7 +199,7 @@ export async function deleteCanvasFile(
   let projectPath: string | undefined;
   try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   validateFilename(filename, projectPath);
-  const dir = await getCanvasDir(project, canvas);
+  const dir = await resolveFileDir(project, canvas, filename);
   await unlink(join(dir, filename));
 }
 

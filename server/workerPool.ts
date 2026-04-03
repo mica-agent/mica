@@ -25,7 +25,7 @@ export function buildWorkerEnv(): NodeJS.ProcessEnv {
     TERM: "xterm-256color",
     LANG: process.env.LANG || "en_US.UTF-8",
     PYTHONDONTWRITEBYTECODE: "1",
-    PYTHONPATH: path.join(__dirname, "mica_sdk"),
+    PYTHONPATH: path.join(__dirname, "mica_bridge"),
   };
 }
 
@@ -418,7 +418,7 @@ export class WorkerPool extends EventEmitter {
     this.warmCount = options?.warm ?? 1;
     this.maxCount = options?.max ?? 6;
     this.label = options?.label ?? "pool";
-    const workerPath = path.join(__dirname, "mica_sdk", "mica_worker.py");
+    const workerPath = path.join(__dirname, "mica_bridge", "mica_worker.py");
     this.spawnFn = options?.spawnFn
       ?? localSpawnFn(options?.pythonPath ?? "/usr/bin/python3", workerPath);
   }

@@ -89,12 +89,22 @@ export async function getMicaDir(projectId: string): Promise<string> {
   return join(projectPath, MICA_DIR);
 }
 
-/** Get the canvas directory inside .mica/.
- *  Special case: canvas "_root" returns .mica/ itself (for project-level cards). */
-export async function getCanvasDir(projectId: string, canvas: string): Promise<string> {
+/** Get the infrastructure directory for a canvas (inside .mica/).
+ *  Used for dot-prefixed files: .chat-history.json, .layout.json, .config.json.
+ *  Special case: canvas "_root" returns .mica/ itself. */
+export async function getInfraDir(projectId: string, canvas: string): Promise<string> {
   const micaDir = await getMicaDir(projectId);
   if (canvas === "_root") return micaDir;
   return join(micaDir, canvas);
+}
+
+/** Get the card file directory for a canvas (at project root level).
+ *  Card files (*.md, *.goal, *.brief, etc.) live in the project directory.
+ *  Special case: canvas "_root" returns the project root itself. */
+export async function getCanvasDir(projectId: string, canvas: string): Promise<string> {
+  const projectPath = await getProjectPath(projectId);
+  if (canvas === "_root") return projectPath;
+  return join(projectPath, canvas);
 }
 
 // ── Dot-prefix Migration ──────────────────────────────────
@@ -113,7 +123,6 @@ const CARD_RENAME_MAP: [string, string][] = [
   ["_todo.md", "_todo.todo"],
   ["_brief.md", "_brief.brief"],
   ["_log.md", "_log.log"],
-  ["_chat.md", "_chat.chat"],
   ["_agent.md", "_agent.agent"],
 ];
 
@@ -252,19 +261,22 @@ export async function disconnectProject(projectId: string): Promise<void> {
   console.log(`[connect] Disconnected project "${projectId}" (files preserved)`);
 }
 
-/** Initialize .mica/ directory in a project */
+/** Initialize .mica/ directory and canvas directories in a project */
 export async function initMicaDir(
   projectPath: string,
   config: MicaConfig
 ): Promise<void> {
   const micaDir = join(projectPath, MICA_DIR);
+  await mkdir(micaDir, { recursive: true });
 
-  // Create .mica/ and canvas subdirectories
+  // Create canvas directories at project root (card files live here)
+  // and corresponding infra directories inside .mica/ (for .chat-history.json etc.)
   for (const canvas of config.canvases) {
+    await mkdir(join(projectPath, canvas), { recursive: true });
     await mkdir(join(micaDir, canvas), { recursive: true });
   }
 
-  // Write config.json
+  // Write config.json to .mica/
   await writeFile(
     join(micaDir, CONFIG_FILE),
     JSON.stringify(config, null, 2),
@@ -289,9 +301,10 @@ export async function addCanvasToProject(
   project.canvases.push(canvasName);
   await writeWorkspaceRegistry(registry);
 
-  // Create the canvas directory in .mica/
-  const canvasDir = join(project.path, MICA_DIR, canvasName);
-  await mkdir(canvasDir, { recursive: true });
+  // Create the canvas directory at project root (for card files)
+  // and inside .mica/ (for infrastructure like .chat-history.json)
+  await mkdir(join(project.path, canvasName), { recursive: true });
+  await mkdir(join(project.path, MICA_DIR, canvasName), { recursive: true });
 
   // Update .mica/config.json
   const configPath = join(project.path, MICA_DIR, CONFIG_FILE);

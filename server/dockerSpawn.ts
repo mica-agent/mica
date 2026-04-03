@@ -22,7 +22,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = join(__filename, "..");
 export const SANDBOX_IMAGE = "mica-sandbox:base";
 export const CARD_CLASSES_DIR = resolve("card-classes");
-export const SDK_DIR = join(__dirname, "mica_sdk");
+export const SDK_DIR = join(__dirname, "mica_bridge");
 
 // ── Shared project mount config ─────────────────────────────
 // Single source of truth for how project files are mounted into containers.
@@ -45,7 +45,7 @@ const NODE_MODULES_DIR = resolve("node_modules");
 // so cards/agents can't discover or traverse host filesystem structure.
 export const CONTAINER_PROJECT_DIR = "/project";
 const CONTAINER_CARD_CLASSES = "/opt/mica/card-classes";
-const CONTAINER_SDK = "/opt/mica/mica_sdk";
+const CONTAINER_SDK = "/opt/mica/mica_bridge";
 const CONTAINER_NODE_MODULES = "/opt/mica/node_modules";
 
 export async function getProjectMounts(projectId: string): Promise<ProjectMounts> {
