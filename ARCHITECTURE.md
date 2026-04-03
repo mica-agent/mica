@@ -146,7 +146,7 @@ After an agent makes changes, Mica auto-commits: `mica: {canvas} agent update`.
 
 ### 5. Per-Project Container Isolation
 
-Each project runs in its own Docker container. The container is a **blast radius boundary** — filesystem scoping and resource limits, not a full sandbox. Card classes do not run inside the container; they run in V8 isolates on the host (see §7.8). Agents run inside the container with full network access.
+Each project runs in its own Docker container. The container is a **blast radius boundary** — filesystem scoping and resource limits, not a full sandbox. Card classes run as Node.js modules on the host (see §7.8). Agents run inside the container with full network access.
 
 | Endpoint | Operation |
 |----------|-----------|
@@ -204,13 +204,15 @@ Removes the project from `workspaces.json`. The `.mica/` directory is **left int
 
 ### 7. Card Class Runtime
 
-Card classes are JavaScript `render.js` files that produce interactive HTML. They use named exports:
+Card classes are Node.js ES module `render.js` files that produce interactive HTML. They can `import` any npm package. They use named exports:
 
 | Export | Purpose |
 |--------|---------|
 | `export default function render(content, config)` | Returns HTML string |
 | `export async function myExport(content, args, mica)` | Exposes a server-side function callable from the browser |
-| `export function channel(content, args, mica)` | Opens a persistent bidirectional stream (for terminals, real-time data) |
+| `export function onConnect(mica, args)` | Called when a bidirectional channel session starts |
+| `export function onMessage(msg, mica)` | Called when the browser sends data through a channel |
+| `export function onDisconnect(mica)` | Called when the channel session is destroyed |
 
 **Resolution order**: YAML frontmatter `card: name` → extension lookup via manifest (`.goal` → goal, `.md` → markdown) → fallback to `text`.
 
@@ -347,26 +349,28 @@ Rendered cards get a `mica` bridge object with five communication patterns:
 | Bidirectional channel | `mica.openChannel(fn, args)` | Terminal PTY, streaming data |
 | Widget broadcast | `mica.broadcast(event, data)` | Cross-card coordination |
 
-Server-side export handlers can call back into Mica: `mica.write()`, `mica.readFile()`, `mica.writeFile()`, `mica.emit()`, `mica.agent.chat()`.
+Server-side export and stream handlers receive a `mica` bridge with minimal infrastructure: `mica.send(data)`, `mica.reply(data)`, `mica.read(filename)`, `mica.write(content)`, `mica.exec(command)`, `mica.log(message)`. Card classes import anything else they need directly (agent SDKs, node-pty, etc.).
 
-#### 7.8 V8 Isolate Pool
+#### 7.8 ModuleLoader
 
-Card classes run in a pool of V8 isolates managed by `isolated-vm`. Each isolate is a lightweight V8 context with a **32 MB memory limit** and zero OS access — no filesystem, no network, no child processes.
+Card classes run as standard Node.js ES modules loaded via dynamic `import()`. They have full access to `require()`, `import`, `fs`, `process`, and all Node.js APIs. Card classes can import any npm package directly (e.g., `node-pty` for terminal PTY, `marked` for markdown parsing, `@anthropic-ai/claude-agent-sdk` for agent calls).
 
-**Sandboxing model:**
-- The `mica.*` bridge is injected as the sole API surface. Card code can only interact with the outside world through bridge calls (`mica.read()`, `mica.write()`, `mica.emit()`, etc.)
-- No `require()`, no `import`, no `process`, no `fs` — only what the bridge explicitly provides
-- Each isolate runs a single card class module
+**Runtime model:**
+- Card classes are the unit of extension — all behavior lives in `render.js`, including server-side stream handlers
+- The `mica` bridge provides minimal infrastructure (file I/O, channel messaging, exec, logging) — card classes import everything else they need directly
+- Blast radius is the Docker container (per-project isolation), not runtime sandboxing
 
 **Lifecycle:**
-- Isolates are created on first render of a card class and cached by class name
-- When a `render.js` file changes, the cached isolate is disposed and a new one is created on next render
-- Idle isolates are evicted after 60s of inactivity to reclaim memory
-- Channel isolates (terminal PTY, etc.) are kept alive for the duration of the channel
+- Modules are loaded on first render and cached by class name
+- When a `render.js` file changes, the cached module is invalidated and re-imported on next render (cache-bust via timestamp)
+- Stream handlers (`onConnect`/`onMessage`/`onDisconnect`) are auto-detected and registered with the ChannelManager
 
-**Concurrency:**
-- Multiple render calls for the same class reuse the cached isolate (V8 isolates are single-threaded; calls are queued)
-- Export calls and channel opens run in the same isolate as the class's render function
+**Stream handler pattern** (mirrors WebSocket semantics):
+- `onConnect(mica, args)` — session created, first client attached
+- `onMessage(msg, mica)` — data received from any connected browser
+- `onDisconnect(mica)` — session destroyed (card file deleted or server shutdown)
+- `mica.send(data)` pushes to all connected browsers; `mica.reply(data)` targets the sender
+- Sessions persist across browser reconnects — the ChannelManager delivers a synthetic `{ type: "attached" }` message to `onMessage` so card classes can replay state (scrollback, history)
 
 #### 7.9 Creating Card Classes
 
@@ -465,9 +469,10 @@ Containers are simple blast radius boundaries — filesystem scoping and resourc
 | `server/llamaServer.ts` | llama-server singleton lifecycle (start, health check, stop) |
 | `server/localAgent.ts` | Local LLM agent with tool loop, XML fallback parsing, mermaid sanitization |
 | `server/reactiveAgent.ts` | Two-phase reactive agent (triage → reaction) with cooldowns |
-| `server/cardManager.ts` | Card rendering dispatch through V8 isolate pool |
-| `server/isolatePool.ts` | V8 isolate pool — creates, caches, and disposes isolated-vm contexts for card classes |
-| `server/mica_bridge/mica.js` | Bridge API injected into each V8 isolate (mica.write, mica.readFile, mica.emit, etc.) |
+| `server/cardManager.ts` | Card rendering orchestration via ModuleLoader, cache management |
+| `server/moduleLoader.ts` | Loads card classes as Node.js ES modules, exposes render/callExport/getStreamHandlers |
+| `server/channelHandlers/module.ts` | Generic handler factory bridging card class stream exports to ChannelManager |
+| `server/channelManager.ts` | Unified, transport-agnostic session manager for bidirectional channels |
 | `src/api/projectGit.ts` | Frontend git API client |
 | `src/api/projectContainer.ts` | Frontend container API client |
 
@@ -479,7 +484,7 @@ Containers are simple blast radius boundaries — filesystem scoping and resourc
 | `server/seedCanvases.ts` | `seedNewProject()` accepts `agentProvider`, writes to config |
 | `server/index.ts` | Agent routing (`routedChat`), reactive agent integration, llama-server shutdown hook |
 | `server/agents.ts` | Read from repo root + `.mica/`, exported shared prompts for local agent reuse |
-| `server/workerPool.ts` | Legacy Python worker pool (retained for sandbox manager compatibility, warm=0) |
+| `server/workerPool.ts` | Legacy worker pool (retained for sandbox manager compatibility, scheduled for removal) |
 | `server/fileWatcher.ts` | Watch project root + `.mica/`, skip `.git/` |
 | `server/dockerSpawn.ts` | Export `parseDependencies` and `getOrBuildImage` for reuse |
 | `src/ProjectNav.tsx` | Agent provider toggle (Claude / Local) in project creation UI |
@@ -517,9 +522,9 @@ Existing projects in `canvases/{project}/` can be migrated via `migrateLegacyPro
 
 ## Security Model
 
-Card classes are code — they run JavaScript on the server (in V8 isolates) and in the browser. The security model uses three layers of defense, each handling a different threat.
+Card classes are code — they run as Node.js modules on the server and as inline scripts in the browser. The security model uses two layers of defense.
 
-### Three-layer model
+### Two-layer model
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -528,9 +533,9 @@ Card classes are code — they run JavaScript on the server (in V8 isolates) and
 │    ├── /proxy/cdn/*  (allowlisted CDN fetch)    │
 │    ├── /api/agent/chat (proxies Claude API)     │
 │    │                                            │
-│    ├── V8 Isolate Pool (card sandboxing)        │
-│    │    ├── Card class A  (32MB, mica.* only)   │
-│    │    └── Card class B  (32MB, mica.* only)   │
+│    ├── ModuleLoader (card class runtime)        │
+│    │    ├── Card class A  (Node.js module)      │
+│    │    └── Card class B  (Node.js module)      │
 │    │                                            │
 │    ├──→ Project A Container (blast radius)      │
 │    │      ├── Agent Bash sessions               │
@@ -543,16 +548,15 @@ Card classes are code — they run JavaScript on the server (in V8 isolates) and
 | Layer | What it protects | Mechanism |
 |-------|-----------------|-----------|
 | **Container** | Blast radius — filesystem scoping + resource limits | Docker: project dir (rw), `~/.claude/` (rw for agent functionality), no `~/.ssh`/`~/.aws`/other projects. 1GB mem, 2 CPU default |
-| **V8 isolate** | Card sandboxing — zero OS access | `isolated-vm`: 32MB heap, no `require`/`import`/`process`/`fs`. Only the `mica.*` bridge is available |
 | **Mica server** | Network policy + proxy | Per-card network permissions, CDN allowlist proxy, agent API proxy |
 
-### V8 isolate sandboxing (card classes)
+### Card class trust model
 
-Card classes run in `isolated-vm` V8 isolates — not in the container. An isolate has:
-- **No OS access**: no filesystem, no network, no child processes, no environment variables
-- **Allowlist API model**: the `mica.*` bridge is injected as the sole interface. Cards call `mica.read()`, `mica.write()`, `mica.emit()` — nothing else exists
-- **32 MB memory limit**: isolate is terminated if exceeded
-- This is the inverse of a blocklist approach — instead of blocking dangerous APIs, only safe APIs are provided
+Card classes run as Node.js modules with full access to the runtime — `import`, `fs`, `process`, `child_process`, and all Node.js APIs. There is no runtime sandboxing of card code. Security relies on:
+
+- **Trusted source**: Built-in card classes ship with Mica. Project-level classes (`.mica/.card-classes/`) are committed to the project repo and reviewed like any other code.
+- **Container blast radius**: Agent-spawned processes (including any card-initiated `mica.exec()` calls) run inside the per-project Docker container with filesystem and resource limits.
+- **Browser-side CSP**: Content Security Policy blocks browser-side card scripts from reaching external origins (see below).
 
 ### Per-card network permissions
 
@@ -568,10 +572,9 @@ Card classes declare network access in their manifest:
 }
 ```
 
-- **Default: deny all.** Cards with no `network` field (or `network: false`) cannot make any outbound requests
-- Cards with `network: true` can call `mica.fetch(url, options)` — requests are proxied through the Mica server
-- The V8 isolate itself has no network primitives; `mica.fetch()` is an RPC call to the host
-- Cards with network access are surfaced in the UI so users know which cards can reach the internet
+- **Default: deny all.** Cards with no `network` field (or `network: false`) have no network-gated features surfaced
+- Cards with `network: true` are surfaced in the UI so users know which cards may reach the internet
+- Card classes can use Node.js `fetch` or any HTTP library directly (they have full Node.js access)
 
 ### Agent trust model
 

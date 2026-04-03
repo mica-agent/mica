@@ -77,22 +77,17 @@ Card code runs in three distinct environments. Understanding which code runs whe
 
 ```
 +------------------------------------------------------------------+
-| 1. V8 ISOLATE (server-side)                                      |
+| 1. NODE.JS MODULE (server-side render.js)                        |
 |                                                                   |
-|    Runs: render() function and export functions                   |
-|    Has:  JSON, Math, Date, RegExp, Map, Set, Promise, String,    |
-|          template literals, all JS built-ins                      |
-|    Has:  mica bridge (exports ONLY — not available in render)     |
+|    Runs: render(), export functions, stream handlers              |
+|    Has:  Full Node.js — import, require, fs, process, fetch      |
+|    Has:  mica bridge (export functions and stream handlers)       |
+|    Has:  Any npm package (node-pty, marked, agent SDKs, etc.)    |
 |                                                                   |
-|    Does NOT have:                                                 |
-|      - require() or import                                        |
-|      - fs, net, child_process, process                            |
-|      - fetch, XMLHttpRequest                                      |
-|      - Any Node.js or browser APIs                                |
-|                                                                   |
-|    render() is SYNCHRONOUS — returns an HTML string               |
-|    Export functions are ASYNC — can use await mica.*               |
-|    Memory limit: 32 MB per isolate                                |
+|    render(content, config) returns an HTML string                 |
+|    Export functions are ASYNC — receive (content, args, mica)     |
+|    Stream handlers: onConnect(mica, args), onMessage(msg, mica), |
+|      onDisconnect(mica) — for bidirectional channels              |
 +------------------------------------------------------------------+
 
 +------------------------------------------------------------------+
@@ -102,12 +97,6 @@ Card code runs in three distinct environments. Understanding which code runs whe
 |    Has:  bash, find, ls, cat, grep, sed, awk, python3, node      |
 |    Has:  project directory mounted at its original path (rw)      |
 |    Has:  HOME=/home/sandbox, ~/.claude/ mounted (rw)              |
-|                                                                   |
-|    Volume mounts:                                                 |
-|      {project-path} -> {project-path}    (rw, 1:1 path mapping)  |
-|      card-classes/   -> card-classes/     (ro)                    |
-|      ~/.claude/      -> /home/sandbox/.claude/  (rw)              |
-|      node_modules/   -> node_modules/    (ro)                     |
 |                                                                   |
 |    Does NOT have:                                                 |
 |      - Your IDE, your home directory, other projects              |
@@ -138,7 +127,7 @@ Card code runs in three distinct environments. Understanding which code runs whe
 ### Data flow
 
 ```
-Browser                    V8 Isolate (server)           Docker Container
+Browser                    Node.js (server)              Docker Container
   |                              |                              |
   |-- mica.call('fn', args) ---->|                              |
   |                              |-- mica.exec('cmd') --------->|
@@ -146,7 +135,8 @@ Browser                    V8 Isolate (server)           Docker Container
   |<-- Promise resolves ---------|                              |
   |                              |                              |
   |-- mica.openChannel('fn') -->|                              |
-  |<== bidirectional data =====>|                              |
+  |<== bidirectional data =====>|  (onConnect/onMessage/        |
+  |                              |   onDisconnect + mica.send)  |
 ```
 
 ---
@@ -202,7 +192,7 @@ if (result.exitCode === 0) {
 
 ## 4. The Render Function
 
-The default export. Synchronous. Returns an HTML string. Runs in the V8 isolate.
+The default export. Returns an HTML string (can be sync or async). Runs in Node.js.
 
 ```javascript
 export default function render(content, config) {
@@ -220,10 +210,10 @@ export default function render(content, config) {
 
 ### Rules
 
-- **Synchronous only.** No `async`, no `await`, no Promises.
-- **No mica bridge.** You cannot call `mica.exec()`, `mica.readFile()`, or any mica function inside `render()`. The `mica` object is not available here.
-- **Pure computation.** You have access to: `JSON.parse`, `Math`, `Date`, `RegExp`, `parseInt`, template literals, string manipulation, array methods, etc.
-- **No mutable module-level state.** Module-level code runs once per isolate creation. The isolate is cached and reused across renders. Do not rely on module-level variables for per-render state.
+- **Returns a string.** `render()` can be sync or async. It returns an HTML string.
+- **No mica bridge.** The `mica` object is not passed to `render()`. Use export functions or stream handlers for server-side operations.
+- **Full Node.js access.** You can `import` any package, read files with `fs`, etc. But prefer keeping render pure — side effects belong in exports or stream handlers.
+- **Module-level state is shared.** The module is cached per class. Use module-level Maps keyed by session identity for per-card state (see terminal and chat examples).
 - **Return a single HTML string** containing markup, `<style>` tags, `<script src>` tags, and inline `<script>` blocks.
 
 ### What you CAN do in render()
@@ -271,7 +261,7 @@ export default function render(content, config) {
 
 ## 5. Export Functions
 
-Named exports become server-side functions callable from the browser. They run in the same V8 isolate as `render()` but are async and have access to the `mica` bridge.
+Named exports become server-side functions callable from the browser. They run in the Node.js process and have access to the `mica` bridge.
 
 ```javascript
 export async function my_function(content, args, mica) {
@@ -412,7 +402,7 @@ export async function list_project_files(content, args, mica) {
 
 ### mica.fetch() details
 
-Proxied through the Mica server. The V8 isolate has no direct network access.
+Card classes have full Node.js access and can use `fetch` or any HTTP library directly.
 
 ```javascript
 const resp = await mica.fetch('https://api.example.com/data', {
@@ -552,6 +542,57 @@ function send() {
 mica.onDestroy(() => { ch.close(); });
 ```
 
+### Server-side stream handlers
+
+Card classes implement the server side of channels by exporting `onConnect`, `onMessage`, and `onDisconnect`. These mirror WebSocket semantics — the infrastructure provides the transport, the card class decides the behavior.
+
+```javascript
+import * as pty from 'node-pty';  // Full Node.js access — import anything
+
+const sessions = new Map();  // Per-session state (module is cached per class)
+
+function sessionKey(mica) {
+  return `${mica.project}/${mica.canvas}/${mica.filename}`;
+}
+
+// Called once when the channel session is created (first client attaches)
+export function onConnect(mica, args) {
+  const proc = pty.spawn('bash', ['--login'], { cols: args.cols || 80, rows: args.rows || 24 });
+  sessions.set(sessionKey(mica), { proc, scrollback: '' });
+
+  proc.onData((data) => {
+    mica.send({ output: data });  // Broadcast to all connected browsers
+  });
+}
+
+// Called for every message from any connected browser
+export function onMessage(msg, mica) {
+  const session = sessions.get(sessionKey(mica));
+
+  // Handle reconnect: replay state to just the reconnecting client
+  if (msg.type === 'attached') {
+    if (session?.scrollback) mica.reply({ output: session.scrollback });
+    return;
+  }
+
+  if (msg.input) session?.proc?.write(msg.input);
+}
+
+// Called when the session is destroyed (card file deleted, server shutdown)
+export function onDisconnect(mica) {
+  const session = sessions.get(sessionKey(mica));
+  session?.proc?.kill();
+  sessions.delete(sessionKey(mica));
+}
+```
+
+**Key patterns:**
+- **`mica.send(data)`** broadcasts to all connected browsers
+- **`mica.reply(data)`** sends only to the client that triggered the current `onMessage` call
+- **`{ type: "attached" }` message** is delivered automatically when a client reconnects (refresh, second window). Use it to replay state (scrollback, history) without losing the live session.
+- **Module-level state** via `Map` keyed by `project/canvas/filename` — the module is cached per class, so multiple cards of the same class share the module but have separate session state.
+- **Full Node.js access** — import `node-pty`, `@anthropic-ai/claude-agent-sdk`, `marked`, or any npm package.
+
 ---
 
 ## 9. Dependencies
@@ -670,7 +711,7 @@ mica.onDestroy(() => document.removeEventListener('keydown', handler));
 ### Module-level mutable state
 
 ```javascript
-// WRONG — state persists across different card instances sharing the isolate
+// WRONG — state persists across different card instances sharing the cached module
 let currentData = {};
 
 export default function render(content, config) {
@@ -801,8 +842,8 @@ export async function debug_function(content, args, mica) {
 ### Auto-reload on card class changes
 
 The file watcher monitors card class directories. When you modify a `render.js` file:
-1. The cached V8 isolate for that class is disposed
-2. A new isolate is created on the next render
+1. The cached module for that class is invalidated
+2. The module is re-imported on the next render
 3. All cards using that class automatically re-render
 
 No server restart needed during development.
