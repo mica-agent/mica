@@ -81,7 +81,12 @@ function waitForStyleApplication(): Promise<void> {
 export default function WidgetRuntime({ html, exports: exportFns, dependencies, project, canvas, filename }: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<HTMLDivElement>(null);
+  // Bridge created once per component instance — survives effect re-runs (StrictMode).
+  // Channel dedup lives inside the bridge, so it persists across mount/cleanup/remount.
   const bridgeRef = useRef<ReturnType<typeof createBridge> | null>(null);
+  if (!bridgeRef.current) {
+    bridgeRef.current = createBridge(project, canvas, filename);
+  }
   const [activeCalls, setActiveCalls] = useState(0);
   const [loadingDeps, setLoadingDeps] = useState(false);
 
@@ -128,9 +133,8 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
         link.remove();
       });
 
-      // Build mica bridge
-      const baseBridge = createBridge(project, canvas, filename);
-      bridgeRef.current = baseBridge;
+      // Use the stable bridge from the ref (created once per component instance)
+      const baseBridge = bridgeRef.current!;
 
       // Provide the refresh implementation — re-fetches HTML from server and re-injects
       baseBridge._setRefreshFn(async () => {

@@ -6,6 +6,7 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { getProjectPath } from '../../server/projectConnection.js';
 
 // ── Server-side chat management ───────────────────────────
 
@@ -109,6 +110,9 @@ async function processMessage(session, message, mica) {
     let sessionId;
     let cost = 0;
 
+    let projectPath;
+    try { projectPath = await getProjectPath(mica.project); } catch { /* fallback */ }
+
     const options = {
       systemPrompt: "You are a helpful assistant collaborating on a project. Be concise and direct.",
       tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
@@ -116,6 +120,7 @@ async function processMessage(session, message, mica) {
       maxTurns: 10,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
+      cwd: projectPath || process.cwd(),
       ...(session.sessionId ? { resume: session.sessionId } : {}),
     };
 
