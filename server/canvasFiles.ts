@@ -89,7 +89,7 @@ export function getPrimaryFile(cardClass: string, projectPath?: string): string 
 }
 
 /** Resolve card class from a card directory name (extension lookup). */
-function resolveCardClassFromFilename(filename: string, projectPath?: string): string {
+export function resolveCardClassFromFilename(filename: string, projectPath?: string): string {
   const ext = extname(filename);
   const manifest = loadManifest(projectPath);
   for (const [className, entry] of Object.entries(manifest)) {

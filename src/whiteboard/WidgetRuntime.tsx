@@ -81,23 +81,20 @@ function waitForStyleApplication(): Promise<void> {
 export default function WidgetRuntime({ html, exports: exportFns, dependencies, project, canvas, filename }: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<HTMLDivElement>(null);
-  const prevHtmlRef = useRef<string>("");
   const bridgeRef = useRef<ReturnType<typeof createBridge> | null>(null);
   const [activeCalls, setActiveCalls] = useState(0);
   const [loadingDeps, setLoadingDeps] = useState(false);
 
-  // Only re-run when html changes
+  // Render on mount. Idempotent — safe to re-run (StrictMode, re-render).
+  // The bridge deduplicates channels, scripts re-register callbacks.
   useEffect(() => {
     const el = widgetRef.current;
     if (!el) return;
-    if (html === prevHtmlRef.current) return;
 
-    // Run destroy callbacks from previous render before updating DOM
+    // Run destroy callbacks from previous execution before re-injecting
     if (bridgeRef.current) {
       bridgeRef.current._runDestroy();
     }
-
-    prevHtmlRef.current = html;
 
     // ── Phase 1: Preload declared dependencies ──────────────────
     // If the card class declared `export const dependencies`, load them
@@ -134,8 +131,35 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
       // Build mica bridge
       const baseBridge = createBridge(project, canvas, filename);
       bridgeRef.current = baseBridge;
+
+      // Provide the refresh implementation — re-fetches HTML from server and re-injects
+      baseBridge._setRefreshFn(async () => {
+        const { fetchRenderedCard } = await import("../api/canvasFiles");
+        const rendered = await fetchRenderedCard(project, canvas, filename);
+        if (el && rendered.html) {
+          baseBridge._runDestroy();
+          el.innerHTML = rendered.html;
+          // Re-execute scripts with the same bridge
+          const scripts = Array.from(el.querySelectorAll("script"));
+          scripts.forEach((oldScript) => {
+            if (oldScript.getAttribute("src")) { oldScript.remove(); return; }
+            const newScript = document.createElement("script");
+            newScript.textContent =
+              `try{(function(mica, container) {${oldScript.textContent}})(` +
+              `document.currentScript.__mica, document.currentScript.parentElement);}` +
+              `catch(e){console.error("[widget-runtime] Script error in ${filename}:",e);}`;
+            oldScript.remove();
+            (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
+            el.appendChild(newScript);
+          });
+        }
+      });
+
       const micaBridge = {
         ...baseBridge,
+        project,
+        canvas,
+        filename,
         call: async (fn: string, args: Record<string, unknown> = {}) => {
           setActiveCalls((n) => n + 1);
           try {
@@ -144,6 +168,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
             setActiveCalls((n) => n - 1);
           }
         },
+        refresh: baseBridge.refresh,
         exports: exportFns || [],
       };
 
@@ -214,24 +239,15 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
       continueRender();
     }
 
-    // Cleanup on unmount only — NOT on re-render.
-    // The prevHtmlRef guard above ensures we don't re-execute when html is unchanged,
-    // but the effect cleanup would still destroy channels on dependency reference changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [html, project, canvas, filename]);
-
-  // Soft destroy on unmount — detach callbacks but keep channels alive.
-  // Hard destroy (channel_close) is ONLY triggered by the server when the
-  // card file is deleted (tenet #4: lifecycle bound to user intent).
-  // React unmounts happen for many reasons (project switch, parent re-render)
-  // that are NOT card deletion — we must not kill channels for those.
-  useEffect(() => {
+    // Cleanup: run onDestroy callbacks (which null channel callbacks via ch.close()).
+    // On StrictMode re-run or unmount, this ensures stale callbacks are cleared.
+    // The bridge dedup ensures the next execution gets the same channel handle.
     return () => {
       if (bridgeRef.current) {
         bridgeRef.current._runDestroy();
       }
     };
-  }, []);
+  }, [html, project, canvas, filename]);
 
   return (
     <div ref={outerRef} className={`widget-runtime ${activeCalls > 0 ? "widget-runtime--busy" : ""}`}>

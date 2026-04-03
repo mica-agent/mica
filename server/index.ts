@@ -808,6 +808,19 @@ app.get("/api/projects/:project/canvases/:canvas/cards", async (req, res) => {
   }
 });
 
+// Render a single card (used by mica.refresh())
+app.get("/api/projects/:project/canvases/:canvas/cards/:filename", async (req, res) => {
+  const { project, canvas, filename } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
+  try {
+    const file = await readCanvasFile(project, canvas, filename);
+    const rendered = await cardManager.renderCard(project, canvas, filename, file.content);
+    res.json(rendered);
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // Call an export function on a card
 app.post("/api/projects/:project/canvases/:canvas/cards/:filename/call/:fn", async (req, res) => {
   req.setTimeout(300000);
@@ -1111,67 +1124,63 @@ function broadcast(msg: Record<string, unknown>) {
 // Wire broadcast for agent lifecycle events
 agentManager.setBroadcast(broadcast);
 
-// File watcher → re-render + broadcast
+// File watcher → broadcast events (card classes own their own update lifecycle)
 fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {
-  // Dot-prefixed files are internal data — never reach here (filtered by fileWatcher)
-  // but guard just in case
   if (event.filename.startsWith(".")) return;
 
   console.log(`[file-watcher] ${event.type}: ${event.project}/${event.canvas}/${event.filename}`);
 
   if (event.type === "deleted") {
     cardManager.invalidateCard(event.project, event.canvas, event.filename);
-    // Destroy any channel session for this card file (tenet #4: lifecycle bound to user intent)
     channelManager.destroySession(event.project, event.canvas, event.filename);
     broadcast({ type: "file-deleted", project: event.project, canvas: event.canvas, filename: event.filename });
     return;
   }
 
-  // Notify clients that a re-render is starting
-  broadcast({ type: "file-rendering", project: event.project, canvas: event.canvas, filename: event.filename });
-
-  // Re-render the changed card
-  cardManager.invalidateCard(event.project, event.canvas, event.filename);
-  try {
-    const file = await readCanvasFile(event.project, event.canvas, event.filename);
-    console.log(`[file-watcher] Rendering ${event.project}/${event.canvas}/${event.filename}...`);
-    const rendered = await cardManager.renderCard(
-      event.project,
-      event.canvas,
-      event.filename,
-      file.content
-    );
-    // Auto-register module channel handler if card has stream exports
-    if (rendered.hasStream && rendered.meta?.cardClass) {
-      ensureModuleHandler(rendered.meta.cardClass);
+  // For created cards, resolve meta so the canvas can display them
+  if (event.type === "created") {
+    try {
+      const file = await readCanvasFile(event.project, event.canvas, event.filename);
+      const rendered = await cardManager.renderCard(
+        event.project, event.canvas, event.filename, file.content
+      );
+      if (rendered.hasStream && rendered.meta?.cardClass) {
+        ensureModuleHandler(rendered.meta.cardClass);
+      }
+      broadcast({
+        type: "file-created",
+        project: event.project,
+        canvas: event.canvas,
+        filename: event.filename,
+        html: rendered.html,
+        exports: rendered.exports,
+        dependencies: rendered.dependencies,
+        hasStream: rendered.hasStream,
+        meta: rendered.meta,
+      });
+    } catch (err) {
+      console.error(`[file-watcher] Render failed for new card ${event.filename}:`, (err as Error).message);
     }
-
-    console.log(`[file-watcher] Broadcasting ${event.type} for ${event.project}/${event.canvas}/${event.filename}`);
+  } else {
+    // file-changed: broadcast event only — no re-render, card classes handle updates
+    cardManager.invalidateCard(event.project, event.canvas, event.filename);
     broadcast({
-      type: event.type === "created" ? "file-created" : "file-changed",
+      type: "file-changed",
       project: event.project,
       canvas: event.canvas,
       filename: event.filename,
-      html: rendered.html,
-      exports: rendered.exports,
-      dependencies: rendered.dependencies,
-      hasStream: rendered.hasStream,
-      meta: rendered.meta,
     });
-  } catch (err) {
-    console.error(`[file-watcher] Re-render failed for ${event.project}/${event.canvas}/${event.filename}:`, (err as Error).message);
   }
 
-  // Notify reactive agent of the change (runs asynchronously)
   reactiveAgent.onFileChange(event);
 });
 
-// Card class changes → invalidate + re-render all instances
+// Card class changes → invalidate cache, broadcast so cards can refresh
 fileWatcher.on("class-change", async (event: { className: string }) => {
   console.log(`[file-watcher] Card class changed: ${event.className}`);
   cardManager.invalidateClass(event.className);
 
-  // Re-render all cards that use this class across all projects/canvases
+  // Broadcast class-changed so all cards of this class can refresh themselves
   try {
     const projects = await listProjects();
     for (const project of projects) {
@@ -1183,22 +1192,12 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
           if (file.name.startsWith(".")) continue;
           const { cardClass } = cardManager.resolveCardClass(file.name, file.content);
           if (cardClass === event.className) {
-            try {
-              const rendered = await cardManager.renderCard(project.id, canvas, file.name, file.content);
-              console.log(`[file-watcher] Re-rendered ${project.id}/${canvas}/${file.name} (class: ${event.className})`);
-              broadcast({
-                type: "file-changed",
-                project: project.id,
-                canvas,
-                filename: file.name,
-                html: rendered.html,
-                exports: rendered.exports,
-                dependencies: rendered.dependencies,
-                meta: rendered.meta,
-              });
-            } catch (err) {
-              console.error(`[file-watcher] Re-render failed for ${file.name}:`, (err as Error).message);
-            }
+            broadcast({
+              type: "file-changed",
+              project: project.id,
+              canvas,
+              filename: file.name,
+            });
           }
         }
       }

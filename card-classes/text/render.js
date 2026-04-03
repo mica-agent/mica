@@ -9,5 +9,10 @@ export default function render(content, config) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#x27;");
-  return `<pre class="card-text">${escaped}</pre>`;
+  return `<pre class="card-text">${escaped}</pre>
+    <script>
+      mica.on('file-changed', (e) => {
+        if (e.filename === mica.filename) mica.refresh();
+      });
+    </script>`;
 }

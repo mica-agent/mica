@@ -27,5 +27,10 @@ export default function render(content, config) {
       ${progressHtml}
       <div class="card-markdown">${html}</div>
     </div>
+    <script>
+      mica.on('file-changed', (e) => {
+        if (e.filename === mica.filename) mica.refresh();
+      });
+    </script>
   `;
 }

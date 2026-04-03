@@ -227,14 +227,12 @@ export function on(event: string, callback: (data: unknown) => void): () => void
 /**
  * Pattern 4: Open a bidirectional channel.
  *
- * Every call sends channel_open to the server. The server's ChannelManager
- * attaches to an existing session (keyed by card filename) or creates a new one.
- * onAttach fires server-side, delivering state replay (scrollback, history).
+ * openChannel() always sends channel_open to the server. The server's
+ * ChannelManager attaches to an existing session (keyed by card filename)
+ * or creates a new one. onAttach fires server-side for state replay.
  *
- * ch.close()   = Soft detach. Sends channel_close. Server detaches client,
- *                session stays alive. Next openChannel() reattaches.
- * ch.destroy() = Same as close() — session lifecycle is bound to the card file,
- *                not the channel.
+ * ch.close()   = Soft detach. Nulls callbacks. Does not notify server.
+ * ch.destroy() = Hard close. Notifies server to detach this client.
  */
 export interface Channel {
   id: string;
@@ -265,13 +263,6 @@ export function openChannel(
     handle.onClose?.();
   });
 
-  const close = () => {
-    activeChannels.delete(id);
-    waitForConnection().then(() => {
-      sendMsg({ type: "channel_close", id });
-    }).catch(() => {});
-  };
-
   return {
     id,
     send: (data: unknown) => {
@@ -279,8 +270,21 @@ export function openChannel(
         sendMsg({ type: "channel_data", id, data });
       }).catch((err) => console.error("[mica-socket] channel send failed:", err));
     },
-    close,
-    destroy: close,
+    close: () => {
+      // Soft detach — null callbacks so stale data doesn't reach destroyed widgets.
+      // Does NOT notify server. Session stays alive.
+      handle.onData = null;
+      handle.onClose = null;
+    },
+    destroy: () => {
+      // Hard close — notifies server to detach this client.
+      handle.onData = null;
+      handle.onClose = null;
+      activeChannels.delete(id);
+      waitForConnection().then(() => {
+        sendMsg({ type: "channel_close", id });
+      }).catch(() => {});
+    },
     onData: (cb) => { handle.onData = cb; },
     onClose: (cb) => { handle.onClose = cb; },
   };
@@ -295,18 +299,48 @@ export function broadcast(event: string, data: Record<string, unknown> = {}): vo
 /**
  * Create a scoped mica bridge for a specific widget instance.
  */
+/**
+ * Create a scoped mica bridge for a specific widget instance.
+ *
+ * The bridge deduplicates openChannel() calls for the same (filename, fn) key.
+ * This handles React lifecycle: scripts re-execute on re-render, StrictMode
+ * double-mounts — the same channel handle is returned with swapped callbacks
+ * instead of opening a new server connection.
+ *
+ * On page refresh, the bridge is recreated (fresh JS context), so openChannel
+ * sends a fresh channel_open and the server attaches to the existing session.
+ */
 export function createBridge(project: string, canvas: CanvasId, filename: string) {
   const destroyCallbacks: Array<() => void> = [];
+  let refreshFn: (() => Promise<void>) | null = null;
+
+  // Per-bridge channel dedup: keyed by fn (channel function name).
+  // Prevents duplicate channel_open for the same card during React lifecycle.
+  const bridgeChannels = new Map<string, Channel>();
 
   return {
+    /** Set the refresh implementation (provided by WidgetRuntime) */
+    _setRefreshFn: (fn: () => Promise<void>) => { refreshFn = fn; },
+    /** Re-fetch and re-render this card's HTML. Card classes call this to opt-in to updates. */
+    refresh: async () => { if (refreshFn) await refreshFn(); },
     call: (fn: string, args: Record<string, unknown> = {}) =>
       call(project, canvas, filename, fn, args),
     send: (fn: string, args: Record<string, unknown> = {}) =>
       send(project, canvas, filename, fn, args),
     on: (event: string, cb: (data: unknown) => void) =>
       on(event, cb),
-    openChannel: (fn: string, args: Record<string, unknown> = {}) =>
-      openChannel(project, canvas, filename, fn, args),
+    openChannel: (fn: string, args: Record<string, unknown> = {}) => {
+      // If this bridge already has a channel for this fn, return it.
+      // The card script will set new callbacks via ch.onData()/ch.onClose().
+      const existing = bridgeChannels.get(fn);
+      if (existing && activeChannels.has(existing.id)) {
+        return existing;
+      }
+      // New channel — send channel_open to server
+      const ch = openChannel(project, canvas, filename, fn, args);
+      bridgeChannels.set(fn, ch);
+      return ch;
+    },
     broadcast: (event: string, data: Record<string, unknown> = {}) =>
       broadcast(event, data),
     /** Register a cleanup callback for re-render/unmount. */

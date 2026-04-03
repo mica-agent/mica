@@ -96,6 +96,8 @@ export function createModuleHandlerFactory(deps: ModuleHandlerDeps) {
         // For reconnecting clients (refresh, second window), deliver a synthetic
         // "attached" message so the card class can replay state (scrollback, history).
         // Use a per-call mica proxy so concurrent attaches don't clobber each other.
+        // This runs synchronously inside channelManager.open() — the client handle
+        // is already registered, so sendTo() will deliver data immediately.
         if (handlers.onMessage) {
           const replyToClient = (d: unknown) => ctx.sendTo(clientId, d);
           const attachMica = Object.create(mica, {

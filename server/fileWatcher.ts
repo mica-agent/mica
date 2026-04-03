@@ -13,7 +13,7 @@ import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
 import { readWorkspaceRegistry, getProjectPath } from "./projectConnection.js";
-import { getValidExtensions } from "./canvasFiles.js";
+import { getValidExtensions, getPrimaryFile, resolveCardClassFromFilename } from "./canvasFiles.js";
 
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
@@ -121,8 +121,20 @@ export class FileWatcher extends EventEmitter {
         if (!getValidExtensions(projectPath).includes(ext)) return;
 
         // If it's a file inside a card directory (e.g., "card.md/document.md"),
-        // also skip dot-prefixed internal files (infrastructure)
+        // skip dot-prefixed internal files (infrastructure)
         if (parts.length > 1 && parts[parts.length - 1].startsWith(".")) return;
+
+        // If it's a file inside a card directory, only trigger re-render
+        // for the primary file. Other files (conversation.json, transcript.log)
+        // are supplementary state that shouldn't cause re-renders.
+        if (parts.length > 1) {
+          const changedFile = parts[parts.length - 1];
+          const cardExt = path.extname(topLevel);
+          // Quick extension → class lookup
+          const cardClass = resolveCardClassFromFilename(topLevel, projectPath);
+          const primaryFile = getPrimaryFile(cardClass, projectPath);
+          if (changedFile !== primaryFile) return;
+        }
 
         // The card name is the top-level directory name
         const cardName = topLevel;

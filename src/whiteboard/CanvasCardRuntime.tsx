@@ -139,10 +139,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
       // Skip files that aren't child cards
       if (m.filename === "_project.project" || m.filename === ".chat-history.json" || m.filename === ".config.json") {
-        // If _project.project changed, refetch ONLY the parent card (not children).
-        // Children are kept in sync via WebSocket events. Refetching children via HTTP
-        // can race with WebSocket updates and cause cards to briefly unmount, destroying
-        // persistent channel sessions.
         if (m.filename === "_project.project") {
           fetchProjectCard(projectId).then(setParentCard).catch(() => {});
         }
@@ -154,7 +150,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
         setRenderingFiles((prev) => { const next = new Set(prev); next.delete(m.filename!); return next; });
       }
 
-      if ((m.type === "file-changed" || m.type === "file-created") && m.html && m.filename && m.meta) {
+      // file-created: add new card to canvas (server sends full render)
+      if (m.type === "file-created" && m.html && m.filename && m.meta) {
         setChildren((prev) => {
           const card: RenderedCard = {
             filename: m.filename!,
@@ -171,14 +168,18 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           }
           return [...prev, card];
         });
-        // Trigger flash highlight
         setFlashFiles((prev) => new Set(prev).add(m.filename!));
         setTimeout(() => {
           setFlashFiles((prev) => { const next = new Set(prev); next.delete(m.filename!); return next; });
         }, 1200);
-      } else if (m.type === "file-deleted" && m.filename) {
+      }
+      // file-changed: event only — card classes handle their own updates via mica.on()
+      // No HTML replacement, no React state update for existing cards.
+      else if (m.type === "file-deleted" && m.filename) {
         setChildren((prev) => prev.filter((c) => c.filename !== m.filename));
       }
+      // file-changed events are passed through to card scripts via mica.on('file-changed')
+      // (handled by the WebSocket event listener system — no action needed here)
     }
 
     const unsub0 = on("file-rendering", handleRendering);

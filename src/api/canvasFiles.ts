@@ -159,6 +159,12 @@ export async function fetchCards(project: string, canvas: CanvasId): Promise<Ren
   return res.json();
 }
 
+export async function fetchRenderedCard(project: string, canvas: CanvasId, filename: string): Promise<RenderedCard> {
+  const res = await fetch(`${projectCanvasUrl(project, canvas)}/cards/${encodeURIComponent(filename)}`);
+  if (!res.ok) throw new Error(`Failed to fetch card: ${res.statusText}`);
+  return res.json();
+}
+
 // ── Project Card API ──────────────────────────────────────
 
 /** Fetch the rendered project card (layout shell with child metadata) */

@@ -68,6 +68,10 @@ export default function render(content, config) {
     outputEl.textContent = 'mermaid.js not loaded';
   }
 })();
+
+  mica.on('file-changed', (e) => {
+    if (e.filename === mica.filename) mica.refresh();
+  });
 </script>
   `;
 }
