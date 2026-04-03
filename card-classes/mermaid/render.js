@@ -69,9 +69,10 @@ export default function render(content, config) {
   }
 })();
 
-  mica.on('file-changed', (e) => {
+  const unsub = mica.on('file-changed', (e) => {
     if (e.filename === mica.filename) mica.refresh();
   });
+  mica.onDestroy(() => unsub());
 </script>
   `;
 }
