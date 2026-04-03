@@ -127,23 +127,12 @@
   margin-bottom: 8px;
 }
 
-/* Masonry via CSS columns */
+/* Content cards — responsive grid (avoids Safari CSS column compositing bugs) */
 .wb-masonry {
-  column-count: 3;
-  column-gap: 12px;
-}
-
-@media (max-width: 1200px) {
-  .wb-masonry { column-count: 2; }
-}
-
-@media (max-width: 700px) {
-  .wb-masonry { column-count: 1; }
-}
-
-.wb-masonry > .wb-card {
-  break-inside: avoid;
-  margin-bottom: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+  align-items: start;
 }
 
 .wb-empty {

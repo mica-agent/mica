@@ -28,19 +28,46 @@ const loadedExternalScripts = new Set<string>();
 const loadedExternalStyles = new Set<string>();
 
 /** Load a script into <head> (deduplicated). Returns a promise that resolves when loaded. */
+// Track in-flight script loads so concurrent callers wait on the same promise
+const scriptLoadPromises = new Map<string, Promise<void>>();
+
 function ensureScript(src: string): Promise<void> {
   if (loadedExternalScripts.has(src)) return Promise.resolve();
-  if (document.querySelector(`script[src="${CSS.escape(src)}"]`)) {
-    loadedExternalScripts.add(src);
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve, reject) => {
+
+  // If a load is already in-flight (e.g., StrictMode second run), wait for it
+  const inflight = scriptLoadPromises.get(src);
+  if (inflight) return inflight;
+
+  const promise = new Promise<void>((resolve, reject) => {
+    // Check if already in DOM and loaded
+    const existing = document.querySelector(`script[src="${CSS.escape(src)}"]`) as HTMLScriptElement | null;
+    if (existing) {
+      // Script element exists — but is it loaded? Check if the global it provides is available.
+      // Use a load event listener in case it's still loading.
+      if (loadedExternalScripts.has(src)) {
+        resolve();
+        return;
+      }
+      existing.addEventListener("load", () => { loadedExternalScripts.add(src); resolve(); });
+      existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)));
+      // If it already loaded (no event will fire), resolve after a tick
+      if ((existing as HTMLScriptElement & { readyState?: string }).readyState === "complete" || existing.dataset.loaded) {
+        loadedExternalScripts.add(src);
+        resolve();
+      }
+      return;
+    }
+
     const s = document.createElement("script");
     s.src = src;
-    s.onload = () => { loadedExternalScripts.add(src); resolve(); };
+    s.onload = () => { loadedExternalScripts.add(src); s.dataset.loaded = "1"; resolve(); };
     s.onerror = () => reject(new Error(`Failed to load ${src}`));
     document.head.appendChild(s);
   });
+
+  scriptLoadPromises.set(src, promise);
+  promise.finally(() => scriptLoadPromises.delete(src));
+  return promise;
 }
 
 /** Load a stylesheet into <head> (deduplicated). Returns a promise that resolves when CSS is applied. */
