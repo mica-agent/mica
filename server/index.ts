@@ -23,6 +23,8 @@ import {
   readCanvasFile,
   writeCanvasFile,
   deleteCanvasFile,
+  readCardFile,
+  writeCardFile,
   listProjects,
   deleteProject,
   getProjectConfig,
@@ -772,25 +774,11 @@ function createMicaBridge(project: string, canvas: string, filename: string): Mi
     reply(data: unknown) {
       broadcast({ type: "card-data", project, canvas, filename, data });
     },
-    async readSelf() {
-      const file = await readCanvasFile(project, canvas, filename);
-      return file.content;
-    },
-    async writeSelf(content: string) {
-      await writeCanvasFile(project, canvas, filename, content);
-    },
     async read(fname: string) {
-      const file = await readCanvasFile(project, canvas, fname);
-      return file.content;
+      return readCardFile(project, canvas, filename, fname);
     },
-    async write(filenameOrContent: string, content?: string) {
-      if (content === undefined) {
-        // write(content) — write to self
-        await writeCanvasFile(project, canvas, filename, filenameOrContent);
-      } else {
-        // write(filename, content) — write to another file
-        await writeCanvasFile(project, canvas, filenameOrContent, content);
-      }
+    async write(fname: string, content: string) {
+      await writeCardFile(project, canvas, filename, fname, content);
     },
     async exec(command: string, opts?: { cwd?: string; timeout?: number }) {
       return executor.exec(project, command, opts);
@@ -917,6 +905,8 @@ const moduleHandlerFactory = createModuleHandlerFactory({
   resolveCardClass: (filename, content) => cardManager.resolveCardClass(filename, content),
   getProjectPath,
   createExecFn: (project) => (command, opts) => executor.exec(project, command, opts),
+  readCardFile,
+  writeCardFile,
 });
 
 /** Ensure a module-based handler is registered for a card class with stream exports. */

@@ -9,7 +9,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 
 // ── Server-side chat management ───────────────────────────
 
-const HISTORY_FILE = ".chat-history.json";
+const HISTORY_FILE = "conversation.json";
 const MAX_HISTORY = 100;
 const MODEL = "claude-sonnet-4-6";
 

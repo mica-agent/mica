@@ -1,10 +1,10 @@
 // Canvas file management — filesystem CRUD for card and infrastructure files.
-// Card files (*.md, *.goal, *.agent, etc.) live at {project}/{canvas}/.
-// Infrastructure files (.chat-history.json, .layout.json, etc.) live in {project}/.mica/{canvas}/.
-// Card classes live in {project}/.mica/card-classes/.
+// Every card is a directory named {name}.{class}/ containing a primary file
+// and optional supporting files. Infrastructure files (.dot-prefixed) live in
+// {project}/.mica/{canvas}/.
 
-import { readdir, readFile, writeFile, unlink, mkdir, stat } from "fs/promises";
-import { readFileSync } from "fs";
+import { readdir, readFile, writeFile, unlink, mkdir, stat, rm } from "fs/promises";
+import { readFileSync, existsSync, statSync } from "fs";
 import { join, basename, extname } from "path";
 
 import {
@@ -30,37 +30,51 @@ export const addCanvasToProject = addConnectedCanvas;
 export const deleteProject = disconnectConnected;
 
 // ── Dynamic extension registry ──────────────────────────────
-// Valid extensions are derived from the card class manifest.
-// .json is always valid (for data files). Extensions are cached and
-// refreshed when getValidExtensions() is called.
 
 const MANIFEST_PATH = join(process.cwd(), "card-classes", "_manifest.json");
 let _cachedExtensions: string[] | null = null;
+let _cachedManifest: Record<string, ManifestEntry> | null = null;
 
-export function getValidExtensions(projectPath?: string): string[] {
-  if (_cachedExtensions && !projectPath) return _cachedExtensions;
-  const exts = new Set<string>();
+interface ManifestEntry {
+  extension?: string;
+  primaryFile?: string;
+  badge?: string;
+  system?: boolean;
+  defaultTitle?: string;
+  network?: boolean;
+}
+
+/** Load the merged manifest (built-in + project-level). */
+function loadManifest(projectPath?: string): Record<string, ManifestEntry> {
+  if (_cachedManifest && !projectPath) return _cachedManifest;
+
+  let manifest: Record<string, ManifestEntry> = {};
   try {
     const raw = readFileSync(MANIFEST_PATH, "utf-8");
-    const manifest = JSON.parse(raw) as Record<string, { extension?: string }>;
-    for (const entry of Object.values(manifest)) {
-      if (entry.extension) exts.add(entry.extension);
-    }
-  } catch {
-    // Fallback if manifest unreadable
-    for (const e of [".txt", ".md", ".mmd", ".html", ".goal", ".todo", ".brief", ".log", ".agent", ".canvas", ".project"]) {
-      exts.add(e);
-    }
-  }
-  // Merge project-level manifest extensions
+    manifest = JSON.parse(raw) as Record<string, ManifestEntry>;
+  } catch { /* fallback empty */ }
+
   if (projectPath) {
     try {
       const raw = readFileSync(join(projectPath, ".mica", ".card-classes", "_manifest.json"), "utf-8");
-      const manifest = JSON.parse(raw) as Record<string, { extension?: string }>;
-      for (const entry of Object.values(manifest)) {
-        if (entry.extension) exts.add(entry.extension);
+      const projectManifest = JSON.parse(raw) as Record<string, ManifestEntry>;
+      for (const [className, entry] of Object.entries(projectManifest)) {
+        manifest[className] = { ...manifest[className], ...entry };
       }
     } catch { /* no project manifest */ }
+  }
+
+  if (!projectPath) _cachedManifest = manifest;
+  return manifest;
+}
+
+/** Get valid file extensions from the manifest. */
+export function getValidExtensions(projectPath?: string): string[] {
+  if (_cachedExtensions && !projectPath) return _cachedExtensions;
+  const manifest = loadManifest(projectPath);
+  const exts = new Set<string>();
+  for (const entry of Object.values(manifest)) {
+    if (entry.extension) exts.add(entry.extension);
   }
   exts.add(".json"); // Always valid for data files
   const result = [...exts];
@@ -68,9 +82,26 @@ export function getValidExtensions(projectPath?: string): string[] {
   return result;
 }
 
-/** Call when manifest changes to refresh the extension cache. */
+/** Resolve the primary file name for a card class. */
+export function getPrimaryFile(cardClass: string, projectPath?: string): string {
+  const manifest = loadManifest(projectPath);
+  return manifest[cardClass]?.primaryFile || "content";
+}
+
+/** Resolve card class from a card directory name (extension lookup). */
+function resolveCardClassFromFilename(filename: string, projectPath?: string): string {
+  const ext = extname(filename);
+  const manifest = loadManifest(projectPath);
+  for (const [className, entry] of Object.entries(manifest)) {
+    if (entry.extension === ext) return className;
+  }
+  return "text";
+}
+
+/** Call when manifest changes to refresh caches. */
 export function invalidateExtensionCache(): void {
   _cachedExtensions = null;
+  _cachedManifest = null;
 }
 
 export interface CanvasFile {
@@ -93,6 +124,8 @@ function validateFilename(filename: string, projectPath?: string): void {
   if (base !== filename || filename.includes("..") || filename.includes("/")) {
     throw new Error(`Invalid filename: ${filename}`);
   }
+  // Dot-prefixed files (infrastructure) skip extension validation
+  if (filename.startsWith(".")) return;
   const ext = extname(filename);
   const validExts = getValidExtensions(projectPath);
   if (!validExts.includes(ext)) {
@@ -103,8 +136,8 @@ function validateFilename(filename: string, projectPath?: string): void {
 }
 
 // ── File operations ────────────────────────────────────────
-// Card files (*.md, *.goal, etc.) live at project root level.
-// Infrastructure files (dot-prefixed: .chat-history.json, .layout.json) live in .mica/.
+// Card files are directories at project root level: {name}.{class}/
+// Infrastructure files (dot-prefixed) live in .mica/.
 
 /** Resolve the directory for a file — infrastructure (.dot files) goes to .mica/, cards go to project root */
 async function resolveFileDir(project: string, canvas: string, filename: string): Promise<string> {
@@ -117,12 +150,27 @@ async function resolveFileDir(project: string, canvas: string, filename: string)
 export async function ensureCanvasDir(project: string, canvas: string): Promise<string> {
   const dir = await getCanvasDir(project, canvas);
   await mkdir(dir, { recursive: true });
-  // Also ensure infra dir exists (for .chat-history.json etc.)
+  // Also ensure infra dir exists
   const infraDir = await getInfraDir(project, canvas);
   await mkdir(infraDir, { recursive: true });
   return dir;
 }
 
+/** Check if a path is a card directory (has a valid card extension). */
+function isCardDirectory(name: string, fullPath: string, validExts: string[]): boolean {
+  const ext = extname(name);
+  if (!validExts.includes(ext)) return false;
+  try {
+    return statSync(fullPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * List all cards in a canvas. Each card is a directory — reads the primary file from inside.
+ * Also includes legacy flat files for backward compatibility during migration.
+ */
 export async function listFiles(project: string, canvas: string): Promise<CanvasFile[]> {
   const dir = await ensureCanvasDir(project, canvas);
   let projectPath: string | undefined;
@@ -136,18 +184,46 @@ export async function listFiles(project: string, canvas: string): Promise<Canvas
 
   const validExts = getValidExtensions(projectPath);
   const files: CanvasFile[] = [];
-  for (const name of entries) {
-    const ext = extname(name);
-    if (!validExts.includes(ext) || name.startsWith(".")) continue;
 
-    const filepath = join(dir, name);
-    const content = await readFile(filepath, "utf-8");
-    const stats = await stat(filepath);
+  for (const name of entries) {
+    if (name.startsWith(".")) continue;
+    const ext = extname(name);
+    if (!validExts.includes(ext)) continue;
+
+    const fullPath = join(dir, name);
+    let content = "";
+    let modifiedAt = new Date().toISOString();
+
+    try {
+      const stats = await stat(fullPath);
+      if (stats.isDirectory()) {
+        // Card directory — read primary file from inside
+        const cardClass = resolveCardClassFromFilename(name, projectPath);
+        const primaryFile = getPrimaryFile(cardClass, projectPath);
+        const primaryPath = join(fullPath, primaryFile);
+        try {
+          content = await readFile(primaryPath, "utf-8");
+          const primaryStats = await stat(primaryPath);
+          modifiedAt = primaryStats.mtime.toISOString();
+        } catch {
+          // Primary file doesn't exist yet — empty content
+          content = "";
+          modifiedAt = stats.mtime.toISOString();
+        }
+      } else {
+        // Legacy flat file — read directly (backward compat during migration)
+        content = await readFile(fullPath, "utf-8");
+        modifiedAt = stats.mtime.toISOString();
+      }
+    } catch {
+      continue;
+    }
+
     files.push({
       name,
       type: extToType(ext),
       content,
-      modifiedAt: stats.mtime.toISOString(),
+      modifiedAt,
     });
   }
 
@@ -157,6 +233,10 @@ export async function listFiles(project: string, canvas: string): Promise<Canvas
   );
 }
 
+/**
+ * Read a card's primary content. Handles both directory cards and legacy flat files.
+ * For dot-prefixed files (infrastructure), reads directly from .mica/.
+ */
 export async function readCanvasFile(
   project: string,
   canvas: string,
@@ -165,18 +245,61 @@ export async function readCanvasFile(
   let projectPath: string | undefined;
   try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   validateFilename(filename, projectPath);
+
   const dir = await resolveFileDir(project, canvas, filename);
-  const filepath = join(dir, filename);
-  const content = await readFile(filepath, "utf-8");
-  const stats = await stat(filepath);
+  const fullPath = join(dir, filename);
+
+  // Dot-prefixed infrastructure files — read directly
+  if (filename.startsWith(".")) {
+    const content = await readFile(fullPath, "utf-8");
+    const stats = await stat(fullPath);
+    return {
+      name: filename,
+      type: extToType(extname(filename)),
+      content,
+      modifiedAt: stats.mtime.toISOString(),
+    };
+  }
+
+  // Card directory — read primary file from inside
+  let content = "";
+  let modifiedAt = new Date().toISOString();
+
+  try {
+    const stats = await stat(fullPath);
+    if (stats.isDirectory()) {
+      const cardClass = resolveCardClassFromFilename(filename, projectPath);
+      const primaryFile = getPrimaryFile(cardClass, projectPath);
+      const primaryPath = join(fullPath, primaryFile);
+      try {
+        content = await readFile(primaryPath, "utf-8");
+        const primaryStats = await stat(primaryPath);
+        modifiedAt = primaryStats.mtime.toISOString();
+      } catch {
+        content = "";
+        modifiedAt = stats.mtime.toISOString();
+      }
+    } else {
+      // Legacy flat file
+      content = await readFile(fullPath, "utf-8");
+      modifiedAt = stats.mtime.toISOString();
+    }
+  } catch (err) {
+    throw new Error(`Card not found: ${filename}`);
+  }
+
   return {
     name: filename,
     type: extToType(extname(filename)),
     content,
-    modifiedAt: stats.mtime.toISOString(),
+    modifiedAt,
   };
 }
 
+/**
+ * Write a card's primary content. Creates the card directory if needed.
+ * For dot-prefixed files (infrastructure), writes directly to .mica/.
+ */
 export async function writeCanvasFile(
   project: string,
   canvas: string,
@@ -186,11 +309,27 @@ export async function writeCanvasFile(
   let projectPath: string | undefined;
   try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   validateFilename(filename, projectPath);
+
   const dir = await resolveFileDir(project, canvas, filename);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, filename), content, "utf-8");
+
+  // Dot-prefixed infrastructure files — write directly
+  if (filename.startsWith(".")) {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, filename), content, "utf-8");
+    return;
+  }
+
+  // Card directory — ensure directory exists, write primary file inside
+  const cardDir = join(dir, filename);
+  await mkdir(cardDir, { recursive: true });
+  const cardClass = resolveCardClassFromFilename(filename, projectPath);
+  const primaryFile = getPrimaryFile(cardClass, projectPath);
+  await writeFile(join(cardDir, primaryFile), content, "utf-8");
 }
 
+/**
+ * Delete a card. Removes the entire card directory (or legacy flat file).
+ */
 export async function deleteCanvasFile(
   project: string,
   canvas: string,
@@ -199,8 +338,101 @@ export async function deleteCanvasFile(
   let projectPath: string | undefined;
   try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   validateFilename(filename, projectPath);
+
   const dir = await resolveFileDir(project, canvas, filename);
-  await unlink(join(dir, filename));
+  const fullPath = join(dir, filename);
+
+  try {
+    const stats = await stat(fullPath);
+    if (stats.isDirectory()) {
+      await rm(fullPath, { recursive: true, force: true });
+    } else {
+      await unlink(fullPath);
+    }
+  } catch {
+    // Already gone
+  }
+}
+
+/**
+ * Read a file from inside a card's directory. Used by MicaBridge.read().
+ */
+export async function readCardFile(
+  project: string,
+  canvas: string,
+  cardName: string,
+  filename: string
+): Promise<string> {
+  const dir = await getCanvasDir(project, canvas);
+  const filepath = join(dir, cardName, filename);
+  return readFile(filepath, "utf-8");
+}
+
+/**
+ * Write a file inside a card's directory. Used by MicaBridge.write().
+ */
+export async function writeCardFile(
+  project: string,
+  canvas: string,
+  cardName: string,
+  filename: string,
+  content: string
+): Promise<void> {
+  const dir = await getCanvasDir(project, canvas);
+  const cardDir = join(dir, cardName);
+  await mkdir(cardDir, { recursive: true });
+  await writeFile(join(cardDir, filename), content, "utf-8");
+}
+
+/**
+ * Migrate flat card files to card directories.
+ * For each file with a valid card extension that is NOT a directory,
+ * move it into a directory with the primary file name.
+ */
+export async function migrateToCardDirectories(projectPath: string, canvas: string): Promise<number> {
+  const dir = canvas === "_root" ? projectPath : join(projectPath, canvas);
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return 0;
+  }
+
+  const validExts = getValidExtensions(projectPath);
+  let migrated = 0;
+
+  for (const name of entries) {
+    if (name.startsWith(".")) continue;
+    const ext = extname(name);
+    if (!validExts.includes(ext)) continue;
+
+    const fullPath = join(dir, name);
+    try {
+      const stats = await stat(fullPath);
+      if (stats.isFile()) {
+        // Flat file → convert to directory
+        const content = await readFile(fullPath, "utf-8");
+        const cardClass = resolveCardClassFromFilename(name, projectPath);
+        const primaryFile = getPrimaryFile(cardClass, projectPath);
+
+        // Create card directory
+        const cardDir = join(dir, name);
+        // Rename file to temp, mkdir, write primary, remove temp
+        const tmpPath = fullPath + ".migrating";
+        const { rename } = await import("fs/promises");
+        await rename(fullPath, tmpPath);
+        await mkdir(cardDir, { recursive: true });
+        await writeFile(join(cardDir, primaryFile), content, "utf-8");
+        await unlink(tmpPath);
+
+        migrated++;
+      }
+    } catch (err) {
+      console.warn(`[migration] Failed to migrate ${name}: ${(err as Error).message}`);
+    }
+  }
+
+  return migrated;
 }
 
 export async function getAllFilesAsContext(project: string, canvas: string): Promise<string> {

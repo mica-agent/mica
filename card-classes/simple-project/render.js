@@ -7,6 +7,7 @@
  */
 
 import { marked } from 'marked';
+import { writeCanvasFile } from '../../server/canvasFiles.js';
 
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -104,6 +105,6 @@ export async function create_file(content, args, mica) {
   const filename = args.filename || "";
   const fileContent = args.content || "";
   if (!filename) return { error: "filename is required" };
-  await mica.write(filename, fileContent);
+  await writeCanvasFile(mica.project, mica.canvas, filename, fileContent);
   return { ok: true, filename };
 }

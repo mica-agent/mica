@@ -41,6 +41,7 @@ interface ClassManifestEntry {
   system?: boolean;
   defaultTitle?: string;
   network?: boolean;
+  primaryFile?: string;
 }
 
 // ── Constants ──────────────────────────────────────────────

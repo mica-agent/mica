@@ -20,6 +20,8 @@ export interface ModuleHandlerDeps {
   resolveCardClass: (filename: string, content?: string) => { cardClass: string };
   getProjectPath: (project: string) => Promise<string>;
   createExecFn: (project: string) => (command: string, opts?: { cwd?: string; timeout?: number }) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  readCardFile: (project: string, canvas: string, cardName: string, filename: string) => Promise<string>;
+  writeCardFile: (project: string, canvas: string, cardName: string, filename: string, content: string) => Promise<void>;
 }
 
 /**
@@ -49,8 +51,9 @@ export function createModuleHandlerFactory(deps: ModuleHandlerDeps) {
       throw new Error(`Card class "${cardClass}" has no stream handlers (onConnect/onMessage)`);
     }
 
-    // Build a MicaBridge that routes send() through ctx.broadcast()
+    // Build a MicaBridge — read/write scoped to card directory
     const exec = createExecFn(ctx.project);
+    const { readCardFile: rcf, writeCardFile: wcf } = deps;
     const mica: MicaBridge = {
       project: ctx.project,
       canvas: ctx.canvas,
@@ -62,23 +65,11 @@ export function createModuleHandlerFactory(deps: ModuleHandlerDeps) {
         // Default: broadcast. Overridden per-call in onData to target the sender.
         ctx.broadcast(data);
       },
-      async readSelf() {
-        return ctx.readContent();
-      },
-      async writeSelf(content: string) {
-        await ctx.writeFile(ctx.filename, content);
-      },
       async read(filename: string) {
-        return ctx.readFile(filename);
+        return rcf(ctx.project, ctx.canvas, ctx.filename, filename);
       },
-      async write(filenameOrContent: string, content?: string) {
-        if (content === undefined) {
-          // write(content) — write to self
-          await ctx.writeFile(ctx.filename, filenameOrContent);
-        } else {
-          // write(filename, content) — write to another file
-          await ctx.writeFile(filenameOrContent, content);
-        }
+      async write(filename: string, content: string) {
+        await wcf(ctx.project, ctx.canvas, ctx.filename, filename, content);
       },
       async exec(command: string, opts?: { cwd?: string; timeout?: number }) {
         return exec(command, opts);

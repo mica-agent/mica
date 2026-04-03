@@ -2,81 +2,95 @@
   "markdown": {
     "extension": ".md",
     "badge": "MD",
-    "defaultTitle": ""
+    "defaultTitle": "",
+    "primaryFile": "document.md"
   },
   "mermaid": {
     "extension": ".mmd",
     "badge": "MMD",
-    "defaultTitle": ""
+    "defaultTitle": "",
+    "primaryFile": "diagram.mmd"
   },
   "text": {
     "extension": ".txt",
     "badge": "TXT",
-    "defaultTitle": ""
+    "defaultTitle": "",
+    "primaryFile": "content.txt"
   },
   "html": {
     "extension": ".html",
     "badge": "HTML",
-    "defaultTitle": ""
+    "defaultTitle": "",
+    "primaryFile": "page.html"
   },
   "goal": {
     "extension": ".goal",
     "badge": "GOAL",
     "system": true,
-    "defaultTitle": "Project Goal"
+    "defaultTitle": "Project Goal",
+    "primaryFile": "goals.md"
   },
   "todo": {
     "extension": ".todo",
     "badge": "TODO",
     "system": true,
-    "defaultTitle": "To Do"
+    "defaultTitle": "To Do",
+    "primaryFile": "tasks.md"
   },
   "brief": {
     "extension": ".brief",
     "badge": "BRIEF",
     "system": true,
-    "defaultTitle": "Agent Brief"
+    "defaultTitle": "Agent Brief",
+    "primaryFile": "brief.md"
   },
   "log": {
     "extension": ".log",
     "badge": "LOG",
     "system": true,
-    "defaultTitle": "Activity Log"
+    "defaultTitle": "Activity Log",
+    "primaryFile": "log.md"
   },
   "agent": {
     "extension": ".agent",
     "badge": "AGENT",
     "system": false,
-    "defaultTitle": "Agent"
+    "defaultTitle": "Agent",
+    "primaryFile": "task-state.json"
   },
   "canvas": {
     "extension": ".canvas",
     "badge": "CANVAS",
     "system": true,
-    "defaultTitle": "Canvas"
+    "defaultTitle": "Canvas",
+    "primaryFile": "canvas.json"
   },
   "terminal": {
     "extension": ".terminal",
     "badge": "TERM",
     "system": false,
-    "defaultTitle": "Terminal"
+    "defaultTitle": "Terminal",
+    "primaryFile": "transcript.log"
   },
   "simple-project": {
     "extension": ".project",
     "badge": "PROJECT",
     "system": true,
-    "defaultTitle": "Project"
+    "defaultTitle": "Project",
+    "primaryFile": "project.md"
   },
   "claude-chat": {
     "extension": ".claude-chat",
     "badge": "CLAUDE",
     "system": false,
-    "defaultTitle": "Claude Chat"
+    "defaultTitle": "Claude Chat",
+    "primaryFile": "conversation.json"
   },
   "llama-chat": {
     "extension": ".llama-chat",
     "badge": "LLAMA",
     "system": false,
-    "defaultTitle": "Llama Chat"
+    "defaultTitle": "Llama Chat",
+    "primaryFile": "conversation.json"
   }
 }

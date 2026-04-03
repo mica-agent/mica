@@ -93,6 +93,6 @@ export default function render(content, config) {
 
 export async function save(content, args, mica) {
   const newContent = args.content || "";
-  await mica.write(newContent);
+  await mica.write('document.md', newContent);
   return { ok: true };
 }

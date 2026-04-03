@@ -372,7 +372,7 @@ export async function select_provider(content, args, mica) {
   state.status = "idle";
   state.phase = "Ready";
   state.last_updated = new Date().toTimeString().slice(0, 8);
-  await mica.write(JSON.stringify(state, null, 2));
+  await mica.write('task-state.json', JSON.stringify(state, null, 2));
 
   return { provider };
 }

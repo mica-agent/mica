@@ -36,14 +36,10 @@ export interface MicaBridge {
   send(data: unknown): void;
   /** Reply to the client that sent the current message (only valid inside onMessage) */
   reply(data: unknown): void;
-  /** Read this card's own file content */
-  readSelf(): Promise<string>;
-  /** Write this card's own file content */
-  writeSelf(content: string): Promise<void>;
-  /** Read a file from the current canvas */
+  /** Read a file from this card's directory */
   read(filename: string): Promise<string>;
-  /** Write a file or write to self. write(content) = write to self, write(filename, content) = write to file */
-  write(filenameOrContent: string, content?: string): Promise<void>;
+  /** Write a file to this card's directory */
+  write(filename: string, content: string): Promise<void>;
   /** Run a shell command in the project container */
   exec(command: string, opts?: { cwd?: string; timeout?: number }): Promise<{ stdout: string; stderr: string; exitCode: number }>;
   /** Append to the activity log */

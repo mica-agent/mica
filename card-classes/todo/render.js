@@ -329,7 +329,7 @@ export async function toggle(content, args, mica) {
   }
 
   const newContent = rebuildContent(items, otherLines);
-  await mica.write(newContent);
+  await mica.write('tasks.md', newContent);
   return { ok: true };
 }
 
@@ -343,7 +343,7 @@ export async function set_priority(content, args, mica) {
   }
 
   const newContent = rebuildContent(items, otherLines);
-  await mica.write(newContent);
+  await mica.write('tasks.md', newContent);
   return { ok: true };
 }
 
@@ -355,7 +355,7 @@ export async function reassign(content, args, mica) {
   if (index >= 0 && index < items.length) {
     items[index].assignee = assignee;
     const newContent = rebuildContent(items, otherLines);
-    await mica.write(newContent);
+    await mica.write('tasks.md', newContent);
 
     if (assignee === "agent") {
       const item = items[index];
@@ -378,7 +378,7 @@ export async function reassign(content, args, mica) {
     }
   } else {
     const newContent = rebuildContent(items, otherLines);
-    await mica.write(newContent);
+    await mica.write('tasks.md', newContent);
   }
 
   return { ok: true };
@@ -407,7 +407,7 @@ export async function add_item(content, args, mica) {
   });
 
   const newContent = rebuildContent(items, otherLines);
-  await mica.write(newContent);
+  await mica.write('tasks.md', newContent);
   return { ok: true };
 }
 

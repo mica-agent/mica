@@ -9,6 +9,7 @@ import {
   writeCanvasFile,
   ensureCanvasDir,
   listProjects,
+  migrateToCardDirectories,
 } from "./canvasFiles.js";
 import {
   connectProject,
@@ -163,6 +164,11 @@ export async function initializeProjects(): Promise<void> {
     console.log(`[seed] Found ${registry.projects.length} connected project(s).`);
     for (const project of registry.projects) {
       await migrateDataFileNames(project.path);
+      // Migrate flat card files → card directories
+      const migrated = await migrateToCardDirectories(project.path, "_root");
+      if (migrated > 0) {
+        console.log(`[seed] Migrated ${migrated} card(s) to directories in "${project.id}".`);
+      }
     }
     return;
   }

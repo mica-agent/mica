@@ -41,13 +41,13 @@ export default function render(content, config) {
 
 export async function increment(content, args, mica) {
   const count = (parseInt(content.trim(), 10) || 0) + 1;
-  await mica.write(String(count));
+  await mica.write('counter.txt', String(count));
   return { count };
 }
 
 export async function decrement(content, args, mica) {
   const count = Math.max(0, (parseInt(content.trim(), 10) || 0) - 1);
-  await mica.write(String(count));
+  await mica.write('counter.txt', String(count));
   return { count };
 }
 ```
@@ -199,8 +199,8 @@ Examples:     src/index.js, README.md, package.json, tsconfig.json
 ### Example: reading project files from a card
 
 ```javascript
-// WRONG — this reads from .mica/, not from the project
-const src = await mica.readFile('src/index.js');  // null — file doesn't exist in canvas
+// WRONG — this reads from the card directory, not from the project
+const src = await mica.read('src/index.js');  // error — file doesn't exist in card dir
 
 // RIGHT — this reads from the project directory
 const result = await mica.exec('cat src/index.js');
@@ -995,13 +995,13 @@ export default function render(content, config) {
 
 export async function increment(content, args, mica) {
   const count = (parseInt(content.trim(), 10) || 0) + 1;
-  await mica.write(String(count));
+  await mica.write('counter.txt', String(count));
   return { count };
 }
 
 export async function decrement(content, args, mica) {
   const count = Math.max(0, (parseInt(content.trim(), 10) || 0) - 1);
-  await mica.write(String(count));
+  await mica.write('counter.txt', String(count));
   return { count };
 }
 ```

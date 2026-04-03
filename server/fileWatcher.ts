@@ -74,13 +74,14 @@ export class FileWatcher extends EventEmitter {
     try {
       await fs.promises.mkdir(dir, { recursive: true });
 
-      // Scan existing files
+      // Scan existing cards (files or directories with valid extensions)
       const files = new Set<string>();
       try {
         const entries = await fs.promises.readdir(dir);
         for (const entry of entries) {
+          if (entry.startsWith(".")) continue;
           const ext = path.extname(entry);
-          if (getValidExtensions(projectPath).includes(ext) && !entry.startsWith(".")) {
+          if (getValidExtensions(projectPath).includes(ext)) {
             files.add(entry);
           }
         }
@@ -102,17 +103,32 @@ export class FileWatcher extends EventEmitter {
 
   private watchDirectory(dir: string, project: string, canvas: string, projectPath?: string): void {
     try {
-      const watcher = fs.watch(dir, (eventType, filename) => {
+      // Use recursive: true to catch changes inside card directories
+      const watcher = fs.watch(dir, { recursive: true }, (eventType, filename) => {
         if (!filename) return;
+
+        // filename may be "card.md/document.md" (path inside card dir).
+        // Extract the top-level card directory name.
+        const parts = filename.split(path.sep);
+        const topLevel = parts[0];
+
         // Skip .git internals and hidden files
-        if (filename.startsWith(".")) return;
-        // For _root canvas, skip subdirectories (canvas dirs, .card-classes)
-        if (canvas === "_root" && !filename.includes(".")) return;
-        const ext = path.extname(filename);
+        if (topLevel.startsWith(".")) return;
+        // Skip files inside .mica/
+        if (topLevel === ".mica") return;
+
+        const ext = path.extname(topLevel);
         if (!getValidExtensions(projectPath).includes(ext)) return;
 
+        // If it's a file inside a card directory (e.g., "card.md/document.md"),
+        // also skip dot-prefixed internal files (infrastructure)
+        if (parts.length > 1 && parts[parts.length - 1].startsWith(".")) return;
+
+        // The card name is the top-level directory name
+        const cardName = topLevel;
+
         // Debounce
-        const debounceKey = `${project}/${canvas}/${filename}`;
+        const debounceKey = `${project}/${canvas}/${cardName}`;
         const existing = this.debounceTimers.get(debounceKey);
         if (existing) clearTimeout(existing);
 
@@ -120,8 +136,8 @@ export class FileWatcher extends EventEmitter {
           debounceKey,
           setTimeout(() => {
             this.debounceTimers.delete(debounceKey);
-            this.handleFileChange(project, canvas, filename, dir).catch((err) => {
-              console.error(`[file-watcher] Error handling ${project}/${canvas}/${filename}:`, (err as Error).message);
+            this.handleFileChange(project, canvas, cardName, dir).catch((err) => {
+              console.error(`[file-watcher] Error handling ${project}/${canvas}/${cardName}:`, (err as Error).message);
             });
           }, DEBOUNCE_MS)
         );
@@ -144,7 +160,7 @@ export class FileWatcher extends EventEmitter {
 
     try {
       await fs.promises.access(filePath);
-      // File exists
+      // Card exists (file or directory)
       if (known.has(filename)) {
         this.emit("file-change", { type: "changed", project, canvas, filename } as FileChangeEvent);
       } else {
@@ -153,7 +169,7 @@ export class FileWatcher extends EventEmitter {
         this.emit("file-change", { type: "created", project, canvas, filename } as FileChangeEvent);
       }
     } catch {
-      // File was deleted
+      // Card was deleted (file or directory removed)
       if (known.has(filename)) {
         known.delete(filename);
         this.knownFiles.set(key, known);
