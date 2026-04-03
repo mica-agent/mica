@@ -2,6 +2,16 @@
  * Todo card class — interactive to-do list with assignments, priorities, and agent integration.
  */
 
+import { getProvider } from '../../server/agentCore/registry.js';
+import { resolveAgentProvider } from '../../server/agentCore/config.js';
+
+async function agentChat(mica, message) {
+  const providerName = await resolveAgentProvider(mica.project);
+  const provider = getProvider(providerName);
+  if (!provider) throw new Error(`No agent provider: ${providerName}`);
+  return provider.chat(mica.project, mica.canvas, message);
+}
+
 const PRIORITIES = ["high", "medium", "low"];
 
 function parseItems(content) {
@@ -349,7 +359,7 @@ export async function reassign(content, args, mica) {
 
     if (assignee === "agent") {
       const item = items[index];
-      const response = await mica.agent.chat(
+      const response = await agentChat(mica,
         `A task has been assigned to you from the to-do list: "${item.text}"\n\n` +
         `Priority: ${item.priority || "not set"}\n` +
         `Section: ${item.section}\n\n` +
@@ -409,7 +419,7 @@ export async function discuss(content, args, mica) {
     const item = items[index];
     const prefix = item.assignee ? `@${item.assignee} ` : "";
     const taskText = `${prefix}${item.text}`;
-    const response = await mica.agent.chat(
+    const response = await agentChat(mica,
       `Let's discuss this task from the to-do list: "${taskText}". ` +
       `What's the best approach? Any blockers or dependencies I should know about? ` +
       `Keep it brief \u2014 2-3 sentences.`

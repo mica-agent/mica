@@ -2,14 +2,12 @@
  * CardManager — Orchestrates card rendering with caching.
  *
  * Resolves card classes from file metadata, manages render cache,
- * and delegates rendering/export calls to the WorkerPool.
+ * and delegates rendering/export calls to the ModuleLoader.
  */
 
 import path from "path";
 import fs from "fs";
-import { WorkerPool, type RenderResult } from "./workerPool.js";
-import { IsolatePool, type RenderResult as IsolateRenderResult, type CardDependencies } from "./isolatePool.js";
-import type { SandboxManager } from "./projectSandbox.js";
+import { ModuleLoader, type RenderResult as ModuleRenderResult, type CardDependencies, type MicaBridge } from "./moduleLoader.js";
 import {
   readCanvasFile,
   writeCanvasFile,
@@ -32,6 +30,7 @@ interface CacheEntry {
   html: string;
   exports: string[];
   dependencies?: CardDependencies;
+  hasStream: boolean;
   meta: CardMeta;
   mtime: number;
 }
@@ -68,13 +67,11 @@ function parseFrontmatter(raw: string): ParsedFile {
   const yamlBlock = raw.slice(4, endMarker).trim();
   const content = raw.slice(endMarker + 4).replace(/^\r?\n/, "");
 
-  // Simple YAML parser (handles key: value pairs)
   const metadata: Record<string, unknown> = {};
   for (const line of yamlBlock.split("\n")) {
     const match = line.match(/^(\w[\w-]*)\s*:\s*(.+)$/);
     if (match) {
       const [, key, value] = match;
-      // Try to parse as JSON for nested values, otherwise keep as string
       try {
         metadata[key] = JSON.parse(value);
       } catch {
@@ -90,22 +87,13 @@ function parseFrontmatter(raw: string): ParsedFile {
 
 export class CardManager {
   private cache: Map<string, CacheEntry> = new Map();
-  private pool: WorkerPool;
-  private isolatePool: IsolatePool;
-  private sandboxManager: SandboxManager | null = null;
+  private moduleLoader: ModuleLoader;
   private manifest: Record<string, ClassManifestEntry> = {};
-  private extensionMap: Map<string, string> = new Map(); // ".todo" → "todo"
+  private extensionMap: Map<string, string> = new Map();
 
-  constructor(pool: WorkerPool, sandboxManager?: SandboxManager) {
-    this.pool = pool;
-    this.isolatePool = new IsolatePool();
-    this.sandboxManager = sandboxManager ?? null;
+  constructor() {
+    this.moduleLoader = new ModuleLoader();
     this.loadManifest();
-  }
-
-  /** Set the RPC handler for the V8 isolate pool. */
-  setIsolateRpcHandler(handler: import("./isolatePool.js").RpcHandler) {
-    this.isolatePool.setRpcHandler(handler);
   }
 
   /** Get all valid card extensions (for file validation and watching). */
@@ -118,20 +106,7 @@ export class CardManager {
     return this.manifest[cardClass]?.network === true;
   }
 
-  /** Get the worker pool for a project. Uses sandbox if available, else global pool. */
-  private async getPool(project: string): Promise<WorkerPool> {
-    if (this.sandboxManager) {
-      try {
-        return await this.sandboxManager.getPool(project);
-      } catch (err) {
-        console.warn(`[card-manager] Sandbox unavailable for "${project}", falling back to global pool:`, (err as Error).message);
-      }
-    }
-    return this.pool;
-  }
-
   private loadManifest(projectPath?: string) {
-    // Load built-in manifest
     const manifestPath = path.join(CARD_CLASSES_DIR, "_manifest.json");
     try {
       const raw = fs.readFileSync(manifestPath, "utf-8");
@@ -141,8 +116,6 @@ export class CardManager {
       this.manifest = {};
     }
 
-    // Merge project-level manifest on top (if it exists)
-    // Deep-merge per entry so project overrides don't drop built-in fields like `extension`
     if (projectPath) {
       const projectManifestPath = path.join(projectPath, ".mica", ".card-classes", "_manifest.json");
       try {
@@ -151,18 +124,16 @@ export class CardManager {
         for (const [className, projectEntry] of Object.entries(projectManifest)) {
           const builtIn = this.manifest[className];
           if (builtIn) {
-            // Merge: project fields override, but keep built-in fields the project didn't specify
             this.manifest[className] = { ...builtIn, ...projectEntry };
           } else {
             this.manifest[className] = projectEntry;
           }
         }
       } catch {
-        // No project manifest — that's fine
+        // No project manifest
       }
     }
 
-    // Build extension → class lookup from manifest
     this.extensionMap.clear();
     for (const [className, entry] of Object.entries(this.manifest)) {
       if (entry.extension) {
@@ -173,34 +144,30 @@ export class CardManager {
 
   // ── Card class resolution ──────────────────────────────
 
-  resolveCardClass(filename: string, content: string): { cardClass: string; strippedContent: string; metadata: Record<string, unknown> } {
-    // 1. Check frontmatter
-    const { metadata, content: strippedContent } = parseFrontmatter(content);
+  resolveCardClass(filename: string, content?: string): { cardClass: string; strippedContent: string; metadata: Record<string, unknown> } {
+    const rawContent = content || "";
+    const { metadata, content: strippedContent } = parseFrontmatter(rawContent);
     if (metadata.card && typeof metadata.card === "string") {
       return { cardClass: metadata.card, strippedContent, metadata };
     }
 
-    // 2. Extension → class via manifest
     const ext = path.extname(filename);
     const cardClass = this.extensionMap.get(ext) || "text";
-    return { cardClass, strippedContent: content, metadata };
+    return { cardClass, strippedContent: rawContent, metadata };
   }
 
   resolveCardMeta(filename: string, content: string): CardMeta {
     const { cardClass, metadata } = this.resolveCardClass(filename, content);
     const manifestEntry = this.manifest[cardClass];
 
-    // Determine title
     let title = (metadata.title as string) || manifestEntry?.defaultTitle || "";
     if (!title) {
-      // Strip any registered extension for title humanization
       const ext = path.extname(filename);
       title = (ext ? filename.slice(0, -ext.length) : filename)
         .replace(/[-_]/g, " ")
         .replace(/\b\w/g, (c) => c.toUpperCase());
     }
 
-    // System file check
     const isSystem =
       manifestEntry?.system ||
       filename.startsWith("_") ||
@@ -218,11 +185,7 @@ export class CardManager {
 
   // ── Rendering ──────────────────────────────────────────
 
-  /**
-   * Resolve the class file path for a card class.
-   * Project-level classes take priority over built-in classes.
-   */
-  private getClassPath(className: string, projectPath?: string): string {
+  getClassPath(className: string, projectPath?: string): string {
     if (projectPath) {
       const projectJs = path.join(projectPath, ".mica", ".card-classes", className, "render.js");
       if (fs.existsSync(projectJs)) return projectJs;
@@ -240,7 +203,7 @@ export class CardManager {
     filename: string,
     content: string,
     config?: Record<string, unknown>
-  ): Promise<{ html: string; exports: string[]; dependencies?: CardDependencies; meta: CardMeta }> {
+  ): Promise<{ html: string; exports: string[]; dependencies?: CardDependencies; hasStream?: boolean; meta: CardMeta }> {
     const key = this.cacheKey(project, canvas, filename);
     let projectPath: string | undefined;
     try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
@@ -248,50 +211,35 @@ export class CardManager {
     const { cardClass, strippedContent, metadata } = this.resolveCardClass(filename, content);
     const meta = this.resolveCardMeta(filename, content);
 
-    // Check class file exists (project-level first, then built-in)
     const classPath = this.getClassPath(cardClass, projectPath);
     if (!fs.existsSync(classPath)) {
-      // Fallback: render as escaped HTML
       const html = `<pre style="color: #f87171;">Card class "${cardClass}" not found.\nFile: ${filename}</pre>`;
       return { html, exports: [], meta };
-    }
-
-    // Pre-load data into config for cards that need it during render.
-    // RPC is not available during render (applySyncPromise would deadlock),
-    // so cards receive data via config instead of calling mica.readFile().
-    const extraConfig: Record<string, unknown> = {};
-    if (cardClass === "chat") {
-      try {
-        const historyFile = await readCanvasFile(project, canvas, ".chat-history.json");
-        extraConfig.__chatHistory = historyFile.content;
-      } catch { /* no history yet */ }
     }
 
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const renderConfig = { ...metadata, ...(config || {}), ...extraConfig, project, canvas, filename };
-        const requestContext = { project, canvas, filename };
+        const renderConfig = { ...metadata, ...(config || {}), project, canvas, filename };
         console.log(`[card-manager] Rendering ${filename} (class=${cardClass})...`);
-        const result = await this.isolatePool.render(
-          cardClass, classPath, strippedContent, renderConfig, requestContext
+        const result = await this.moduleLoader.render(
+          cardClass, classPath, strippedContent, renderConfig
         );
         console.log(`[card-manager] Rendered ${filename} (${result.html.length} chars)`);
 
-        // Cache the result
         this.cache.set(key, {
           html: result.html,
           exports: result.exports,
           dependencies: result.dependencies,
+          hasStream: result.hasStream,
           meta,
           mtime: Date.now(),
         });
 
-        return { html: result.html, exports: result.exports, dependencies: result.dependencies, meta };
+        return { html: result.html, exports: result.exports, dependencies: result.dependencies, hasStream: result.hasStream, meta };
       } catch (err) {
         const msg = (err as Error).message;
-        const isTimeout = msg.includes("timed out") || msg.includes("pool exhausted");
-        if (isTimeout && attempt < maxRetries - 1) {
+        if (attempt < maxRetries - 1) {
           console.warn(`[card-manager] Render retry ${attempt + 1}/${maxRetries} for ${project}/${canvas}/${filename}: ${msg}`);
           await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
           continue;
@@ -300,7 +248,6 @@ export class CardManager {
         return { html: errorHtml, exports: [], meta };
       }
     }
-    // Should not reach here
     return { html: "", exports: [], meta };
   }
 
@@ -309,65 +256,11 @@ export class CardManager {
     canvas: string,
     filename: string,
     fn: string,
-    args: Record<string, unknown>
-  ): Promise<any> {
-    // Read the current file content
-    const file = await readCanvasFile(project, canvas, filename);
-    const { cardClass, strippedContent, metadata } = this.resolveCardClass(filename, file.content);
-    let projectPath: string | undefined;
-    try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
-    const classPath = this.getClassPath(cardClass, projectPath);
-
-    if (!fs.existsSync(classPath)) {
-      throw new Error(`Card class "${cardClass}" not found`);
-    }
-
-    return this.isolatePool.callExport(
-      cardClass, classPath, fn, strippedContent, args,
-      { project, canvas, filename }
-    );
-  }
-
-  /** Fire-and-forget: call an export but don't return the result to the caller. */
-  async callSend(
-    project: string,
-    canvas: string,
-    filename: string,
-    fn: string,
-    args: Record<string, unknown>
-  ): Promise<void> {
-    const file = await readCanvasFile(project, canvas, filename);
-    const { cardClass, strippedContent } = this.resolveCardClass(filename, file.content);
-    let projectPath: string | undefined;
-    try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
-    const classPath = this.getClassPath(cardClass, projectPath);
-
-    if (!fs.existsSync(classPath)) {
-      console.error(`[card-manager] callSend: card class "${cardClass}" not found`);
-      return;
-    }
-
-    const pool = await this.getPool(project);
-    pool.callExport(cardClass, classPath, fn, strippedContent, args, { project, canvas, filename })
-      .catch((err) => console.error(`[card-manager] callSend error:`, (err as Error).message));
-  }
-
-  /**
-   * Open a bidirectional channel to a @mica.channel handler.
-   * Returns the channel ID (same as the caller-provided channelId).
-   */
-  async openChannel(
-    channelId: string,
-    project: string,
-    canvas: string,
-    filename: string,
-    fn: string,
     args: Record<string, unknown>,
-    onData: (data: unknown) => void,
-    onClose: () => void
-  ): Promise<string> {
+    mica: MicaBridge
+  ): Promise<unknown> {
     const file = await readCanvasFile(project, canvas, filename);
-    const { cardClass, strippedContent } = this.resolveCardClass(filename, file.content);
+    const { cardClass } = this.resolveCardClass(filename, file.content);
     let projectPath: string | undefined;
     try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
     const classPath = this.getClassPath(cardClass, projectPath);
@@ -376,23 +269,17 @@ export class CardManager {
       throw new Error(`Card class "${cardClass}" not found`);
     }
 
-    const pool = await this.getPool(project);
-    return pool.openChannel(
-      channelId,
-      cardClass,
-      classPath,
-      fn,
-      strippedContent,
-      args,
-      { project, canvas, filename },
-      onData,
-      onClose
+    return this.moduleLoader.callExport(
+      cardClass, classPath, fn, file.content, args, mica
     );
   }
 
-  /**
-   * Render all cards for a project canvas. Returns an array of rendered cards.
-   */
+  /** Get the module loader (for stream handler access) */
+  getModuleLoader(): ModuleLoader {
+    return this.moduleLoader;
+  }
+
+  /** Render all cards for a project canvas. */
   async renderAllCards(project: string, canvas: string): Promise<
     Array<{
       filename: string;
@@ -405,9 +292,7 @@ export class CardManager {
     const results = [];
 
     for (const file of files) {
-      // Skip chat history files
       if (file.name === ".chat-history.json") continue;
-
       const rendered = await this.renderCard(project, canvas, file.name, file.content);
       results.push({
         filename: file.name,
@@ -434,25 +319,20 @@ export class CardManager {
   }
 
   invalidateClass(className: string) {
-    this.pool.invalidateClass(className);
-    this.isolatePool.invalidateClass(className);
-    // Clear all cached cards of this class
+    this.moduleLoader.invalidateClass(className);
     for (const [key, entry] of this.cache) {
       if (entry.meta.cardClass === className) {
         this.cache.delete(key);
       }
     }
-    // Reload manifest in case it changed
     this.loadManifest();
   }
 
   invalidateAll() {
     this.cache.clear();
-    // Invalidate all classes in workers
-    for (const className of Object.keys(this.manifest)) {
-      this.pool.invalidateClass(className);
-    }
+    this.moduleLoader.invalidateAll();
   }
 }
 
 export { parseFrontmatter };
+export type { CardDependencies };

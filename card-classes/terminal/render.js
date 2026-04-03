@@ -1,8 +1,123 @@
 /**
  * Terminal card class — xterm.js terminal with PTY.
- * PTY is managed by Node (server/terminalChannel.ts), not by this card class.
- * The channel is routed Node-side by checking .terminal extension.
+ *
+ * Browser: xterm.js UI, opens a logical channel for PTY I/O.
+ * Server: onConnect spawns PTY, onMessage forwards input/resize, onDisconnect kills PTY.
  */
+
+import * as pty from 'node-pty';
+
+// ── Server-side PTY management ────────────────────────────
+
+// Per-session state. Module is cached once per class, but multiple terminal
+// cards can exist simultaneously, so state is keyed by session identity.
+const sessions = new Map();
+const SCROLLBACK_SIZE = 4000;
+
+function sessionKey(mica) {
+  return `${mica.project}/${mica.canvas}/${mica.filename}`;
+}
+
+export function onConnect(mica, args) {
+  const key = sessionKey(mica);
+  const cols = args.cols || 80;
+  const rows = args.rows || 24;
+  const spawnOverride = args.spawnOverride;
+
+  const shell = spawnOverride?.shell || process.env.SHELL || "/bin/bash";
+  const shellArgs = spawnOverride?.args || ["--login"];
+  const cwd = (spawnOverride?.shell === "docker")
+    ? (process.env.HOME || "/")
+    : (spawnOverride?.cwd || process.env.HOME || "/");
+
+  const env = {
+    ...process.env,
+    TERM: "xterm-256color",
+    COLORTERM: "truecolor",
+    COLUMNS: String(cols),
+    LINES: String(rows),
+  };
+
+  const proc = pty.spawn(shell, shellArgs, {
+    name: "xterm-256color",
+    cols,
+    rows,
+    env,
+    cwd,
+  });
+
+  const session = { proc, scrollback: "" };
+  sessions.set(key, session);
+
+  console.log(
+    `[terminal] Spawned PTY for ${key} ` +
+    `(${cols}x${rows}, shell=${shell} ${shellArgs.join(" ")})`
+  );
+
+  // PTY output → broadcast to all connected browsers
+  proc.onData((data) => {
+    session.scrollback += data;
+    if (session.scrollback.length > SCROLLBACK_SIZE) {
+      session.scrollback = session.scrollback.slice(-SCROLLBACK_SIZE);
+    }
+    mica.send({ output: data });
+  });
+
+  // PTY exit → notify browsers
+  proc.onExit(() => {
+    console.log(`[terminal] PTY exited for ${key}`);
+    session.proc = null;
+    mica.send({ type: "pty-exit" });
+  });
+}
+
+export function onMessage(msg, mica) {
+  const session = sessions.get(sessionKey(mica));
+
+  // Scrollback replay — on attach (reconnect/second window) or explicit request.
+  // Uses reply() to send only to the requesting client, not all clients.
+  if (msg.type === "attached" || msg.requestScrollback) {
+    if (session?.scrollback) {
+      mica.reply({ output: session.scrollback });
+    }
+    mica.reply({ pong: true, ptyAlive: !!session?.proc });
+    return;
+  }
+
+  // Heartbeat
+  if (msg.ping) {
+    mica.send({ pong: true, ptyAlive: !!session?.proc });
+    return;
+  }
+
+  if (!session?.proc) return;
+
+  // Keyboard input
+  if (msg.input !== undefined) {
+    session.proc.write(msg.input);
+  }
+
+  // Resize
+  if (msg.resize && msg.cols > 0 && msg.rows > 0) {
+    session.proc.resize(msg.cols, msg.rows);
+  }
+}
+
+export function onDisconnect(mica) {
+  const key = sessionKey(mica);
+  const session = sessions.get(key);
+  console.log(`[terminal] Session destroyed for ${key}`);
+  if (session?.proc) {
+    try {
+      session.proc.kill();
+    } catch {
+      // Already dead
+    }
+  }
+  sessions.delete(key);
+}
+
+// ── Browser-side xterm.js UI ──────────────────────────────
 
 const XTERM_CSS = ".xterm{cursor:text;position:relative;user-select:none;-ms-user-select:none;-webkit-user-select:none}.xterm.focus,.xterm:focus{outline:0}.xterm .xterm-helpers{position:absolute;top:0;z-index:5}.xterm .xterm-helper-textarea{padding:0;border:0;margin:0;position:absolute;opacity:0;left:-9999em;top:0;width:0;height:0;z-index:-5;white-space:nowrap;overflow:hidden;resize:none}.xterm .composition-view{background:#000;color:#fff;display:none;position:absolute;white-space:nowrap;z-index:1}.xterm .composition-view.active{display:block}.xterm .xterm-viewport{background-color:#000;overflow-y:scroll;cursor:default;position:absolute;right:0;left:0;top:0;bottom:0}.xterm .xterm-screen{position:relative}.xterm .xterm-screen canvas{position:absolute;left:0;top:0}.xterm .xterm-scroll-area{visibility:hidden}.xterm-char-measure-element{display:inline-block;visibility:hidden;position:absolute;top:0;left:-9999em;line-height:normal}.xterm.enable-mouse-events{cursor:default}.xterm .xterm-cursor-pointer,.xterm.xterm-cursor-pointer{cursor:pointer}.xterm.column-select.focus{cursor:crosshair}.xterm .xterm-accessibility,.xterm .xterm-message{position:absolute;left:0;top:0;bottom:0;right:0;z-index:10;color:transparent;pointer-events:none}.xterm .live-region{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}.xterm-dim{opacity:1!important}.xterm-underline-1{text-decoration:underline}.xterm-underline-2{text-decoration:double underline}.xterm-underline-3{text-decoration:wavy underline}.xterm-underline-4{text-decoration:dotted underline}.xterm-underline-5{text-decoration:dashed underline}.xterm-overline{text-decoration:overline}.xterm-overline.xterm-underline-1{text-decoration:overline underline}.xterm-overline.xterm-underline-2{text-decoration:overline double underline}.xterm-overline.xterm-underline-3{text-decoration:overline wavy underline}.xterm-overline.xterm-underline-4{text-decoration:overline dotted underline}.xterm-overline.xterm-underline-5{text-decoration:overline dashed underline}.xterm-strikethrough{text-decoration:line-through}.xterm-screen .xterm-decoration-container .xterm-decoration{z-index:6;position:absolute}.xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer{z-index:7}.xterm-decoration-overview-ruler{z-index:8;position:absolute;top:0;right:0;pointer-events:none}.xterm-decoration-top{z-index:2;position:relative}";
 
@@ -87,13 +202,11 @@ export default function render(content, config) {
       try {
         ch.send({ ping: true });
       } catch(e) {
-        // WS disconnected — show banner immediately, stop pinging
         term.write('\\r\\n\\x1b[90m[connection lost]\\x1b[0m\\r\\n');
         showBanner();
         stopHeartbeat();
         return;
       }
-      // If no pong within 5s, show banner
       heartbeatTimeout = setTimeout(() => {
         if (connected) {
           term.write('\\r\\n\\x1b[90m[connection lost]\\x1b[0m\\r\\n');
@@ -101,7 +214,7 @@ export default function render(content, config) {
           stopHeartbeat();
         }
       }, 5000);
-    }, 10000); // ping every 10s
+    }, 10000);
   }
 
   function openSession() {
@@ -111,14 +224,18 @@ export default function render(content, config) {
 
     ch.onData((data) => {
       if (data.pong) {
-        // Heartbeat response — clear the timeout
         if (heartbeatTimeout) { clearTimeout(heartbeatTimeout); heartbeatTimeout = null; }
         if (data.ptyAlive === false) {
-          // Server is up but PTY is dead
           term.write('\\r\\n\\x1b[90m[session ended]\\x1b[0m\\r\\n');
           showBanner();
           stopHeartbeat();
         }
+        return;
+      }
+      if (data.type === 'pty-exit') {
+        term.write('\\r\\n\\x1b[90m[session ended]\\x1b[0m\\r\\n');
+        showBanner();
+        stopHeartbeat();
         return;
       }
       if (data.output !== undefined) term.write(data.output);
@@ -147,11 +264,9 @@ export default function render(content, config) {
     reconnectBtn.textContent = 'Connecting...';
     reconnectBtn.disabled = true;
 
-    // Delay to let server process close and WS reconnect
     const delay = Math.min(1000 * (reconnectAttempt + 1), 5000);
     setTimeout(() => {
       openSession();
-      // Check if it worked after a few seconds
       setTimeout(() => {
         if (!connected) {
           reconnectAttempt++;

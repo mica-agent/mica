@@ -28,7 +28,7 @@ import {
   getProjectConfig,
   validateProjectCanvas,
 } from "./canvasFiles.js";
-import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig } from "./projectConnection.js";
+import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath } from "./projectConnection.js";
 import {
   getGitStatus,
   gitCommit,
@@ -45,8 +45,8 @@ import {
   setContainerExecutor,
 } from "./projectContainer.js";
 import { initializeProjects, seedNewProject } from "./seedCanvases.js";
-import { WorkerPool } from "./workerPool.js";
 import { CardManager } from "./cardManager.js";
+import type { MicaBridge } from "./moduleLoader.js";
 import { FileWatcher } from "./fileWatcher.js";
 import { SandboxManager } from "./projectSandbox.js";
 import { ReactiveAgent } from "./reactiveAgent.js";
@@ -60,8 +60,7 @@ import { LocalProvider } from "./agentProviders/local.js";
 import { registerProvider, getProvider } from "./agentCore/registry.js";
 import { resolveAgentProvider } from "./agentCore/config.js";
 import { ChannelManager } from "./channelManager.js";
-import { createChatHandler } from "./channelHandlers/chat.js";
-import { createTerminalHandler } from "./channelHandlers/terminal.js";
+import { createModuleHandlerFactory } from "./channelHandlers/module.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
@@ -616,15 +615,12 @@ app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, 
 
 // ── Widget Card System ──────────────────────────────────────
 
-// Legacy Python worker pool — warm: 0 since card classes now run in V8 isolates.
-// Retained for SandboxManager compatibility; will be removed in a future cleanup.
-const workerPool = new WorkerPool({ warm: 0, max: 0, label: "global" });
 const sandboxManager = new SandboxManager();
 const executor = new ProjectExecutor(sandboxManager);
 setAgentExecutor(executor);
 setContainerExecutor(executor);
 setSubagentExecutor(executor);
-const cardManager = new CardManager(workerPool, sandboxManager);
+const cardManager = new CardManager();
 const fileWatcher = new FileWatcher();
 
 // ── Agent provider registry ──────────────────────────────────
@@ -761,9 +757,56 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
       throw new Error(`Unknown RPC method: ${method}`);
   }
 };
-workerPool.setRpcHandler(rpcHandler);
 sandboxManager.setRpcHandler(rpcHandler);
-cardManager.setIsolateRpcHandler(rpcHandler);
+
+// MicaBridge factory — creates a bridge instance for a specific card context.
+// Used when calling card class exports that need server-side mica operations.
+function createMicaBridge(project: string, canvas: string, filename: string): MicaBridge {
+  return {
+    project,
+    canvas,
+    filename,
+    send(data: unknown) {
+      broadcast({ type: "card-data", project, canvas, filename, data });
+    },
+    reply(data: unknown) {
+      broadcast({ type: "card-data", project, canvas, filename, data });
+    },
+    async readSelf() {
+      const file = await readCanvasFile(project, canvas, filename);
+      return file.content;
+    },
+    async writeSelf(content: string) {
+      await writeCanvasFile(project, canvas, filename, content);
+    },
+    async read(fname: string) {
+      const file = await readCanvasFile(project, canvas, fname);
+      return file.content;
+    },
+    async write(filenameOrContent: string, content?: string) {
+      if (content === undefined) {
+        // write(content) — write to self
+        await writeCanvasFile(project, canvas, filename, filenameOrContent);
+      } else {
+        // write(filename, content) — write to another file
+        await writeCanvasFile(project, canvas, filenameOrContent, content);
+      }
+    },
+    async exec(command: string, opts?: { cwd?: string; timeout?: number }) {
+      return executor.exec(project, command, opts);
+    },
+    async log(message: string) {
+      const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
+      const line = `- **${timestamp}** — ${message}\n`;
+      try {
+        const existing = await readCanvasFile(project, canvas, "_log.log");
+        await writeCanvasFile(project, canvas, "_log.log", existing.content + line);
+      } catch {
+        await writeCanvasFile(project, canvas, "_log.log", `# Activity Log\n\n${line}`);
+      }
+    },
+  };
+}
 
 // Get all rendered cards for a canvas
 app.get("/api/projects/:project/canvases/:canvas/cards", async (req, res) => {
@@ -784,7 +827,8 @@ app.post("/api/projects/:project/canvases/:canvas/cards/:filename/call/:fn", asy
   const { project, canvas, filename, fn } = req.params;
   if (!(await validateParams(res, project, canvas))) return;
   try {
-    const result = await cardManager.callExport(project, canvas, filename, fn, req.body || {});
+    const mica = createMicaBridge(project, canvas, filename);
+    const result = await cardManager.callExport(project, canvas, filename, fn, req.body || {}, mica);
     res.json({ result });
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
@@ -859,16 +903,28 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel IDs
-const channelPools = new Map<string, WorkerPool>(); // channelId → pool that owns it (Python channels)
 const agentManager = new AgentChannelManager(); // Agent card sessions (complex task protocol, kept separate)
 
 // Unified channel manager — handles chat, terminal, and future card types.
 // Transport-agnostic: index.ts is the WebSocket adapter.
 const channelManager = new ChannelManager();
-channelManager.registerHandler("chat", createChatHandler);
-channelManager.registerHandler("claude-chat", createChatHandler);
-channelManager.registerHandler("llama-chat", createChatHandler);
-channelManager.registerHandler("terminal", createTerminalHandler);
+
+// Module-based channel handler — bridges card class stream exports (onConnect/onMessage/onDisconnect)
+// to the ChannelHandler interface. Registered dynamically per card class when stream support is detected.
+const moduleHandlerFactory = createModuleHandlerFactory({
+  moduleLoader: cardManager.getModuleLoader(),
+  getClassPath: (className, projectPath) => cardManager.getClassPath(className, projectPath),
+  resolveCardClass: (filename, content) => cardManager.resolveCardClass(filename, content),
+  getProjectPath,
+  createExecFn: (project) => (command, opts) => executor.exec(project, command, opts),
+});
+
+/** Ensure a module-based handler is registered for a card class with stream exports. */
+function ensureModuleHandler(cardClass: string): void {
+  if (!channelManager.hasHandler(cardClass)) {
+    channelManager.registerHandler(cardClass, moduleHandlerFactory);
+  }
+}
 
 wss.on("error", (err) => {
   console.error("[websocket-server] Error:", (err as Error).message);
@@ -879,7 +935,7 @@ wss.on("connection", (ws) => {
 
   // Clean up channels when WebSocket disconnects.
   // channelManager.detach() is a soft close — sessions stay alive for reconnect.
-  // Agent and Python channels get hard-closed (they don't use the unified manager yet).
+  // Agent channels get hard-closed (they don't use the unified manager yet).
   const cleanupWsChannels = () => {
     wsClients.delete(ws);
     const channels = wsChannels.get(ws);
@@ -889,10 +945,6 @@ wss.on("connection", (ws) => {
           channelManager.detach(channelId); // soft — session stays alive
         } else if (agentManager.has(channelId)) {
           agentManager.close(channelId);
-        } else {
-          const pool = channelPools.get(channelId) || workerPool;
-          pool.closeChannel(channelId);
-          channelPools.delete(channelId);
         }
       }
       wsChannels.delete(ws);
@@ -925,9 +977,11 @@ wss.on("connection", (ws) => {
       case "call":
       case "export_call": {
         try {
+          const mica = createMicaBridge(project as string, canvas as string, filename as string);
           const result = await cardManager.callExport(
             project as string, canvas as string, filename as string,
-            fn as string, (args || {}) as Record<string, unknown>
+            fn as string, (args || {}) as Record<string, unknown>,
+            mica
           );
           ws.send(JSON.stringify({ type: "result", id, result }));
         } catch (err) {
@@ -938,10 +992,12 @@ wss.on("connection", (ws) => {
 
       // Pattern 2: Fire-and-forget
       case "send": {
-        cardManager.callSend(
+        const mica = createMicaBridge(project as string, canvas as string, filename as string);
+        cardManager.callExport(
           project as string, canvas as string, filename as string,
-          fn as string, (args || {}) as Record<string, unknown>
-        );
+          fn as string, (args || {}) as Record<string, unknown>,
+          mica
+        ).catch((err) => console.error(`[ws] send error:`, (err as Error).message));
         break;
       }
 
@@ -990,33 +1046,32 @@ wss.on("connection", (ws) => {
             channelArgs.spawnOverride = shellOverride;
           }
 
-          // Try the unified channel manager (chat, terminal, and future types)
+          // Try the unified channel manager (chat, terminal, module-based handlers)
           const cardClass = channelManager.resolveCardClass(fname);
+
+          // If no handler registered yet, check if the card class has stream exports
+          if (!channelManager.hasHandler(cardClass)) {
+            const { cardClass: resolvedClass } = cardManager.resolveCardClass(fname);
+            let projectPath: string | undefined;
+            try { projectPath = await getProjectPath(proj); } catch { /* fallback */ }
+            const classPath = cardManager.getClassPath(resolvedClass, projectPath);
+            if (classPath) {
+              const streamHandlers = await cardManager.getModuleLoader().getStreamHandlers(resolvedClass, classPath);
+              if (streamHandlers) {
+                ensureModuleHandler(cardClass);
+              }
+            }
+          }
+
           if (channelManager.hasHandler(cardClass)) {
             await channelManager.open(cid, proj, canv, fname, fn as string, channelArgs, onData, onClose);
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(cid);
-            break;
+          } else {
+            throw new Error(`No channel handler for card class "${cardClass}" (file: ${fname})`);
           }
-
-          // Fallback: Python worker pool (legacy card classes with @mica.channel)
-          let pool: WorkerPool = workerPool;
-          if (sandboxManager) {
-            try { pool = await sandboxManager.getPool(proj); } catch { /* fallback */ }
-          }
-          channelPools.set(cid, pool);
-
-          await cardManager.openChannel(
-            cid, proj, canv, fname,
-            fn as string, channelArgs,
-            onData,
-            () => { onClose(); channelPools.delete(cid); }
-          );
-          if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
-          wsChannels.get(ws)!.add(cid);
         } catch (err) {
           console.error(`[ws] channel_open error for ${project}/${canvas}/${filename}#${fn}:`, (err as Error).message);
-          channelPools.delete(id as string);
           ws.send(JSON.stringify({ type: "error", id, error: (err as Error).message }));
         }
         break;
@@ -1029,9 +1084,6 @@ wss.on("connection", (ws) => {
           channelManager.sendData(cid, (msg as { data?: unknown }).data);
         } else if (agentManager.has(cid)) {
           agentManager.sendData(cid, (msg as { data?: unknown }).data);
-        } else {
-          const pool = channelPools.get(cid) || workerPool;
-          pool.sendChannelData(cid, (msg as { data?: unknown }).data);
         }
         break;
       }
@@ -1043,10 +1095,6 @@ wss.on("connection", (ws) => {
           channelManager.detach(cid);
         } else if (agentManager.has(cid)) {
           agentManager.close(cid);
-        } else {
-          const pool = channelPools.get(cid) || workerPool;
-          pool.closeChannel(cid);
-          channelPools.delete(cid);
         }
         wsChannels.get(ws)?.delete(cid);
         break;
@@ -1101,6 +1149,11 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
       event.filename,
       file.content
     );
+    // Auto-register module channel handler if card has stream exports
+    if (rendered.hasStream && rendered.meta?.cardClass) {
+      ensureModuleHandler(rendered.meta.cardClass);
+    }
+
     console.log(`[file-watcher] Broadcasting ${event.type} for ${event.project}/${event.canvas}/${event.filename}`);
     broadcast({
       type: event.type === "created" ? "file-created" : "file-changed",
@@ -1110,6 +1163,7 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
       html: rendered.html,
       exports: rendered.exports,
       dependencies: rendered.dependencies,
+      hasStream: rendered.hasStream,
       meta: rendered.meta,
     });
   } catch (err) {
@@ -1165,11 +1219,9 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
 // Start everything
 (async () => {
   try {
-    await workerPool.start();
     await fileWatcher.start();
   } catch (err) {
-    console.error("[startup] Worker pool or file watcher failed:", (err as Error).message);
-    console.error("[startup] Widget rendering will be unavailable. Card classes need Python 3.");
+    console.error("[startup] File watcher failed:", (err as Error).message);
   }
 
   server.listen(PORT, "0.0.0.0", () => {
@@ -1180,9 +1232,9 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
 ║  REST API:  http://localhost:${PORT}/api                     ║
 ║  WebSocket: ws://localhost:${PORT}/ws/cards                  ║
 ╠══════════════════════════════════════════════════════════╣
-║  Widget System:                                          ║
-║    Global Pool: warm=2, max=8 Python workers             ║
-║    Per-Project Sandboxes: Docker --network=none          ║
+║  Card System:                                            ║
+║    Module Loader: ES module card classes                  ║
+║    Per-Project Sandboxes: Docker isolation               ║
 ║    Card Classes: card-classes/                           ║
 ║    File Watcher: active                                  ║
 ╠══════════════════════════════════════════════════════════╣
@@ -1194,12 +1246,11 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log("\n[shutdown] Stopping agents, terminals, sandboxes, worker pool, and llama-server...");
+    console.log("\n[shutdown] Stopping agents, terminals, sandboxes, and llama-server...");
     agentManager.closeAll();
     channelManager.destroyAll();
     await stopLlamaServer();
     await sandboxManager.stopAll();
-    await workerPool.stop();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

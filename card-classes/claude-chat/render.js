@@ -1,7 +1,162 @@
 /**
  * Claude Chat card class — interactive chat with Claude agent.
- * Opens a chat_session channel with provider: "claude".
+ *
+ * Browser: Chat UI, opens channel with provider: "claude".
+ * Server: onConnect loads history, onMessage processes chat via agent provider.
  */
+
+import { getProvider } from '../../server/agentCore/registry.js';
+import { resolveAgentProvider } from '../../server/agentCore/config.js';
+import { describeToolUse } from '../../server/agentCore/logging.js';
+
+// ── Server-side chat management ───────────────────────────
+
+const HISTORY_FILE = ".chat-history.json";
+const MAX_HISTORY = 100;
+
+// Per-session state (module cached once, multiple chat cards possible)
+const sessions = new Map();
+
+function sessionKey(mica) {
+  return `${mica.project}/${mica.canvas}/${mica.filename}`;
+}
+
+async function loadHistory(mica) {
+  try {
+    const raw = await mica.read(HISTORY_FILE);
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+async function appendHistory(mica, newMessages) {
+  let messages = await loadHistory(mica);
+  messages.push(...newMessages);
+  if (messages.length > MAX_HISTORY) {
+    messages = messages.slice(-MAX_HISTORY);
+  }
+  await mica.write(HISTORY_FILE, JSON.stringify(messages, null, 2));
+}
+
+export async function onConnect(mica, args) {
+  const key = sessionKey(mica);
+  sessions.set(key, {
+    busy: false,
+    queue: [],
+    agentSessionId: undefined,
+    providerName: args.provider,
+  });
+
+  // Send history to the connecting browser
+  const messages = await loadHistory(mica);
+  mica.send({ type: "history", messages });
+}
+
+export async function onMessage(msg, mica) {
+  const key = sessionKey(mica);
+  const session = sessions.get(key);
+  if (!session) return;
+
+  // Handle history request (reconnect)
+  if (msg.type === "request_history") {
+    const messages = await loadHistory(mica);
+    mica.send({ type: "history", messages });
+    return;
+  }
+
+  const message = msg.message;
+  if (!message) return;
+
+  if (session.busy) {
+    session.queue.push(message);
+    return;
+  }
+
+  await processMessage(session, message, mica);
+}
+
+export function onDisconnect(mica) {
+  const key = sessionKey(mica);
+  const session = sessions.get(key);
+  if (session) {
+    session.queue.length = 0;
+  }
+  sessions.delete(key);
+}
+
+async function processMessage(session, message, mica) {
+  session.busy = true;
+
+  // Resolve provider
+  const resolvedName = session.providerName || await resolveAgentProvider(mica.project);
+  const provider = getProvider(resolvedName);
+  if (!provider) {
+    session.busy = false;
+    mica.send({ type: "error", error: `No agent provider found: ${resolvedName}` });
+    return;
+  }
+
+  // Broadcast user message
+  mica.send({ type: "user", content: message });
+  await appendHistory(mica, [{ role: "user", content: message }]);
+
+  // Signal thinking
+  mica.send({ type: "thinking" });
+
+  try {
+    const response = await provider.chat(
+      mica.project,
+      mica.canvas,
+      message,
+      undefined,
+      (evt) => {
+        const description = evt.description
+          || (evt.tool ? describeToolUse(evt.tool) : undefined);
+        mica.send({
+          type: "progress",
+          event: evt.type,
+          tool: evt.tool,
+          description,
+          elapsed: evt.elapsed,
+        });
+      },
+      session.agentSessionId,
+    );
+
+    if (response.sessionId) {
+      session.agentSessionId = response.sessionId;
+    }
+
+    const agentName = provider.name;
+    const filesChanged = response.filesChanged ?? false;
+
+    mica.send({
+      type: "assistant",
+      content: response.message,
+      agent: agentName,
+      filesChanged,
+    });
+
+    await appendHistory(mica, [
+      { role: "assistant", content: response.message, agent: agentName, filesChanged },
+    ]);
+  } catch (err) {
+    console.error(`[chat] Agent error:`, err.message);
+    mica.send({ type: "error", error: err.message });
+  } finally {
+    session.busy = false;
+
+    // Drain queue — take only the last message
+    if (session.queue.length > 0) {
+      const lastMessage = session.queue[session.queue.length - 1];
+      session.queue.length = 0;
+      setImmediate(() => processMessage(session, lastMessage, mica));
+    }
+  }
+}
+
+// ── Browser-side chat UI ──────────────────────────────────
 
 export default function render(content, config) {
   return chatCardHtml("claude", "Claude", "#60a5fa", "◆");
@@ -140,7 +295,7 @@ function chatCardHtml(provider, label, color, icon) {
     statusBar.style.display = 'block';
     statusDot.style.background = '${color}';
     statusDot.style.animation = 'none';
-    statusDot.offsetHeight; // reflow
+    statusDot.offsetHeight;
     statusDot.style.animation = 'pulse 1.5s ease-in-out infinite';
     statusLabel.textContent = text || 'Agent is working...';
     updateMeta();

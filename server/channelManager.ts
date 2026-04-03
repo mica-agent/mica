@@ -241,6 +241,10 @@ export class ChannelManager {
       const ctx = this.buildContext(session);
       session.ctx = ctx;
 
+      // Attach client BEFORE creating handler so onConnect can broadcast to first client
+      session.clients.set(clientId, { onData, onClose });
+      this.clientToSession.set(clientId, key);
+
       // Create handler via factory
       const handler = await factory(content, args, ctx);
       session.handler = handler;
@@ -248,13 +252,18 @@ export class ChannelManager {
       this.sessions.set(key, session);
 
       console.log(`[channel-mgr] Created session ${key} (cardClass=${cardClass})`);
+      console.log(`[channel-mgr] Client ${clientId} attached to ${key} (${session.clients.size} clients)`);
+
+      // Notify handler of first attach
+      session.handler?.onAttach?.(clientId, args);
+      return;
     } else if (session.state === "idle") {
       // Resume from idle
       session.state = "active";
       console.log(`[channel-mgr] Session ${key} resumed from idle`);
     }
 
-    // Attach client
+    // Attach client (existing session)
     session.clients.set(clientId, { onData, onClose });
     this.clientToSession.set(clientId, key);
 

@@ -1,7 +1,8 @@
 /**
  * Goal card class — renders project goals with checklist progress.
- * Uses the `marked` library (injected by the isolate pool).
  */
+
+import { marked } from 'marked';
 
 export default function render(content, config) {
   const html = marked.parse(content, { breaks: false, gfm: true });

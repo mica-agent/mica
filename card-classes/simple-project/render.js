@@ -4,9 +4,9 @@
  * Renders a project overview with:
  * - Project name and description
  * - Slots for system cards (goal, todo, brief, log) and content cards
- *
- * Uses the `marked` library (injected by the isolate pool).
  */
+
+import { marked } from 'marked';
 
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -104,6 +104,6 @@ export async function create_file(content, args, mica) {
   const filename = args.filename || "";
   const fileContent = args.content || "";
   if (!filename) return { error: "filename is required" };
-  await mica.writeFile(filename, fileContent);
+  await mica.write(filename, fileContent);
   return { ok: true, filename };
 }

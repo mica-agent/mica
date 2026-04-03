@@ -1,7 +1,8 @@
 /**
  * Log card class — renders the activity log.
- * Uses the `marked` library (injected by the isolate pool).
  */
+
+import { marked } from 'marked';
 
 export default function render(content, config) {
   const html = marked.parse(content, { breaks: false, gfm: true });

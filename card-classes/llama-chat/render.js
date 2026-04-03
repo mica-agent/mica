@@ -1,7 +1,12 @@
 /**
  * Llama Chat card class — interactive chat with local LLM agent.
- * Opens a chat_session channel with provider: "local".
+ *
+ * Browser: Chat UI, opens channel with provider: "local".
+ * Server: Shares stream handlers with claude-chat (identical logic).
  */
+
+// Re-export server-side handlers from claude-chat — same logic, provider comes from args
+export { onConnect, onMessage, onDisconnect } from '../claude-chat/render.js';
 
 export default function render(content, config) {
   return chatCardHtml("local", "Llama", "#4ade80", "🦙");
@@ -134,8 +139,6 @@ function chatCardHtml(provider, label, color, icon) {
     scrollToBottom();
   }
 
-  // ── Status bar ──
-
   function showWorking(text) {
     statusBar.style.display = 'block';
     statusDot.style.background = '${color}';
@@ -194,8 +197,6 @@ function chatCardHtml(provider, label, color, icon) {
     logExpanded = !logExpanded;
     progressLog.style.display = logExpanded ? 'block' : 'none';
   });
-
-  // ── Channel data ──
 
   ch.onData((data) => {
     switch (data.type) {
