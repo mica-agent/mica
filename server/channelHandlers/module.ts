@@ -104,9 +104,14 @@ export function createModuleHandlerFactory(deps: ModuleHandlerDeps) {
       onAttach(clientId: string, _args: Record<string, unknown>): void {
         // For reconnecting clients (refresh, second window), deliver a synthetic
         // "attached" message so the card class can replay state (scrollback, history).
+        // Use a per-call mica proxy so concurrent attaches don't clobber each other.
         if (handlers.onMessage) {
-          mica.reply = (d: unknown) => ctx.sendTo(clientId, d);
-          Promise.resolve(handlers.onMessage({ type: "attached" }, mica)).catch(() => {});
+          const replyToClient = (d: unknown) => ctx.sendTo(clientId, d);
+          const attachMica = Object.create(mica, {
+            reply: { value: replyToClient, writable: true },
+            send: { value: replyToClient, writable: true },
+          });
+          Promise.resolve(handlers.onMessage({ type: "attached" }, attachMica)).catch(() => {});
         }
       },
 

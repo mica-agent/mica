@@ -2,10 +2,10 @@
  * Llama Chat card class — interactive chat with local LLM agent.
  *
  * Browser: Chat UI, opens channel with provider: "local".
- * Server: Shares stream handlers with claude-chat (identical logic).
+ * Server: Shares stream handlers with claude-chat (uses Claude SDK for now).
+ * TODO: Wire to local LLM (llama-server) when ready.
  */
 
-// Re-export server-side handlers from claude-chat — same logic, provider comes from args
 export { onConnect, onMessage, onDisconnect } from '../claude-chat/render.js';
 
 export default function render(content, config) {

@@ -1,18 +1,17 @@
 /**
  * Claude Chat card class — interactive chat with Claude agent.
  *
- * Browser: Chat UI, opens channel with provider: "claude".
- * Server: onConnect loads history, onMessage processes chat via agent provider.
+ * Browser: Chat UI, opens channel for bidirectional streaming.
+ * Server: onConnect/onMessage/onDisconnect wire directly to Claude Agent SDK.
  */
 
-import { getProvider } from '../../server/agentCore/registry.js';
-import { resolveAgentProvider } from '../../server/agentCore/config.js';
-import { describeToolUse } from '../../server/agentCore/logging.js';
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
 // ── Server-side chat management ───────────────────────────
 
 const HISTORY_FILE = ".chat-history.json";
 const MAX_HISTORY = 100;
+const MODEL = "claude-sonnet-4-6";
 
 // Per-session state (module cached once, multiple chat cards possible)
 const sessions = new Map();
@@ -39,16 +38,30 @@ async function appendHistory(mica, newMessages) {
   await mica.write(HISTORY_FILE, JSON.stringify(messages, null, 2));
 }
 
+function describeToolUse(name, input) {
+  if (!input) return name;
+  switch (name) {
+    case "Bash": {
+      const cmd = String(input.command || "").split("\n")[0].slice(0, 80);
+      return cmd ? `$ ${cmd}` : "Running command";
+    }
+    case "Read": return `Read ${String(input.file_path || "").split("/").pop() || "file"}`;
+    case "Write": return `Write ${String(input.file_path || "").split("/").pop() || "file"}`;
+    case "Edit": return `Edit ${String(input.file_path || "").split("/").pop() || "file"}`;
+    case "Glob": return `Search ${input.pattern || "files"}`;
+    case "Grep": return `Grep ${String(input.pattern || "").slice(0, 40)}`;
+    default: return name;
+  }
+}
+
 export async function onConnect(mica, args) {
   const key = sessionKey(mica);
   sessions.set(key, {
     busy: false,
     queue: [],
-    agentSessionId: undefined,
-    providerName: args.provider,
+    sessionId: undefined,
   });
 
-  // Send history to the connecting browser
   const messages = await loadHistory(mica);
   mica.send({ type: "history", messages });
 }
@@ -58,10 +71,10 @@ export async function onMessage(msg, mica) {
   const session = sessions.get(key);
   if (!session) return;
 
-  // Handle history request (reconnect)
-  if (msg.type === "request_history") {
+  // Reconnect: replay history
+  if (msg.type === "attached" || msg.type === "request_history") {
     const messages = await loadHistory(mica);
-    mica.send({ type: "history", messages });
+    mica.reply({ type: "history", messages });
     return;
   }
 
@@ -78,24 +91,11 @@ export async function onMessage(msg, mica) {
 
 export function onDisconnect(mica) {
   const key = sessionKey(mica);
-  const session = sessions.get(key);
-  if (session) {
-    session.queue.length = 0;
-  }
   sessions.delete(key);
 }
 
 async function processMessage(session, message, mica) {
   session.busy = true;
-
-  // Resolve provider
-  const resolvedName = session.providerName || await resolveAgentProvider(mica.project);
-  const provider = getProvider(resolvedName);
-  if (!provider) {
-    session.busy = false;
-    mica.send({ type: "error", error: `No agent provider found: ${resolvedName}` });
-    return;
-  }
 
   // Broadcast user message
   mica.send({ type: "user", content: message });
@@ -105,49 +105,75 @@ async function processMessage(session, message, mica) {
   mica.send({ type: "thinking" });
 
   try {
-    const response = await provider.chat(
-      mica.project,
-      mica.canvas,
-      message,
-      undefined,
-      (evt) => {
-        const description = evt.description
-          || (evt.tool ? describeToolUse(evt.tool) : undefined);
-        mica.send({
-          type: "progress",
-          event: evt.type,
-          tool: evt.tool,
-          description,
-          elapsed: evt.elapsed,
-        });
-      },
-      session.agentSessionId,
-    );
+    let resultText = "";
+    let sessionId;
+    let cost = 0;
 
-    if (response.sessionId) {
-      session.agentSessionId = response.sessionId;
+    const options = {
+      systemPrompt: "You are a helpful assistant collaborating on a project. Be concise and direct.",
+      tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+      model: MODEL,
+      maxTurns: 10,
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
+      ...(session.sessionId ? { resume: session.sessionId } : {}),
+    };
+
+    for await (const evt of query({ prompt: message, options })) {
+      // Tool use progress
+      if (evt.type === "assistant" && evt.message?.content) {
+        for (const block of evt.message.content) {
+          if (block.type === "tool_use" && block.name) {
+            mica.send({
+              type: "progress",
+              tool: block.name,
+              description: describeToolUse(block.name, block.input),
+            });
+          }
+        }
+
+        // Extract latest text
+        let turnText = "";
+        for (const block of evt.message.content) {
+          if (block.type === "text" && block.text) {
+            turnText += block.text;
+          }
+        }
+        if (turnText) resultText = turnText;
+      }
+
+      // Final result
+      if (evt.type === "result" && "result" in evt) {
+        resultText = evt.result || resultText;
+        cost = evt.total_cost_usd || 0;
+        sessionId = evt.session_id;
+      }
     }
 
-    const agentName = provider.name;
-    const filesChanged = response.filesChanged ?? false;
+    if (!resultText.trim()) {
+      resultText = "I worked on it but ran out of steps. Say 'continue' to pick up where I left off.";
+    }
+
+    if (sessionId) {
+      session.sessionId = sessionId;
+    }
 
     mica.send({
       type: "assistant",
-      content: response.message,
-      agent: agentName,
-      filesChanged,
+      content: resultText,
+      agent: "Claude",
+      filesChanged: false,
     });
 
     await appendHistory(mica, [
-      { role: "assistant", content: response.message, agent: agentName, filesChanged },
+      { role: "assistant", content: resultText, agent: "Claude" },
     ]);
   } catch (err) {
-    console.error(`[chat] Agent error:`, err.message);
+    console.error(`[claude-chat] Error:`, err.message);
     mica.send({ type: "error", error: err.message });
   } finally {
     session.busy = false;
 
-    // Drain queue — take only the last message
     if (session.queue.length > 0) {
       const lastMessage = session.queue[session.queue.length - 1];
       session.queue.length = 0;
