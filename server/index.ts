@@ -897,6 +897,7 @@ const agentManager = new AgentChannelManager(); // Agent card sessions (complex 
 // Transport-agnostic: index.ts is the WebSocket adapter.
 const channelManager = new ChannelManager();
 
+
 // Module-based channel handler — bridges card class stream exports (onConnect/onMessage/onDisconnect)
 // to the ChannelHandler interface. Registered dynamically per card class when stream support is detected.
 const moduleHandlerFactory = createModuleHandlerFactory({
@@ -1003,10 +1004,11 @@ wss.on("connection", (ws) => {
 
       // Pattern 5: Bidirectional channel — open
       case "channel_open": {
+        const cid = id as string;
+
         try {
           const fname = filename as string;
           const channelArgs = (args || {}) as Record<string, unknown>;
-          const cid = id as string;
           const proj = project as string;
           const canv = canvas as string;
 

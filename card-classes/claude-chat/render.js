@@ -71,8 +71,8 @@ export async function onMessage(msg, mica) {
   const session = sessions.get(key);
   if (!session) return;
 
-  // Reconnect: replay history
-  if (msg.type === "attached" || msg.type === "request_history") {
+  // Replay history — server delivers { type: "attached" } on every channel attach.
+  if (msg.type === "attached") {
     const messages = await loadHistory(mica);
     mica.reply({ type: "history", messages });
     return;

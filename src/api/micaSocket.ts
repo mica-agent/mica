@@ -5,14 +5,14 @@
  *   1. call(fn, args) → Promise<result>         Request/response
  *   2. send(fn, args)                           Fire-and-forget to server
  *   3. on(event, callback)                      Server-pushed events
- *   4. openChannel(fn, args) → Channel          Bidirectional stream (persistent)
+ *   4. openChannel(fn, args) → Channel          Bidirectional stream
  *   5. broadcast(event, data)                   Widget-to-widget events
  *
- * Channel persistence:
- *   Channels are keyed by (project/canvas/filename/fn). Calling openChannel()
- *   for the same card and function returns the existing channel with swapped
- *   callbacks — no close/reopen cycle. Channels survive re-renders and WS
- *   reconnects. Only ch.destroy() (card file deleted) sends channel_close.
+ * Channel lifecycle:
+ *   Every openChannel() sends channel_open to the server. The server's
+ *   ChannelManager attaches to an existing session (keyed by card filename)
+ *   or creates a new one. ch.close() sends channel_close (soft detach).
+ *   The server session stays alive — the card filename is the session identity.
  */
 
 export type CanvasId = string;
@@ -40,22 +40,6 @@ function nextId(): string {
   return `mc-${++idCounter}-${Date.now()}`;
 }
 
-// ── Persistent channel registry ─────────────────────────────
-// Channels keyed by purpose (project/canvas/filename/fn), not by random ID.
-// Survives re-renders and WS reconnects.
-
-interface PersistentChannel {
-  id: string;
-  handle: ChannelHandle;
-  openParams: { project: string; canvas: string; filename: string; fn: string; args: Record<string, unknown> };
-}
-
-const channelRegistry = new Map<string, PersistentChannel>();
-
-function channelKey(project: string, canvas: string, filename: string, fn: string): string {
-  return `${project}/${canvas}/${filename}/${fn}`;
-}
-
 // ── Connection management ────────────────────────────────────
 
 export function connect(url?: string): void {
@@ -68,16 +52,8 @@ export function connect(url?: string): void {
 
   ws.onopen = () => {
     console.log("[mica-socket] Connected");
-    // Reattach all persistent channels — server sessions may still be alive
-    for (const [, info] of channelRegistry) {
-      const newId = nextId();
-      activeChannels.delete(info.id);
-      info.id = newId;
-      activeChannels.set(newId, info.handle);
-      try {
-        sendMsg({ type: "channel_open", id: newId, ...info.openParams });
-      } catch { /* WS may not be ready yet */ }
-    }
+    // No channel re-registration needed — card scripts re-execute on re-render
+    // and each openChannel() sends a fresh channel_open to the server.
   };
 
   ws.onclose = () => {
@@ -89,17 +65,10 @@ export function connect(url?: string): void {
       pending.reject(new Error("WebSocket disconnected"));
       pendingCalls.delete(id);
     }
-    // Soft-close non-persistent channels only.
-    // Persistent channels stay in registry and reattach on reconnect.
+    // Notify all active channels of disconnect
     for (const [id, ch] of activeChannels) {
-      let isPersistent = false;
-      for (const info of channelRegistry.values()) {
-        if (info.id === id) { isPersistent = true; break; }
-      }
-      if (!isPersistent) {
-        ch.onClose?.();
-        activeChannels.delete(id);
-      }
+      ch.onClose?.();
+      activeChannels.delete(id);
     }
     reconnectTimer = setTimeout(() => connect(wsUrl), 2000);
   };
@@ -171,15 +140,7 @@ function handleMessage(msg: Record<string, unknown>): void {
     case "channel_close": {
       const ch = id ? activeChannels.get(id) : undefined;
       if (ch) {
-        // Server closed the channel (session destroyed, file deleted).
-        // Remove from both maps.
         activeChannels.delete(id!);
-        for (const [key, info] of channelRegistry) {
-          if (info.id === id) {
-            channelRegistry.delete(key);
-            break;
-          }
-        }
         ch.onClose?.();
       }
       break;
@@ -264,15 +225,16 @@ export function on(event: string, callback: (data: unknown) => void): () => void
 }
 
 /**
- * Pattern 4: Open a persistent bidirectional channel.
+ * Pattern 4: Open a bidirectional channel.
  *
- * Channels are keyed by (project/canvas/filename/fn). If one already exists
- * for this key, the existing channel is returned with swapped callbacks.
- * No close/reopen message is sent to the server.
+ * Every call sends channel_open to the server. The server's ChannelManager
+ * attaches to an existing session (keyed by card filename) or creates a new one.
+ * onAttach fires server-side, delivering state replay (scrollback, history).
  *
- * ch.close()   = SOFT detach. Nulls callbacks. Channel stays in registry.
- *                Next openChannel() with same key reattaches instantly.
- * ch.destroy() = HARD close. Removes from registry. Sends channel_close to server.
+ * ch.close()   = Soft detach. Sends channel_close. Server detaches client,
+ *                session stays alive. Next openChannel() reattaches.
+ * ch.destroy() = Same as close() — session lifecycle is bound to the card file,
+ *                not the channel.
  */
 export interface Channel {
   id: string;
@@ -290,53 +252,25 @@ export function openChannel(
   fn: string,
   args: Record<string, unknown> = {}
 ): Channel {
-  const key = channelKey(project, canvas, filename, fn);
-
-  // Reattach to existing channel if one exists for this key
-  const existing = channelRegistry.get(key);
-  if (existing && activeChannels.has(existing.id)) {
-    const handle = existing.handle;
-    return {
-      id: existing.id,
-      send: (data: unknown) => {
-        waitForConnection().then(() => {
-          sendMsg({ type: "channel_data", id: existing.id, data });
-        }).catch((err) => console.error("[mica-socket] channel send failed:", err));
-      },
-      close: () => {
-        // Soft detach — no-op for persistent channels.
-        // Callbacks stay active so data continues flowing even if the
-        // card script doesn't re-run (same HTML, prevHtmlRef guard).
-      },
-      destroy: () => {
-        // Hard close — remove from everything, notify server
-        activeChannels.delete(existing.id);
-        channelRegistry.delete(key);
-        waitForConnection().then(() => {
-          sendMsg({ type: "channel_close", id: existing.id });
-        }).catch(() => {});
-        handle.onClose?.();
-      },
-      onData: (cb) => { handle.onData = cb; },
-      onClose: (cb) => { handle.onClose = cb; },
-    };
-  }
-
-  // New channel
   const id = nextId();
   const handle: ChannelHandle = { onData: null, onClose: null };
 
   activeChannels.set(id, handle);
-  channelRegistry.set(key, { id, handle, openParams: { project, canvas, filename, fn, args } });
 
   waitForConnection().then(() => {
     sendMsg({ type: "channel_open", id, project, canvas, filename, fn, args });
   }).catch((err) => {
     console.error("[mica-socket] channel open failed:", err);
     activeChannels.delete(id);
-    channelRegistry.delete(key);
     handle.onClose?.();
   });
+
+  const close = () => {
+    activeChannels.delete(id);
+    waitForConnection().then(() => {
+      sendMsg({ type: "channel_close", id });
+    }).catch(() => {});
+  };
 
   return {
     id,
@@ -345,20 +279,8 @@ export function openChannel(
         sendMsg({ type: "channel_data", id, data });
       }).catch((err) => console.error("[mica-socket] channel send failed:", err));
     },
-    close: () => {
-      // Soft detach — no-op for persistent channels.
-      // Callbacks stay active so data continues flowing even if the
-      // card script doesn't re-run (same HTML, prevHtmlRef guard).
-    },
-    destroy: () => {
-      // Hard close — remove from everything, notify server
-      activeChannels.delete(id);
-      channelRegistry.delete(key);
-      waitForConnection().then(() => {
-        sendMsg({ type: "channel_close", id });
-      }).catch(() => {});
-      handle.onClose?.();
-    },
+    close,
+    destroy: close,
     onData: (cb) => { handle.onData = cb; },
     onClose: (cb) => { handle.onClose = cb; },
   };
@@ -387,35 +309,16 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
       openChannel(project, canvas, filename, fn, args),
     broadcast: (event: string, data: Record<string, unknown> = {}) =>
       broadcast(event, data),
-    /** Register a cleanup callback for soft destroy (re-render). */
+    /** Register a cleanup callback for re-render/unmount. */
     onDestroy: (fn: () => void) => {
       destroyCallbacks.push(fn);
     },
-    /** Soft destroy — re-render lifecycle. Runs onDestroy callbacks (which call ch.close() = detach). */
+    /** Run onDestroy callbacks. Channels close via ch.close() in the callbacks. */
     _runDestroy: () => {
       for (const cb of destroyCallbacks) {
         try { cb(); } catch (e) { console.error("[mica-bridge] onDestroy error:", e); }
       }
       destroyCallbacks.length = 0;
-    },
-    /** Hard destroy — component permanently removed. Destroys all channels for this card. */
-    _hardDestroy: () => {
-      // Run soft destroy first (onDestroy callbacks)
-      for (const cb of destroyCallbacks) {
-        try { cb(); } catch (e) { console.error("[mica-bridge] onDestroy error:", e); }
-      }
-      destroyCallbacks.length = 0;
-      // Then destroy all persistent channels belonging to this card
-      const prefix = `${project}/${canvas}/${filename}/`;
-      for (const [key, info] of channelRegistry) {
-        if (key.startsWith(prefix)) {
-          activeChannels.delete(info.id);
-          channelRegistry.delete(key);
-          waitForConnection().then(() => {
-            sendMsg({ type: "channel_close", id: info.id });
-          }).catch(() => {});
-        }
-      }
     },
   };
 }

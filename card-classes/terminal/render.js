@@ -74,9 +74,9 @@ export function onConnect(mica, args) {
 export function onMessage(msg, mica) {
   const session = sessions.get(sessionKey(mica));
 
-  // Scrollback replay — on attach (reconnect/second window) or explicit request.
-  // Uses reply() to send only to the requesting client, not all clients.
-  if (msg.type === "attached" || msg.requestScrollback) {
+  // Scrollback replay — server delivers { type: "attached" } on every channel attach.
+  // Uses reply() to send only to the attaching client.
+  if (msg.type === "attached") {
     if (session?.scrollback) {
       mica.reply({ output: session.scrollback });
     }
@@ -241,6 +241,7 @@ export default function render(content, config) {
       if (data.output !== undefined) term.write(data.output);
     });
 
+    // Request scrollback after callbacks are registered.
     ch.onClose(() => {
       if (reconnecting) return;
       stopHeartbeat();
