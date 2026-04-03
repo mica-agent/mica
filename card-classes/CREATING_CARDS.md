@@ -124,6 +124,10 @@ Card code runs in three distinct environments. Understanding which code runs whe
 +------------------------------------------------------------------+
 ```
 
+### Rendering lifecycle
+
+`render()` runs **once** to produce the initial HTML. The server does not re-render cards when files change on disk. Instead, file-change events are delivered to card scripts via `mica.on('file-changed', cb)` with metadata only (filename, event type — no HTML). Card scripts decide whether to update by calling `mica.refresh()`, which fetches fresh HTML from the server and re-injects the card.
+
 ### Data flow
 
 ```
@@ -367,14 +371,18 @@ Each `<script>` block is wrapped in an IIFE:
 
 ### The browser-side mica bridge
 
-| Method | Description |
+| Method / Property | Description |
 |--------|-------------|
 | `await mica.call(fn, args)` | Call a server-side export, returns Promise with result |
 | `mica.send(fn, args)` | Fire-and-forget call to server export, no return value |
-| `mica.on(event, callback)` | Subscribe to server-pushed events. Returns unsubscribe function |
+| `mica.on(event, callback)` | Subscribe to server-pushed events (e.g., `file-changed`). Returns unsubscribe function |
 | `mica.openChannel(fn, args)` | Open a persistent bidirectional channel. Returns Channel object |
 | `mica.broadcast(event, data)` | Send an event to all other cards on this canvas |
 | `mica.onDestroy(callback)` | Register cleanup function for re-render/unmount |
+| `mica.refresh()` | Fetch fresh HTML from the server and re-inject the card. Called by card scripts in response to `mica.on('file-changed')` for external edits |
+| `mica.project` | Project identifier (string) |
+| `mica.canvas` | Canvas identifier (string) |
+| `mica.filename` | Card filename, e.g. `"notes.md"` (string) |
 
 ---
 
@@ -491,20 +499,20 @@ Returns a Channel object:
 | Method | Description |
 |--------|-------------|
 | `ch.send(data)` | Send data to the server handler |
-| `ch.close()` | Soft detach. **No-op** for persistent channels. Callbacks stay active. |
-| `ch.destroy()` | Hard close. Removes from registry, sends `channel_close` to server. |
+| `ch.close()` | Soft detach (client-side only). Nulls callbacks, handle stays in registry. No message sent to server. Safe for React cleanup via `mica.onDestroy()`. |
+| `ch.destroy()` | Hard close. Removes from registry, sends `channel_close` to server. Session lifecycle is bound to the card file, not the channel. |
 | `ch.onData(callback)` | Set the data callback. Called when server sends data. |
 | `ch.onClose(callback)` | Set the close callback. Called when server destroys the session. |
 
 ### Persistence model
 
-Channels are keyed by `(project, canvas, filename, fn)`. This means:
+Channels are keyed by `(project, canvas, filename, fn)`. The transport layer (`openChannel`) is dumb — it always sends `channel_open` to the server. The bridge layer deduplicates per card identity for React lifecycle safety: if a channel with the same key already exists in the registry, callbacks are swapped without sending a new message.
 
 - **`openChannel()` with the same key returns the existing channel** with swapped callbacks. No close/reopen message is sent to the server.
 - **Channels survive re-renders.** When card HTML changes and scripts re-execute, `openChannel()` reconnects to the existing server session.
 - **Channels survive WebSocket reconnects.** On reconnect, all persistent channels automatically reattach.
-- **`ch.close()` is a no-op.** It does not close the channel. It is safe to call in `mica.onDestroy()`.
-- **`ch.destroy()` is permanent.** Only called by the server when a card file is deleted. Do not call this from card code.
+- **`ch.close()` is a soft detach (client-side only).** It nulls callbacks but keeps the handle in the registry. No message is sent to the server. It is safe to call in `mica.onDestroy()` for React lifecycle cleanup. The next `openChannel()` with the same key reattaches.
+- **`ch.destroy()` is a hard close.** Removes the handle from the registry and sends `channel_close` to the server. The server tears down the session if appropriate. Session lifecycle is bound to the card file, not the transport.
 
 ### Pattern: using onDestroy with channels
 
@@ -648,7 +656,7 @@ export function onDisconnect(mica) {
 **Key patterns:**
 - **`mica.send(data)`** broadcasts to all connected browsers
 - **`mica.reply(data)`** sends only to the client that triggered the current `onMessage` call
-- **`{ type: "attached" }` message** is delivered automatically when a client reconnects (refresh, second window). Use it to replay state (scrollback, history) without losing the live session.
+- **`{ type: "attached" }` synthetic message** — the infrastructure delivers this to `onMessage` automatically when a client attaches (initial connect, page refresh, second browser window). Card classes use it to replay state (scrollback, chat history) to the connecting client via `mica.reply()` without duplicating to existing clients.
 - **Module-level state** via `Map` keyed by `project/canvas/filename` — the module is cached per class, so multiple cards of the same class share the module but have separate session state.
 - **Full Node.js access** — import `node-pty`, `@anthropic-ai/claude-agent-sdk`, `marked`, or any npm package.
 

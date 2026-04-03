@@ -146,7 +146,7 @@ Clients are browser-side handles that attach to sessions. They're identified by 
               └──────────────┘
 ```
 
-`ch.close()` = **detach** (soft). No-op for persistent channels — callbacks stay active, handle stays in registry, no message to server. This is safe because the channel persists across re-renders. The next `openChannel()` with the same key returns the existing channel with its live callbacks.
+`ch.close()` = **detach** (soft, client-side only). Nulls callbacks, but handle stays in registry. No message sent to server. This is safe for React cleanup — the channel persists across re-renders. The next `openChannel()` with the same key returns the existing handle and swaps in fresh callbacks.
 
 `ch.destroy()` = **hard close**. Removes from registry. Sends `channel_close`. Server tears down session if appropriate.
 

@@ -345,11 +345,13 @@ Rendered cards get a `mica` bridge object with five communication patterns:
 |---------|-------------|----------|
 | Request/response | `mica.call(fn, args)` → Promise | Toggle a checkbox, submit a form |
 | Fire-and-forget | `mica.send(fn, args)` | Log an event, no response needed |
-| Server push | `mica.on(event, cb)` | React to file changes, agent updates |
+| Server push | `mica.on(event, cb)` | React to file changes (metadata only), agent updates |
 | Bidirectional channel | `mica.openChannel(fn, args)` | Terminal PTY, streaming data |
 | Widget broadcast | `mica.broadcast(event, data)` | Cross-card coordination |
 
 Server-side export and stream handlers receive a `mica` bridge with minimal infrastructure: `mica.send(data)`, `mica.reply(data)`, `mica.read(filename)`, `mica.write(content)`, `mica.exec(command)`, `mica.log(message)`. Card classes import anything else they need directly (agent SDKs, node-pty, etc.).
+
+File-change events (`file-changed`, `file-created`, `file-deleted`) carry metadata only (filename, event type) — no rendered HTML. The server does not re-render cards on file changes. Card scripts subscribe via `mica.on('file-changed', cb)` and decide whether to update by calling `mica.refresh()`, which fetches fresh HTML from the server and re-injects the card.
 
 #### 7.8 ModuleLoader
 
@@ -357,6 +359,7 @@ Card classes run as standard Node.js ES modules loaded via dynamic `import()`. T
 
 **Runtime model:**
 - Card classes are the unit of extension — all behavior lives in `render.js`, including server-side stream handlers
+- `render()` runs once for initial HTML. The server does not re-render on file changes. Card scripts own their update lifecycle: they subscribe to `mica.on('file-changed')` events and call `mica.refresh()` to fetch fresh HTML when needed
 - The `mica` bridge provides minimal infrastructure (file I/O, channel messaging, exec, logging) — card classes import everything else they need directly
 - Blast radius is the Docker container (per-project isolation), not runtime sandboxing
 
