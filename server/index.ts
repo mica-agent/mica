@@ -1093,6 +1093,9 @@ wss.on("connection", (ws) => {
             }
           }
 
+          // Ensure container runtime is ready before opening channels
+          await getOrCreateContainerRuntime(proj);
+
           // Try the unified channel manager (chat, terminal, module-based handlers)
           const cardClass = channelManager.resolveCardClass(fname);
 
@@ -1255,6 +1258,21 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
     await fileWatcher.start();
   } catch (err) {
     console.error("[startup] File watcher failed:", (err as Error).message);
+  }
+
+  // Start container runtimes for all connected projects eagerly
+  try {
+    const projects = await listProjects();
+    for (const project of projects) {
+      try {
+        await getOrCreateContainerRuntime(project.id);
+        console.log(`[startup] Container runtime ready for "${project.id}"`);
+      } catch (err) {
+        console.error(`[startup] Container runtime failed for "${project.id}":`, (err as Error).message);
+      }
+    }
+  } catch (err) {
+    console.error("[startup] Failed to start container runtimes:", (err as Error).message);
   }
 
   server.listen(PORT, "0.0.0.0", () => {

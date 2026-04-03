@@ -29,6 +29,21 @@ import fs from "fs";
 import path from "path";
 import { createInterface } from "readline";
 
+// ── Redirect console.log to stderr ─────────────────────────
+// stdout is reserved for the JSON protocol with the host.
+// Card classes that call console.log() must not corrupt the protocol.
+const origLog = console.log;
+console.log = (...args) => {
+  process.stderr.write(args.map(String).join(" ") + "\n");
+};
+console.info = console.log;
+console.warn = (...args) => {
+  process.stderr.write("[warn] " + args.map(String).join(" ") + "\n");
+};
+console.error = (...args) => {
+  process.stderr.write("[error] " + args.map(String).join(" ") + "\n");
+};
+
 // ── Module cache ────────────────────────────────────────────
 
 const moduleCache = new Map();
