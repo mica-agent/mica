@@ -139,27 +139,48 @@ Browser                    Node.js (server)              Docker Container
   |                              |   onDisconnect + mica.send)  |
 ```
 
+### Complete card class exports
+
+A `render.js` file can export any combination of these:
+
+```javascript
+// ── Rendering (required) ────────────────────────────
+export default function render(content, config) { }   // Returns HTML string
+
+// ── Request/Response exports (optional) ─────────────
+export async function myExport(content, args, mica) {} // Browser calls via mica.call()
+
+// ── Stream handlers (optional) ──────────────────────
+export function onConnect(mica, args) { }              // Channel session created
+export function onMessage(msg, mica) { }               // Data from browser
+export function onDisconnect(mica) { }                 // Session destroyed
+
+// ── Dependencies (optional) ─────────────────────────
+export const dependencies = { scripts: [], styles: [] }; // CDN resources to preload
+```
+
+See sections 5, 7, and 8 for detailed reference on each.
+
 ---
 
 ## 3. Two File Systems
 
 Cards interact with two separate file systems. Confusing them is the most common source of bugs.
 
-### Canvas files (.mica/ directory)
+### Card directory files
 
-These are card files, chat history, goals, todos, briefs, and logs that live in the project's `.mica/` directory.
+Each card is a directory. `mica.read()` and `mica.write()` operate on files inside the card's own directory.
 
 ```
-Access via:   mica.readFile(filename)      — read a canvas file
-              mica.writeFile(filename, content) — write a canvas file
-              mica.write(content)          — write THIS card's own file
+Access via:   mica.read(filename)            — read from card directory
+              mica.write(filename, content)   — write to card directory
 
-Scope:        Current canvas only
-Contains:     Card data files, metadata, collaboration artifacts
-Examples:     _todo.todo, _goal.goal, _brief.brief, notes.md, my-counter.counter
+Scope:        This card's directory only
+Contains:     Primary content, supplementary state, dot-prefixed infrastructure
+Examples:     document.md, conversation.json, transcript.log, .session.json
 ```
 
-The agent's built-in tools (`list_files`, `read_file`, `write_file`) also operate on canvas files.
+Dot-prefixed files (`.session.json`) are infrastructure — hidden from agents and UI. Non-dot files are visible and should have descriptive names.
 
 ### Project files (project root directory)
 
@@ -265,15 +286,15 @@ Named exports become server-side functions callable from the browser. They run i
 
 ```javascript
 export async function my_function(content, args, mica) {
-  // content: string  — the card file's current body text (re-read on each call)
+  // content: string  — the primary file's current content (re-read on each call)
   // args:    object   — arguments passed from the browser
   // mica:    object   — the server bridge (see section 7)
 
   // Do work...
   const result = await mica.exec('ls -la');
 
-  // Optionally update the card file
-  await mica.write('new content');
+  // Update a file in the card directory
+  await mica.write('document.md', args.newContent);
 
   // Return value is sent back to the browser as the Promise result
   return { files: result.stdout.split('\n') };
@@ -299,7 +320,7 @@ export async function toggle_item(content, args, mica) {
   const data = JSON.parse(content || '{"items":[]}');
   const item = data.items.find(i => i.id === args.id);
   if (item) item.done = !item.done;
-  await mica.write(JSON.stringify(data, null, 2));
+  await mica.write('tasks.md', JSON.stringify(data, null, 2));
   return { items: data.items };
 }
 ```
@@ -359,20 +380,61 @@ Each `<script>` block is wrapped in an IIFE:
 
 ## 7. Server Bridge API Reference
 
-These functions are available on the `mica` object in **export functions only** (not in `render()`).
+The `mica` bridge is available in **export functions and stream handlers** (not in `render()`). It provides minimal infrastructure — file I/O, messaging, exec, and logging. Card classes import anything else they need directly (agent SDKs, libraries, etc.).
 
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `await mica.write(content)` | `void` | Overwrite this card's own file content. Triggers re-render. |
-| `await mica.writeFile(filename, content)` | `void` | Write to any file in the current canvas (.mica/ directory). |
-| `await mica.readFile(filename)` | `string \| null` | Read a file from the current canvas. Returns `null` if not found. |
+### MicaBridge methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `await mica.read(filename)` | `string` | Read a file from this card's directory. |
+| `await mica.write(filename, content)` | `void` | Write a file to this card's directory. Triggers re-render if primary file. |
+| `mica.send(data)` | `void` | Broadcast data to all connected browsers (stream handlers). |
+| `mica.reply(data)` | `void` | Send data to the browser that sent the current message (stream handlers). |
 | `await mica.exec(command, options?)` | `{ stdout, stderr, exitCode }` | Run a shell command in the project's Docker container. |
 | `await mica.log(message)` | `void` | Append a line to `_log.log` in the canvas. |
-| `await mica.emit(event, data)` | `void` | Broadcast an event to all connected browser widgets. |
-| `await mica.fetch(url, options?)` | `{ status, statusText, headers, body }` | HTTP request via server proxy. Requires `network: true` in manifest. |
-| `await mica.agent.chat(message)` | `object` | Send a message to the canvas's AI agent. Returns response dict. |
 
-### mica.exec() details
+### MicaBridge properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `mica.project` | `string` | Project identifier |
+| `mica.canvas` | `string` | Canvas identifier |
+| `mica.filename` | `string` | Card directory name (e.g., `"my-chat.claude-chat"`) |
+
+### mica.read() / mica.write()
+
+Read and write files scoped to the card's own directory. The card class knows its filenames — use descriptive names that give agents context.
+
+```javascript
+// Write the card's primary content
+await mica.write('document.md', newMarkdown);
+
+// Write supplementary state
+await mica.write('conversation.json', JSON.stringify(messages, null, 2));
+
+// Dot-prefixed files are hidden from agents
+await mica.write('.session.json', JSON.stringify({ sessionId }));
+
+// Read a file from the card directory
+const history = JSON.parse(await mica.read('conversation.json'));
+```
+
+### mica.send() / mica.reply()
+
+Used in stream handlers (`onConnect`, `onMessage`, `onDisconnect`) for bidirectional communication.
+
+```javascript
+// Broadcast to ALL connected browsers watching this card
+mica.send({ type: 'output', text: 'hello' });
+
+// Reply to only the browser that sent the current message
+// (useful for replay on reconnect — don't duplicate to existing clients)
+mica.reply({ type: 'history', messages });
+```
+
+`mica.reply()` is only meaningful inside `onMessage`. Outside of `onMessage`, it behaves like `mica.send()`.
+
+### mica.exec()
 
 Runs a shell command inside the project's Docker container via `docker exec`.
 
@@ -384,7 +446,6 @@ const result = await mica.exec(command, { cwd, timeout });
 - **cwd** (string, optional): Working directory. Defaults to the project root path.
 - **timeout** (number, optional): Milliseconds. Defaults to 30000 (30s). Maximum 300000 (5 min).
 - **Returns**: `{ stdout: string, stderr: string, exitCode: number }`
-- **maxBuffer**: 10 MB for stdout/stderr
 
 **Error handling**: `mica.exec()` never throws. Check `exitCode` for failure:
 
@@ -400,20 +461,18 @@ export async function list_project_files(content, args, mica) {
 }
 ```
 
-### mica.fetch() details
+### Direct Node.js access
 
-Card classes have full Node.js access and can use `fetch` or any HTTP library directly.
+Card classes run as Node.js modules. For anything not covered by the bridge — HTTP requests, agent SDKs, file parsing libraries — import directly:
 
 ```javascript
-const resp = await mica.fetch('https://api.example.com/data', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ query: 'test' })
-});
-// resp = { status: 200, statusText: 'OK', headers: {...}, body: '...' }
-```
+import { marked } from 'marked';
+import * as pty from 'node-pty';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 
-Throws an error if the card's manifest entry does not have `network: true`.
+// No need for mica.fetch() — use native fetch or any HTTP library
+const resp = await fetch('https://api.example.com/data');
+```
 
 ---
 
