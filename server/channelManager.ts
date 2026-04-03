@@ -329,6 +329,27 @@ export class ChannelManager {
   }
 
   /**
+   * Broadcast data to all clients of a session (for container bridge mica.send()).
+   */
+  broadcastToSession(project: string, canvas: string, filename: string, data: unknown): void {
+    const key = this.sessionKey(project, canvas, filename);
+    const session = this.sessions.get(key);
+    if (!session) return;
+    session.ctx.broadcast(data);
+  }
+
+  /**
+   * Send data to a specific client (for container bridge mica.reply()).
+   */
+  sendToClient(clientId: string, data: unknown): void {
+    const key = this.clientToSession.get(clientId);
+    if (!key) return;
+    const session = this.sessions.get(key);
+    if (!session) return;
+    session.ctx.sendTo(clientId, data);
+  }
+
+  /**
    * Get the number of active sessions.
    */
   get sessionCount(): number {

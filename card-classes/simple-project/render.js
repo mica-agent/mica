@@ -7,7 +7,8 @@
  */
 
 import { marked } from 'marked';
-import { writeCanvasFile } from '../../server/canvasFiles.js';
+import fs from 'fs';
+import path from 'path';
 
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -105,6 +106,13 @@ export async function create_file(content, args, mica) {
   const filename = args.filename || "";
   const fileContent = args.content || "";
   if (!filename) return { error: "filename is required" };
-  await writeCanvasFile(mica.project, mica.canvas, filename, fileContent);
+  // Create card directory with primary file inside the project directory
+  const cardDir = path.join(process.cwd(), filename);
+  await fs.promises.mkdir(cardDir, { recursive: true });
+  // Determine primary file name from extension (simple heuristic)
+  const ext = path.extname(filename);
+  const primaryNames = { '.md': 'document.md', '.todo': 'tasks.md', '.mmd': 'diagram.mmd', '.txt': 'content.txt' };
+  const primaryFile = primaryNames[ext] || 'content';
+  await fs.promises.writeFile(path.join(cardDir, primaryFile), fileContent, 'utf-8');
   return { ok: true, filename };
 }

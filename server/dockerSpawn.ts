@@ -47,6 +47,8 @@ export const CONTAINER_PROJECT_DIR = "/project";
 const CONTAINER_CARD_CLASSES = "/opt/mica/card-classes";
 const CONTAINER_SDK = "/opt/mica/mica_bridge";
 const CONTAINER_NODE_MODULES = "/opt/mica/node_modules";
+const CONTAINER_RUNTIME_DIR = "/opt/mica/runtime";
+export const RUNTIME_DIR = join(__dirname, "container-runtime");
 
 export async function getProjectMounts(projectId: string): Promise<ProjectMounts> {
   const projectPath = await getProjectPath(projectId);
@@ -57,6 +59,7 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
       `${CARD_CLASSES_DIR}:${CONTAINER_CARD_CLASSES}:ro`,
       `${SDK_DIR}:${CONTAINER_SDK}:ro`,
       `${NODE_MODULES_DIR}:${CONTAINER_NODE_MODULES}:ro`,
+      `${RUNTIME_DIR}:${CONTAINER_RUNTIME_DIR}:ro`,
       // ~/.claude/ for Claude Code CLI: credentials, settings, plugins, sessions.
       `${process.env.HOME}/.claude:/home/sandbox/.claude:rw`,
       `${process.env.HOME}/.claude.json:/home/sandbox/.claude.json:ro`,

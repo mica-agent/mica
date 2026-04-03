@@ -24,7 +24,7 @@ export function onConnect(mica, args) {
   const rows = args.rows || 24;
   const spawnOverride = args.spawnOverride;
 
-  const shell = spawnOverride?.shell || process.env.SHELL || "/bin/bash";
+  const shell = spawnOverride?.shell || process.env.SHELL || "/usr/bin/bash";
   const shellArgs = spawnOverride?.args || ["--login"];
   const cwd = (spawnOverride?.shell === "docker")
     ? (process.env.HOME || "/")

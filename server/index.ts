@@ -49,6 +49,7 @@ import {
 import { initializeProjects, seedNewProject } from "./seedCanvases.js";
 import { CardManager } from "./cardManager.js";
 import type { MicaBridge } from "./moduleLoader.js";
+import { ContainerRuntime } from "./containerRuntime.js";
 import { FileWatcher } from "./fileWatcher.js";
 import { SandboxManager } from "./projectSandbox.js";
 import { ReactiveAgent } from "./reactiveAgent.js";
@@ -625,6 +626,40 @@ setSubagentExecutor(executor);
 const cardManager = new CardManager();
 const fileWatcher = new FileWatcher();
 
+// Container runtime management — one per project, started lazily
+const containerRuntimes = new Map<string, ContainerRuntime>();
+
+async function getOrCreateContainerRuntime(projectId: string): Promise<ContainerRuntime> {
+  let runtime = containerRuntimes.get(projectId);
+  if (runtime) return runtime;
+
+  // Ensure the container is running
+  await sandboxManager.getPool(projectId);
+  const containerName = `mica-project-${projectId}`;
+
+  runtime = new ContainerRuntime(containerName, projectId);
+  runtime.setBridgeCallbacks({
+    onSend: (cardName, data) => {
+      channelManager.broadcastToSession(projectId, "_root", cardName, data);
+    },
+    onReply: (cardName, clientId, data) => {
+      channelManager.sendToClient(clientId, data);
+    },
+    onLog: (cardName, message) => {
+      const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
+      const line = `- **${timestamp}** — ${message}\n`;
+      readCanvasFile(projectId, "_root", "_log.log")
+        .then((f) => writeCanvasFile(projectId, "_root", "_log.log", f.content + line))
+        .catch(() => writeCanvasFile(projectId, "_root", "_log.log", `# Activity Log\n\n${line}`));
+    },
+  });
+
+  await runtime.start();
+  containerRuntimes.set(projectId, runtime);
+  cardManager.setContainerRuntime(projectId, runtime);
+  return runtime;
+}
+
 // ── Agent provider registry ──────────────────────────────────
 const claudeProvider = new ClaudeProvider(executor);
 const localProvider = new LocalProvider();
@@ -801,6 +836,8 @@ app.get("/api/projects/:project/canvases/:canvas/cards", async (req, res) => {
   const { project, canvas } = req.params;
   if (!(await validateParams(res, project, canvas))) return;
   try {
+    // Ensure container runtime is started for this project
+    await getOrCreateContainerRuntime(project);
     const cards = await cardManager.renderAllCards(project, canvas);
     res.json(cards);
   } catch (err: unknown) {
@@ -921,6 +958,7 @@ const moduleHandlerFactory = createModuleHandlerFactory({
   createExecFn: (project) => (command, opts) => executor.exec(project, command, opts),
   readCardFile,
   writeCardFile,
+  getContainerRuntime: (project) => cardManager.getContainerRuntime(project),
 });
 
 /** Ensure a module-based handler is registered for a card class with stream exports. */
@@ -1045,10 +1083,14 @@ wss.on("connection", (ws) => {
             break;
           }
 
-          // Terminal cards need shell override from project container
+          // Terminal cards: if running on host (no container runtime), need shell override
+          // to docker exec into the container. If running in container, skip — bash is local.
           if (fname.endsWith(".terminal") || (fn as string) === "shell") {
-            const shellOverride = await executor.getContainerShell(proj);
-            channelArgs.spawnOverride = shellOverride;
+            const hasContainerRuntime = !!cardManager.getContainerRuntime(proj);
+            if (!hasContainerRuntime) {
+              const shellOverride = await executor.getContainerShell(proj);
+              channelArgs.spawnOverride = shellOverride;
+            }
           }
 
           // Try the unified channel manager (chat, terminal, module-based handlers)

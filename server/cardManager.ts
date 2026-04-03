@@ -8,6 +8,7 @@
 import path from "path";
 import fs from "fs";
 import { ModuleLoader, type RenderResult as ModuleRenderResult, type CardDependencies, type MicaBridge } from "./moduleLoader.js";
+import type { ContainerRuntime } from "./containerRuntime.js";
 import {
   readCanvasFile,
   writeCanvasFile,
@@ -89,12 +90,23 @@ function parseFrontmatter(raw: string): ParsedFile {
 export class CardManager {
   private cache: Map<string, CacheEntry> = new Map();
   private moduleLoader: ModuleLoader;
+  private containerRuntimes: Map<string, ContainerRuntime> = new Map();
   private manifest: Record<string, ClassManifestEntry> = {};
   private extensionMap: Map<string, string> = new Map();
 
   constructor() {
     this.moduleLoader = new ModuleLoader();
     this.loadManifest();
+  }
+
+  /** Register a container runtime for a project. Card execution goes through the container. */
+  setContainerRuntime(projectId: string, runtime: ContainerRuntime): void {
+    this.containerRuntimes.set(projectId, runtime);
+  }
+
+  /** Get the container runtime for a project (if any). */
+  getContainerRuntime(projectId: string): ContainerRuntime | undefined {
+    return this.containerRuntimes.get(projectId);
   }
 
   /** Get all valid card extensions (for file validation and watching). */
@@ -223,9 +235,10 @@ export class CardManager {
       try {
         const renderConfig = { ...metadata, ...(config || {}), project, canvas, filename };
         console.log(`[card-manager] Rendering ${filename} (class=${cardClass})...`);
-        const result = await this.moduleLoader.render(
-          cardClass, classPath, strippedContent, renderConfig
-        );
+        const containerRuntime = this.containerRuntimes.get(project);
+        const result = containerRuntime
+          ? await containerRuntime.render(cardClass, classPath, strippedContent, renderConfig)
+          : await this.moduleLoader.render(cardClass, classPath, strippedContent, renderConfig);
         console.log(`[card-manager] Rendered ${filename} (${result.html.length} chars)`);
 
         this.cache.set(key, {
@@ -270,12 +283,16 @@ export class CardManager {
       throw new Error(`Card class "${cardClass}" not found`);
     }
 
+    const containerRuntime = this.containerRuntimes.get(project);
+    if (containerRuntime) {
+      return containerRuntime.callExport(cardClass, classPath, fn, file.content, args, filename);
+    }
     return this.moduleLoader.callExport(
       cardClass, classPath, fn, file.content, args, mica
     );
   }
 
-  /** Get the module loader (for stream handler access) */
+  /** Get the module loader (fallback for non-containerized projects) */
   getModuleLoader(): ModuleLoader {
     return this.moduleLoader;
   }
@@ -321,6 +338,9 @@ export class CardManager {
 
   invalidateClass(className: string) {
     this.moduleLoader.invalidateClass(className);
+    for (const rt of this.containerRuntimes.values()) {
+      rt.invalidateClass(className).catch(() => {});
+    }
     for (const [key, entry] of this.cache) {
       if (entry.meta.cardClass === className) {
         this.cache.delete(key);

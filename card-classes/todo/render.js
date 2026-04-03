@@ -2,14 +2,28 @@
  * Todo card class — interactive to-do list with assignments, priorities, and agent integration.
  */
 
-import { getProvider } from '../../server/agentCore/registry.js';
-import { resolveAgentProvider } from '../../server/agentCore/config.js';
+import { query } from "@anthropic-ai/claude-agent-sdk";
 
 async function agentChat(mica, message) {
-  const providerName = await resolveAgentProvider(mica.project);
-  const provider = getProvider(providerName);
-  if (!provider) throw new Error(`No agent provider: ${providerName}`);
-  return provider.chat(mica.project, mica.canvas, message);
+  let resultText = "";
+  for await (const evt of query({ prompt: message, options: {
+    systemPrompt: "You are a helpful assistant. Be concise.",
+    tools: ["Bash", "Read", "Write", "Edit"],
+    model: "claude-sonnet-4-6",
+    maxTurns: 5,
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+  }})) {
+    if (evt.type === "assistant" && evt.message?.content) {
+      for (const block of evt.message.content) {
+        if (block.type === "text" && block.text) resultText = block.text;
+      }
+    }
+    if (evt.type === "result" && "result" in evt) {
+      resultText = evt.result || resultText;
+    }
+  }
+  return { message: resultText, filesChanged: false };
 }
 
 const PRIORITIES = ["high", "medium", "low"];
