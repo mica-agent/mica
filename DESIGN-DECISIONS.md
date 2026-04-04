@@ -55,9 +55,17 @@ The sidebar chat agent has full context and all tools. The orchestrator extensio
 
 ## Agent context — brief as identity, canvas as context
 
-An agent's identity is its `brief.md` file — a markdown document in the agent card's directory that defines role, personality, constraints, and instructions. The brief template ships with the card class and is copied on instance creation. Users and other agents can edit the brief to reshape behavior.
+An agent's identity is its `brief.md` file — a markdown document in the agent card's directory that defines role, personality, constraints, and instructions. The brief has two parts: agent-specific instructions (how the SDK works, what tools are available) that come from the card class template, and role-specific instructions (what the agent does) that the user customizes after creation.
 
-The agent's context is the canvas itself. Agents read the same cards humans see: goal, todo, documents, diagrams. There is no separate "agent memory" — the canvas is the shared context. This means agents and humans have a single source of truth, and any agent can be repointed at a different canvas to change what it knows.
+Brief templates ship with the card class:
+```
+card-classes/claude-chat/brief-template.md   ← Claude-specific tool instructions
+card-classes/pi-chat/brief-template.md       ← Pi-specific tool instructions
+```
+
+On instance creation, the template is copied into the card directory as `brief.md`. The user or an orchestrator edits it to specialize the agent. Swapping the card class (Claude → Pi) requires a different template because the SDK capabilities differ, but the role-specific part of the brief is agent-agnostic.
+
+The agent's context is the canvas itself. Agents read the same cards humans see: goal, todo, documents, diagrams. There is no separate "agent memory" — the canvas is the shared context.
 
 ## Card class as back of the card
 
@@ -65,14 +73,30 @@ A card has two sides. The **front** is the instance — the user's conversation,
 
 This maps cleanly to the file system: the card class lives in `card-classes/{name}/render.js` (or `.mica/.card-classes/{name}/render.js` for project-specific classes), and the card instance is a directory at the project root.
 
+## Canvas cards seed their own context
+
+System cards (goal, todo, brief, log) are tied to a specific canvas. Each canvas has its own set. Different canvas card classes can seed different initial cards:
+
+- `project.project` seeds `goal.goal`, `todo.todo`, `brief.md`, `log.md`
+- A hypothetical `sprint.canvas` could seed `backlog.todo`, `sprint-goal.goal`, `retro.md`
+
+The canvas card class defines what gets seeded — it's in the class definition, not infrastructure. This means new canvas types with different workflows are just new card classes.
+
 ## Cards as tools — mica.callCard()
 
 Any card with exported functions can be called by other cards via `mica.callCard(cardName, fn, args)`. This turns cards into composable tools: an orchestrator agent delegates to specialist agents, a dashboard pulls from data cards, a workflow chains card operations.
 
-This is the extension mechanism for tool use. Instead of building a registry of tools, every card *is* a potential tool. The card class defines the interface (its named exports); `mica.callCard()` provides the invocation path.
+Cards don't need to declare they are callable. Any named export in `render.js` is automatically callable. The render result includes the export list (`exports: ["screenshot", "summarize"]`). An agent discovers callable cards by listing the canvas and checking which cards have exports. No separate registration needed.
+
+## Card classes are arbitrary Node programs
+
+A card class's `render.js` runs inside the project's Docker container as a Node.js module. It can import anything — an AI SDK, a database driver, a web scraper, a machine learning library. It can spawn child processes, open network connections, and use any system package installed in the container.
+
+A card class can wrap any Node program: a Jupyter kernel, a language server, a game engine, a media transcoder. The `render.js` is the adapter between the Mica bridge protocol and whatever the program needs. The container provides the sandbox — filesystem scoping, resource limits, network policy. The card class has full freedom within those boundaries.
 
 ## Open questions
 - "Add to any project" model when cards live outside `.mica/`
 - When to build the shared primitives library
-- Orchestrator as visible canvas card vs sidebar vs both
 - Card class versioning and breaking changes
+- Container idle timeout and lifecycle management
+- Card class system dependency declaration (`systemDeps` in manifest)
