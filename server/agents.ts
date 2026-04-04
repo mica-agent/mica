@@ -228,7 +228,7 @@ ch.close();                                       // close when done
 
 IMPORTANT: Actually use the tools when appropriate — don't just describe what you'd do.
 
-ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to _log.log so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
+ACTIVITY LOG: When you write or delete files, provide a clear summary/reason — this is automatically logged to log.md so the human can see what you did and why, even when they weren't watching. This is critical for async collaboration.
 `;
 
 export const GOAL_INSTRUCTIONS = `
@@ -289,11 +289,11 @@ export async function appendToLog(project: string, canvas: CanvasId, entry: stri
   const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
   const line = `- **${timestamp}** — ${entry}\n`;
   try {
-    const existing = await readCanvasFile(project, canvas, "_log.log");
-    await writeCanvasFile(project, canvas, "_log.log", existing.content + line);
+    const existing = await readCanvasFile(project, canvas, "log.md");
+    await writeCanvasFile(project, canvas, "log.md", existing.content + line);
   } catch {
     // No log yet — create it
-    await writeCanvasFile(project, canvas, "_log.log", `# Activity Log\n\n${line}`);
+    await writeCanvasFile(project, canvas, "log.md", `# Activity Log\n\n${line}`);
   }
 }
 
@@ -384,7 +384,7 @@ const writeFileTool = tool(
     await writeCanvasFile(currentProject, currentCanvas, args.filename, args.content);
     filesWereChanged = true;
     // Append to activity log (skip if writing the log itself)
-    if (args.filename !== "_log.log") {
+    if (args.filename !== "log.md") {
       await appendToLog(currentProject, currentCanvas, `Updated **${args.filename}**: ${args.summary}`);
     }
     return {

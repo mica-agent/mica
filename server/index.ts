@@ -25,6 +25,7 @@ import {
   deleteCanvasFile,
   readCardFile,
   writeCardFile,
+  createCard,
   listProjects,
   deleteProject,
   getProjectConfig,
@@ -648,9 +649,14 @@ async function getOrCreateContainerRuntime(projectId: string): Promise<Container
     onLog: (cardName, message) => {
       const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
       const line = `- **${timestamp}** — ${message}\n`;
-      readCanvasFile(projectId, "_root", "_log.log")
-        .then((f) => writeCanvasFile(projectId, "_root", "_log.log", f.content + line))
-        .catch(() => writeCanvasFile(projectId, "_root", "_log.log", `# Activity Log\n\n${line}`));
+      readCanvasFile(projectId, "_root", "log.md")
+        .then((f) => writeCanvasFile(projectId, "_root", "log.md", f.content + line))
+        .catch(() => writeCanvasFile(projectId, "_root", "log.md", `# Activity Log\n\n${line}`));
+    },
+    onCreateCard: (name) => {
+      createCard(projectId, "_root", name).catch((err) => {
+        console.error(`[container] createCard failed for "${name}":`, (err as Error).message);
+      });
     },
   });
 
@@ -714,10 +720,10 @@ const rpcHandler = async (method: string, args: Record<string, unknown>, context
       const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
       const line = `- **${timestamp}** — ${args.message}\n`;
       try {
-        const existing = await readCanvasFile(project, canvas, "_log.log");
-        await writeCanvasFile(project, canvas, "_log.log", existing.content + line);
+        const existing = await readCanvasFile(project, canvas, "log.md");
+        await writeCanvasFile(project, canvas, "log.md", existing.content + line);
       } catch {
-        await writeCanvasFile(project, canvas, "_log.log", `# Activity Log\n\n${line}`);
+        await writeCanvasFile(project, canvas, "log.md", `# Activity Log\n\n${line}`);
       }
       return { success: true };
     }
@@ -822,11 +828,14 @@ function createMicaBridge(project: string, canvas: string, filename: string): Mi
       const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
       const line = `- **${timestamp}** — ${message}\n`;
       try {
-        const existing = await readCanvasFile(project, canvas, "_log.log");
-        await writeCanvasFile(project, canvas, "_log.log", existing.content + line);
+        const existing = await readCanvasFile(project, canvas, "log.md");
+        await writeCanvasFile(project, canvas, "log.md", existing.content + line);
       } catch {
-        await writeCanvasFile(project, canvas, "_log.log", `# Activity Log\n\n${line}`);
+        await writeCanvasFile(project, canvas, "log.md", `# Activity Log\n\n${line}`);
       }
+    },
+    async createCard(name: string) {
+      await createCard(project, canvas, name);
     },
   };
 }
@@ -853,6 +862,26 @@ app.get("/api/projects/:project/canvases/:canvas/cards/:filename", async (req, r
     const file = await readCanvasFile(project, canvas, filename);
     const rendered = await cardManager.renderCard(project, canvas, filename, file.content);
     res.json(rendered);
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Create a new card instance (with seed files from card class)
+app.post("/api/projects/:project/canvases/:canvas/cards", async (req, res) => {
+  const { project, canvas } = req.params;
+  const { name } = req.body;
+  if (!(await validateParams(res, project, canvas))) return;
+  if (!name) {
+    res.status(400).json({ error: "name is required" });
+    return;
+  }
+  try {
+    await createCard(project, canvas, name);
+    // Render the new card and return it
+    const file = await readCanvasFile(project, canvas, name);
+    const rendered = await cardManager.renderCard(project, canvas, name, file.content);
+    res.json({ ok: true, card: rendered });
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
   }

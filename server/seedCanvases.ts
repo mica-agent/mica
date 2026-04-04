@@ -10,6 +10,7 @@ import {
   ensureCanvasDir,
   listProjects,
   migrateToCardDirectories,
+  migrateCardNames,
 } from "./canvasFiles.js";
 import {
   connectProject,
@@ -31,9 +32,9 @@ const PROJECTS_DIR = process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-p
 // Card files are written to the project root (canvas = "_root").
 
 const NEW_PROJECT_SEEDS: Record<string, string> = {
-  "_project.project": "", // Content will be generated with project name
+  "project.project": "", // Content will be generated with project name
 
-  "_goal.goal": `# Project Goal
+  "goal.goal": `# Project Goal
 
 Define what this project aims to achieve.
 
@@ -45,7 +46,7 @@ Define what this project aims to achieve.
 - [ ] Scope is bounded — what's in v1 and what's deferred
 `,
 
-  "_brief.brief": `# Agent Brief
+  "brief.md": `# Agent Brief
 
 ## Who You Are
 You are an AI collaborator for this project. You help the human think through problems, create artifacts, and make progress toward the project goal.
@@ -56,14 +57,9 @@ You are an AI collaborator for this project. You help the human think through pr
 - When you spot gaps, **create a draft** and ask the human to review it.
 - When a relationship or flow would be clearer as a diagram, **create a .mmd mermaid file**.
 - Always prefer creating/updating files over long chat responses. The whiteboard is the artifact — chat is ephemeral.
-
-## Dependencies
-<!-- Uncomment to add packages for Docker sandbox mode (PROD) -->
-<!-- - apt: ffmpeg, curl -->
-<!-- - pip: pandas, requests -->
 `,
 
-  "_todo.todo": `# To Do
+  "todo.todo": `# To Do
 
 ## Active
 
@@ -72,7 +68,7 @@ You are an AI collaborator for this project. You help the human think through pr
 ## Done (recent)
 `,
 
-  "_log.log": `# Activity Log
+  "log.md": `# Activity Log
 `,
 
   // Sample content cards to demonstrate different card types
@@ -141,7 +137,7 @@ export async function seedNewProject(
   if (userFiles.length === 0) {
     console.log(`[seed] Seeding project "${projectId}" with starter files...`);
     for (const [filename, content] of Object.entries(NEW_PROJECT_SEEDS)) {
-      const fileContent = filename === "_project.project" ? `# ${projectName}\n` : content;
+      const fileContent = filename === "project.project" ? `# ${projectName}\n` : content;
       await writeCanvasFile(projectId, "_root", filename, fileContent);
     }
     console.log(
@@ -165,9 +161,14 @@ export async function initializeProjects(): Promise<void> {
     for (const project of registry.projects) {
       await migrateDataFileNames(project.path);
       // Migrate flat card files → card directories
-      const migrated = await migrateToCardDirectories(project.path, "_root");
-      if (migrated > 0) {
-        console.log(`[seed] Migrated ${migrated} card(s) to directories in "${project.id}".`);
+      const dirMigrated = await migrateToCardDirectories(project.path, "_root");
+      if (dirMigrated > 0) {
+        console.log(`[seed] Migrated ${dirMigrated} card(s) to directories in "${project.id}".`);
+      }
+      // Rename _prefixed cards and convert .brief/.log → .md
+      const nameMigrated = await migrateCardNames(project.path, "_root");
+      if (nameMigrated > 0) {
+        console.log(`[seed] Renamed ${nameMigrated} card(s) in "${project.id}" (dropped _ prefix, .brief/.log → .md).`);
       }
     }
     return;

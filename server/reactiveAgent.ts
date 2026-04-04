@@ -43,7 +43,7 @@ type ChatWithAgentFn = (
 
 // ── Ignore rules ────────────────────────────────────────────
 // Dot-prefixed files are internal data (not cards) — handled by naming convention.
-// _log.log is a system card but reacting to log changes creates feedback loops.
+// log.md is a system card but reacting to log changes creates feedback loops.
 
 // ── ReactiveAgent ────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ export class ReactiveAgent {
   onFileChange(event: FileChangeEvent): void {
     // Skip ignored files
     if (event.filename.startsWith(".")) return;   // dot-prefix = internal data
-    if (event.filename === "_log.log") return;      // reacting to log changes creates loops
+    if (event.filename === "log.md") return;      // reacting to log changes creates loops
     if (event.filename.endsWith(".agent")) return;  // agent cards use lifecycle broadcasts, not file watches
     if (event.filename.endsWith(".terminal")) return; // terminal cards are interactive, not reactive
 

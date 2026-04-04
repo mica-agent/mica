@@ -49,9 +49,9 @@ export async function appendToLog(project: string, canvas: CanvasId, entry: stri
   const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
   const line = `- **${timestamp}** — ${entry}\n`;
   try {
-    const existing = await readCanvasFile(project, canvas, "_log.log");
-    await writeCanvasFile(project, canvas, "_log.log", existing.content + line);
+    const existing = await readCanvasFile(project, canvas, "log.md");
+    await writeCanvasFile(project, canvas, "log.md", existing.content + line);
   } catch {
-    await writeCanvasFile(project, canvas, "_log.log", `# Activity Log\n\n${line}`);
+    await writeCanvasFile(project, canvas, "log.md", `# Activity Log\n\n${line}`);
   }
 }

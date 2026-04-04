@@ -76,7 +76,7 @@ export async function executeTool(
         ctx.onAgentWrite?.(ctx.project, ctx.canvas, filename);
         await writeCanvasFile(ctx.project, ctx.canvas, filename, content);
         ctx.filesChanged.value = true;
-        if (filename !== "_log.log") {
+        if (filename !== "log.md") {
           await appendToLog(ctx.project, ctx.canvas, `Updated **${filename}**: ${summary || "(no summary)"}`);
         }
         return `File "${filename}" written to whiteboard.`;

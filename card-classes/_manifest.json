@@ -37,20 +37,6 @@
     "defaultTitle": "To Do",
     "primaryFile": "tasks.md"
   },
-  "brief": {
-    "extension": ".brief",
-    "badge": "BRIEF",
-    "system": true,
-    "defaultTitle": "Agent Brief",
-    "primaryFile": "brief.md"
-  },
-  "log": {
-    "extension": ".log",
-    "badge": "LOG",
-    "system": true,
-    "defaultTitle": "Activity Log",
-    "primaryFile": "log.md"
-  },
   "agent": {
     "extension": ".agent",
     "badge": "AGENT",

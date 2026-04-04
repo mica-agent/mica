@@ -71,7 +71,7 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
 // Cache of already-verified image tags
 const imageCache = new Set<string>();
 
-// ── _brief.brief dependency parsing ─────────────────────────────
+// ── brief.md dependency parsing ─────────────────────────────
 
 export interface SandboxDeps {
   apt: string[];

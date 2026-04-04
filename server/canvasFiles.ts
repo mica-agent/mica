@@ -384,6 +384,100 @@ export async function writeCardFile(
   await writeFile(join(cardDir, filename), content, "utf-8");
 }
 
+// ── Card class directory resolution ──────────────────────
+
+const BUILT_IN_CLASSES_DIR = join(process.cwd(), "card-classes");
+
+function resolveCardClassDir(cardClass: string, projectPath?: string): string | null {
+  // Project-level override first
+  if (projectPath) {
+    const projectDir = join(projectPath, ".mica", ".card-classes", cardClass);
+    if (existsSync(projectDir)) return projectDir;
+  }
+  // Built-in
+  const builtinDir = join(BUILT_IN_CLASSES_DIR, cardClass);
+  if (existsSync(builtinDir)) return builtinDir;
+  return null;
+}
+
+/**
+ * Copy seed files from a card class directory into a card instance directory.
+ * Seed files are prefixed with `_` — the prefix is stripped on copy.
+ * Handles both files and directories (for card-in-card seeds like canvas types).
+ */
+async function copySeedFiles(classDir: string, instanceDir: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(classDir);
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.startsWith("_")) continue;
+
+    const seedName = entry.slice(1); // Strip _ prefix
+    const srcPath = join(classDir, entry);
+    const destPath = join(instanceDir, seedName);
+
+    // Skip if already exists (don't overwrite user edits)
+    if (existsSync(destPath)) continue;
+
+    const srcStat = await stat(srcPath);
+    if (srcStat.isDirectory()) {
+      // Recursively copy seed directory
+      await mkdir(destPath, { recursive: true });
+      const subEntries = await readdir(srcPath);
+      for (const sub of subEntries) {
+        const subSrc = join(srcPath, sub);
+        const subDest = join(destPath, sub);
+        const subStat = await stat(subSrc);
+        if (subStat.isFile()) {
+          await writeFile(subDest, await readFile(subSrc, "utf-8"), "utf-8");
+        }
+      }
+    } else {
+      // Copy seed file
+      await writeFile(destPath, await readFile(srcPath, "utf-8"), "utf-8");
+    }
+  }
+}
+
+/**
+ * Create a new card instance with seed files from the card class.
+ * The card name includes the extension (e.g., "my-task.todo").
+ * The extension determines the card class.
+ */
+export async function createCard(
+  project: string,
+  canvas: string,
+  cardName: string
+): Promise<void> {
+  let projectPath: string | undefined;
+  try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
+  validateFilename(cardName, projectPath);
+
+  const dir = await getCanvasDir(project, canvas);
+  const cardDir = join(dir, cardName);
+
+  // Create the card directory
+  await mkdir(cardDir, { recursive: true });
+
+  // Resolve card class and copy seeds
+  const cardClass = resolveCardClassFromFilename(cardName, projectPath);
+  const classDir = resolveCardClassDir(cardClass, projectPath);
+  if (classDir) {
+    await copySeedFiles(classDir, cardDir);
+  }
+
+  // Ensure primary file exists (even if no seed for it)
+  const primaryFile = getPrimaryFile(cardClass, projectPath);
+  const primaryPath = join(cardDir, primaryFile);
+  if (!existsSync(primaryPath)) {
+    await writeFile(primaryPath, "", "utf-8");
+  }
+}
+
 /**
  * Migrate flat card files to card directories.
  * For each file with a valid card extension that is NOT a directory,
@@ -429,6 +523,41 @@ export async function migrateToCardDirectories(projectPath: string, canvas: stri
       }
     } catch (err) {
       console.warn(`[migration] Failed to migrate ${name}: ${(err as Error).message}`);
+    }
+  }
+
+  return migrated;
+}
+
+/**
+ * Migrate underscore-prefixed cards and .brief/.log extensions.
+ * _goal.goal → goal.goal, _brief.brief → brief.md, _log.log → log.md, etc.
+ */
+export async function migrateCardNames(projectPath: string, canvas: string): Promise<number> {
+  const dir = canvas === "_root" ? projectPath : join(projectPath, canvas);
+  const { rename } = await import("fs/promises");
+  let migrated = 0;
+
+  const renames: [string, string][] = [
+    // Underscore prefix removal
+    ["_project.project", "project.project"],
+    ["_goal.goal", "goal.goal"],
+    ["_todo.todo", "todo.todo"],
+    // Extension changes (brief/log become .md)
+    ["_brief.brief", "brief.md"],
+    ["_log.log", "log.md"],
+  ];
+
+  for (const [oldName, newName] of renames) {
+    const oldPath = join(dir, oldName);
+    const newPath = join(dir, newName);
+    if (existsSync(oldPath) && !existsSync(newPath)) {
+      try {
+        await rename(oldPath, newPath);
+        migrated++;
+      } catch (err) {
+        console.warn(`[migration] Failed to rename ${oldName} → ${newName}: ${(err as Error).message}`);
+      }
     }
   }
 

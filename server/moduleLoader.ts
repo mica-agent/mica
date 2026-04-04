@@ -44,6 +44,8 @@ export interface MicaBridge {
   exec(command: string, opts?: { cwd?: string; timeout?: number }): Promise<{ stdout: string; stderr: string; exitCode: number }>;
   /** Append to the activity log */
   log(message: string): Promise<void>;
+  /** Create a new card instance on the canvas. Extension determines class. Seeds copied automatically. */
+  createCard(name: string): Promise<void>;
   /** Project and canvas identifiers */
   project: string;
   canvas: string;

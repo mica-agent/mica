@@ -107,6 +107,24 @@ export async function fetchFile(
   return res.json();
 }
 
+export async function createCardApi(
+  project: string,
+  canvas: CanvasId,
+  name: string
+): Promise<RenderedCard> {
+  const res = await fetch(
+    `${projectCanvasUrl(project, canvas)}/cards`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }
+  );
+  if (!res.ok) throw new Error(`Failed to create card: ${res.statusText}`);
+  const data = await res.json();
+  return data.card;
+}
+
 export async function saveFile(
   project: string,
   canvas: CanvasId,

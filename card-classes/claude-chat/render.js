@@ -14,33 +14,43 @@ import path from 'path';
 const PROJECT_DIR = process.env.PROJECT_DIR || "/project";
 const HISTORY_FILE = "conversation.json";
 
+/** Read the first non-dot file from a card directory. */
+async function readCardContent(cardName) {
+  const dir = path.join(PROJECT_DIR, cardName);
+  try {
+    const entries = await fs.promises.readdir(dir);
+    for (const entry of entries) {
+      if (!entry.startsWith(".")) {
+        return await fs.promises.readFile(path.join(dir, entry), "utf-8");
+      }
+    }
+  } catch { /* card doesn't exist */ }
+  return null;
+}
+
 /** Build project context for the system prompt. */
-async function buildContext() {
+async function buildContext(mica) {
   const parts = [];
 
-  // Read system cards for project context
-  const systemCards = [
-    { file: "_brief.brief", label: "Agent Brief" },
-    { file: "_goal.goal", label: "Project Goals" },
-    { file: "_todo.todo", label: "Tasks" },
-    { file: "_log.log", label: "Recent Activity" },
+  // Read the agent's own brief (from this card's directory)
+  try {
+    const brief = await mica.read("brief.md");
+    if (brief.trim()) parts.push(`## Agent Brief\n${brief.trim()}`);
+  } catch { /* no brief */ }
+
+  // Read canvas seed cards for project context
+  const contextCards = [
+    { name: "goal.goal", label: "Project Goals" },
+    { name: "todo.todo", label: "Tasks" },
+    { name: "brief.md", label: "Project Brief" },
+    { name: "log.md", label: "Recent Activity" },
   ];
 
-  for (const { file, label } of systemCards) {
-    try {
-      // Read primary file from card directory
-      const dir = path.join(PROJECT_DIR, file);
-      const entries = await fs.promises.readdir(dir).catch(() => []);
-      for (const entry of entries) {
-        if (!entry.startsWith(".")) {
-          const content = await fs.promises.readFile(path.join(dir, entry), "utf-8");
-          if (content.trim()) {
-            parts.push(`## ${label}\n${content.trim()}`);
-          }
-          break;
-        }
-      }
-    } catch { /* card doesn't exist */ }
+  for (const { name, label } of contextCards) {
+    const content = await readCardContent(name);
+    if (content?.trim()) {
+      parts.push(`## ${label}\n${content.trim()}`);
+    }
   }
 
   // List canvas cards
@@ -161,7 +171,7 @@ async function processMessage(session, message, mica) {
     let sessionId;
     let cost = 0;
 
-    const context = await buildContext();
+    const context = await buildContext(mica);
     const systemPrompt = `You are a collaborative AI assistant working on this project. You have full access to the project filesystem and can run commands.
 
 ${context}

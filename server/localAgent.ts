@@ -254,7 +254,7 @@ async function executeTool(
         }
         await writeCanvasFile(project, canvas, args.filename, content);
         filesChanged.value = true;
-        if (args.filename !== "_log.log") {
+        if (args.filename !== "log.md") {
           await appendToLog(project, canvas, `Updated **${args.filename}**: ${args.summary || "(no summary)"}`);
         }
         return `File "${args.filename}" written to whiteboard.`;

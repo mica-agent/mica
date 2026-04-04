@@ -144,6 +144,10 @@ function createBridge(cardName, replyClientId) {
     async log(message) {
       sendToHost({ type: "bridge", cardName, method: "log", data: { message } });
     },
+
+    async createCard(name) {
+      sendToHost({ type: "bridge", cardName, method: "createCard", data: { name } });
+    },
   };
 }
 

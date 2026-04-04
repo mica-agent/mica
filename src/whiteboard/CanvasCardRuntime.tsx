@@ -5,7 +5,7 @@
 // one per child card. Each child gets its own container, bridge, and script scope.
 
 import React, { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
-import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing, fetchLayout, saveLayout } from "../api/canvasFiles";
+import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing, fetchLayout, saveLayout, createCardApi } from "../api/canvasFiles";
 import type { RenderedCard } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
 import WidgetRuntime from "./WidgetRuntime";
@@ -207,31 +207,22 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   const createTerminal = useCallback(async () => {
     const name = `term-${Date.now().toString(36)}.terminal`;
-    await saveFile(projectId, "_root", name, "");
+    await createCardApi(projectId, "_root", name);
   }, [projectId]);
 
   const createClaudeChat = useCallback(async () => {
     const name = `chat-${Date.now().toString(36)}.claude-chat`;
-    await saveFile(projectId, "_root", name, "");
+    await createCardApi(projectId, "_root", name);
   }, [projectId]);
 
   const createLlamaChat = useCallback(async () => {
     const name = `chat-${Date.now().toString(36)}.llama-chat`;
-    await saveFile(projectId, "_root", name, "");
+    await createCardApi(projectId, "_root", name);
   }, [projectId]);
 
   const createAgent = useCallback(async () => {
     const name = `agent-${Date.now().toString(36)}.agent`;
-    const initialState = JSON.stringify({
-      provider: null,
-      status: "setup",
-      phase: "Choose an agent",
-      plan: [],
-      current_action: null,
-      blocker: null,
-      last_updated: null,
-    }, null, 2);
-    await saveFile(projectId, "_root", name, initialState);
+    await createCardApi(projectId, "_root", name);
   }, [projectId]);
 
   const handleSave = useCallback(async (filename: string, content: string) => {

@@ -143,11 +143,15 @@ async function createHostHandler(
       const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16);
       const line = `- **${timestamp}** — ${message}\n`;
       try {
-        const existing = await ctx.readFile("_log.log");
-        await ctx.writeFile("_log.log", existing + line);
+        const existing = await ctx.readFile("log.md");
+        await ctx.writeFile("log.md", existing + line);
       } catch {
-        await ctx.writeFile("_log.log", `# Activity Log\n\n${line}`);
+        await ctx.writeFile("log.md", `# Activity Log\n\n${line}`);
       }
+    },
+    async createCard(name: string) {
+      const { createCard: cc } = await import("../canvasFiles.js");
+      await cc(ctx.project, ctx.canvas, name);
     },
   };
 
