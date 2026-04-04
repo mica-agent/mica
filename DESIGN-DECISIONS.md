@@ -75,7 +75,7 @@ This maps cleanly to the file system: the card class lives in `card-classes/{nam
 
 ## Canvas cards seed their own context
 
-System cards (goal, todo, brief, log) are tied to a specific canvas. Each canvas has its own set. Different canvas card classes can seed different initial cards:
+Seed cards (goal, todo, brief, log) are created when a canvas is set up. After creation, they're regular cards — editable, deletable, no special treatment. Each canvas has its own set. Different canvas card classes can seed different initial cards:
 
 - `project.project` seeds `goal.goal`, `todo.todo`, `brief.md`, `log.md`
 - A hypothetical `sprint.canvas` could seed `backlog.todo`, `sprint-goal.goal`, `retro.md`

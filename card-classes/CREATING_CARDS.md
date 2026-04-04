@@ -1036,8 +1036,8 @@ The manifest file maps card class names to file extensions and UI metadata. Ther
 |-------|----------|------|-------------|
 | `extension` | Yes | string | File extension that maps to this class. Must start with `.` |
 | `badge` | Yes | string | Short label shown on the card header (e.g., "TODO", "CHAT", "TERM") |
-| `defaultTitle` | No | string | Display title when the filename is a system card (e.g., `project.project`) |
-| `system` | No | boolean | If `true`, card appears in the system cards section of the canvas. Default `false` |
+| `defaultTitle` | No | string | Display title for seed cards (e.g., `project.project`) |
+| `system` | No | boolean | UI hint: if `true`, card appears in the seed cards section at the top of the canvas. No functional difference — just layout grouping. Default `false` |
 | `network` | No | boolean | If `true`, enables `mica.fetch()` for server-proxied HTTP requests. Default `false` |
 
 ### Extension mapping rules

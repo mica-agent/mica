@@ -55,7 +55,7 @@ my-project/
 │           └── render.js
 │
 ├── project.project         ← root canvas card (what you see when you open the project)
-├── goal.goal               ← system cards (seeded by Mica)
+├── goal.goal               ← seed cards (created on project setup)
 ├── todo.todo
 ├── brief.md                ← agent identity (markdown)
 ├── log.md                  ← activity log (markdown)
