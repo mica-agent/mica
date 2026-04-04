@@ -378,11 +378,26 @@ Card classes run as standard Node.js ES modules loaded via dynamic `import()`. T
 
 Agents and users can create new card classes at runtime:
 
-1. Write a `render.js` file to `.mica/.card-classes/{name}/` in the project (via the agent's `write_file` tool with `.card-classes/` prefix)
-2. Create a card file — either use the class name as extension (`mycard.{name}`) or use frontmatter `card: name` in a `.md` file
-3. The file watcher picks up the new class and renders it immediately
+1. Write a `render.js` file to `.mica/.card-classes/{name}/` in the project
+2. Add seed files prefixed with `_` — these are copied into new card instances on creation (prefix stripped)
+3. Create a card instance — a directory using the class name as extension (`mycard.{name}`)
+4. The file watcher picks up the new class and renders it immediately
 
-See `card-classes/CREATING_CARDS.md` for the full API reference including all five communication patterns, HTML structure, external resource loading, and complete examples.
+**Card class directory structure:**
+
+```
+card-classes/claude-chat/
+├── render.js              ← card class code (required)
+├── _brief.md              ← seed: copied into new instances as brief.md
+├── _conversation.json     ← seed: copied as conversation.json
+└── README.md              ← documentation (not a seed, not copied)
+```
+
+Files prefixed with `_` inside the card class directory are **seed files**. When a new card instance is created, the card creation subsystem copies all `_` prefixed files into the new card directory with the prefix stripped. After creation, they're regular files — editable, deletable, no special treatment.
+
+Canvas card classes use the same mechanism to define initial project cards. The `simple-project` class seeds `goal.goal`, `todo.todo`, `brief.md`, and `log.md` for every new project.
+
+See `card-classes/CREATING_CARDS.md` for the full API reference.
 
 #### 7.10 Agent Context Model
 

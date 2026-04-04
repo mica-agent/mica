@@ -73,14 +73,40 @@ A card has two sides. The **front** is the instance — the user's conversation,
 
 This maps cleanly to the file system: the card class lives in `card-classes/{name}/render.js` (or `.mica/.card-classes/{name}/render.js` for project-specific classes), and the card instance is a directory at the project root.
 
-## Canvas cards seed their own context
+## Seed cards — `_` prefix convention in card class directories
 
-Seed cards (goal, todo, brief, log) are created when a canvas is set up. After creation, they're regular cards — editable, deletable, no special treatment. Each canvas has its own set. Different canvas card classes can seed different initial cards:
+Seed cards are initial cards created when a new card instance is set up. They're defined by the card class using a simple convention: files prefixed with `_` inside the card class directory are seeds.
 
-- `project.project` seeds `goal.goal`, `todo.todo`, `brief.md`, `log.md`
-- A hypothetical `sprint.canvas` could seed `backlog.todo`, `sprint-goal.goal`, `retro.md`
+```
+card-classes/claude-chat/
+├── render.js              ← card class code (not a seed)
+├── _brief.md              ← seed: copied into new instances
+├── _conversation.json     ← seed: initial empty history
+└── README.md              ← documentation (not a seed)
+```
 
-The canvas card class defines what gets seeded — it's in the class definition, not infrastructure. This means new canvas types with different workflows are just new card classes.
+On creation of `my-agent.claude-chat/`, the card creation subsystem scans the card class directory for `_` prefixed files, copies them into the new card directory, and strips the prefix:
+
+```
+my-agent.claude-chat/
+├── brief.md               ← copied from _brief.md
+├── conversation.json      ← copied from _conversation.json
+```
+
+After seeding, they're regular files — editable, deletable, no special treatment. The underscore convention exists only inside card class directories to tell the subsystem what to copy.
+
+Canvas card classes use the same mechanism. A `simple-project` card class has seeds that define the initial project canvas:
+
+```
+card-classes/simple-project/
+├── render.js
+├── _goal.goal/goals.md        ← seeds a goal.goal card
+├── _todo.todo/tasks.md        ← seeds a todo.todo card
+├── _brief.md/document.md      ← seeds a brief.md card
+├── _log.md/document.md        ← seeds a log.md card
+```
+
+Different canvas types seed different cards. A hypothetical `sprint.canvas` class would seed `backlog.todo`, `sprint-goal.goal`, `retro.md`. No hardcoded names in the server — the card class owns its seeds.
 
 ## Cards as tools — mica.callCard()
 
