@@ -6,10 +6,62 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import fs from 'fs';
+import path from 'path';
 
 // ── Server-side chat management ───────────────────────────
 
+const PROJECT_DIR = process.env.PROJECT_DIR || "/project";
 const HISTORY_FILE = "conversation.json";
+
+/** Build project context for the system prompt. */
+async function buildContext() {
+  const parts = [];
+
+  // Read system cards for project context
+  const systemCards = [
+    { file: "_brief.brief", label: "Agent Brief" },
+    { file: "_goal.goal", label: "Project Goals" },
+    { file: "_todo.todo", label: "Tasks" },
+    { file: "_log.log", label: "Recent Activity" },
+  ];
+
+  for (const { file, label } of systemCards) {
+    try {
+      // Read primary file from card directory
+      const dir = path.join(PROJECT_DIR, file);
+      const entries = await fs.promises.readdir(dir).catch(() => []);
+      for (const entry of entries) {
+        if (!entry.startsWith(".")) {
+          const content = await fs.promises.readFile(path.join(dir, entry), "utf-8");
+          if (content.trim()) {
+            parts.push(`## ${label}\n${content.trim()}`);
+          }
+          break;
+        }
+      }
+    } catch { /* card doesn't exist */ }
+  }
+
+  // List canvas cards
+  try {
+    const entries = await fs.promises.readdir(PROJECT_DIR);
+    const cards = [];
+    for (const entry of entries) {
+      if (entry.startsWith(".") || entry === "workspace") continue;
+      const ext = path.extname(entry);
+      if (ext) {
+        const stat = await fs.promises.stat(path.join(PROJECT_DIR, entry));
+        cards.push(`- ${entry}${stat.isDirectory() ? "/" : ""}`);
+      }
+    }
+    if (cards.length > 0) {
+      parts.push(`## Canvas Cards\n${cards.join("\n")}`);
+    }
+  } catch { /* no cards */ }
+
+  return parts.join("\n\n");
+}
 const MAX_HISTORY = 100;
 const MODEL = "claude-sonnet-4-6";
 
@@ -109,8 +161,15 @@ async function processMessage(session, message, mica) {
     let sessionId;
     let cost = 0;
 
+    const context = await buildContext();
+    const systemPrompt = `You are a collaborative AI assistant working on this project. You have full access to the project filesystem and can run commands.
+
+${context}
+
+Be concise and direct. Take action — don't just discuss. When asked to create files or make changes, do it.`;
+
     const options = {
-      systemPrompt: "You are a helpful assistant collaborating on a project. Be concise and direct.",
+      systemPrompt,
       tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
       model: MODEL,
       maxTurns: 10,

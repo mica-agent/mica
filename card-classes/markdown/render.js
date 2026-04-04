@@ -32,6 +32,13 @@ export default function render(content, config) {
     <style>
     .card-markdown-editor {
       min-height: 200px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+    .card-markdown-editor #editor {
+      flex: 1;
+      min-height: 0;
     }
     .card-markdown-editor .toastui-editor-defaultUI {
       border: none;
@@ -58,7 +65,7 @@ export default function render(content, config) {
 
       const editor = new toastui.Editor({
         el: editorEl,
-        height: '240px',
+        height: '100%',
         initialEditType: 'wysiwyg',
         previewStyle: 'tab',
         initialValue: initialContent,
@@ -72,6 +79,13 @@ export default function render(content, config) {
         ],
       });
 
+      // Resize editor when card resizes
+      const ro = new ResizeObserver(() => {
+        const h = editorEl.clientHeight;
+        if (h > 0) editor.setHeight(h + 'px');
+      });
+      ro.observe(editorEl);
+
       // Debounced save — write back to file after user stops typing
       let saveTimer = null;
       editor.on('change', () => {
@@ -84,6 +98,7 @@ export default function render(content, config) {
 
       mica.onDestroy(() => {
         if (saveTimer) clearTimeout(saveTimer);
+        ro.disconnect();
         editor.destroy();
       });
     })();

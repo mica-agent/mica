@@ -866,12 +866,14 @@ pre.mermaid svg {
   opacity: 1 !important;
 }
 
-/* When card has explicit height from resize, body scrolls instead of clipping */
+/* When card has explicit height from resize, body fills available space */
 .wb-card--resized .wb-card-body {
   max-height: none !important;
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Remove fade gradient on resized cards */
@@ -910,6 +912,16 @@ pre.mermaid svg {
   position: relative;
   -webkit-user-select: text;
   user-select: text;
+  /* Fill card body when card is resized */
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Widget content div fills the runtime container */
+.widget-runtime > div {
+  flex: 1;
+  min-height: 0;
 }
 
 /* Activity indicator — subtle animated bar at top of card */

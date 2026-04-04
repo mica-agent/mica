@@ -730,6 +730,27 @@ The server is the source of truth. When a widget is recreated, the channel reope
 
 6. **Unique IDs** — if your library needs DOM element IDs, make them unique per card instance (e.g., `widget-${Date.now()}`). Multiple cards of the same class share the page.
 
+7. **Handle resize** — cards can be resized by the user. Set your widget to fill the container (`height: 100%; width: 100%`) and use a `ResizeObserver` to call the library's resize method when the card changes size:
+
+```javascript
+// Widget fills the card body
+const widget = new MyLibrary(container.querySelector('#widget'), {
+  height: '100%',
+  width: '100%',
+});
+
+// Respond to card resize
+const ro = new ResizeObserver(() => {
+  widget.resize();  // or widget.setHeight(), fitAddon.fit(), etc.
+});
+ro.observe(container);
+
+mica.onDestroy(() => {
+  ro.disconnect();
+  widget.destroy();
+});
+```
+
 ---
 
 ## 10. Dependencies
