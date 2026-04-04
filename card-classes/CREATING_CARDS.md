@@ -662,7 +662,77 @@ export function onDisconnect(mica) {
 
 ---
 
-## 9. Dependencies
+## 9. Working with Third-Party GUI Libraries
+
+Card classes can use any browser-side library — xterm.js, Three.js, D3, CodeMirror, Leaflet, etc. The key is understanding the lifecycle: your widget will be destroyed and recreated when the user refreshes the page, switches layouts, or opens a new browser window. The server preserves the meaningful state; the widget just needs to catch up.
+
+### The pattern
+
+```javascript
+export const dependencies = {
+  scripts: ['https://cdn.example.com/my-library.min.js'],
+  styles: ['https://cdn.example.com/my-library.min.css'],
+};
+
+export default function render(content, config) {
+  return `
+    <div id="widget"></div>
+    <script>
+      // 1. Initialize the library widget
+      const widget = new MyLibrary(container.querySelector('#widget'), { ... });
+
+      // 2. Connect to server for live state
+      const ch = mica.openChannel('session', { ... });
+
+      // 3. Server sends current state on connect (and on every reconnect)
+      ch.onData((data) => {
+        widget.update(data);  // Apply server state to widget
+      });
+
+      // 4. User interactions → send to server
+      widget.on('change', (value) => {
+        ch.send({ value });
+      });
+
+      // 5. Clean up on destroy
+      mica.onDestroy(() => {
+        ch.close();
+        widget.destroy();
+      });
+    </script>
+  `;
+}
+```
+
+### What survives vs. what's lost
+
+| Survives (server-side) | Lost (browser-side) |
+|------------------------|-------------------|
+| PTY session, process output | Cursor position |
+| Chat conversation history | Scroll position |
+| File content | Text selection |
+| Channel session state | Widget animation state |
+| Agent SDK session | Unsaved editor drafts (use debounced save) |
+
+The server is the source of truth. When a widget is recreated, the channel reopens, the server replays state via the `{ type: "attached" }` message, and the widget catches up. From the user's perspective, the widget reappears with its content intact.
+
+### Rules for robust card classes
+
+1. **Declare dependencies** via the `dependencies` export — not inline `<script src>` tags. This guarantees libraries are loaded before your scripts run, even across React lifecycle events.
+
+2. **Use `mica.onDestroy()`** to clean up everything — `dispose()` widgets, disconnect observers, clear timers. If you skip this, resources leak on every page refresh.
+
+3. **Handle `{ type: "attached" }` on the server** — this message arrives when a browser reconnects. Replay current state via `mica.reply()` so the new widget instance catches up.
+
+4. **Save state aggressively** — don't hold important state only in the browser widget. Write it to the card directory via `mica.write()` or keep it in a server-side session Map. The browser is ephemeral; the server persists.
+
+5. **Use `container.querySelector()`** — never `document.querySelector()`. Cards are isolated; using `document` would reach into other cards' DOM.
+
+6. **Unique IDs** — if your library needs DOM element IDs, make them unique per card instance (e.g., `widget-${Date.now()}`). Multiple cards of the same class share the page.
+
+---
+
+## 10. Dependencies
 
 Card classes that use third-party libraries from CDN should declare them via a `dependencies` export. This guarantees scripts and styles are fully loaded and applied before inline `<script>` blocks execute.
 
@@ -739,7 +809,7 @@ const term = new Terminal();
 
 ---
 
-## 10. Common Pitfalls
+## 11. Common Pitfalls
 
 ### container.querySelector vs document.querySelector
 
@@ -850,7 +920,7 @@ Use inline `style` attributes for your card's own layout. Reserve `<style>` tags
 
 ---
 
-## 11. Debugging
+## 12. Debugging
 
 ### Render errors
 
@@ -917,7 +987,7 @@ No server restart needed during development.
 
 ---
 
-## 12. Manifest Reference
+## 13. Manifest Reference
 
 The manifest file maps card class names to file extensions and UI metadata. There are two manifest locations:
 
@@ -958,7 +1028,7 @@ The manifest file maps card class names to file extensions and UI metadata. Ther
 
 ---
 
-## 13. Complete Examples
+## 14. Complete Examples
 
 ### Example 1: Counter (simple export-based state)
 
