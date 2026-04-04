@@ -401,6 +401,7 @@ The `mica` bridge is available in **export functions and stream handlers** (not 
 | `await mica.exec(command, options?)` | `{ stdout, stderr, exitCode }` | Run a shell command in the project's Docker container. |
 | `await mica.log(message)` | `void` | Append a line to `log.md` in the canvas. |
 | `await mica.callCard(cardName, fn, args)` | `any` | Call an exported function on another card in the same canvas. |
+| `await mica.createCard(name)` | `void` | Create a new card instance. Extension determines class. Seed files from the card class are copied automatically. |
 
 ### MicaBridge properties
 

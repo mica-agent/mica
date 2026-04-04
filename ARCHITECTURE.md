@@ -380,8 +380,7 @@ Agents and users can create new card classes at runtime:
 
 1. Write a `render.js` file to `.mica/.card-classes/{name}/` in the project
 2. Add seed files prefixed with `_` — these are copied into new card instances on creation (prefix stripped)
-3. Create a card instance — a directory using the class name as extension (`mycard.{name}`)
-4. The file watcher picks up the new class and renders it immediately
+3. The file watcher picks up the new class and it's available immediately
 
 **Card class directory structure:**
 
@@ -393,9 +392,13 @@ card-classes/claude-chat/
 └── README.md              ← documentation (not a seed, not copied)
 ```
 
-Files prefixed with `_` inside the card class directory are **seed files**. When a new card instance is created, the card creation subsystem copies all `_` prefixed files into the new card directory with the prefix stripped. After creation, they're regular files — editable, deletable, no special treatment.
+Files prefixed with `_` inside the card class directory are **seed files**. They define the initial contents of new card instances.
 
-Canvas card classes use the same mechanism to define initial project cards. The `simple-project` class seeds `goal.goal`, `todo.todo`, `brief.md`, and `log.md` for every new project.
+**Creating card instances:** `mica.createCard('my-agent.claude-chat')`. The system creates the card directory, copies seed files from the card class (stripping the `_` prefix), and the card appears on the canvas. One call, fully formed card. The agent doesn't need to know about seeds or directory structure.
+
+Canvas card classes use the same mechanism. The `simple-project` class has seed directories for `goal.goal`, `todo.todo`, `brief.md`, and `log.md` — all created automatically when a new project is set up.
+
+After creation, seed files are regular files — editable, deletable, no special treatment.
 
 See `card-classes/CREATING_CARDS.md` for the full API reference.
 

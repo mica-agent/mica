@@ -85,7 +85,7 @@ card-classes/claude-chat/
 └── README.md              ← documentation (not a seed)
 ```
 
-On creation of `my-agent.claude-chat/`, the card creation subsystem scans the card class directory for `_` prefixed files, copies them into the new card directory, and strips the prefix:
+Cards are created via `mica.createCard('my-agent.claude-chat')`. The system creates the directory and copies seed files automatically:
 
 ```
 my-agent.claude-chat/
@@ -93,7 +93,7 @@ my-agent.claude-chat/
 ├── conversation.json      ← copied from _conversation.json
 ```
 
-After seeding, they're regular files — editable, deletable, no special treatment. The underscore convention exists only inside card class directories to tell the subsystem what to copy.
+The agent doesn't need to know about seeds, directory structure, or primary files. One call, fully formed card. After creation, seed files are regular files — editable, deletable, no special treatment. The `_` convention exists only inside card class directories to tell the system what to copy.
 
 Canvas card classes use the same mechanism. A `simple-project` card class has seeds that define the initial project canvas:
 
