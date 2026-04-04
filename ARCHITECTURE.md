@@ -54,20 +54,20 @@ my-project/
 │       └── my-widget/
 │           └── render.js
 │
-├── _project.project        ← root canvas card (what you see when you open the project)
-├── _goal.goal              ← system cards (seeded by Mica)
-├── _brief.brief
-├── _todo.todo
-├── _log.log
+├── project.project         ← root canvas card (what you see when you open the project)
+├── goal.goal               ← system cards (seeded by Mica)
+├── todo.todo
+├── brief.md                ← agent identity (markdown)
+├── log.md                  ← activity log (markdown)
 ├── welcome.md              ← user/agent-created cards
 ├── architecture.mmd
 └── research/               ← nested canvas (a card that contains cards)
-    ├── _project.project
+    ├── project.project
     ├── hypotheses.md
     └── findings.md
 ```
 
-**Card files live at the project root** — they are the work, not metadata. System cards (`_` prefix), user-created cards, and nested canvases (subdirectories) are all visible and first-class in the project directory.
+**Card files live at the project root** — they are the work, not metadata. System cards, user-created cards, and nested canvases (subdirectories) are all visible and first-class in the project directory.
 
 **`.mica/` holds infrastructure only** — agent config, chat history, layout state, and custom card class definitions. This is the machinery, not the work.
 
@@ -80,8 +80,7 @@ Card files follow a three-tier naming convention:
 | Prefix | Meaning | Visible to agents? | Examples |
 |--------|---------|-------------------|----------|
 | `.` (dot) | Internal data — not cards | No | `.config.json`, `.chat-history.json`, `.layout.json` |
-| `_` (underscore) | System card — seeded by Mica | Yes | `_goal.goal`, `_todo.todo`, `_brief.brief` |
-| (none) | User card — created by humans/agents | Yes | `notes.md`, `architecture.mmd`, `tasks.todo` |
+| (none) | Card — system-seeded or user-created | Yes | `goal.goal`, `todo.todo`, `brief.md`, `notes.md`, `tasks.todo` |
 
 #### Extension-as-class convention
 
@@ -95,8 +94,6 @@ The file extension determines the card class. Standard file formats keep standar
 | `html` | `.html` | HTML | Yes |
 | `goal` | `.goal` | Markdown | Mica-native |
 | `todo` | `.todo` | Markdown | Mica-native |
-| `brief` | `.brief` | Markdown | Mica-native |
-| `log` | `.log` | Markdown | Mica-native |
 | `chat` | `.chat` | Managed | Mica-native |
 | `agent` | `.agent` | Managed | Mica-native |
 | `canvas` | `.canvas` | Managed | Mica-native |
@@ -105,7 +102,9 @@ The file extension determines the card class. Standard file formats keep standar
 
 The content format is independent of the extension. A `.todo` file contains markdown internally — the `todo` card class renders it with interactive checkboxes. The extension determines *behavior*, not format.
 
-Multiple cards of the same class are natural: `backend.todo` and `frontend.todo` are both rendered by the `todo` class. The `_` prefix on system cards is a convention, not a constraint.
+Multiple cards of the same class are natural: `backend.todo` and `frontend.todo` are both rendered by the `todo` class.
+
+Note that `brief` and `log` are plain `.md` files rendered by the `markdown` card class. They were originally Mica-native extensions but graduated to standard markdown — their semantics come from their filename and content, not a custom renderer.
 
 ### 3. Workspace Registry
 
@@ -310,7 +309,7 @@ Project .mica/.card-classes/  →  Workspace ~/.mica/card-classes/  →  Built-i
 
 | Scope | Top-level card | Card class | What it shows |
 |-------|---------------|------------|---------------|
-| **Project** | `_project.project` (project root) | `simple-project` | Project's child cards in a grid |
+| **Project** | `project.project` (project root) | `simple-project` | Project's child cards in a grid |
 | **Workspace** | `~/.mica/_portfolio.md` | `portfolio` | Connected projects as child cards |
 | **User** | (future) | (future) | Cross-workspace, identity-level |
 
@@ -326,12 +325,12 @@ The hierarchy emerges naturally from card nesting:
 ```
 Portfolio card (workspace scope)
   └── Project card (project scope)
-        ├── _goal.goal (simple card)
-        ├── _todo.todo (simple card)
+        ├── goal.goal (simple card)
+        ├── todo.todo (simple card)
         ├── design.md (simple card)
         ├── tasks.todo (simple card — second todo instance)
         └── Component A (canvas card)
-              ├── _goal.goal
+              ├── goal.goal
               └── api-spec.mmd
 ```
 
@@ -385,7 +384,28 @@ Agents and users can create new card classes at runtime:
 
 See `card-classes/CREATING_CARDS.md` for the full API reference including all five communication patterns, HTML structure, external resource loading, and complete examples.
 
-#### 7.10 Local LLM Agent
+#### 7.10 Agent Context Model
+
+Agents in Mica operate within a three-part context model:
+
+**Brief = agent identity.** Each agent card has a `brief.md` file in its card directory that defines who the agent is — its role, personality, constraints, and instructions. The brief is the agent's identity document. Brief templates ship with the card class (e.g., `card-classes/claude-chat/brief.md`) and are copied into the card instance directory on creation. Users and other agents can edit the brief to reshape the agent's behavior.
+
+**Card class = SDK adapter.** The card class (`claude-chat`, `pi-chat`, etc.) is the "back of the card" — it handles the mechanics of connecting to an LLM provider, managing conversation state, and translating between the Mica bridge protocol and the provider's API. The front of the card is the instance (the user's conversation, the agent's brief, the accumulated context). Two sides of the same card: the class defines *how* it works, the instance defines *who* it is and *what* it knows.
+
+**Canvas = shared context.** Agents read the same cards that humans see. The canvas is the shared work surface — goal, todo, brief, markdown documents, diagrams, code files. When an agent needs context, it reads the canvas. When it produces work, it writes to the canvas. There is no separate "agent memory" or "agent context window" — the canvas *is* the context, shared between humans and agents.
+
+#### 7.11 Cards as Tools
+
+Cards can invoke other cards programmatically via `mica.callCard(cardName, fn, args)`. This turns any card with exported functions into a reusable tool that other cards (including agent cards) can call.
+
+```javascript
+// From an agent card's server-side code:
+const result = await mica.callCard('research.claude-chat', 'summarize', { topic: 'authentication' });
+```
+
+This enables composition: an orchestrator agent can delegate work to specialist agent cards, a dashboard card can pull data from multiple source cards, and card classes can be designed as reusable services.
+
+#### 7.12 Local LLM Agent
 
 Mica can run agents against a local LLM instead of Claude, enabling fully offline operation.
 
@@ -411,7 +431,7 @@ Mica can run agents against a local LLM instead of Claude, enabling fully offlin
 - `"local"` → `chatWithLocalAgent()`, `"claude"` (default) → `chatWithAgent()`
 - UI toggle in `ProjectNav.tsx` sets `agentProvider` at project creation
 
-#### 7.11 Reactive Behavior
+#### 7.13 Reactive Behavior
 
 Agents can react to human file edits and propose updates to related artifacts. This is implemented as a reactive layer (`server/reactiveAgent.ts`) that triggers the project's configured agent.
 
@@ -429,7 +449,7 @@ Agents can react to human file edits and propose updates to related artifacts. T
 **Rate limiting:**
 - Per-canvas cooldown: 60s default (configurable via `config.reactive.cooldownMs`)
 - Per-canvas busy lock: skips events while an agent is already working on the canvas
-- Ignored files: dot-prefixed files (`.chat-history.json`, `.config.json`, etc.) are skipped by naming convention; `_log.log` is explicitly skipped to avoid feedback loops
+- Ignored files: dot-prefixed files (`.chat-history.json`, `.config.json`, etc.) are skipped by naming convention; `log.md` is explicitly skipped to avoid feedback loops
 - Deletes are skipped (triage only makes sense for content changes)
 
 **Configuration** (`.mica/.config.json`):
@@ -444,7 +464,7 @@ Agents can react to human file edits and propose updates to related artifacts. T
 
 Reaction results appear in chat history tagged with `reactive: true` and `trigger: filename`.
 
-#### 7.12 Sandbox Lifecycle Hardening
+#### 7.14 Sandbox Lifecycle Hardening
 
 Per-project container management (`server/projectSandbox.ts`) includes several reliability guarantees:
 

@@ -399,7 +399,8 @@ The `mica` bridge is available in **export functions and stream handlers** (not 
 | `mica.send(data)` | `void` | Broadcast data to all connected browsers (stream handlers). |
 | `mica.reply(data)` | `void` | Send data to the browser that sent the current message (stream handlers). |
 | `await mica.exec(command, options?)` | `{ stdout, stderr, exitCode }` | Run a shell command in the project's Docker container. |
-| `await mica.log(message)` | `void` | Append a line to `_log.log` in the canvas. |
+| `await mica.log(message)` | `void` | Append a line to `log.md` in the canvas. |
+| `await mica.callCard(cardName, fn, args)` | `any` | Call an exported function on another card in the same canvas. |
 
 ### MicaBridge properties
 
@@ -986,7 +987,7 @@ if (result.exitCode !== 0) {
 
 ### Server-side printf debugging
 
-Use `mica.log()` in export functions to write messages to `_log.log` on the canvas:
+Use `mica.log()` in export functions to write messages to `log.md` on the canvas:
 
 ```javascript
 export async function debug_function(content, args, mica) {
@@ -1035,7 +1036,7 @@ The manifest file maps card class names to file extensions and UI metadata. Ther
 |-------|----------|------|-------------|
 | `extension` | Yes | string | File extension that maps to this class. Must start with `.` |
 | `badge` | Yes | string | Short label shown on the card header (e.g., "TODO", "CHAT", "TERM") |
-| `defaultTitle` | No | string | Display title when the filename is a system card (e.g., `_project.project`) |
+| `defaultTitle` | No | string | Display title when the filename is a system card (e.g., `project.project`) |
 | `system` | No | boolean | If `true`, card appears in the system cards section of the canvas. Default `false` |
 | `network` | No | boolean | If `true`, enables `mica.fetch()` for server-proxied HTTP requests. Default `false` |
 
