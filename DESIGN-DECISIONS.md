@@ -120,6 +120,10 @@ A card class's `render.js` runs inside the project's Docker container as a Node.
 
 A card class can wrap any Node program: a Jupyter kernel, a language server, a game engine, a media transcoder. The `render.js` is the adapter between the Mica bridge protocol and whatever the program needs. The container provides the sandbox — filesystem scoping, resource limits, network policy. The card class has full freedom within those boundaries.
 
+## Deferred
+
+- **"Flip the card" UI** — a button on the card header that shows the card class definition (render.js, seed files, manifest entry) instead of the instance content. "Customize" copies built-in to project level for editing. Purely frontend — no backend changes needed.
+
 ## Open questions
 - "Add to any project" model when cards live outside `.mica/`
 - When to build the shared primitives library
