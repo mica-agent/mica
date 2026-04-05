@@ -330,30 +330,27 @@ export default function render(content, config) {
                         return aName.localeCompare(bName);
                     });
 
-                    // Reset width first so we can measure natural heights
-                    cards.forEach(function(card) {
-                        card.style.width = CARD_W + 'px';
-                        card.style.height = '';
-                        card.classList.remove('wb-card--resized');
-                    });
-
-                    // Place row by row, using tallest card per row for Y offset
+                    // Place cards left-to-right, wrapping to next row when
+                    // the card would exceed the container width
                     layout = {};
-                    var y = 0;
-                    for (var ri = 0; ri < cards.length; ri += COLS) {
-                        var rowCards = cards.slice(ri, ri + COLS);
-                        var rowMaxH = 0;
-                        rowCards.forEach(function(card, ci) {
-                            var x = ci * (CARD_W + GAP);
-                            card.style.left = x + 'px';
-                            card.style.top = y + 'px';
-                            var h = card.offsetHeight || CARD_H;
-                            if (h > rowMaxH) rowMaxH = h;
-                            var name = card.getAttribute('data-filename');
-                            if (name) layout[name] = { x: x, y: y, w: CARD_W, h: h };
-                        });
-                        y += rowMaxH + GAP;
-                    }
+                    var maxWidth = freeform.offsetWidth || 1200;
+                    var x = 0, y = 0, rowMaxH = 0;
+                    cards.forEach(function(card) {
+                        var w = card.offsetWidth || CARD_W;
+                        var h = card.offsetHeight || CARD_H;
+                        // Wrap to next row if this card won't fit (unless it's the first in the row)
+                        if (x > 0 && x + w > maxWidth) {
+                            y += rowMaxH + GAP;
+                            x = 0;
+                            rowMaxH = 0;
+                        }
+                        card.style.left = x + 'px';
+                        card.style.top = y + 'px';
+                        if (h > rowMaxH) rowMaxH = h;
+                        var name = card.getAttribute('data-filename');
+                        if (name) layout[name] = { x: x, y: y, w: w, h: h };
+                        x += w + GAP;
+                    });
                     persistLayout();
                 });
                 buttons.push(tidyBtn);
