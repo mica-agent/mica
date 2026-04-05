@@ -11,7 +11,7 @@ my-project/
 ├── .mica/                      ← infrastructure
 │   ├── .config.json            ← agent config, provider settings
 │   ├── .chat-history.json      ← sidebar conversation
-│   ├── .layout.json            ← card positions
+│   ├──                         ← (layout state lives in project.project/layout.json)
 │   └── card-classes/           ← custom card type definitions
 │
 ├── project.project             ← root canvas card
@@ -120,13 +120,43 @@ A card class's `render.js` runs inside the project's Docker container as a Node.
 
 A card class can wrap any Node program: a Jupyter kernel, a language server, a game engine, a media transcoder. The `render.js` is the adapter between the Mica bridge protocol and whatever the program needs. The container provides the sandbox — filesystem scoping, resource limits, network policy. The card class has full freedom within those boundaries.
 
+## Self-describing card classes — metadata in render.js
+
+Card classes used to require a separate `_manifest.json` file that mapped class names to extensions and UI metadata. This was a coordination problem: two files had to agree, and forgetting the manifest entry was a common failure mode.
+
+**Decision:** Card classes export `metadata` directly from `render.js`. The system scans card class directories on startup, imports each `render.js`, and reads the `metadata` export. No separate manifest file exists. The card class is the single source of truth for its extension, badge, primary file, and other properties.
+
+```javascript
+export const metadata = { extension: ".todo", badge: "TODO", primaryFile: "tasks.md", seed: true, defaultTitle: "To Do" };
+```
+
+This simplifies creation (one file instead of two), eliminates desync bugs, and makes card classes truly self-contained.
+
+## Event source attribution — windowId in broadcasts
+
+Cross-window coordination (e.g., layout sync) initially had race conditions: a window would save state, broadcast the change, and then receive its own broadcast back, causing redundant refreshes or flicker. Timing hacks (debounce, ignore-next-event flags) were fragile.
+
+**Decision:** All broadcast events include a `source` field containing the originating window's ID. Each window checks `source` and ignores events it originated. This is a general pattern — any cross-window broadcast should include `source` so the originator can skip its own echo. No timing hacks needed.
+
+## Layout is canvas card state
+
+Layout positions were originally stored in `.mica/.layout.json` — an infrastructure file. But layout is the canvas card's state, not infrastructure. The canvas card decides how children are arranged, and different canvas types would have different layout formats.
+
+**Decision:** Layout state moved to `project.project/layout.json` — inside the canvas card's own directory. This follows the principle that card state belongs to the card. Cross-window layout sync uses `layout-changed` broadcasts with source attribution (see above).
+
 ## Deferred
 
-- **"Flip the card" UI** — a button on the card header that shows the card class definition (render.js, seed files, manifest entry) instead of the instance content. "Customize" copies built-in to project level for editing. Purely frontend — no backend changes needed.
+- **"Flip the card" UI** — a button on the card header that shows the card class definition (render.js, seed files) instead of the instance content. "Customize" copies built-in to project level for editing. Purely frontend — no backend changes needed.
+
+- **Move toolbar into canvas card class** — Currently the toolbar (add card, layout toggle, etc.) is hardcoded in CanvasCardRuntime.tsx (React). Target: the canvas card class's `render.js` renders toolbar HTML and inline scripts handle button clicks. Different canvas types would have different toolbars.
+
+- **Move card partitioning into canvas card class** — Currently CanvasCardRuntime.tsx decides how to partition children (seed cards at top, diagrams full-width, content in grid). Target: the canvas card class receives child metadata in `config` and decides arrangement. Different canvas types would partition differently (kanban: by lane, timeline: by date).
+
+- **CanvasCardRuntime becomes thin host** — After toolbar and partitioning move into the card class, CanvasCardRuntime.tsx becomes a thin mount host: it renders the canvas card class's HTML and mounts child cards into `data-slot` elements. All layout logic, toolbar, and partitioning are owned by the card class.
 
 ## Open questions
 - "Add to any project" model when cards live outside `.mica/`
 - When to build the shared primitives library
 - Card class versioning and breaking changes
 - Container idle timeout and lifecycle management
-- Card class system dependency declaration (`systemDeps` in manifest)
+- Card class system dependency declaration (`systemDeps` in metadata)

@@ -6,13 +6,15 @@ This document is the complete reference for building Mica card classes. A card c
 
 ## 1. Quick Start
 
-A card class needs three things: a `render.js` file, a manifest entry, and a card file.
+A card class needs two things: a `render.js` file (with a `metadata` export) and a card file.
 
 ### Step 1: Create render.js
 
 Create `{project}/.mica/.card-classes/counter/render.js`:
 
 ```javascript
+export const metadata = { extension: ".counter", badge: "COUNT", primaryFile: "counter.txt" };
+
 export default function render(content, config) {
   const count = parseInt(content.trim(), 10) || 0;
 
@@ -52,20 +54,9 @@ export async function decrement(content, args, mica) {
 }
 ```
 
-### Step 2: Add a manifest entry
+The `metadata` export declares the extension mapping and UI properties. No separate manifest file is needed.
 
-Create `{project}/.mica/.card-classes/_manifest.json`:
-
-```json
-{
-  "counter": {
-    "extension": ".counter",
-    "badge": "COUNT"
-  }
-}
-```
-
-### Step 3: Create a card file
+### Step 2: Create a card file
 
 Create `{project}/.mica/my-counter.counter` with content `0`. The file watcher picks it up and renders the counter widget immediately.
 
@@ -153,6 +144,9 @@ export default function render(content, config) { }   // Returns HTML string
 
 // ── Request/Response exports (optional) ─────────────
 export async function myExport(content, args, mica) {} // Browser calls via mica.call()
+
+// ── Metadata (required) ────────────────────────────
+export const metadata = { extension: ".x", badge: "X" }; // Self-describing class info
 
 // ── Stream handlers (optional) ──────────────────────
 export function onConnect(mica, args) { }              // Channel session created
@@ -1029,25 +1023,22 @@ No server restart needed during development.
 
 ---
 
-## 13. Manifest Reference
+## 13. Metadata Reference
 
-The manifest file maps card class names to file extensions and UI metadata. There are two manifest locations:
+Card classes are self-describing. Each `render.js` exports a `metadata` object that declares the extension mapping and UI properties. There is no separate manifest file — the card class itself is the source of truth.
 
-- **Built-in**: `card-classes/_manifest.json` (ships with Mica)
-- **Project-specific**: `{project}/.mica/.card-classes/_manifest.json` (merged on top of built-in)
+The system scans card class directories on startup (both built-in `card-classes/` and project-specific `.mica/.card-classes/`), imports each `render.js`, and reads the `metadata` export.
 
 ### Format
 
-```json
-{
-  "class-name": {
-    "extension": ".class-name",
-    "badge": "BADGE",
-    "defaultTitle": "My Card",
-    "system": false,
-    "network": false
-  }
-}
+```javascript
+export const metadata = {
+  extension: ".class-name",
+  badge: "BADGE",
+  primaryFile: "data.json",
+  defaultTitle: "My Card",
+  seed: true
+};
 ```
 
 ### Fields
@@ -1056,9 +1047,9 @@ The manifest file maps card class names to file extensions and UI metadata. Ther
 |-------|----------|------|-------------|
 | `extension` | Yes | string | File extension that maps to this class. Must start with `.` |
 | `badge` | Yes | string | Short label shown on the card header (e.g., "TODO", "CHAT", "TERM") |
-| `defaultTitle` | No | string | Display title for seed cards (e.g., `project.project`) |
-| `system` | No | boolean | UI hint: if `true`, card appears in the seed cards section at the top of the canvas. No functional difference — just layout grouping. Default `false` |
-| `network` | No | boolean | If `true`, enables `mica.fetch()` for server-proxied HTTP requests. Default `false` |
+| `primaryFile` | No | string | The main file in the card directory (e.g., "document.md", "conversation.json") |
+| `defaultTitle` | No | string | Display title for new instances (e.g., "Claude Chat", "Project Goal") |
+| `seed` | No | boolean | If `true`, card is seeded when a new project is created. Default `false` |
 
 ### Extension mapping rules
 

@@ -49,7 +49,7 @@ my-project/
 ├── .mica/                  ← infrastructure (config, chat history, layout, card classes)
 │   ├── .config.json        # Project manifest (agent provider, reactive settings)
 │   ├── .chat-history.json  # Chat persistence
-│   ├── .layout.json        # Card layout state
+│   ├──                     # (layout state lives in project.project/layout.json)
 │   └── .card-classes/      # Project-specific card class definitions
 │       └── my-widget/
 │           └── render.js
@@ -69,7 +69,7 @@ my-project/
 
 **Card files live at the project root** — they are the work, not metadata. System cards, user-created cards, and nested canvases (subdirectories) are all visible and first-class in the project directory.
 
-**`.mica/` holds infrastructure only** — agent config, chat history, layout state, and custom card class definitions. This is the machinery, not the work.
+**`.mica/` holds infrastructure only** — agent config, chat history, and custom card class definitions. This is the machinery, not the work. (Layout state lives in the canvas card's directory — see §7.9.)
 
 For nested canvases, the canvas directory is at the project root (`research/`) and its infrastructure is at `.mica/research/` (for `.chat-history.json`, `.layout.json`, etc.).
 
@@ -213,9 +213,9 @@ Card classes are Node.js ES module `render.js` files that produce interactive HT
 | `export function onMessage(msg, mica)` | Called when the browser sends data through a channel |
 | `export function onDisconnect(mica)` | Called when the channel session is destroyed |
 
-**Resolution order**: YAML frontmatter `card: name` → extension lookup via manifest (`.goal` → goal, `.md` → markdown) → fallback to `text`.
+**Resolution order**: YAML frontmatter `card: name` → extension lookup via metadata (`.goal` → goal, `.md` → markdown) → fallback to `text`.
 
-The manifest (`card-classes/_manifest.json`) maps each card class to its extension. Valid file extensions are determined dynamically from the manifest at runtime — no hardcoded extension list.
+Card classes are **self-describing**: each `render.js` exports a `metadata` object that declares its extension, badge, and other properties. The system scans `card-classes/` directories on startup, loads `render.js` from each, and reads the `metadata` export. There is no separate manifest file — the card class itself is the source of truth for its extension mapping.
 
 See `card-classes/CREATING_CARDS.md` for the full API reference for writing card classes.
 
@@ -352,6 +352,8 @@ Server-side export and stream handlers receive a `mica` bridge with minimal infr
 
 File-change events (`file-changed`, `file-created`, `file-deleted`) carry metadata only (filename, event type) — no rendered HTML. The server does not re-render cards on file changes. Card scripts subscribe via `mica.on('file-changed', cb)` and decide whether to update by calling `mica.refresh()`, which fetches fresh HTML from the server and re-injects the card.
 
+**Event source attribution:** Broadcast events (e.g., `layout-changed`, `file-changed`) include a `source` field containing the originating window ID. This lets the window that triggered a change ignore its own broadcast and avoid redundant updates. This is the general pattern for cross-window coordination — no timing hacks or debounce workarounds.
+
 #### 7.8 ModuleLoader
 
 Card classes run as standard Node.js ES modules loaded via dynamic `import()`. They have full access to `require()`, `import`, `fs`, `process`, and all Node.js APIs. Card classes can import any npm package directly (e.g., `node-pty` for terminal PTY, `marked` for markdown parsing, `@anthropic-ai/claude-agent-sdk` for agent calls).
@@ -379,14 +381,29 @@ Card classes run as standard Node.js ES modules loaded via dynamic `import()`. T
 Agents and users can create new card classes at runtime:
 
 1. Write a `render.js` file to `.mica/.card-classes/{name}/` in the project
-2. Add seed files prefixed with `_` — these are copied into new card instances on creation (prefix stripped)
-3. The file watcher picks up the new class and it's available immediately
+2. Export a `metadata` object from `render.js` declaring extension, badge, and other properties
+3. Add seed files prefixed with `_` — these are copied into new card instances on creation (prefix stripped)
+4. The file watcher picks up the new class and it's available immediately
+
+**Self-describing metadata:** Each card class declares its own metadata as a named export in `render.js`. There is no separate manifest file — the card class is the single source of truth.
+
+```javascript
+export const metadata = {
+  extension: ".my-widget",    // required — file extension that maps to this class
+  badge: "WIDGET",            // required — short label on card header
+  primaryFile: "data.json",   // optional — the main file in the card directory
+  defaultTitle: "My Widget",  // optional — display title for new instances
+  seed: true                  // optional — if true, seeded on project creation
+};
+```
+
+The system scans card class directories on startup, imports each `render.js`, and reads the `metadata` export to build the extension-to-class mapping dynamically.
 
 **Card class directory structure:**
 
 ```
 card-classes/claude-chat/
-├── render.js              ← card class code (required)
+├── render.js              ← card class code + metadata export (required)
 ├── _brief.md              ← seed: copied into new instances as brief.md
 ├── _conversation.json     ← seed: copied as conversation.json
 └── README.md              ← documentation (not a seed, not copied)
@@ -397,6 +414,8 @@ Files prefixed with `_` inside the card class directory are **seed files**. They
 **Creating card instances:** `mica.createCard('my-agent.claude-chat')`. The system creates the card directory, copies seed files from the card class (stripping the `_` prefix), and the card appears on the canvas. One call, fully formed card. The agent doesn't need to know about seeds or directory structure.
 
 Canvas card classes use the same mechanism. The `simple-project` class has seed directories for `goal.goal`, `todo.todo`, `brief.md`, and `log.md` — all created automatically when a new project is set up.
+
+**Layout is canvas card state:** Layout positions are stored in `project.project/layout.json` — inside the canvas card's own directory, not in `.mica/`. This follows the principle that card state belongs to the card. Cross-window layout sync uses `layout-changed` broadcasts with source attribution (see §7.7).
 
 After creation, seed files are regular files — editable, deletable, no special treatment.
 
