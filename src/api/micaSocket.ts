@@ -36,6 +36,9 @@ const eventListeners = new Map<string, Set<(data: unknown) => void>>();
 let idCounter = 0;
 let wsUrl = "";
 
+/** Unique ID for this browser window — used for event source attribution. */
+export const windowId = `win-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
 function nextId(): string {
   return `mc-${++idCounter}-${Date.now()}`;
 }

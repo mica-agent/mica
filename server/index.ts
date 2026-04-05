@@ -461,15 +461,21 @@ app.delete("/api/projects/:project/canvases/:canvas/files/:filename", async (req
   }
 });
 
-// ── Layout persistence (UI metadata, not a card) ────────────
+// ── Layout persistence (stored in canvas card's directory) ───
 app.get("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   const { project, canvas } = req.params;
   if (!(await validateParams(res, project, canvas))) return;
   try {
-    const file = await readCanvasFile(project, canvas, ".layout.json");
-    res.json(JSON.parse(file.content));
+    const data = await readCardFile(project, canvas, "project.project", "layout.json");
+    res.json(JSON.parse(data));
   } catch {
-    res.json({});
+    // Fall back to legacy .layout.json in .mica/
+    try {
+      const file = await readCanvasFile(project, canvas, ".layout.json");
+      res.json(JSON.parse(file.content));
+    } catch {
+      res.json({});
+    }
   }
 });
 
@@ -477,7 +483,13 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   const { project, canvas } = req.params;
   if (!(await validateParams(res, project, canvas))) return;
   try {
-    await writeCanvasFile(project, canvas, ".layout.json", JSON.stringify(req.body, null, 2));
+    const source = req.body.source;
+    // Don't persist the source field — it's only for broadcast routing
+    const dataToStore = { ...req.body };
+    delete dataToStore.source;
+    await writeCardFile(project, canvas, "project.project", "layout.json", JSON.stringify(dataToStore, null, 2));
+    // Broadcast layout change with source so originator can ignore
+    broadcast({ type: "layout-changed", project, canvas, source });
     res.json({ success: true });
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });

@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
 import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing, fetchLayout, saveLayout, createCardApi } from "../api/canvasFiles";
 import type { RenderedCard } from "../api/canvasFiles";
-import { on } from "../api/micaSocket";
+import { on, windowId } from "../api/micaSocket";
 import WidgetRuntime from "./WidgetRuntime";
 import FileCard from "./FileCard";
 import FileEditor from "./FileEditor";
@@ -47,6 +47,7 @@ function debouncedSaveLayout(projectId: string, mode: LayoutMode, layouts: Map<s
     saveLayout(projectId, "_root", {
       mode,
       cards: Object.fromEntries(layouts),
+      source: windowId,
     }).catch(() => {});
   }, LAYOUT_SAVE_DELAY);
 }
@@ -183,7 +184,25 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     const unsub1 = on("file-changed", handleFileEvent);
     const unsub2 = on("file-created", handleFileEvent);
     const unsub3 = on("file-deleted", handleFileEvent);
-    return () => { unsub1(); unsub2(); unsub3(); };
+
+    // Layout sync — other windows broadcast layout changes
+    const unsub4 = on("layout-changed", (msg) => {
+      const m = msg as { project?: string; canvas?: string; source?: string };
+      if (m.project !== projectId || m.canvas !== "_root") return;
+      // Skip if this window caused the change
+      if (m.source === windowId) return;
+      // Refetch layout from server
+      fetchLayout(projectId, "_root").then((data: Record<string, unknown>) => {
+        if (data.mode === "freeform") setLayoutMode("freeform");
+        else if (data.mode === "masonry") setLayoutMode("masonry");
+        if (data.cards) {
+          const entries = Object.entries(data.cards as Record<string, CardLayout>);
+          setCardLayouts(new Map(entries));
+        }
+      }).catch(() => {});
+    });
+
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [projectId, loadProjectCard]);
 
   // ── Listen for toolbar-action broadcasts from the parent card's scripts ──
