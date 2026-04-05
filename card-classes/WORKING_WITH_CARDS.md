@@ -2,6 +2,35 @@
 
 Cards are the fundamental unit of work in Mica. Every card is a **directory** with an extension that determines its type.
 
+## Project structure
+
+```
+~/mica-projects/my-project/
+  .mica/                              # Infrastructure (not cards)
+    .config.json                      # Project config (canvasCard, settings)
+  my-project.project/                 # Canvas card — contains all cards
+    project.md                        # Canvas primary file (title/description)
+    .layout.json                      # Card positions on the canvas
+    goal.goal/                        # Card: project goals
+      goals.md                        #   primary file
+    todo.todo/                        # Card: task list
+      tasks.md
+    brief.md/                         # Card: agent instructions
+      document.md
+    welcome.md/                       # Card: markdown document
+      document.md
+    architecture.mmd/                 # Card: mermaid diagram
+      diagram.mmd
+    chat-abc123.claude-chat/          # Card: Claude chat agent
+      brief.md/                       #   agent's own brief (also a card)
+        document.md
+      conversation.json               #   chat history
+    my-terminal.terminal/             # Card: terminal session
+      transcript.log
+```
+
+The canvas card directory (`my-project.project/`) IS the canvas. Its extension (`.project`) determines which card class renders the canvas layout. All child cards live inside it.
+
 ## Creating cards
 
 Use the `create_card` tool (or `mica.createCard(name)` bridge method):
@@ -48,6 +77,8 @@ Use `list_files` to see what cards are on the canvas. Each entry is a card direc
 | `.terminal` | Terminal | Shell session |
 | `.claude-chat` | Claude Chat | AI chat agent |
 | `.llama-chat` | Llama Chat | Local LLM chat agent |
+| `.project` | Project | Canvas layout (freeform card surface) |
+| `.canvas` | Canvas | Nested canvas |
 
 ## Content format tips
 
@@ -55,3 +86,4 @@ Use `list_files` to see what cards are on the canvas. Each entry is a card direc
 - **`.md` cards**: Write standard markdown.
 - **`.todo` cards**: Use markdown checklist format (`- [ ] task`, `- [x] done`).
 - **`.goal` cards**: Use markdown with `- [ ]` checklists for progress tracking.
+- **`.html` cards**: Write HTML fragments (not full documents). If you write `<!DOCTYPE>`, the body content will be extracted automatically.

@@ -1,6 +1,6 @@
-# Creating Card Classes
+# Authoring Card Classes
 
-This document is the complete reference for building Mica card classes. A card class is a `render.js` file that turns a data file into an interactive widget on the Mica canvas.
+This document is the complete reference for building Mica card classes. A card class is a `render.js` file that turns a data file into an interactive card on the Mica canvas. Any card class can serve as a canvas — the user chooses which class to use when creating a project.
 
 ---
 
@@ -56,9 +56,9 @@ export async function decrement(content, args, mica) {
 
 The `metadata` export declares the extension mapping and UI properties. No separate manifest file is needed.
 
-### Step 2: Create a card file
+### Step 2: Create a card
 
-Create `{project}/.mica/my-counter.counter` with content `0`. The file watcher picks it up and renders the counter widget immediately.
+Use the toolbar's card creation buttons, or call `create_card({ name: "my-counter.counter" })` from an agent. The card directory is created inside the canvas card with the primary file. The file watcher picks it up and renders the counter widget immediately.
 
 ---
 
@@ -78,7 +78,7 @@ Card code runs in three distinct environments. Understanding which code runs whe
 |    render(content, config) returns an HTML string                 |
 |    Export functions are ASYNC — receive (content, args, mica)     |
 |    Stream handlers: onConnect(mica, args), onMessage(msg, mica), |
-|      onDisconnect(mica) — for bidirectional channels              |
+|      onDestroy(mica) — for bidirectional channels                 |
 +------------------------------------------------------------------+
 
 +------------------------------------------------------------------+
@@ -131,7 +131,7 @@ Browser                    Node.js (server)              Docker Container
   |                              |                              |
   |-- mica.openChannel('fn') -->|                              |
   |<== bidirectional data =====>|  (onConnect/onMessage/        |
-  |                              |   onDisconnect + mica.send)  |
+  |                              |   onDestroy + mica.send)     |
 ```
 
 ### Complete card class exports
@@ -151,7 +151,7 @@ export const metadata = { extension: ".x", badge: "X" }; // Self-describing clas
 // ── Stream handlers (optional) ──────────────────────
 export function onConnect(mica, args) { }              // Channel session created
 export function onMessage(msg, mica) { }               // Data from browser
-export function onDisconnect(mica) { }                 // Session destroyed
+export function onDestroy(mica) { }                    // Session destroyed (card deleted)
 
 // ── Dependencies (optional) ─────────────────────────
 export const dependencies = { scripts: [], styles: [] }; // CDN resources to preload
@@ -161,51 +161,79 @@ See sections 5, 7, and 8 for detailed reference on each.
 
 ---
 
-## 3. Two File Systems
+## 3. Directory Structure and File Systems
 
-Cards interact with two separate file systems. Confusing them is the most common source of bugs.
-
-### Card directory files
-
-Each card is a directory. `mica.read()` and `mica.write()` operate on files inside the card's own directory.
+### Project directory layout
 
 ```
-Access via:   mica.read(filename)            — read from card directory
-              mica.write(filename, content)   — write to card directory
-
-Scope:        This card's directory only
-Contains:     Primary content, supplementary state, dot-prefixed infrastructure
-Examples:     document.md, conversation.json, transcript.log, .session.json
+~/mica-projects/my-project/
+  .mica/                              # Infrastructure (not cards)
+    .config.json                      # Project config (canvasCard, settings)
+  my-project.project/                 # Canvas card — contains all child cards
+    project.md                        # Canvas primary file (title/description)
+    .layout.json                      # Card positions on the canvas
+    goal.goal/                        # Child card
+      goals.md                        #   primary file
+    todo.todo/                        # Child card
+      tasks.md
+    brief.md/                         # Child card
+      document.md
+    chat-abc.claude-chat/             # Child card (agent)
+      brief.md/                       #   nested card (agent's own brief)
+        document.md
+      conversation.json               #   supplementary state
 ```
 
-Dot-prefixed files (`.session.json`) are infrastructure — hidden from agents and UI. Non-dot files are visible and should have descriptive names.
+The canvas card directory IS the canvas. Its extension (`.project`) determines which card class renders it. All child cards live inside it. Cards can contain child cards — any depth of nesting is valid.
 
-### Project files (project root directory)
+### Two file scopes
 
-These are the project's actual source code, configs, and assets.
+Cards interact with two file scopes. Confusing them is the most common source of bugs.
 
+**Card directory** — `mica.read()` / `mica.write()`:
 ```
-Access via:   mica.exec('cat ./src/index.js')     — read a project file
-              mica.exec('ls -la ./src/')           — list project files
-              mica.exec('echo "data" > output.txt') — write a project file
-
-Scope:        Full project directory tree
-Contains:     Source code, package.json, configs, build outputs, etc.
-Examples:     src/index.js, README.md, package.json, tsconfig.json
+Scope:     This card's own directory
+Contains:  Primary content, supplementary state, dot-prefixed infrastructure
+Examples:  document.md, conversation.json, .session.json
+Note:      If a filename resolves to a card subdirectory, the primary file is
+           read/written automatically (e.g., mica.read('brief.md') reads
+           brief.md/document.md transparently)
 ```
 
-### Example: reading project files from a card
+**Canvas directory** — `mica.exec()`:
+```
+Scope:     The canvas card's directory (mounted as /project in the container)
+Contains:  All sibling cards, the canvas primary file
+Access:    mica.exec('ls'), mica.exec('cat goal.goal/goals.md')
+```
+
+### Example: reading sibling card content
 
 ```javascript
-// WRONG — this reads from the card directory, not from the project
-const src = await mica.read('src/index.js');  // error — file doesn't exist in card dir
+// WRONG — reads from THIS card's directory, not a sibling
+const goals = await mica.read('goal.goal');
 
-// RIGHT — this reads from the project directory
-const result = await mica.exec('cat src/index.js');
-if (result.exitCode === 0) {
-  const src = result.stdout;
-}
+// RIGHT — read via the canvas directory
+const result = await mica.exec('cat goal.goal/goals.md');
+
+// ALSO RIGHT — use the read_file tool pattern (resolves primary file)
+const goals = await mica.read('goal.goal');  // works if goal.goal/ is inside this card
 ```
+
+### Seed files
+
+Card classes define seed files using the `_` prefix convention. Files prefixed with `_` in the card class directory are copied into new card instances with the prefix stripped:
+
+```
+card-classes/simple-project/
+  render.js                 # Card class code
+  _.layout.json             # Internal seed → project.project/.layout.json
+  _goal.goal                # Card seed → project.project/goal.goal/goals.md
+  _brief.md                 # Card seed → project.project/brief.md/document.md
+  _welcome.md               # Card seed → project.project/welcome.md/document.md
+```
+
+Files with valid card extensions (`.goal`, `.md`, `.mmd`, etc.) become **child card subdirectories** with their content written to the primary file. Files without card extensions (`.json`, etc.) are copied as **flat internal files**.
 
 ---
 
@@ -425,7 +453,7 @@ const history = JSON.parse(await mica.read('conversation.json'));
 
 ### mica.send() / mica.reply()
 
-Used in stream handlers (`onConnect`, `onMessage`, `onDisconnect`) for bidirectional communication.
+Used in stream handlers (`onConnect`, `onMessage`, `onDestroy`) for bidirectional communication.
 
 ```javascript
 // Broadcast to ALL connected browsers watching this card
@@ -607,7 +635,7 @@ mica.onDestroy(() => { ch.close(); });
 
 ### Server-side stream handlers
 
-Card classes implement the server side of channels by exporting `onConnect`, `onMessage`, and `onDisconnect`. These mirror WebSocket semantics — the infrastructure provides the transport, the card class decides the behavior.
+Card classes implement the server side of channels by exporting `onConnect`, `onMessage`, and `onDestroy`. These mirror WebSocket semantics — the infrastructure provides the transport, the card class decides the behavior.
 
 ```javascript
 import * as pty from 'node-pty';  // Full Node.js access — import anything
@@ -642,7 +670,7 @@ export function onMessage(msg, mica) {
 }
 
 // Called when the session is destroyed (card file deleted, server shutdown)
-export function onDisconnect(mica) {
+export function onDestroy(mica) {
   const session = sessions.get(sessionKey(mica));
   session?.proc?.kill();
   sessions.delete(sessionKey(mica));
@@ -751,7 +779,7 @@ mica.onDestroy(() => {
 
 ```javascript
 // Save canvas scroll position before init
-const scrollParent = container.closest('.wb-freeform') || container.closest('.wb-grid');
+const scrollParent = container.closest('.canvas-freeform') || container.closest('.wb-container');
 const scrollX = scrollParent ? scrollParent.scrollLeft : 0;
 const scrollY = scrollParent ? scrollParent.scrollTop : 0;
 
@@ -983,7 +1011,7 @@ try {
 
 Browser console shows:
 ```
-[widget-runtime] Script error in <filename>: <error>
+[card-runtime] Script error in <filename>: <error>
 ```
 
 Common causes: referencing `document.querySelector` instead of `container.querySelector`, CDN library not loaded, typos in element IDs.

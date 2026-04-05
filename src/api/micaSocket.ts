@@ -35,6 +35,20 @@ const activeChannels = new Map<string, ChannelHandle>();
 const eventListeners = new Map<string, Set<(data: unknown) => void>>();
 let idCounter = 0;
 let wsUrl = "";
+let connected = false;
+const connectionListeners = new Set<(connected: boolean) => void>();
+
+/** Subscribe to WebSocket connection state changes. */
+export function onConnectionChange(cb: (connected: boolean) => void): () => void {
+  connectionListeners.add(cb);
+  cb(connected); // immediate current state
+  return () => { connectionListeners.delete(cb); };
+}
+
+function setConnected(value: boolean) {
+  connected = value;
+  for (const cb of connectionListeners) cb(value);
+}
 
 /** Unique ID for this browser window — used for event source attribution. */
 export const windowId = `win-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -55,12 +69,14 @@ export function connect(url?: string): void {
 
   ws.onopen = () => {
     console.log("[mica-socket] Connected");
+    setConnected(true);
     // No channel re-registration needed — card scripts re-execute on re-render
     // and each openChannel() sends a fresh channel_open to the server.
   };
 
   ws.onclose = () => {
     console.log("[mica-socket] Disconnected, reconnecting in 2s...");
+    setConnected(false);
     ws = null;
     // Reject all pending calls
     for (const [id, pending] of pendingCalls) {

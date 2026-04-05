@@ -1,11 +1,20 @@
 # Mica — Development Guide
 
+## What Mica is
+
+Cards all the way down. A card is a directory with an extension that determines its behavior. A card can contain child cards. A canvas is just a card whose class renders a layout surface. A project is a canvas card with infrastructure alongside it.
+
+The infrastructure (server, React host, channels) is pipes, not policy. It routes messages, reads/writes files, and mounts HTML. It does not know what a terminal is, what a chat agent does, or how a canvas lays out cards. All behavior lives in the card class's `render.js`.
+
+New capabilities = new card classes, not server modifications. The system is extended by addition, not modification.
+
 ## Before writing any code
 
 Read these documents first:
 - `ARCHITECTURE.md` — Core principles, design tenets, system overview
 - `ARCHITECTURE-DETAILS.md` — Deep dives on subsystem design (ChannelManager, session lifecycle)
 - `SPEC.md` — Product definition and card model
+- `card-classes/AUTHORING_CARD_CLASSES.md` — Full reference for building card classes
 
 ## Before delegating to subagents
 
@@ -43,7 +52,10 @@ are **generic infrastructure**. They must NEVER contain card-class-specific logi
 - **NO** special-casing canvas vs non-canvas — any card can contain child cards
 
 If you find yourself writing `if` statements that check card class names or extensions in server
-or host code, **stop**. You are putting policy in the pipe. The card class should own that behavior.
+or host code, **stop**. You are putting policy in the pipe. Instead, ask: "what infrastructure
+does the card class need to do this itself?" Then add that infrastructure — a bridge method,
+a config field, an event — so the card class can own the behavior. The goal is always to make
+things possible in card classes, never to implement features in the server.
 
 ### The containment model
 

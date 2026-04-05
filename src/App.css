@@ -148,19 +148,45 @@
   position: absolute;
   top: 0;
   left: 0;
-  right: 60px;
-  height: 52px;
+  right: 0;
+  height: 48px;
   display: flex;
   align-items: center;
-  padding: 0 20px;
-  background: rgba(10, 10, 15, 0.7);
+  padding: 0 16px;
+  background: rgba(10, 10, 15, 0.85);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   border-bottom: 1px solid var(--glass-border);
   z-index: 100;
-  gap: 6px;
+  gap: 8px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+.breadcrumb-spacer { flex: 1; }
+
+.breadcrumb-ws-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background-color 0.3s;
+}
+
+.breadcrumb-ws-indicator--connected {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.4);
+}
+
+.breadcrumb-ws-indicator--disconnected {
+  background: #f87171;
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.4);
+  animation: ws-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes ws-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
 .breadcrumb-project {

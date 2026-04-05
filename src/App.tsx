@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchProjects } from './api/canvasFiles';
 import type { ProjectConfig } from './api/canvasFiles';
-import { connect as connectMicaSocket } from './api/micaSocket';
+import { connect as connectMicaSocket, onConnectionChange } from './api/micaSocket';
 import CanvasCardRuntime from './whiteboard/CanvasCardRuntime';
 import ProjectNav from './ProjectNav';
 import './App.css';
@@ -14,6 +14,9 @@ connectMicaSocket();
 export default function App() {
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
   const [activeProjectIndex, setActiveProjectIndex] = useState(0);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  useEffect(() => onConnectionChange(setWsConnected), []);
 
   const loadProjects = useCallback(() => {
     fetchProjects()
@@ -57,6 +60,11 @@ export default function App() {
             activeProject={activeProject}
             onSwitch={(i) => { setActiveProjectIndex(i); }}
             onProjectsChanged={loadProjects}
+          />
+          <span className="breadcrumb-spacer" />
+          <span
+            className={`breadcrumb-ws-indicator ${wsConnected ? "breadcrumb-ws-indicator--connected" : "breadcrumb-ws-indicator--disconnected"}`}
+            title={wsConnected ? "Connected" : "Disconnected — reconnecting..."}
           />
         </nav>
 
