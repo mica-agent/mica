@@ -70,6 +70,7 @@ async function startServer(): Promise<string> {
 
   const proc = spawn(LLAMA_SERVER_BIN, [
     "--model", MODEL_PATH,
+    "--host", "0.0.0.0",
     "--port", String(port),
     "--ctx-size", "32768",
     "--flash-attn", "on",
