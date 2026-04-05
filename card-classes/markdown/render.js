@@ -76,10 +76,14 @@ export default function render(content, config) {
         ],
       });
 
-      // Resize editor when card resizes
+      // Resize editor when card resizes (only respond to significant changes)
+      let lastHeight = 0;
       const ro = new ResizeObserver(() => {
         const h = editorEl.clientHeight;
-        if (h > 0) editor.setHeight(h + 'px');
+        if (h > 0 && Math.abs(h - lastHeight) > 5) {
+          lastHeight = h;
+          editor.setHeight(h + 'px');
+        }
       });
       ro.observe(editorEl);
 
