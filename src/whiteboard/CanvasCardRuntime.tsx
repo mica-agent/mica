@@ -127,12 +127,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   // ── Real-time updates via WebSocket ─────────────────────
 
   useEffect(() => {
-    function handleRendering(msg: unknown) {
-      const m = msg as { project?: string; canvas?: string; filename?: string };
-      if (m.project !== projectId || m.canvas !== "_root" || !m.filename) return;
-      setRenderingFiles((prev) => new Set(prev).add(m.filename!));
-    }
-
     function handleFileEvent(msg: unknown) {
       const m = msg as {
         type: string;
@@ -146,17 +140,12 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       };
       if (m.project !== projectId || m.canvas !== "_root") return;
 
-      // Skip files that aren't child cards
-      if (m.filename === "_project.project" || m.filename === ".chat-history.json" || m.filename === ".config.json") {
-        if (m.filename === "_project.project") {
+      // Skip infrastructure files
+      if (m.filename === "project.project" || m.filename === ".chat-history.json" || m.filename === ".config.json") {
+        if (m.filename === "project.project") {
           fetchProjectCard(projectId).then(setParentCard).catch(() => {});
         }
         return;
-      }
-
-      // Clear rendering state
-      if (m.filename) {
-        setRenderingFiles((prev) => { const next = new Set(prev); next.delete(m.filename!); return next; });
       }
 
       // file-created: add new card to canvas (server sends full render)
@@ -191,11 +180,10 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       // (handled by the WebSocket event listener system — no action needed here)
     }
 
-    const unsub0 = on("file-rendering", handleRendering);
     const unsub1 = on("file-changed", handleFileEvent);
     const unsub2 = on("file-created", handleFileEvent);
     const unsub3 = on("file-deleted", handleFileEvent);
-    return () => { unsub0(); unsub1(); unsub2(); unsub3(); };
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, [projectId, loadProjectCard]);
 
   // ── Listen for toolbar-action broadcasts from the parent card's scripts ──
