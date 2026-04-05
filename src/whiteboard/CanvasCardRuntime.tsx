@@ -5,7 +5,7 @@
 // one per child card. Each child gets its own container, bridge, and script scope.
 
 import React, { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
-import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing, fetchLayout, saveLayout, createCardApi } from "../api/canvasFiles";
+import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing, fetchLayout, saveLayout } from "../api/canvasFiles";
 import type { RenderedCard } from "../api/canvasFiles";
 import { on, windowId } from "../api/micaSocket";
 import WidgetRuntime from "./WidgetRuntime";
@@ -56,7 +56,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [parentCard, setParentCard] = useState<RenderedCard | null>(null);
   const [children, setChildren] = useState<RenderedCard[]>([]);
   const [loading, setLoading] = useState(true);
-  const [cardClasses, setCardClasses] = useState<Record<string, { extension: string; badge: string; defaultTitle?: string; seed?: boolean }>>({});
 
   // Editor/expanded state
   const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
@@ -72,14 +71,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const layoutLoaded = useRef(false);
 
   const parentRef = useRef<HTMLDivElement>(null);
-
-  // ── Fetch available card classes for toolbar ──────────────
-  useEffect(() => {
-    fetch(`${import.meta.env.VITE_API_BASE || "http://localhost:3002"}/api/card-classes`)
-      .then((r) => r.json())
-      .then(setCardClasses)
-      .catch((err) => console.error("[toolbar] Failed to fetch card classes:", err));
-  }, []);
 
   // ── Data loading ────────────────────────────────────────
 
@@ -205,27 +196,21 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [projectId, loadProjectCard]);
 
-  // ── Listen for toolbar-action broadcasts from the parent card's scripts ──
+  // ── Listen for layout-mode broadcast from canvas card class ──
 
   useEffect(() => {
-    const unsub = on("toolbar-action", (msg) => {
-      const m = msg as Record<string, unknown>;
-      // Server flattens broadcast data — action is a top-level key
-      const action = m.action as string | undefined;
-      if (action === "new-note") setCreatingType("text");
-      else if (action === "new-doc") setCreatingType("markdown");
-      else if (action === "new-diagram") setCreatingType("mermaid");
+    const unsub = on("layout-mode", (msg) => {
+      const m = msg as { mode?: string };
+      if (m.mode === "masonry" || m.mode === "freeform") {
+        setLayoutMode(m.mode);
+        debouncedSaveLayout(projectId, m.mode, cardLayouts);
+      }
     });
     return unsub;
-  }, []);
+  }, [projectId, cardLayouts]);
 
   // ── File operations ─────────────────────────────────────
 
-  const createCardInstance = useCallback(async (className: string, extension: string) => {
-    const prefix = className.split("-")[0].slice(0, 6);
-    const name = `${prefix}-${Date.now().toString(36)}${extension}`;
-    await createCardApi(projectId, "_root", name);
-  }, [projectId]);
 
   const handleSave = useCallback(async (filename: string, content: string) => {
     await saveFile(projectId, "_root", filename, content);
@@ -353,43 +338,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           </div>
         )}
 
-        {/* Toolbar */}
-        <div className="wb-toolbar" style={{ "--canvas-color": canvasColor } as React.CSSProperties}>
-          <div className="wb-toolbar-left">
-            {Object.entries(cardClasses)
-              .filter(([name, meta]) => !meta.seed && name !== "simple-project" && name !== "canvas")
-              .map(([name, meta]) => (
-                <button
-                  key={name}
-                  className="wb-btn wb-btn--tool"
-                  onClick={() => {
-                    if (name === "text" || name === "markdown" || name === "mermaid") {
-                      setCreatingType(name as "text" | "markdown" | "mermaid");
-                    } else {
-                      createCardInstance(name, meta.extension);
-                    }
-                  }}
-                >
-                  + {meta.defaultTitle || name}
-                </button>
-              ))}
-            <button className="wb-btn wb-btn--tool" onClick={() => setDrawingMode(true)}>Draw</button>
-          </div>
-          <div className="wb-toolbar-right">
-            <button
-              className={`wb-btn wb-btn--tool ${layoutMode === "masonry" ? "wb-btn--active" : ""}`}
-              onClick={() => { setLayoutMode("masonry"); debouncedSaveLayout(projectId, "masonry", cardLayouts); }}
-            >
-              Grid
-            </button>
-            <button
-              className={`wb-btn wb-btn--tool ${layoutMode === "freeform" ? "wb-btn--active" : ""}`}
-              onClick={() => { setLayoutMode("freeform"); debouncedSaveLayout(projectId, "freeform", cardLayouts); }}
-            >
-              Free
-            </button>
-          </div>
-        </div>
+        {/* Toolbar is rendered by the canvas card class (simple-project/render.js) */}
 
         {layoutMode === "masonry" ? (
           <>

@@ -1,14 +1,13 @@
 /**
  * Simple Project card class — a canvas card for straightforward projects.
  *
- * Renders a project overview with:
+ * Renders the project layout including:
+ * - Toolbar with card creation buttons (dynamic from available classes) and layout toggle
+ * - Slots for seed cards and content cards
  * - Project name and description
- * - Slots for system cards (goal, todo, brief, log) and content cards
  */
 
 import { marked } from 'marked';
-import fs from 'fs';
-import path from 'path';
 
 export const metadata = { extension: ".project", badge: "PROJECT", primaryFile: "project.md", seed: true, defaultTitle: "Project" };
 
@@ -39,6 +38,9 @@ export default function render(content, config) {
 
   return `
     <div class="simple-project" data-children='${childrenJson}'>
+        <!-- Toolbar: rendered by card class, dynamic from available card classes -->
+        <div id="project-toolbar" class="project-toolbar"></div>
+
         <div class="project-header">
             <h1 class="project-name">${projectName}</h1>
             <div class="project-stats">
@@ -59,6 +61,22 @@ export default function render(content, config) {
     <style>
     .simple-project {
         display: flex; flex-direction: column; gap: 16px; padding: 0; min-height: 100%;
+    }
+    .project-toolbar {
+        display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+        padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .project-toolbar .toolbar-btn {
+        background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 6px; padding: 4px 12px; color: #ccc; font-size: 0.8rem;
+        cursor: pointer; font-family: inherit;
+    }
+    .project-toolbar .toolbar-btn:hover {
+        background: rgba(255,255,255,0.1); color: #fff;
+    }
+    .project-toolbar .toolbar-spacer { flex: 1; }
+    .project-toolbar .toolbar-btn--active {
+        background: rgba(74,138,255,0.3); border-color: rgba(74,138,255,0.5); color: #fff;
     }
     .project-header {
         display: flex; align-items: baseline; gap: 16px; padding: 8px 0;
@@ -81,24 +99,71 @@ export default function render(content, config) {
 
     <script>
     (function() {
-        var contentSlot = container.querySelector('[data-slot="content-cards"]');
-        var emptyEl = container.querySelector('.project-empty');
+        const toolbar = container.querySelector('#project-toolbar');
+        const contentSlot = container.querySelector('[data-slot="content-cards"]');
+        const emptyEl = container.querySelector('.project-empty');
+
+        // Watch for child cards being added/removed to toggle empty state
         if (contentSlot && emptyEl) {
-            var observer = new MutationObserver(function() {
+            const observer = new MutationObserver(() => {
                 emptyEl.style.display = contentSlot.children.length === 0 ? 'block' : 'none';
             });
             observer.observe(contentSlot, { childList: true });
-            requestAnimationFrame(function() {
+            requestAnimationFrame(() => {
                 emptyEl.style.display = contentSlot.children.length === 0 ? 'block' : 'none';
             });
         }
 
-        container.querySelectorAll('.toolbar-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var action = btn.getAttribute('data-action');
-                mica.broadcast('toolbar-action', { action: action });
-            });
-        });
+        // Fetch available card classes and build toolbar buttons
+        fetch('/api/card-classes')
+            .then(r => r.json())
+            .then(classes => {
+                const buttons = [];
+
+                // Card creation buttons (skip seed cards, skip canvas types)
+                for (const [name, meta] of Object.entries(classes)) {
+                    if (meta.seed || name === 'simple-project' || name === 'canvas') continue;
+                    const btn = document.createElement('button');
+                    btn.className = 'toolbar-btn';
+                    btn.textContent = '+ ' + (meta.defaultTitle || name);
+                    btn.addEventListener('click', () => {
+                        const prefix = name.split('-')[0].slice(0, 6);
+                        const cardName = prefix + '-' + Date.now().toString(36) + meta.extension;
+                        mica.createCard(cardName);
+                    });
+                    buttons.push(btn);
+                }
+
+                // Spacer
+                const spacer = document.createElement('span');
+                spacer.className = 'toolbar-spacer';
+                buttons.push(spacer);
+
+                // Layout toggle (broadcasts to canvas host)
+                const gridBtn = document.createElement('button');
+                gridBtn.className = 'toolbar-btn';
+                gridBtn.textContent = 'Grid';
+                gridBtn.addEventListener('click', () => {
+                    mica.broadcast('layout-mode', { mode: 'masonry' });
+                    gridBtn.classList.add('toolbar-btn--active');
+                    freeBtn.classList.remove('toolbar-btn--active');
+                });
+
+                const freeBtn = document.createElement('button');
+                freeBtn.className = 'toolbar-btn';
+                freeBtn.textContent = 'Free';
+                freeBtn.addEventListener('click', () => {
+                    mica.broadcast('layout-mode', { mode: 'freeform' });
+                    freeBtn.classList.add('toolbar-btn--active');
+                    gridBtn.classList.remove('toolbar-btn--active');
+                });
+
+                buttons.push(gridBtn, freeBtn);
+
+                // Append all buttons to toolbar
+                for (const btn of buttons) toolbar.appendChild(btn);
+            })
+            .catch(err => console.error('[project] Failed to load card classes:', err));
     })();
     </script>
   `;
@@ -108,13 +173,6 @@ export async function create_file(content, args, mica) {
   const filename = args.filename || "";
   const fileContent = args.content || "";
   if (!filename) return { error: "filename is required" };
-  // Create card directory with primary file inside the project directory
-  const cardDir = path.join(process.cwd(), filename);
-  await fs.promises.mkdir(cardDir, { recursive: true });
-  // Determine primary file name from extension (simple heuristic)
-  const ext = path.extname(filename);
-  const primaryNames = { '.md': 'document.md', '.todo': 'tasks.md', '.mmd': 'diagram.mmd', '.txt': 'content.txt' };
-  const primaryFile = primaryNames[ext] || 'content';
-  await fs.promises.writeFile(path.join(cardDir, primaryFile), fileContent, 'utf-8');
+  await mica.createCard(filename);
   return { ok: true, filename };
 }
