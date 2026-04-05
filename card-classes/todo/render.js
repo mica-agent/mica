@@ -251,7 +251,7 @@ export default function render(content, config) {
         container.querySelectorAll('.todo-checkbox').forEach(cb => {
             cb.addEventListener('change', (e) => {
                 e.stopPropagation();
-                mica.call('toggle', { index: parseInt(cb.dataset.index) }).then(() => mica.refresh());
+                mica.call('toggle', { index: parseInt(cb.dataset.index) });
             });
         });
 
@@ -263,7 +263,7 @@ export default function render(content, config) {
                     : btn.classList.contains('todo-pri--med') ? 'medium'
                     : btn.classList.contains('todo-pri--low') ? 'low' : '';
                 const nextIdx = (priorities.indexOf(current) + 1) % priorities.length;
-                mica.call('set_priority', { index: parseInt(btn.dataset.index), priority: priorities[nextIdx] }).then(() => mica.refresh());
+                mica.call('set_priority', { index: parseInt(btn.dataset.index), priority: priorities[nextIdx] });
             });
         });
 
@@ -288,7 +288,7 @@ export default function render(content, config) {
                     agentBtn.title = 'Agent is evaluating...';
                 }
 
-                mica.call('reassign', { index: idx, assignee: assignee }).then(() => mica.refresh()).catch(() => {});
+                mica.call('reassign', { index: idx, assignee: assignee }).catch(() => {});
             });
         });
 
@@ -316,7 +316,7 @@ export default function render(content, config) {
             const text = addInput.value.trim();
             if (!text) return;
             addInput.value = '';
-            mica.call('add_item', { text: text }).then(() => mica.refresh());
+            mica.call('add_item', { text: text });
         }
         addBtn.addEventListener('click', (e) => { e.stopPropagation(); addItem(); });
         addInput.addEventListener('keydown', (e) => {
