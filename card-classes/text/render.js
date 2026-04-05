@@ -2,6 +2,8 @@
  * Text card class — renders plain text in a pre block.
  */
 
+export const metadata = { extension: ".txt", badge: "TXT", primaryFile: "content.txt" };
+
 export default function render(content, config) {
   const escaped = content
     .replace(/&/g, "&amp;")

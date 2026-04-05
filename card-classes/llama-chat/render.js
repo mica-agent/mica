@@ -6,6 +6,8 @@
  * TODO: Wire to local LLM (llama-server) when ready.
  */
 
+export const metadata = { extension: ".llama-chat", badge: "LLAMA", primaryFile: "conversation.json", defaultTitle: "Llama Chat" };
+
 export { onConnect, onMessage, onDisconnect } from '../claude-chat/render.js';
 
 export default function render(content, config) {

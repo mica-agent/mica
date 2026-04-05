@@ -55,6 +55,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [parentCard, setParentCard] = useState<RenderedCard | null>(null);
   const [children, setChildren] = useState<RenderedCard[]>([]);
   const [loading, setLoading] = useState(true);
+  const [cardClasses, setCardClasses] = useState<Record<string, { extension: string; badge: string; defaultTitle?: string; seed?: boolean }>>({});
 
   // Editor/expanded state
   const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
@@ -70,6 +71,14 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const layoutLoaded = useRef(false);
 
   const parentRef = useRef<HTMLDivElement>(null);
+
+  // ── Fetch available card classes for toolbar ──────────────
+  useEffect(() => {
+    fetch(`${import.meta.env.VITE_API_BASE || "http://localhost:3002"}/api/card-classes`)
+      .then((r) => r.json())
+      .then(setCardClasses)
+      .catch((err) => console.error("[toolbar] Failed to fetch card classes:", err));
+  }, []);
 
   // ── Data loading ────────────────────────────────────────
 
@@ -205,23 +214,9 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── File operations ─────────────────────────────────────
 
-  const createTerminal = useCallback(async () => {
-    const name = `term-${Date.now().toString(36)}.terminal`;
-    await createCardApi(projectId, "_root", name);
-  }, [projectId]);
-
-  const createClaudeChat = useCallback(async () => {
-    const name = `chat-${Date.now().toString(36)}.claude-chat`;
-    await createCardApi(projectId, "_root", name);
-  }, [projectId]);
-
-  const createLlamaChat = useCallback(async () => {
-    const name = `chat-${Date.now().toString(36)}.llama-chat`;
-    await createCardApi(projectId, "_root", name);
-  }, [projectId]);
-
-  const createAgent = useCallback(async () => {
-    const name = `agent-${Date.now().toString(36)}.agent`;
+  const createCardInstance = useCallback(async (className: string, extension: string) => {
+    const prefix = className.split("-")[0].slice(0, 6);
+    const name = `${prefix}-${Date.now().toString(36)}${extension}`;
     await createCardApi(projectId, "_root", name);
   }, [projectId]);
 
@@ -354,15 +349,24 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
         {/* Toolbar */}
         <div className="wb-toolbar" style={{ "--canvas-color": canvasColor } as React.CSSProperties}>
           <div className="wb-toolbar-left">
-            <button className="wb-btn wb-btn--tool" onClick={() => setCreatingType("text")}>+ Note</button>
-            <button className="wb-btn wb-btn--tool" onClick={() => setCreatingType("markdown")}>+ Doc</button>
-            <button className="wb-btn wb-btn--tool" onClick={() => setCreatingType("mermaid")}>+ Diagram</button>
+            {Object.entries(cardClasses)
+              .filter(([name, meta]) => !meta.seed && name !== "simple-project" && name !== "canvas")
+              .map(([name, meta]) => (
+                <button
+                  key={name}
+                  className="wb-btn wb-btn--tool"
+                  onClick={() => {
+                    if (name === "text" || name === "markdown" || name === "mermaid") {
+                      setCreatingType(name as "text" | "markdown" | "mermaid");
+                    } else {
+                      createCardInstance(name, meta.extension);
+                    }
+                  }}
+                >
+                  + {meta.defaultTitle || name}
+                </button>
+              ))}
             <button className="wb-btn wb-btn--tool" onClick={() => setDrawingMode(true)}>Draw</button>
-            <span className="wb-toolbar-divider" />
-            <button className="wb-btn wb-btn--tool" onClick={createTerminal}>+ Terminal</button>
-            <button className="wb-btn wb-btn--tool" onClick={createClaudeChat}>+ Claude Chat</button>
-            <button className="wb-btn wb-btn--tool" onClick={createLlamaChat}>+ Llama Chat</button>
-            <button className="wb-btn wb-btn--tool" onClick={createAgent}>+ Agent</button>
           </div>
           <div className="wb-toolbar-right">
             <button

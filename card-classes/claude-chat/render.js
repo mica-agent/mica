@@ -9,6 +9,8 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import fs from 'fs';
 import path from 'path';
 
+export const metadata = { extension: ".claude-chat", badge: "CLAUDE", primaryFile: "conversation.json", defaultTitle: "Claude Chat" };
+
 // ── Server-side chat management ───────────────────────────
 
 const PROJECT_DIR = process.env.PROJECT_DIR || "/project";

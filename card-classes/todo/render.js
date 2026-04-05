@@ -4,6 +4,8 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
+export const metadata = { extension: ".todo", badge: "TODO", primaryFile: "tasks.md", seed: true, defaultTitle: "To Do" };
+
 async function agentChat(mica, message) {
   let resultText = "";
   for await (const evt of query({ prompt: message, options: {

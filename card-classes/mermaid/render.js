@@ -4,6 +4,8 @@
  * with a unique ID, avoiding global state collisions between cards.
  */
 
+export const metadata = { extension: ".mmd", badge: "MMD", primaryFile: "diagram.mmd" };
+
 export const dependencies = {
   scripts: ['https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js']
 };

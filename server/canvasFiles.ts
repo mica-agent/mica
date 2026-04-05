@@ -4,7 +4,7 @@
 // {project}/.mica/{canvas}/.
 
 import { readdir, readFile, writeFile, unlink, mkdir, stat, rm } from "fs/promises";
-import { readFileSync, existsSync, statSync } from "fs";
+import { readFileSync, existsSync, statSync, readdirSync } from "fs";
 import { join, basename, extname } from "path";
 
 import {
@@ -31,7 +31,7 @@ export const deleteProject = disconnectConnected;
 
 // ── Dynamic extension registry ──────────────────────────────
 
-const MANIFEST_PATH = join(process.cwd(), "card-classes", "_manifest.json");
+const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
 let _cachedExtensions: string[] | null = null;
 let _cachedManifest: Record<string, ManifestEntry> | null = null;
 
@@ -39,29 +39,65 @@ interface ManifestEntry {
   extension?: string;
   primaryFile?: string;
   badge?: string;
-  system?: boolean;
+  seed?: boolean;
+  system?: boolean; // legacy alias for seed
   defaultTitle?: string;
   network?: boolean;
 }
 
-/** Load the merged manifest (built-in + project-level). */
+/**
+ * Extract metadata from a render.js file by parsing the source text.
+ * Looks for: export const metadata = { ... };
+ */
+function extractMetadata(renderJsPath: string): ManifestEntry | null {
+  try {
+    const source = readFileSync(renderJsPath, "utf-8");
+    const match = source.match(/export\s+const\s+metadata\s*=\s*(\{[^}]+\})/);
+    if (!match) return null;
+    // Parse the object literal (it's simple key-value pairs)
+    const fn = new Function(`return ${match[1]}`);
+    return fn() as ManifestEntry;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Scan card class directories and build manifest from metadata exports.
+ * Scans built-in card-classes/ and optional project-level .mica/.card-classes/.
+ */
 function loadManifest(projectPath?: string): Record<string, ManifestEntry> {
   if (_cachedManifest && !projectPath) return _cachedManifest;
 
-  let manifest: Record<string, ManifestEntry> = {};
-  try {
-    const raw = readFileSync(MANIFEST_PATH, "utf-8");
-    manifest = JSON.parse(raw) as Record<string, ManifestEntry>;
-  } catch { /* fallback empty */ }
+  const manifest: Record<string, ManifestEntry> = {};
 
-  if (projectPath) {
-    try {
-      const raw = readFileSync(join(projectPath, ".mica", ".card-classes", "_manifest.json"), "utf-8");
-      const projectManifest = JSON.parse(raw) as Record<string, ManifestEntry>;
-      for (const [className, entry] of Object.entries(projectManifest)) {
-        manifest[className] = { ...manifest[className], ...entry };
+  // Scan built-in card classes
+  try {
+    const entries = readdirSync(CARD_CLASSES_DIR);
+    for (const entry of entries) {
+      const renderJs = join(CARD_CLASSES_DIR, entry, "render.js");
+      if (existsSync(renderJs)) {
+        const meta = extractMetadata(renderJs);
+        if (meta) manifest[entry] = meta;
       }
-    } catch { /* no project manifest */ }
+    }
+  } catch { /* card-classes dir may not exist */ }
+
+  // Scan project-level card classes (override built-in)
+  if (projectPath) {
+    const projectClassesDir = join(projectPath, ".mica", ".card-classes");
+    try {
+      const entries = readdirSync(projectClassesDir);
+      for (const entry of entries) {
+        const renderJs = join(projectClassesDir, entry, "render.js");
+        if (existsSync(renderJs)) {
+          const meta = extractMetadata(renderJs);
+          if (meta) {
+            manifest[entry] = { ...manifest[entry], ...meta };
+          }
+        }
+      }
+    } catch { /* no project card classes */ }
   }
 
   if (!projectPath) _cachedManifest = manifest;

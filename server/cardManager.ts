@@ -109,6 +109,11 @@ export class CardManager {
     return this.containerRuntimes.get(projectId);
   }
 
+  /** Get the full manifest (for API endpoint). */
+  getManifest(): Record<string, ClassManifestEntry> {
+    return { ...this.manifest };
+  }
+
   /** Get all valid card extensions (for file validation and watching). */
   getValidExtensions(): string[] {
     return [...this.extensionMap.keys(), ".json"];
@@ -120,31 +125,14 @@ export class CardManager {
   }
 
   private loadManifest(projectPath?: string) {
-    const manifestPath = path.join(CARD_CLASSES_DIR, "_manifest.json");
-    try {
-      const raw = fs.readFileSync(manifestPath, "utf-8");
-      this.manifest = JSON.parse(raw);
-    } catch {
-      console.warn("[card-manager] No _manifest.json found, using defaults");
-      this.manifest = {};
-    }
+    this.manifest = {};
 
+    // Scan built-in card classes
+    this.scanCardClassDir(CARD_CLASSES_DIR);
+
+    // Scan project-level card classes (override built-in)
     if (projectPath) {
-      const projectManifestPath = path.join(projectPath, ".mica", ".card-classes", "_manifest.json");
-      try {
-        const raw = fs.readFileSync(projectManifestPath, "utf-8");
-        const projectManifest = JSON.parse(raw) as Record<string, ClassManifestEntry>;
-        for (const [className, projectEntry] of Object.entries(projectManifest)) {
-          const builtIn = this.manifest[className];
-          if (builtIn) {
-            this.manifest[className] = { ...builtIn, ...projectEntry };
-          } else {
-            this.manifest[className] = projectEntry;
-          }
-        }
-      } catch {
-        // No project manifest
-      }
+      this.scanCardClassDir(path.join(projectPath, ".mica", ".card-classes"));
     }
 
     this.extensionMap.clear();
@@ -153,6 +141,26 @@ export class CardManager {
         this.extensionMap.set(entry.extension, className);
       }
     }
+  }
+
+  /** Scan a card class directory for render.js files with metadata exports. */
+  private scanCardClassDir(dir: string) {
+    try {
+      const entries = fs.readdirSync(dir);
+      for (const entry of entries) {
+        const renderJs = path.join(dir, entry, "render.js");
+        if (fs.existsSync(renderJs)) {
+          try {
+            const source = fs.readFileSync(renderJs, "utf-8");
+            const match = source.match(/export\s+const\s+metadata\s*=\s*(\{[^}]+\})/);
+            if (match) {
+              const meta = new Function(`return ${match[1]}`)() as ClassManifestEntry;
+              this.manifest[entry] = { ...this.manifest[entry], ...meta };
+            }
+          } catch { /* parse error */ }
+        }
+      }
+    } catch { /* directory may not exist */ }
   }
 
   // ── Card class resolution ──────────────────────────────

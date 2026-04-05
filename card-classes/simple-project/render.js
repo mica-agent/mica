@@ -10,6 +10,8 @@ import { marked } from 'marked';
 import fs from 'fs';
 import path from 'path';
 
+export const metadata = { extension: ".project", badge: "PROJECT", primaryFile: "project.md", seed: true, defaultTitle: "Project" };
+
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

@@ -7,6 +7,8 @@
  * render + select_provider export.
  */
 
+export const metadata = { extension: ".agent", badge: "AGENT", primaryFile: "task-state.json", defaultTitle: "Agent" };
+
 const STATUS_MAP = {
   setup:       { color: "#6b7280", label: "\u25cf Setup" },
   idle:        { color: "#6b7280", label: "\u25cf Idle" },

@@ -2,6 +2,8 @@
  * HTML card class — renders raw HTML content directly.
  */
 
+export const metadata = { extension: ".html", badge: "HTML", primaryFile: "page.html" };
+
 export default function render(content, config) {
   return `<div class="html-widget">${content}</div>
     <script>

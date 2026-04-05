@@ -7,6 +7,8 @@
 
 import * as pty from 'node-pty';
 
+export const metadata = { extension: ".terminal", badge: "TERM", primaryFile: "transcript.log", defaultTitle: "Terminal" };
+
 // ── Server-side PTY management ────────────────────────────
 
 // Per-session state. Module is cached once per class, but multiple terminal

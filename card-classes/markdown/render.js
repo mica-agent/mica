@@ -6,6 +6,8 @@
  * is fully available (JS loaded, CSS applied) when we create it.
  */
 
+export const metadata = { extension: ".md", badge: "MD", primaryFile: "document.md" };
+
 export const dependencies = {
   scripts: [
     "https://uicdn.toast.com/editor/3.2.2/toastui-editor-all.min.js",

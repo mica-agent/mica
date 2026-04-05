@@ -485,6 +485,13 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   }
 });
 
+// Get available card classes (for toolbar, card creation)
+app.get("/api/card-classes", (_req, res) => {
+  // CardManager's manifest is built from scanning card class directories
+  const classes = cardManager.getManifest();
+  res.json(classes);
+});
+
 // Convert a drawing to mermaid via Claude Vision
 app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, res) => {
   const { project, canvas } = req.params;

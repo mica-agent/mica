@@ -4,6 +4,8 @@
 
 import { marked } from 'marked';
 
+export const metadata = { extension: ".goal", badge: "GOAL", primaryFile: "goals.md", seed: true, defaultTitle: "Project Goal" };
+
 export default function render(content, config) {
   const html = marked.parse(content, { breaks: false, gfm: true });
 

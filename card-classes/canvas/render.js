@@ -6,6 +6,8 @@
  * child cards, each in its own WidgetRuntime with its own mica bridge.
  */
 
+export const metadata = { extension: ".canvas", badge: "CANVAS", primaryFile: "canvas.json", seed: true, defaultTitle: "Canvas" };
+
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
