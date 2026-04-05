@@ -34,17 +34,28 @@ async function readCardContent(cardName) {
 async function buildContext(mica) {
   const parts = [];
 
-  // Read the agent's own brief (from this card's directory)
+  // Read the agent's own brief and expand @file references
   try {
-    const brief = await mica.read("brief.md");
+    let brief = await mica.read("brief.md");
+    // Expand @filename references — inline the file content
+    const fileRefs = brief.match(/^@(\S+)$/gm) || [];
+    for (const ref of fileRefs) {
+      const filename = ref.slice(1); // strip @
+      try {
+        // Try card-classes mount first, then project directory
+        let content;
+        try {
+          content = await fs.promises.readFile(`/opt/mica/card-classes/${filename}`, "utf-8");
+        } catch {
+          content = await fs.promises.readFile(path.join(PROJECT_DIR, filename), "utf-8");
+        }
+        brief = brief.replace(ref, content.trim());
+      } catch {
+        brief = brief.replace(ref, `(file not found: ${filename})`);
+      }
+    }
     if (brief.trim()) parts.push(`## Agent Brief\n${brief.trim()}`);
   } catch { /* no brief */ }
-
-  // Read card system reference (how to work with cards)
-  try {
-    const cardDocs = await fs.promises.readFile("/opt/mica/card-classes/WORKING_WITH_CARDS.md", "utf-8");
-    parts.push(cardDocs.trim());
-  } catch { /* not available */ }
 
   // Read canvas seed cards for project context
   const contextCards = [
