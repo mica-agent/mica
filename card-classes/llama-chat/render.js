@@ -259,6 +259,28 @@ const TOOLS = [
 ];
 
 // Execute a tool call
+/** Resolve the primary file for a card from its class metadata. */
+function resolvePrimaryFile(cardName) {
+  const ext = path.extname(cardName);
+  // Scan card-classes for a class with this extension, read its metadata
+  const classesDir = "/opt/mica/card-classes";
+  try {
+    const classes = fs.readdirSync(classesDir);
+    for (const cls of classes) {
+      const renderJs = path.join(classesDir, cls, "render.js");
+      try {
+        const source = fs.readFileSync(renderJs, "utf-8");
+        const match = source.match(/export\s+const\s+metadata\s*=\s*(\{[^}]+\})/);
+        if (match) {
+          const meta = new Function(`return ${match[1]}`)();
+          if (meta.extension === ext && meta.primaryFile) return meta.primaryFile;
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* card-classes not available */ }
+  return "content"; // fallback
+}
+
 async function executeTool(name, args, mica) {
   switch (name) {
     case "list_files": {
@@ -269,10 +291,7 @@ async function executeTool(name, args, mica) {
     case "read_file": {
       const dir = path.join(PROJECT_DIR, args.filename);
       try {
-        // Resolve primary file from extension
-        const ext = path.extname(args.filename);
-        const primaryNames = { ".md": "document.md", ".todo": "tasks.md", ".mmd": "diagram.mmd", ".txt": "content.txt", ".goal": "goals.md", ".claude-chat": "conversation.json", ".llama-chat": "conversation.json" };
-        const primary = primaryNames[ext] || "content";
+        const primary = resolvePrimaryFile(args.filename);
         return await fs.promises.readFile(path.join(dir, primary), "utf-8");
       } catch {
         return `Error: card "${args.filename}" not found`;
@@ -282,9 +301,7 @@ async function executeTool(name, args, mica) {
       const dir = path.join(PROJECT_DIR, args.filename);
       try {
         await fs.promises.mkdir(dir, { recursive: true });
-        const ext = path.extname(args.filename);
-        const primaryNames = { ".md": "document.md", ".todo": "tasks.md", ".mmd": "diagram.mmd", ".txt": "content.txt", ".goal": "goals.md" };
-        const primary = primaryNames[ext] || "content";
+        const primary = resolvePrimaryFile(args.filename);
         await fs.promises.writeFile(path.join(dir, primary), args.content, "utf-8");
         return `Written to ${args.filename}/${primary}`;
       } catch (e) {
