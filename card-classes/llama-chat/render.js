@@ -1,14 +1,282 @@
 /**
- * Llama Chat card class — interactive chat with local LLM agent.
+ * Llama Chat card class — interactive chat with local LLM (llama-server).
  *
  * Browser: Chat UI, opens channel with provider: "local".
- * Server: Shares stream handlers with claude-chat (uses Claude SDK for now).
- * TODO: Wire to local LLM (llama-server) when ready.
+ * Server: Calls llama-server's OpenAI-compatible API at /v1/chat/completions.
+ *
+ * Networking: llama-server runs on the host at port 8012. When this card class
+ * runs inside a Docker container (bridge network), it reaches the host via the
+ * default gateway IP. When running on the host directly, it uses 127.0.0.1.
  */
+
+import fs from 'fs';
+import path from 'path';
 
 export const metadata = { extension: ".llama-chat", badge: "LLAMA", primaryFile: "conversation.json", defaultTitle: "Llama Chat" };
 
-export { onConnect, onMessage, onDisconnect } from '../claude-chat/render.js';
+// ── Server-side chat management ───────────────────────────
+
+const PROJECT_DIR = process.env.PROJECT_DIR || "/project";
+const HISTORY_FILE = "conversation.json";
+const MAX_HISTORY = 100;
+const MAX_TURNS = 5;
+
+/**
+ * Resolve the llama-server base URL.
+ * Inside Docker (bridge network), 127.0.0.1 is the container itself.
+ * We detect this by checking for /.dockerenv or the PROJECT_DIR convention,
+ * then use the default gateway IP to reach the host.
+ */
+async function getLlamaBaseUrl() {
+  // If explicitly set, use that
+  if (process.env.LLAMA_URL) return process.env.LLAMA_URL;
+
+  // Check if we're inside a Docker container
+  let inContainer = false;
+  try {
+    await fs.promises.access("/.dockerenv");
+    inContainer = true;
+  } catch {
+    // Also check cgroup for container evidence
+    try {
+      const cgroup = await fs.promises.readFile("/proc/1/cgroup", "utf-8");
+      if (cgroup.includes("docker") || cgroup.includes("containerd")) {
+        inContainer = true;
+      }
+    } catch { /* not in container */ }
+  }
+
+  if (inContainer) {
+    // Get the default gateway IP (host from container's perspective)
+    try {
+      const { execSync } = await import('child_process');
+      const route = execSync("ip route | grep default | awk '{print $3}'", { encoding: "utf-8" }).trim();
+      if (route) {
+        return `http://${route}:8012`;
+      }
+    } catch { /* fallback */ }
+
+    // Fallback: host.docker.internal (works on Docker Desktop for Mac/Windows)
+    return "http://host.docker.internal:8012";
+  }
+
+  return "http://127.0.0.1:8012";
+}
+
+/** Read the first non-dot file from a card directory. */
+async function readCardContent(cardName) {
+  const dir = path.join(PROJECT_DIR, cardName);
+  try {
+    const entries = await fs.promises.readdir(dir);
+    for (const entry of entries) {
+      if (!entry.startsWith(".")) {
+        return await fs.promises.readFile(path.join(dir, entry), "utf-8");
+      }
+    }
+  } catch { /* card doesn't exist */ }
+  return null;
+}
+
+/** Build project context for the system prompt. */
+async function buildContext(mica) {
+  const parts = [];
+
+  // Read the agent's own brief
+  try {
+    const brief = await mica.read("brief.md");
+    if (brief.trim()) parts.push(`## Agent Brief\n${brief.trim()}`);
+  } catch { /* no brief */ }
+
+  // Read canvas seed cards for project context
+  const contextCards = [
+    { name: "goal.goal", label: "Project Goals" },
+    { name: "todo.todo", label: "Tasks" },
+    { name: "brief.md", label: "Project Brief" },
+    { name: "log.md", label: "Recent Activity" },
+  ];
+
+  for (const { name, label } of contextCards) {
+    const content = await readCardContent(name);
+    if (content?.trim()) {
+      parts.push(`## ${label}\n${content.trim()}`);
+    }
+  }
+
+  // List canvas cards
+  try {
+    const entries = await fs.promises.readdir(PROJECT_DIR);
+    const cards = [];
+    for (const entry of entries) {
+      if (entry.startsWith(".") || entry === "workspace") continue;
+      const ext = path.extname(entry);
+      if (ext) {
+        const stat = await fs.promises.stat(path.join(PROJECT_DIR, entry));
+        cards.push(`- ${entry}${stat.isDirectory() ? "/" : ""}`);
+      }
+    }
+    if (cards.length > 0) {
+      parts.push(`## Canvas Cards\n${cards.join("\n")}`);
+    }
+  } catch { /* no cards */ }
+
+  return parts.join("\n\n");
+}
+
+// Per-session state
+const sessions = new Map();
+
+function sessionKey(mica) {
+  return `${mica.project}/${mica.canvas}/${mica.filename}`;
+}
+
+async function loadHistory(mica) {
+  try {
+    const raw = await mica.read(HISTORY_FILE);
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+async function appendHistory(mica, newMessages) {
+  let messages = await loadHistory(mica);
+  messages.push(...newMessages);
+  if (messages.length > MAX_HISTORY) {
+    messages = messages.slice(-MAX_HISTORY);
+  }
+  await mica.write(HISTORY_FILE, JSON.stringify(messages, null, 2));
+}
+
+export async function onConnect(mica, args) {
+  const key = sessionKey(mica);
+  sessions.set(key, {
+    busy: false,
+    queue: [],
+    // OpenAI-format conversation history (system + user/assistant messages)
+    conversation: [],
+  });
+
+  const messages = await loadHistory(mica);
+  mica.send({ type: "history", messages });
+}
+
+export async function onMessage(msg, mica) {
+  const key = sessionKey(mica);
+  const session = sessions.get(key);
+  if (!session) return;
+
+  // Replay history on re-attach
+  if (msg.type === "attached") {
+    const messages = await loadHistory(mica);
+    mica.reply({ type: "history", messages });
+    return;
+  }
+
+  const message = msg.message;
+  if (!message) return;
+
+  if (session.busy) {
+    session.queue.push(message);
+    return;
+  }
+
+  await processMessage(session, message, mica);
+}
+
+export function onDisconnect(mica) {
+  const key = sessionKey(mica);
+  sessions.delete(key);
+}
+
+async function processMessage(session, message, mica) {
+  session.busy = true;
+
+  // Broadcast user message
+  mica.send({ type: "user", content: message });
+  await appendHistory(mica, [{ role: "user", content: message }]);
+
+  // Signal thinking
+  mica.send({ type: "thinking" });
+
+  try {
+    const baseUrl = await getLlamaBaseUrl();
+    const context = await buildContext(mica);
+
+    const systemPrompt = `You are a helpful local AI assistant (Llama) working on this project. Be concise and direct. When asked to create content or make changes, do it.
+
+${context}`;
+
+    // Build OpenAI-format messages from display history
+    // (rebuild each time to keep it fresh; conversation state is display history)
+    const displayHistory = await loadHistory(mica);
+    const openaiMessages = [
+      { role: "system", content: systemPrompt },
+    ];
+
+    // Convert display history to OpenAI format (last N messages for context window)
+    const recentHistory = displayHistory.slice(-20);
+    for (const m of recentHistory) {
+      if (m.role === "user") {
+        openaiMessages.push({ role: "user", content: m.content });
+      } else if (m.role === "assistant") {
+        openaiMessages.push({ role: "assistant", content: m.content });
+      }
+    }
+
+    // Add the current user message (it's already in display history from appendHistory above,
+    // but we built openaiMessages from the saved history which includes it)
+
+    mica.send({ type: "progress", description: "Calling local LLM..." });
+
+    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "local",
+        messages: openaiMessages,
+        temperature: 0.7,
+        max_tokens: 4096,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`llama-server returned ${res.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const choice = data.choices?.[0];
+    let resultText = choice?.message?.content || "";
+
+    if (!resultText.trim()) {
+      resultText = "I wasn't able to generate a response. Please try again.";
+    }
+
+    mica.send({
+      type: "assistant",
+      content: resultText,
+      agent: "Llama",
+      filesChanged: false,
+    });
+
+    await appendHistory(mica, [
+      { role: "assistant", content: resultText, agent: "Llama" },
+    ]);
+  } catch (err) {
+    console.error(`[llama-chat] Error:`, err.message);
+    mica.send({ type: "error", error: err.message });
+  } finally {
+    session.busy = false;
+
+    if (session.queue.length > 0) {
+      const lastMessage = session.queue[session.queue.length - 1];
+      session.queue.length = 0;
+      setImmediate(() => processMessage(session, lastMessage, mica));
+    }
+  }
+}
+
+// ── Browser-side chat UI ──────────────────────────────────
 
 export default function render(content, config) {
   return chatCardHtml("local", "Llama", "#4ade80", "🦙");
