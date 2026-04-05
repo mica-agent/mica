@@ -466,7 +466,7 @@ app.get("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   const { project, canvas } = req.params;
   if (!(await validateParams(res, project, canvas))) return;
   try {
-    const data = await readCardFile(project, canvas, "project.project", "layout.json");
+    const data = await readCardFile(project, canvas, "project.project", ".layout.json");
     res.json(JSON.parse(data));
   } catch {
     // Fall back to legacy .layout.json in .mica/
@@ -487,7 +487,7 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
     // Don't persist the source field — it's only for broadcast routing
     const dataToStore = { ...req.body };
     delete dataToStore.source;
-    await writeCardFile(project, canvas, "project.project", "layout.json", JSON.stringify(dataToStore, null, 2));
+    await writeCardFile(project, canvas, "project.project", ".layout.json", JSON.stringify(dataToStore, null, 2));
     // Broadcast layout change with source so originator can ignore
     broadcast({ type: "layout-changed", project, canvas, source });
     res.json({ success: true });
