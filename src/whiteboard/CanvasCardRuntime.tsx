@@ -319,10 +319,10 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const contentCards = allContent.filter((c) => c.meta.cardClass !== "mermaid");
 
   // Order system cards
-  const orderedSystem = SYSTEM_ORDER
+  const orderedSystem = SEED_CARD_ORDER
     .map((name) => systemCards.find((c) => c.filename === name))
     .filter((c): c is RenderedCard => c != null);
-  const extraSystem = systemCards.filter((c) => !SYSTEM_ORDER.includes(c.filename));
+  const extraSystem = systemCards.filter((c) => !SEED_CARD_ORDER.includes(c.filename));
   const allSystem = [...orderedSystem, ...extraSystem];
 
   // ── Render ──────────────────────────────────────────────
