@@ -98,7 +98,13 @@ export default function render(content, config) {
         }, 800);
       });
 
+      // Sync from other windows — refresh when the file changes externally
+      const unsub = mica.on('file-changed', (e) => {
+        if (e.filename === mica.filename) mica.refresh();
+      });
+
       mica.onDestroy(() => {
+        unsub();
         if (saveTimer) clearTimeout(saveTimer);
         ro.disconnect();
         editor.destroy();
