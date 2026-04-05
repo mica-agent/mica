@@ -1,12 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { fetchProjects } from './api/canvasFiles';
 import type { ProjectConfig } from './api/canvasFiles';
 import { connect as connectMicaSocket } from './api/micaSocket';
 import CanvasCardRuntime from './whiteboard/CanvasCardRuntime';
-import ChatSidebar from './whiteboard/ChatSidebar';
 import ProjectNav from './ProjectNav';
 import './App.css';
-import './ai/ai.css';
 
 // Connect the shared WebSocket for widget communication
 connectMicaSocket();
@@ -16,8 +14,6 @@ connectMicaSocket();
 export default function App() {
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
   const [activeProjectIndex, setActiveProjectIndex] = useState(0);
-  const [, setAgentBusy] = useState(false);
-  const reloadRef = useRef<(() => void) | null>(null);
 
   const loadProjects = useCallback(() => {
     fetchProjects()
@@ -33,7 +29,6 @@ export default function App() {
   const activeProject = projects[activeProjectIndex] || null;
   const canvasColor = '#4a8aff';
 
-  // Loading state
   if (!activeProject) {
     return (
       <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#999' }}>
@@ -45,47 +40,32 @@ export default function App() {
   const projectId = activeProject.id;
 
   return (
-    <div className="app-with-ai">
-      <div className="app-main">
-        <div className="app app--project">
-          <div
-            className="app-bg-tint"
-            style={{ background: 'rgba(74, 138, 255, 0.06)' }}
-          />
-          <div
-            className="app-bg-glow"
-            style={{ background: canvasColor }}
-          />
-
-          <nav className="breadcrumb">
-            <ProjectNav
-              projects={projects}
-              activeProject={activeProject}
-              onSwitch={(i) => { setActiveProjectIndex(i); }}
-              onProjectsChanged={loadProjects}
-            />
-          </nav>
-
-          <div className="project-content">
-            <CanvasCardRuntime
-              key={projectId}
-              projectId={projectId}
-              onReloadRef={reloadRef}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Chat Sidebar — scoped to _root canvas */}
-      <div className="ai-sidebar">
-        <ChatSidebar
-          key={`${projectId}/_root`}
-          projectId={projectId}
-          activeCanvas="_root"
-          canvasColor={canvasColor}
-          onAgentBusy={setAgentBusy}
-          onFilesChanged={() => reloadRef.current?.()}
+    <div className="app-main">
+      <div className="app app--project">
+        <div
+          className="app-bg-tint"
+          style={{ background: 'rgba(74, 138, 255, 0.06)' }}
         />
+        <div
+          className="app-bg-glow"
+          style={{ background: canvasColor }}
+        />
+
+        <nav className="breadcrumb">
+          <ProjectNav
+            projects={projects}
+            activeProject={activeProject}
+            onSwitch={(i) => { setActiveProjectIndex(i); }}
+            onProjectsChanged={loadProjects}
+          />
+        </nav>
+
+        <div className="project-content">
+          <CanvasCardRuntime
+            key={projectId}
+            projectId={projectId}
+          />
+        </div>
       </div>
     </div>
   );

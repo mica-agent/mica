@@ -6,18 +6,9 @@ import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import {
-  chatWithAgent,
-  consultCanvas,
-  teamDiscuss,
-  convertDrawingToMermaid,
-  resetCanvas,
-  resetAll,
-  getAgentMeta,
-  setAgentWriteHook,
-  setAgentExecutor,
-} from "./agents.js";
-import type { CanvasId } from "./agents.js";
+import { convertDrawingToMermaid } from "./drawingConverter.js";
+import type { CanvasId } from "./agentCore/types.js";
+import type { AgentResponse } from "./agentCore/types.js";
 import {
   listFiles,
   readCanvasFile,
@@ -54,7 +45,7 @@ import { ContainerRuntime } from "./containerRuntime.js";
 import { FileWatcher } from "./fileWatcher.js";
 import { SandboxManager } from "./projectSandbox.js";
 import { ReactiveAgent } from "./reactiveAgent.js";
-import { chatWithLocalAgent, setLocalAgentWriteHook, resetLocalCanvas, resetAllLocal } from "./localAgent.js";
+import { setLocalAgentWriteHook } from "./localAgent.js";
 import { stopLlamaServer } from "./llamaServer.js";
 import { AgentChannelManager } from "./agentChannel.js";
 import { setExecutor as setSubagentExecutor } from "./agentProviders/claudeCode.js";
@@ -346,113 +337,7 @@ app.get("/api/projects/:project/container/logs", async (req, res) => {
   }
 });
 
-// ── Agent endpoints (project-scoped) ──────────────────────
-
-// Agent metadata for a canvas
-app.get("/api/projects/:project/canvases/:canvas/agent", async (req, res) => {
-  const { project, canvas } = req.params;
-  if (!(await validateParams(res, project, canvas))) return;
-  res.json(getAgentMeta(canvas));
-});
-
-// Chat with a specific canvas agent
-app.post("/api/projects/:project/canvases/:canvas/chat", async (req, res) => {
-  req.setTimeout(120000);
-  res.setTimeout(120000);
-  const { project, canvas } = req.params;
-  if (!(await validateParams(res, project, canvas))) return;
-
-  const { message } = req.body;
-  if (!message) {
-    res.status(400).json({ error: "Message required" });
-    return;
-  }
-
-  reactiveAgent.markBusy(project, canvas);
-  try {
-    const response = await routedChat(project, canvas, message);
-
-    // If there's a pending consultation, forward it (Claude only)
-    if (response.consultation) {
-      const consultationResponse = await consultCanvas(
-        project,
-        canvas,
-        response.consultation.targetCanvas,
-        response.consultation.question,
-        response.consultation.context
-      );
-      res.json({ response, consultationResponse });
-      return;
-    }
-
-    res.json({ response });
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error(`[${project}/${canvas}] Error:`, error.message);
-    res.status(500).json({ error: error.message });
-  } finally {
-    reactiveAgent.clearBusy(project, canvas);
-  }
-});
-
-// Team discussion — all agents in a project respond to a topic
-app.post("/api/projects/:project/team/discuss", async (req, res) => {
-  const { project } = req.params;
-  const { topic } = req.body;
-  if (!topic) {
-    res.status(400).json({ error: "Topic required" });
-    return;
-  }
-
-  try {
-    const config = await getProjectConfig(project);
-    if (!config) {
-      res.status(404).json({ error: `Project not found: ${project}` });
-      return;
-    }
-    const responses = await teamDiscuss(project, config.canvases);
-    res.json({ responses });
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error("[team] Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Cross-canvas consultation
-app.post("/api/projects/:project/consult", async (req, res) => {
-  const { project } = req.params;
-  const { fromCanvas, toCanvas, question, context } = req.body;
-
-  try {
-    const response = await consultCanvas(
-      project,
-      fromCanvas,
-      toCanvas,
-      question,
-      context
-    );
-    res.json({ response });
-  } catch (err: unknown) {
-    const error = err as Error;
-    console.error("[consult] Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Reset conversations
-app.post("/api/projects/:project/reset", (req, res) => {
-  const { project } = req.params;
-  const { canvas } = req.body;
-  if (canvas) {
-    resetCanvas(project, canvas);
-    resetLocalCanvas(project, canvas);
-  } else {
-    resetAll();
-    resetAllLocal();
-  }
-  res.json({ success: true });
-});
+// Sidebar chat routes removed — chat happens via card classes (claude-chat, llama-chat).
 
 // ── Project Card (top-level canvas card) ─────────────────────
 
@@ -621,7 +506,6 @@ app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, 
 
 const sandboxManager = new SandboxManager();
 const executor = new ProjectExecutor(sandboxManager);
-setAgentExecutor(executor);
 setContainerExecutor(executor);
 setSubagentExecutor(executor);
 const cardManager = new CardManager();
@@ -673,14 +557,11 @@ registerProvider(claudeProvider);
 registerProvider(localProvider);
 
 // Routed chat function — picks provider based on project config
-const routedChat: typeof chatWithAgent = async (project, canvas, message, image?, onProgress?, resumeSessionId?) => {
+const routedChat = async (project: string, canvas: CanvasId, message: string, image?: string, onProgress?: (evt: { type: string; tool?: string; elapsed?: number; description?: string }) => void, resumeSessionId?: string): Promise<AgentResponse> => {
   const providerName = await resolveAgentProvider(project);
   const provider = getProvider(providerName);
-  if (provider) {
-    return provider.chat(project, canvas, message, image, onProgress, resumeSessionId);
-  }
-  // Fallback to Claude if provider not found
-  return chatWithAgent(project, canvas, message, image, onProgress, resumeSessionId);
+  if (!provider) throw new Error(`No agent provider found: ${providerName}`);
+  return provider.chat(project, canvas, message, image, onProgress, resumeSessionId);
 };
 
 const reactiveAgent = new ReactiveAgent(routedChat, broadcast);
@@ -689,7 +570,6 @@ const reactiveAgent = new ReactiveAgent(routedChat, broadcast);
 const writeHook = (project: string, canvas: string, filename: string) => {
   reactiveAgent.markAgentWrite(project, canvas, filename);
 };
-setAgentWriteHook(writeHook);
 setLocalAgentWriteHook(writeHook);
 claudeProvider.setWriteHook(writeHook);
 localProvider.setWriteHook(writeHook);

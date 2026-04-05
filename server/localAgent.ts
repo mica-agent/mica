@@ -9,14 +9,9 @@ import {
   deleteCanvasFile,
   getAllFilesAsContext,
 } from "./canvasFiles.js";
-import {
-  getAgentIdentity,
-  TOOL_INSTRUCTIONS,
-  GOAL_INSTRUCTIONS,
-  describeToolUse,
-  appendToLog,
-} from "./agents.js";
-import type { AgentResponse, CanvasId, ProgressCallback } from "./agents.js";
+import { describeToolUse, appendToLog } from "./agentCore/logging.js";
+import { getAgentIdentity, TOOL_INSTRUCTIONS, GOAL_INSTRUCTIONS } from "./agentCore/systemPrompt.js";
+import type { AgentResponse, CanvasId, ProgressCallback } from "./agentCore/types.js";
 import { readMicaConfig, getProjectPath } from "./projectConnection.js";
 import { ensureLlamaServer } from "./llamaServer.js";
 
