@@ -47,7 +47,6 @@ import { SandboxManager } from "./projectSandbox.js";
 import { ReactiveAgent } from "./reactiveAgent.js";
 import { setLocalAgentWriteHook } from "./localAgent.js";
 import { stopLlamaServer } from "./llamaServer.js";
-import { AgentChannelManager } from "./agentChannel.js";
 import { setExecutor as setSubagentExecutor } from "./agentProviders/claudeCode.js";
 import { ProjectExecutor } from "./projectExecutor.js";
 import { ClaudeProvider } from "./agentProviders/claude.js";
@@ -751,7 +750,6 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel IDs
-const agentManager = new AgentChannelManager(); // Agent card sessions (complex task protocol, kept separate)
 
 // Unified channel manager — handles chat, terminal, and future card types.
 // Transport-agnostic: index.ts is the WebSocket adapter.
@@ -795,8 +793,6 @@ wss.on("connection", (ws) => {
       for (const channelId of channels) {
         if (channelManager.has(channelId)) {
           channelManager.detach(channelId); // soft — session stays alive
-        } else if (agentManager.has(channelId)) {
-          agentManager.close(channelId);
         }
       }
       wsChannels.delete(ws);
@@ -885,14 +881,6 @@ wss.on("connection", (ws) => {
             wsChannels.get(ws)?.delete(cid);
           };
 
-          // Agent cards have a complex task protocol — keep separate for now
-          if (fname.endsWith(".agent")) {
-            agentManager.open(cid, proj, canv, fname, channelArgs, onData, onClose);
-            if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
-            wsChannels.get(ws)!.add(cid);
-            break;
-          }
-
           // Terminal cards: if running on host (no container runtime), need shell override
           // to docker exec into the container. If running in container, skip — bash is local.
           if (fname.endsWith(".terminal") || (fn as string) === "shell") {
@@ -942,8 +930,6 @@ wss.on("connection", (ws) => {
         const cid = id as string;
         if (channelManager.has(cid)) {
           channelManager.sendData(cid, (msg as { data?: unknown }).data);
-        } else if (agentManager.has(cid)) {
-          agentManager.sendData(cid, (msg as { data?: unknown }).data);
         }
         break;
       }
@@ -953,8 +939,6 @@ wss.on("connection", (ws) => {
         const cid = id as string;
         if (channelManager.has(cid)) {
           channelManager.detach(cid);
-        } else if (agentManager.has(cid)) {
-          agentManager.close(cid);
         }
         wsChannels.get(ws)?.delete(cid);
         break;
@@ -977,7 +961,6 @@ function broadcast(msg: Record<string, unknown>) {
 }
 
 // Wire broadcast for agent lifecycle events
-agentManager.setBroadcast(broadcast);
 
 // File watcher → broadcast events (card classes own their own update lifecycle)
 fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {
@@ -1107,8 +1090,7 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
 
   // Graceful shutdown
   const shutdown = async () => {
-    console.log("\n[shutdown] Stopping agents, terminals, sandboxes, and llama-server...");
-    agentManager.closeAll();
+    console.log("\n[shutdown] Stopping channels, sandboxes, and llama-server...");
     channelManager.destroyAll();
     await stopLlamaServer();
     await sandboxManager.stopAll();
