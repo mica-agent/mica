@@ -40,6 +40,12 @@ async function buildContext(mica) {
     if (brief.trim()) parts.push(`## Agent Brief\n${brief.trim()}`);
   } catch { /* no brief */ }
 
+  // Read card system reference (how to work with cards)
+  try {
+    const cardDocs = await fs.promises.readFile("/opt/mica/card-classes/WORKING_WITH_CARDS.md", "utf-8");
+    parts.push(cardDocs.trim());
+  } catch { /* not available */ }
+
   // Read canvas seed cards for project context
   const contextCards = [
     { name: "goal.goal", label: "Project Goals" },

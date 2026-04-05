@@ -92,6 +92,12 @@ async function readCardContent(cardName) {
 async function buildContext(mica) {
   const parts = [];
 
+  // Read card system reference (how to work with cards)
+  try {
+    const cardDocs = await fs.promises.readFile("/opt/mica/card-classes/WORKING_WITH_CARDS.md", "utf-8");
+    parts.push(cardDocs.trim());
+  } catch { /* not available */ }
+
   // Read the agent's own brief
   try {
     const brief = await mica.read("brief.md");
