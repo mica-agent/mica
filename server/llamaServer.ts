@@ -6,8 +6,8 @@ import { spawn, type ChildProcess } from "child_process";
 
 const LLAMA_SERVER_BIN = "/usr/local/bin/llama-server";
 const DEFAULT_PORT = 8012;
-const MODEL_PATH =
-  "/home/vscode/.cache/llama.cpp/Qwen3-Coder-Next-MXFP4_MOE.gguf";
+const MODEL_PATH = process.env.MODEL_PATH ||
+  "/home/vscode/.cache/llama.cpp/unsloth_Qwen3-Next-80B-A3B-Instruct-GGUF_Qwen3-Next-80B-A3B-Instruct-UD-Q4_K_XL.gguf";
 
 let serverProcess: ChildProcess | null = null;
 let serverPort: number = DEFAULT_PORT;
