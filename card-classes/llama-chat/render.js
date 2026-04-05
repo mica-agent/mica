@@ -47,16 +47,27 @@ async function getLlamaBaseUrl() {
   }
 
   if (inContainer) {
-    // Get the default gateway IP (host from container's perspective)
+    // Get the default gateway IP from /proc/net/route (host from container's perspective)
     try {
-      const { execSync } = await import('child_process');
-      const route = execSync("ip route | grep default | awk '{print $3}'", { encoding: "utf-8" }).trim();
-      if (route) {
-        return `http://${route}:8012`;
+      const routeTable = await fs.promises.readFile("/proc/net/route", "utf-8");
+      const lines = routeTable.trim().split("\n");
+      for (const line of lines.slice(1)) {
+        const parts = line.split("\t");
+        if (parts[1] === "00000000") { // default route
+          const gw = parts[2];
+          // Parse hex gateway IP (little-endian)
+          const ip = [
+            parseInt(gw.slice(6, 8), 16),
+            parseInt(gw.slice(4, 6), 16),
+            parseInt(gw.slice(2, 4), 16),
+            parseInt(gw.slice(0, 2), 16),
+          ].join(".");
+          return `http://${ip}:8012`;
+        }
       }
     } catch { /* fallback */ }
 
-    // Fallback: host.docker.internal (works on Docker Desktop for Mac/Windows)
+    // Fallback: host.docker.internal (Docker Desktop for Mac/Windows)
     return "http://host.docker.internal:8012";
   }
 
