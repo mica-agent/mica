@@ -114,7 +114,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
   if (!bridgeRef.current) {
     bridgeRef.current = createBridge(project, canvas, filename);
   }
-  const [activeCalls, setActiveCalls] = useState(0);
+  const activeCallsRef = useRef(0);
   const [loadingDeps, setLoadingDeps] = useState(false);
 
   // Render on mount. Idempotent — safe to re-run (StrictMode, re-render).
@@ -192,11 +192,11 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
         canvas,
         filename,
         call: async (fn: string, args: Record<string, unknown> = {}) => {
-          setActiveCalls((n) => n + 1);
+          activeCallsRef.current++;
           try {
             return await baseBridge.call(fn, args);
           } finally {
-            setActiveCalls((n) => n - 1);
+            activeCallsRef.current--;
           }
         },
         refresh: baseBridge.refresh,
@@ -281,8 +281,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
   }, [html, project, canvas, filename]);
 
   return (
-    <div ref={outerRef} className={`widget-runtime ${activeCalls > 0 ? "widget-runtime--busy" : ""}`}>
-      {activeCalls > 0 && <div className="widget-activity-indicator" />}
+    <div ref={outerRef} className="widget-runtime">
       {loadingDeps && (
         <div className="widget-deps-loading">
           <div className="widget-deps-skeleton" />
