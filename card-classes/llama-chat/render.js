@@ -269,8 +269,14 @@ async function executeTool(name, args, mica) {
     case "read_file": {
       const dir = path.join(PROJECT_DIR, args.filename);
       try {
-        const files = await fs.promises.readdir(dir);
-        const primary = files.find(f => !f.startsWith("."));
+        const entries = await fs.promises.readdir(dir);
+        // Find the first non-dot regular file (skip directories like __pycache__)
+        let primary = null;
+        for (const entry of entries) {
+          if (entry.startsWith(".")) continue;
+          const st = await fs.promises.stat(path.join(dir, entry));
+          if (st.isFile()) { primary = entry; break; }
+        }
         if (!primary) return "(empty card)";
         return await fs.promises.readFile(path.join(dir, primary), "utf-8");
       } catch {
