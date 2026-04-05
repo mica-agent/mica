@@ -99,17 +99,10 @@ export default function render(content, config) {
         }, 800);
       });
 
-      // Sync from other windows — update editor content in place (no full refresh)
+      // Sync from other windows — full refresh on external changes
       const unsub = mica.on('file-changed', (e) => {
         if (e.filename === mica.filename && !justSaved) {
-          mica.call('getContent', {}).then((result) => {
-            if (result && result.content !== editor.getMarkdown()) {
-              const el = editorEl.querySelector('.toastui-editor-ww-container .ProseMirror');
-              const scroll = el ? el.scrollTop : 0;
-              editor.setMarkdown(result.content, false);
-              if (el) requestAnimationFrame(() => { el.scrollTop = scroll; });
-            }
-          }).catch(() => {});
+          mica.refresh();
         }
       });
 
@@ -127,8 +120,4 @@ export default function render(content, config) {
 export async function save(content, args, mica) {
   await mica.write('document.md', args.content || "");
   return { ok: true };
-}
-
-export async function getContent(content, args, mica) {
-  return { content };
 }
