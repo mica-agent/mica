@@ -49,11 +49,11 @@ export async function fetchProject(projectId: string): Promise<ProjectConfig> {
   return res.json();
 }
 
-export async function createProject(id: string, name: string, agentProvider?: string): Promise<ProjectConfig> {
+export async function createProject(id: string, name: string, agentProvider?: string, canvasClass?: string): Promise<ProjectConfig> {
   const res = await fetch(`${API_BASE}/api/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, name, agentProvider }),
+    body: JSON.stringify({ id, name, agentProvider, canvasClass }),
   });
   if (!res.ok) throw new Error(`Failed to create project: ${res.statusText}`);
   return res.json();
@@ -185,8 +185,12 @@ export async function fetchRenderedCard(project: string, canvas: CanvasId, filen
 
 // ── Project Card API ──────────────────────────────────────
 
-/** Fetch the rendered project card (layout shell with child metadata) */
-export async function fetchProjectCard(project: string): Promise<RenderedCard> {
+export interface ProjectCardResponse extends RenderedCard {
+  canvasFilename: string;
+}
+
+/** Fetch the rendered canvas card (layout shell with child metadata) */
+export async function fetchProjectCard(project: string): Promise<ProjectCardResponse> {
   const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card`);
   if (!res.ok) throw new Error(`Failed to fetch project card: ${res.statusText}`);
   return res.json();

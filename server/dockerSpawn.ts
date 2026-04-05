@@ -16,7 +16,7 @@ import { join, resolve } from "path";
 import { tmpdir } from "os";
 import { fileURLToPath } from "url";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
-import { getProjectPath } from "./projectConnection.js";
+import { getProjectPath, getCanvasDir } from "./projectConnection.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = join(__filename, "..");
@@ -50,10 +50,12 @@ export const RUNTIME_DIR = join(__dirname, "container-runtime");
 
 export async function getProjectMounts(projectId: string): Promise<ProjectMounts> {
   const projectPath = await getProjectPath(projectId);
+  // Mount the canvas card directory (where child cards live) as /project
+  const canvasDir = await getCanvasDir(projectId, "_root");
   return {
     projectPath,
     volumes: [
-      `${projectPath}:${CONTAINER_PROJECT_DIR}:rw`,
+      `${canvasDir}:${CONTAINER_PROJECT_DIR}:rw`,
       `${CARD_CLASSES_DIR}:${CONTAINER_CARD_CLASSES}:ro`,
       `${NODE_MODULES_DIR}:${CONTAINER_NODE_MODULES}:ro`,
       `${RUNTIME_DIR}:${CONTAINER_RUNTIME_DIR}:ro`,

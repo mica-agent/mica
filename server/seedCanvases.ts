@@ -1,20 +1,20 @@
 // Seed starter files for new projects and handle initialization.
-// Card files are created at the project root. Infrastructure stays in .mica/.
+// The canvas card class defines the project structure via its _ prefixed seed files.
+// Infrastructure stays in .mica/.
 
 import { existsSync } from "fs";
 import { readFile, writeFile as writeFileFs, mkdir } from "fs/promises";
 import { join } from "path";
 import {
   listFiles,
+  createCard,
   writeCanvasFile,
-  ensureCanvasDir,
   listProjects,
-  migrateToCardDirectories,
-  migrateCardNames,
+  getCardClassExtension,
+  getPrimaryFile,
 } from "./canvasFiles.js";
 import {
   connectProject,
-  initMicaDir,
   readWorkspaceRegistry,
   migrateLegacyProjects,
   migrateDataFileNames,
@@ -28,122 +28,108 @@ import os from "os";
 // Default: ~/mica-projects/ (overridable via MICA_PROJECTS_DIR)
 const PROJECTS_DIR = process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-projects");
 
-// ── Seed content for a new project ──────────────────────────
-// Card files are written to the project root (canvas = "_root").
-
-const NEW_PROJECT_SEEDS: Record<string, string> = {
-  "project.project": "", // Content will be generated with project name
-
-  "goal.goal": `# Project Goal
-
-Define what this project aims to achieve.
-
-## Checklist
-
-- [ ] Problem statement is clear and specific
-- [ ] Target users are identified
-- [ ] Success criteria are measurable
-- [ ] Scope is bounded — what's in v1 and what's deferred
-`,
-
-  "brief.md": `# Agent Brief
-
-## Who You Are
-You are an AI collaborator for this project. You help the human think through problems, create artifacts, and make progress toward the project goal.
-
-## How to Work
-- When the human shares ideas or notes, **refine them** into structured documents. Don't just discuss — write files.
-- When information is scattered across chat, **synthesize it** into a file so nothing gets lost.
-- When you spot gaps, **create a draft** and ask the human to review it.
-- When a relationship or flow would be clearer as a diagram, **create a .mmd mermaid file**.
-- Always prefer creating/updating files over long chat responses. The whiteboard is the artifact — chat is ephemeral.
-`,
-
-  "todo.todo": `# To Do
-
-## Active
-
-## Blocked
-
-## Done (recent)
-`,
-
-  "log.md": `# Activity Log
-`,
-
-  // Sample content cards to demonstrate different card types
-  "welcome.md": `# Welcome to Mica
-
-This is a **markdown** card. You can use it for documentation, notes, or any rich text content.
-
-## Features
-- Full markdown support with tables, code blocks, and more
-- Rendered as a card on your project whiteboard
-- Editable by you and the agent
-
-## Getting Started
-1. Edit the **Goal** card to define what you're building
-2. Chat with the agent to brainstorm and create artifacts
-3. Use the toolbar to add notes, docs, and diagrams
-`,
-
-  "architecture.mmd": `graph TD
-    A[User Interface] --> B[Project Card]
-    B --> C[System Cards]
-    B --> D[Content Cards]
-    C --> E[Goal]
-    C --> F[Todo]
-    C --> G[Brief]
-    D --> H[Documents]
-    D --> I[Diagrams]
-    D --> J[Notes]
-    B --> K[Agent Chat]
-`,
-};
-
 // ── Seed a new project ──────────────────────────────────────
 
-/** Create a new project directory, connect it to Mica, and seed starter files */
+/** Create a new project directory, connect it to Mica, and seed starter files.
+ *  The canvas card class (default: "simple-project") defines what child cards
+ *  get created via its _ prefixed seed files. */
 export async function seedNewProject(
   projectId: string,
   projectName: string,
   agentProvider?: "claude" | "local",
+  canvasClass: string = "simple-project",
 ): Promise<ConnectedProject> {
-  // Create project directory
   const projectDir = join(PROJECTS_DIR, projectId);
   await mkdir(projectDir, { recursive: true });
 
-  // Connect the project (this creates .mica/ and git init)
+  // Connect the project (creates .mica/ and git init)
   const config = await connectProject(projectDir, projectName);
 
-  // Write agentProvider to config if specified
-  if (agentProvider && agentProvider !== "claude") {
-    const configPath = join(projectDir, ".mica", ".config.json");
-    try {
-      const raw = await readFile(configPath, "utf-8");
-      const micaConfig = JSON.parse(raw);
+  // Canvas card filename = projectId + card class extension
+  const ext = getCardClassExtension(canvasClass) || ".project";
+  const canvasCardFilename = `${projectId}${ext}`;
+
+  // Write canvasCard + agentProvider to config
+  const configPath = join(projectDir, ".mica", ".config.json");
+  try {
+    const raw = await readFile(configPath, "utf-8");
+    const micaConfig: MicaConfig = JSON.parse(raw);
+    micaConfig.canvasCard = canvasCardFilename;
+    if (agentProvider && agentProvider !== "claude") {
       micaConfig.agentProvider = agentProvider;
-      await writeFileFs(configPath, JSON.stringify(micaConfig, null, 2), "utf-8");
-      console.log(`[seed] Set agentProvider="${agentProvider}" for "${projectId}"`);
-    } catch (err) {
-      console.error(`[seed] Failed to set agentProvider:`, (err as Error).message);
+    }
+    await writeFileFs(configPath, JSON.stringify(micaConfig, null, 2), "utf-8");
+  } catch (err) {
+    console.error(`[seed] Failed to write config:`, (err as Error).message);
+  }
+
+  // Create the canvas card — this triggers copySeedFiles which:
+  //   - Copies internal files (_.layout.json → .layout.json)
+  //   - Creates child card subdirectories (_goal.goal → goal.goal/)
+  // Note: getCanvasDir reads canvasCard from config, but at this point the
+  // canvas card directory doesn't exist yet. createCard calls getCanvasDir
+  // with "_root" which will resolve to project.project/ directory.
+  // But we need the directory to exist first. Create it manually.
+  const canvasCardDir = join(projectDir, canvasCardFilename);
+  await mkdir(canvasCardDir, { recursive: true });
+
+  // Now createCard will work — it creates the card inside the canvas dir,
+  // but we actually want to seed the canvas card itself at the project root.
+  // The canvas card IS the root, so we create it directly.
+  // Use createCard with a temporary approach: create the card at project root level.
+  // Actually, the canvas card directory IS the canvas, so we just need to:
+  // 1. Copy seed files from the card class into the canvas card directory
+  // 2. Write the primary file
+
+  // Import copySeedFiles helper — it's not exported, so we'll use createCard
+  // which calls copySeedFiles internally. But createCard creates inside getCanvasDir,
+  // which now points to project.project/ — creating project.project/project.project/.
+  // That's wrong. We need to seed the canvas card at the project root level.
+
+  // Direct approach: manually copy seed files and write primary file
+  const { resolveCardClassDir } = await import("./canvasFiles.js");
+  const classDir = resolveCardClassDir(canvasClass);
+  if (classDir) {
+    // copySeedFiles is not exported — replicate the logic for the canvas card
+    const { readdir, stat, readFile: fsRead, writeFile: fsWrite } = await import("fs/promises");
+    const { extname } = await import("path");
+    const { getValidExtensions, resolveCardClassFromFilename } = await import("./canvasFiles.js");
+
+    const entries = await readdir(classDir);
+    const validExts = getValidExtensions();
+
+    for (const entry of entries) {
+      if (!entry.startsWith("_")) continue;
+      const seedName = entry.slice(1);
+      const srcPath = join(classDir, entry);
+      const destPath = join(canvasCardDir, seedName);
+      if (existsSync(destPath)) continue;
+
+      const srcStat = await stat(srcPath);
+      if (srcStat.isFile()) {
+        const seedExt = extname(seedName);
+        if (seedExt && validExts.includes(seedExt) && seedExt !== ".json") {
+          // Card seed → create card subdirectory
+          const cardClass = resolveCardClassFromFilename(seedName);
+          const primaryFile = getPrimaryFile(cardClass);
+          await mkdir(destPath, { recursive: true });
+          await fsWrite(join(destPath, primaryFile), await fsRead(srcPath, "utf-8"), "utf-8");
+        } else {
+          // Internal file → copy as-is
+          await fsWrite(destPath, await fsRead(srcPath, "utf-8"), "utf-8");
+        }
+      }
     }
   }
 
-  // Seed the _root canvas with starter files
-  const existing = await listFiles(projectId, "_root");
-  // Filter out config.json from the count — it's always present
-  const userFiles = existing.filter((f) => f.name !== ".config.json");
-  if (userFiles.length === 0) {
-    console.log(`[seed] Seeding project "${projectId}" with starter files...`);
-    for (const [filename, content] of Object.entries(NEW_PROJECT_SEEDS)) {
-      const fileContent = filename === "project.project" ? `# ${projectName}\n` : content;
-      await writeCanvasFile(projectId, "_root", filename, fileContent);
-    }
-    console.log(
-      `[seed] Created ${Object.keys(NEW_PROJECT_SEEDS).length} files in ${projectDir}/`
-    );
+  // Write the canvas card's primary file
+  const primaryFile = getPrimaryFile(canvasClass);
+  const primaryPath = join(canvasCardDir, primaryFile);
+  if (!existsSync(primaryPath)) {
+    await writeFileFs(primaryPath, `# ${projectName}\n`, "utf-8");
   }
+
+  console.log(`[seed] Seeded project "${projectId}" with canvas class "${canvasClass}" → ${canvasCardFilename}/`);
 
   return config;
 }
@@ -155,22 +141,8 @@ export async function initializeProjects(): Promise<void> {
 
   const registry = await readWorkspaceRegistry();
 
-  // If we already have connected projects, run migrations on each
   if (registry.projects.length > 0) {
     console.log(`[seed] Found ${registry.projects.length} connected project(s).`);
-    for (const project of registry.projects) {
-      await migrateDataFileNames(project.path);
-      // Migrate flat card files → card directories
-      const dirMigrated = await migrateToCardDirectories(project.path, "_root");
-      if (dirMigrated > 0) {
-        console.log(`[seed] Migrated ${dirMigrated} card(s) to directories in "${project.id}".`);
-      }
-      // Rename _prefixed cards and convert .brief/.log → .md
-      const nameMigrated = await migrateCardNames(project.path, "_root");
-      if (nameMigrated > 0) {
-        console.log(`[seed] Renamed ${nameMigrated} card(s) in "${project.id}" (dropped _ prefix, .brief/.log → .md).`);
-      }
-    }
     return;
   }
 

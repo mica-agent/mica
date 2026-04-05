@@ -28,6 +28,7 @@ export interface WorkspaceRegistry {
 export interface MicaConfig {
   name: string;
   canvases: string[];
+  canvasCard?: string; // filename of the canvas card (e.g. "project.project")
   agentProvider?: "claude" | "local"; // default: "claude"
   model?: string; // default model for all agents in this project
   agents?: Record<string, { // per-canvas/agent overrides
@@ -98,12 +99,24 @@ export async function getInfraDir(projectId: string, canvas: string): Promise<st
   return join(micaDir, canvas);
 }
 
-/** Get the card file directory for a canvas (at project root level).
- *  Card files (*.md, *.goal, *.brief, etc.) live in the project directory.
- *  Special case: canvas "_root" returns the project root itself. */
+/** Get the card file directory for a canvas.
+ *  For "_root", resolves to the canvas card's directory (e.g. project.project/).
+ *  The canvas card filename is stored in .config.json as `canvasCard`. */
 export async function getCanvasDir(projectId: string, canvas: string): Promise<string> {
   const projectPath = await getProjectPath(projectId);
-  if (canvas === "_root") return projectPath;
+  if (canvas === "_root") {
+    // Read canvasCard from config — cards live inside the canvas card directory
+    const configPath = join(projectPath, MICA_DIR, CONFIG_FILE);
+    try {
+      const raw = await readFile(configPath, "utf-8");
+      const config = JSON.parse(raw) as MicaConfig;
+      if (config.canvasCard) {
+        return join(projectPath, config.canvasCard);
+      }
+    } catch { /* config not yet written during initial seed */ }
+    // Fallback for legacy or during initial seeding
+    return projectPath;
+  }
   return join(projectPath, canvas);
 }
 

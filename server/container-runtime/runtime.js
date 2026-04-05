@@ -92,9 +92,45 @@ const cardSessions = new Map();
 // send/reply/log cross the boundary to the host via stdout messages.
 
 const PROJECT_DIR = process.env.PROJECT_DIR || "/project";
+const CARD_CLASSES_DIR = process.env.CARD_CLASSES_DIR || "/opt/mica/card-classes";
+
+/** Resolve the primary file for a card directory by looking up card class metadata. */
+function resolvePrimaryFile(cardName) {
+  const ext = path.extname(cardName);
+  // Scan card classes to find the one with this extension
+  try {
+    const classes = fs.readdirSync(CARD_CLASSES_DIR);
+    for (const cls of classes) {
+      const renderJs = path.join(CARD_CLASSES_DIR, cls, "render.js");
+      try {
+        const src = fs.readFileSync(renderJs, "utf-8");
+        const match = src.match(/export\s+const\s+metadata\s*=\s*(\{[^}]+\})/);
+        if (match) {
+          const meta = new Function(`return ${match[1]}`)();
+          if (meta.extension === ext) return meta.primaryFile || "content";
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* card-classes not available */ }
+  return "content"; // fallback
+}
+
+/** Resolve a file path inside a card directory, handling card-as-directory. */
+async function resolveCardPath(basePath) {
+  try {
+    const stats = await fs.promises.stat(basePath);
+    if (stats.isDirectory()) {
+      const cardName = path.basename(basePath);
+      const primaryFile = resolvePrimaryFile(cardName);
+      return path.join(basePath, primaryFile);
+    }
+    return basePath;
+  } catch {
+    return basePath; // doesn't exist yet — treat as flat file
+  }
+}
 
 function createBridge(cardName, replyClientId) {
-  // Card directory is at project root
   const cardDir = path.join(PROJECT_DIR, cardName);
 
   return {
@@ -111,13 +147,15 @@ function createBridge(cardName, replyClientId) {
     },
 
     async read(filename) {
-      const filepath = path.join(cardDir, filename);
+      const filepath = await resolveCardPath(path.join(cardDir, filename));
       return fs.promises.readFile(filepath, "utf-8");
     },
 
     async write(filename, content) {
       await fs.promises.mkdir(cardDir, { recursive: true });
-      await fs.promises.writeFile(path.join(cardDir, filename), content, "utf-8");
+      const filepath = await resolveCardPath(path.join(cardDir, filename));
+      await fs.promises.mkdir(path.dirname(filepath), { recursive: true });
+      await fs.promises.writeFile(filepath, content, "utf-8");
     },
 
     async exec(command, opts) {

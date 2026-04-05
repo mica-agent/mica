@@ -124,6 +124,12 @@ export function getPrimaryFile(cardClass: string, projectPath?: string): string 
   return manifest[cardClass]?.primaryFile || "content";
 }
 
+/** Get the extension for a card class name (e.g. "simple-project" → ".project"). */
+export function getCardClassExtension(cardClass: string, projectPath?: string): string | null {
+  const manifest = loadManifest(projectPath);
+  return manifest[cardClass]?.extension || null;
+}
+
 /** Resolve card class from a card directory name (extension lookup). */
 export function resolveCardClassFromFilename(filename: string, projectPath?: string): string {
   const ext = extname(filename);
@@ -247,9 +253,9 @@ export async function listFiles(project: string, canvas: string): Promise<Canvas
           modifiedAt = stats.mtime.toISOString();
         }
       } else {
-        // Legacy flat file — read directly (backward compat during migration)
-        content = await readFile(fullPath, "utf-8");
-        modifiedAt = stats.mtime.toISOString();
+        // Flat file in the canvas directory — this is an internal file (e.g. the
+        // canvas card's own primary file), not a child card. Skip it.
+        continue;
       }
     } catch {
       continue;
@@ -392,6 +398,7 @@ export async function deleteCanvasFile(
 
 /**
  * Read a file from inside a card's directory. Used by MicaBridge.read().
+ * If the target is a card subdirectory, reads the primary file inside it.
  */
 export async function readCardFile(
   project: string,
@@ -399,13 +406,32 @@ export async function readCardFile(
   cardName: string,
   filename: string
 ): Promise<string> {
+  let projectPath: string | undefined;
+  try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   const dir = await getCanvasDir(project, canvas);
   const filepath = join(dir, cardName, filename);
-  return readFile(filepath, "utf-8");
+  try {
+    const stats = await stat(filepath);
+    if (stats.isDirectory()) {
+      // Card subdirectory — read its primary file
+      const cardClass = resolveCardClassFromFilename(filename, projectPath);
+      const primaryFile = getPrimaryFile(cardClass, projectPath);
+      return readFile(join(filepath, primaryFile), "utf-8");
+    }
+    return readFile(filepath, "utf-8");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "EISDIR") {
+      const cardClass = resolveCardClassFromFilename(filename, projectPath);
+      const primaryFile = getPrimaryFile(cardClass, projectPath);
+      return readFile(join(filepath, primaryFile), "utf-8");
+    }
+    throw err;
+  }
 }
 
 /**
  * Write a file inside a card's directory. Used by MicaBridge.write().
+ * If the target is a card subdirectory, writes to the primary file inside it.
  */
 export async function writeCardFile(
   project: string,
@@ -414,17 +440,29 @@ export async function writeCardFile(
   filename: string,
   content: string
 ): Promise<void> {
+  let projectPath: string | undefined;
+  try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
   const dir = await getCanvasDir(project, canvas);
+  const filepath = join(dir, cardName, filename);
+  try {
+    const stats = await stat(filepath);
+    if (stats.isDirectory()) {
+      const cardClass = resolveCardClassFromFilename(filename, projectPath);
+      const primaryFile = getPrimaryFile(cardClass, projectPath);
+      await writeFile(join(filepath, primaryFile), content, "utf-8");
+      return;
+    }
+  } catch { /* doesn't exist yet — write as flat file */ }
   const cardDir = join(dir, cardName);
   await mkdir(cardDir, { recursive: true });
-  await writeFile(join(cardDir, filename), content, "utf-8");
+  await writeFile(filepath, content, "utf-8");
 }
 
 // ── Card class directory resolution ──────────────────────
 
 const BUILT_IN_CLASSES_DIR = join(process.cwd(), "card-classes");
 
-function resolveCardClassDir(cardClass: string, projectPath?: string): string | null {
+export function resolveCardClassDir(cardClass: string, projectPath?: string): string | null {
   // Project-level override first
   if (projectPath) {
     const projectDir = join(projectPath, ".mica", ".card-classes", cardClass);
@@ -439,15 +477,22 @@ function resolveCardClassDir(cardClass: string, projectPath?: string): string | 
 /**
  * Copy seed files from a card class directory into a card instance directory.
  * Seed files are prefixed with `_` — the prefix is stripped on copy.
- * Handles both files and directories (for card-in-card seeds like canvas types).
+ *
+ * Two kinds of seed files:
+ * - Files with a valid card extension (e.g. `_goal.goal`, `_brief.md`) →
+ *   created as card subdirectories with the seed content in the primary file.
+ * - Other files (e.g. `_.layout.json`) → copied as flat files into the instance.
+ * - Seed directories → recursively copied.
  */
-async function copySeedFiles(classDir: string, instanceDir: string): Promise<void> {
+async function copySeedFiles(classDir: string, instanceDir: string, projectPath?: string): Promise<void> {
   let entries: string[];
   try {
     entries = await readdir(classDir);
   } catch {
     return;
   }
+
+  const validExts = getValidExtensions(projectPath);
 
   for (const entry of entries) {
     if (!entry.startsWith("_")) continue;
@@ -473,8 +518,19 @@ async function copySeedFiles(classDir: string, instanceDir: string): Promise<voi
         }
       }
     } else {
-      // Copy seed file
-      await writeFile(destPath, await readFile(srcPath, "utf-8"), "utf-8");
+      // Check if this seed file has a card extension → create as card subdirectory
+      const ext = extname(seedName);
+      if (ext && validExts.includes(ext) && ext !== ".json") {
+        // Card seed: create subdirectory with primary file
+        const cardClass = resolveCardClassFromFilename(seedName, projectPath);
+        const primaryFile = getPrimaryFile(cardClass, projectPath);
+        const cardDir = destPath;
+        await mkdir(cardDir, { recursive: true });
+        await writeFile(join(cardDir, primaryFile), await readFile(srcPath, "utf-8"), "utf-8");
+      } else {
+        // Internal file: copy as-is
+        await writeFile(destPath, await readFile(srcPath, "utf-8"), "utf-8");
+      }
     }
   }
 }
@@ -503,7 +559,7 @@ export async function createCard(
   const cardClass = resolveCardClassFromFilename(cardName, projectPath);
   const classDir = resolveCardClassDir(cardClass, projectPath);
   if (classDir) {
-    await copySeedFiles(classDir, cardDir);
+    await copySeedFiles(classDir, cardDir, projectPath);
   }
 
   // Ensure primary file exists (even if no seed for it)

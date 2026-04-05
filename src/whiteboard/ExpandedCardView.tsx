@@ -12,7 +12,7 @@ interface Props {
 /**
  * Expanded card view — reparents the actual card body DOM into a full-screen overlay.
  *
- * Instead of creating a second WidgetRuntime (which causes issues with stateful
+ * Instead of creating a second CardRuntime (which causes issues with stateful
  * widgets like mermaid, Three.js, xterm), we move the existing card's DOM into
  * the overlay. The widget stays live — terminals keep their PTY connection,
  * animations continue, etc. On close, the DOM is moved back.

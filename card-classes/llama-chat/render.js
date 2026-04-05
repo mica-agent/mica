@@ -27,17 +27,14 @@ const MAX_TURNS = 5;
  * We detect this by checking for /.dockerenv or the PROJECT_DIR convention,
  * then use the default gateway IP to reach the host.
  */
-async function getLlamaBaseUrl() {
-  // If explicitly set, use that
-  if (process.env.LLAMA_URL) return process.env.LLAMA_URL;
-
+/** Resolve the host IP from inside a container, or return 127.0.0.1. */
+async function getHostIp() {
   // Check if we're inside a Docker container
   let inContainer = false;
   try {
     await fs.promises.access("/.dockerenv");
     inContainer = true;
   } catch {
-    // Also check cgroup for container evidence
     try {
       const cgroup = await fs.promises.readFile("/proc/1/cgroup", "utf-8");
       if (cgroup.includes("docker") || cgroup.includes("containerd")) {
@@ -47,7 +44,6 @@ async function getLlamaBaseUrl() {
   }
 
   if (inContainer) {
-    // Get the default gateway IP from /proc/net/route (host from container's perspective)
     try {
       const routeTable = await fs.promises.readFile("/proc/net/route", "utf-8");
       const lines = routeTable.trim().split("\n");
@@ -55,23 +51,25 @@ async function getLlamaBaseUrl() {
         const parts = line.split("\t");
         if (parts[1] === "00000000") { // default route
           const gw = parts[2];
-          // Parse hex gateway IP (little-endian)
-          const ip = [
+          return [
             parseInt(gw.slice(6, 8), 16),
             parseInt(gw.slice(4, 6), 16),
             parseInt(gw.slice(2, 4), 16),
             parseInt(gw.slice(0, 2), 16),
           ].join(".");
-          return `http://${ip}:8012`;
         }
       }
     } catch { /* fallback */ }
-
-    // Fallback: host.docker.internal (Docker Desktop for Mac/Windows)
-    return "http://host.docker.internal:8012";
+    return "host.docker.internal";
   }
 
-  return "http://127.0.0.1:8012";
+  return "127.0.0.1";
+}
+
+async function getLlamaBaseUrl() {
+  if (process.env.LLAMA_URL) return process.env.LLAMA_URL;
+  const host = await getHostIp();
+  return `http://${host}:8012`;
 }
 
 /** Read the first non-dot file from a card directory. */
@@ -310,7 +308,8 @@ async function executeTool(name, args, mica) {
     }
     case "create_card": {
       try {
-        const res = await fetch(`http://172.18.0.1:3002/api/projects/${mica.project}/canvases/_root/cards`, {
+        const host = await getHostIp();
+        const res = await fetch(`http://${host}:3002/api/projects/${mica.project}/canvases/_root/cards`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: args.name }),

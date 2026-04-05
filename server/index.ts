@@ -22,7 +22,9 @@ import {
   getProjectConfig,
   validateProjectCanvas,
 } from "./canvasFiles.js";
-import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath } from "./projectConnection.js";
+import { readFile, writeFile } from "fs/promises";
+import { join } from "path";
+import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath, getCanvasDir } from "./projectConnection.js";
 import {
   getGitStatus,
   gitCommit,
@@ -145,13 +147,13 @@ app.get("/api/projects/:project", async (req, res) => {
 
 // Create a new project (seeds a fresh directory)
 app.post("/api/projects", async (req, res) => {
-  const { id, name, agentProvider } = req.body;
+  const { id, name, agentProvider, canvasClass } = req.body;
   if (!id || !name) {
     res.status(400).json({ error: "id and name required" });
     return;
   }
   try {
-    const config = await seedNewProject(id, name, agentProvider);
+    const config = await seedNewProject(id, name, agentProvider, canvasClass);
 
     // Add watchers for the new project
     await fileWatcher.addProject(id, config.canvases);
@@ -340,6 +342,12 @@ app.get("/api/projects/:project/container/logs", async (req, res) => {
 
 // ── Project Card (top-level canvas card) ─────────────────────
 
+// Get the canvas card filename from project config
+async function getCanvasCardFilename(project: string): Promise<string> {
+  const micaConfig = await readMicaConfig(project);
+  return micaConfig?.canvasCard || "project.project";
+}
+
 // Get rendered project card (the layout shell)
 app.get("/api/projects/:project/card", async (req, res) => {
   const { project } = req.params;
@@ -350,22 +358,24 @@ app.get("/api/projects/:project/card", async (req, res) => {
       return;
     }
 
-    // Read _project.project from .mica/ root (canvas = "_root")
+    const canvasFilename = await getCanvasCardFilename(project);
+
+    // Read the canvas card's primary file directly from its directory
+    // (the canvas card IS the directory, not a subdirectory within it)
     let projectContent = "";
     try {
-      const f = await readCanvasFile(project, "_root", "_project.project");
-      projectContent = f.content;
-    } catch {
-      // No _project.project yet — that's OK
-    }
+      const canvasDir = await getCanvasDir(project, "_root");
+      const { resolveCardClassFromFilename, getPrimaryFile } = await import("./canvasFiles.js");
+      const cardClass = resolveCardClassFromFilename(canvasFilename);
+      const primaryFile = getPrimaryFile(cardClass);
+      projectContent = await readFile(join(canvasDir, primaryFile), "utf-8");
+    } catch { /* canvas card not yet created */ }
 
-    // Get child card metadata (not rendered HTML)
+    // Get child card metadata — listFiles now returns cards from inside canvas card dir
     const files = await listFiles(project, "_root");
     const childMetas = [];
     for (const file of files) {
-      if (file.name === "_project.project") continue; // Skip the project card itself
-      if (file.name === ".chat-history.json") continue;
-      if (file.name === ".config.json") continue;
+      if (file.name.startsWith(".")) continue;
       const meta = cardManager.resolveCardMeta(file.name, file.content);
       childMetas.push({
         filename: file.name,
@@ -376,12 +386,11 @@ app.get("/api/projects/:project/card", async (req, res) => {
       });
     }
 
-    // Render the project card with children metadata in config
     const rendered = await cardManager.renderCard(
-      project, "_root", "_project.project", projectContent,
+      project, "_root", canvasFilename, projectContent,
       { projectName: config.name, children: childMetas }
     );
-    res.json(rendered);
+    res.json({ ...rendered, canvasFilename });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -394,9 +403,7 @@ app.get("/api/projects/:project/children", async (req, res) => {
     const files = await listFiles(project, "_root");
     const results = [];
     for (const file of files) {
-      if (file.name === "_project.project") continue;
-      if (file.name === ".chat-history.json") continue;
-      if (file.name === ".config.json") continue;
+      if (file.name.startsWith(".")) continue;
       const rendered = await cardManager.renderCard(project, "_root", file.name, file.content);
       results.push({ filename: file.name, ...rendered });
     }
@@ -461,21 +468,18 @@ app.delete("/api/projects/:project/canvases/:canvas/files/:filename", async (req
   }
 });
 
-// ── Layout persistence (stored in canvas card's directory) ───
+// ── Layout persistence (stored as .layout.json in the canvas card directory) ───
 app.get("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   const { project, canvas } = req.params;
   if (!(await validateParams(res, project, canvas))) return;
   try {
-    const data = await readCardFile(project, canvas, "project.project", ".layout.json");
+    // .layout.json lives directly in the canvas card directory
+    const canvasDir = await getCanvasDir(project, canvas);
+    const layoutPath = join(canvasDir, ".layout.json");
+    const data = await readFile(layoutPath, "utf-8");
     res.json(JSON.parse(data));
   } catch {
-    // Fall back to legacy .layout.json in .mica/
-    try {
-      const file = await readCanvasFile(project, canvas, ".layout.json");
-      res.json(JSON.parse(file.content));
-    } catch {
-      res.json({});
-    }
+    res.json({});
   }
 });
 
@@ -484,11 +488,11 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   if (!(await validateParams(res, project, canvas))) return;
   try {
     const source = req.body.source;
-    // Don't persist the source field — it's only for broadcast routing
     const dataToStore = { ...req.body };
     delete dataToStore.source;
-    await writeCardFile(project, canvas, "project.project", ".layout.json", JSON.stringify(dataToStore, null, 2));
-    // Broadcast layout change with source so originator can ignore
+    const canvasDir = await getCanvasDir(project, canvas);
+    const layoutPath = join(canvasDir, ".layout.json");
+    await writeFile(layoutPath, JSON.stringify(dataToStore, null, 2), "utf-8");
     broadcast({ type: "layout-changed", project, canvas, source });
     res.json({ success: true });
   } catch (err: unknown) {
@@ -892,16 +896,6 @@ wss.on("connection", (ws) => {
             }
             wsChannels.get(ws)?.delete(cid);
           };
-
-          // Terminal cards: if running on host (no container runtime), need shell override
-          // to docker exec into the container. If running in container, skip — bash is local.
-          if (fname.endsWith(".terminal") || (fn as string) === "shell") {
-            const hasContainerRuntime = !!cardManager.getContainerRuntime(proj);
-            if (!hasContainerRuntime) {
-              const shellOverride = await executor.getContainerShell(proj);
-              channelArgs.spawnOverride = shellOverride;
-            }
-          }
 
           // Ensure container runtime is ready before opening channels
           await getOrCreateContainerRuntime(proj);

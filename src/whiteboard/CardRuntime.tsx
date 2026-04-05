@@ -1,5 +1,5 @@
-// WidgetRuntime — renders server-produced HTML inside a card.
-// Provides the `mica` bridge (call, send, on, openChannel) for interactive widgets.
+// CardRuntime — renders server-produced HTML inside a card.
+// Provides the `mica` bridge (call, send, on, openChannel) for interactive cards.
 // Card classes handle their own rendering (e.g., mermaid.js) via inline <script> blocks.
 
 import { useEffect, useRef, useState } from "react";
@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 // TODO: Re-evaluate morphdom for preserving mounted library instances once
 // we add proper lifecycle coordination between React and widget scripts.
 import type { CanvasId } from "../api/canvasFiles";
-import { createBridge } from "../api/micaSocket";
+import { createBridge, windowId } from "../api/micaSocket";
 
 interface CardDependencies {
   scripts?: string[];
@@ -105,7 +105,7 @@ function waitForStyleApplication(): Promise<void> {
   });
 }
 
-export default function WidgetRuntime({ html, exports: exportFns, dependencies, project, canvas, filename }: Props) {
+export default function CardRuntime({ html, exports: exportFns, dependencies, project, canvas, filename }: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<HTMLDivElement>(null);
   // Bridge created once per component instance — survives effect re-runs (StrictMode).
@@ -178,7 +178,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
             newScript.textContent =
               `try{(function(mica, container) {${oldScript.textContent}})(` +
               `document.currentScript.__mica, document.currentScript.parentElement);}` +
-              `catch(e){console.error("[widget-runtime] Script error in ${filename}:",e);}`;
+              `catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}`;
             oldScript.remove();
             (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
             el.appendChild(newScript);
@@ -191,6 +191,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
         project,
         canvas,
         filename,
+        windowId,
         call: async (fn: string, args: Record<string, unknown> = {}) => {
           activeCallsRef.current++;
           try {
@@ -228,7 +229,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
           newScript.textContent =
             `try{(function(mica, container) {${oldScript.textContent}})(` +
             `document.currentScript.__mica, document.currentScript.parentElement);}` +
-            `catch(e){console.error("[widget-runtime] Script error in ${filename}:",e);}`;
+            `catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}`;
           oldScript.remove();
           (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
           el.appendChild(newScript);
@@ -244,14 +245,14 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
           if (cssLoads.length > 0) await waitForStyleApplication();
           executeInlineScripts();
         }).catch((err) => {
-          console.error("[widget-runtime] External resource load failed:", err);
+          console.error("[card-runtime] External resource load failed:", err);
         });
       } else {
         executeInlineScripts();
       }
 
       // Mermaid rendering is handled by the mermaid card class itself (via inline <script>),
-      // not by WidgetRuntime. Card classes own their own rendering lifecycle.
+      // not by CardRuntime. Card classes own their own rendering lifecycle.
     };
 
     // If there are declared dependencies, show loading skeleton, preload, then render.
@@ -262,7 +263,7 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
         setLoadingDeps(false);
         continueRender();
       }).catch((err) => {
-        console.error("[widget-runtime] Dependency preload failed:", err);
+        console.error("[card-runtime] Dependency preload failed:", err);
         setLoadingDeps(false);
         continueRender();
       });
@@ -281,12 +282,12 @@ export default function WidgetRuntime({ html, exports: exportFns, dependencies, 
   }, [html, project, canvas, filename]);
 
   return (
-    <div ref={outerRef} className="widget-runtime">
+    <div ref={outerRef} className="card-runtime">
       {loadingDeps && (
-        <div className="widget-deps-loading">
-          <div className="widget-deps-skeleton" />
-          <div className="widget-deps-skeleton widget-deps-skeleton--short" />
-          <div className="widget-deps-skeleton widget-deps-skeleton--med" />
+        <div className="card-deps-loading">
+          <div className="card-deps-skeleton" />
+          <div className="card-deps-skeleton card-deps-skeleton--short" />
+          <div className="card-deps-skeleton card-deps-skeleton--med" />
         </div>
       )}
       {/* Widget HTML is injected into this div via innerHTML — kept separate

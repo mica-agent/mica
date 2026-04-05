@@ -1,10 +1,15 @@
 /**
  * Simple Project card class — a canvas card for straightforward projects.
  *
- * Renders the project layout including:
- * - Toolbar with card creation buttons (dynamic from available classes) and layout toggle
- * - Slots for seed cards and content cards
- * - Project name and description
+ * Owns the entire canvas surface:
+ * - Toolbar with card creation buttons (dynamic from available classes)
+ * - Freeform layout container for child cards
+ * - Layout persistence (load/save/drag/resize)
+ * - Cross-window layout sync
+ * - Tidy auto-arrange
+ *
+ * React portals child FileCard components into #canvas-freeform.
+ * This script positions them, handles drag/resize, and persists layout.
  */
 
 import { marked } from 'marked';
@@ -20,7 +25,6 @@ export default function render(content, config) {
   const children = config.children || [];
   const childrenJson = escapeHtml(JSON.stringify(children));
 
-  // Render project description from content
   let descriptionHtml = "";
   if (content.trim()) {
     const lines = content.trim().split("\n");
@@ -33,12 +37,10 @@ export default function render(content, config) {
     }
   }
 
-  const systemCount = children.filter(c => c.isSystem).length;
-  const contentCount = children.length - systemCount;
+  const contentCount = children.length;
 
   return `
     <div class="simple-project" data-children='${childrenJson}'>
-        <!-- Toolbar: rendered by card class, dynamic from available card classes -->
         <div id="project-toolbar" class="project-toolbar"></div>
 
         <div class="project-header">
@@ -50,8 +52,7 @@ export default function render(content, config) {
 
         ${descriptionHtml}
 
-        <div data-slot="system-cards" class="project-system-cards"></div>
-        <div data-slot="content-cards" class="project-content-cards"></div>
+        <div id="canvas-freeform" class="canvas-freeform"></div>
 
         <div class="project-empty" style="display: none;">
             No content cards yet. Use the toolbar above to create your first card.
@@ -60,7 +61,8 @@ export default function render(content, config) {
 
     <style>
     .simple-project {
-        display: flex; flex-direction: column; gap: 16px; padding: 0; min-height: 100%;
+        display: flex; flex-direction: column; gap: 12px; padding: 0;
+        min-height: 100%; flex: 1;
     }
     .project-toolbar {
         display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -75,23 +77,22 @@ export default function render(content, config) {
         background: rgba(255,255,255,0.1); color: #fff;
     }
     .project-toolbar .toolbar-spacer { flex: 1; }
-    .project-toolbar .toolbar-btn--active {
-        background: rgba(74,138,255,0.3); border-color: rgba(74,138,255,0.5); color: #fff;
-    }
     .project-header {
-        display: flex; align-items: baseline; gap: 16px; padding: 8px 0;
+        display: flex; align-items: baseline; gap: 16px; padding: 4px 0;
         border-bottom: 1px solid rgba(255,255,255,0.06);
     }
     .project-name { font-size: 1.5rem; font-weight: 700; color: #f0f0f0; margin: 0; }
     .project-stats { display: flex; gap: 12px; color: #888; font-size: 0.85rem; }
     .project-description { color: #aaa; font-size: 0.9rem; line-height: 1.5; max-width: 700px; }
     .project-description p { margin: 0 0 8px 0; }
-    .project-system-cards {
-        display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;
+    .canvas-freeform {
+        position: relative; flex: 1; min-height: 200px; overflow: auto;
     }
-    .project-content-cards {
-        display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px;
+    .canvas-freeform > .wb-card {
+        position: absolute; width: 320px;
     }
+    .canvas-freeform .wb-card-header { cursor: grab; }
+    .canvas-freeform .wb-card-header:active { cursor: grabbing; }
     .project-empty {
         text-align: center; color: #666; padding: 40px 20px; font-size: 0.9rem;
     }
@@ -100,108 +101,272 @@ export default function render(content, config) {
     <script>
     (function() {
         const toolbar = container.querySelector('#project-toolbar');
-        const contentSlot = container.querySelector('[data-slot="content-cards"]');
+        const freeform = container.querySelector('#canvas-freeform');
         const emptyEl = container.querySelector('.project-empty');
 
-        // Watch for child cards being added/removed to toggle empty state
-        if (contentSlot && emptyEl) {
-            const observer = new MutationObserver(() => {
-                emptyEl.style.display = contentSlot.children.length === 0 ? 'block' : 'none';
-            });
-            observer.observe(contentSlot, { childList: true });
-            requestAnimationFrame(() => {
-                emptyEl.style.display = contentSlot.children.length === 0 ? 'block' : 'none';
-            });
+        // ── Constants ────────────────────────────────────────
+        const CARD_W = 320, CARD_H = 280, GAP = 16, COLS = 3;
+        const MIN_W = 200, MIN_H = 120;
+        let layout = {};  // { filename: { x, y, w, h } }
+        let saveTimer = null;
+        const SAVE_DELAY = 500;
+
+        // ── Layout persistence ───────────────────────────────
+        function loadLayout() {
+            return fetch('/api/projects/' + mica.project + '/canvases/_root/layout')
+                .then(function(r) { return r.ok ? r.json() : {}; })
+                .then(function(data) { if (data.cards) layout = data.cards; })
+                .catch(function() {});
         }
 
-        // Fetch available card classes and build toolbar buttons
-        fetch('/api/card-classes')
-            .then(r => r.json())
-            .then(classes => {
-                const buttons = [];
+        function persistLayout() {
+            if (saveTimer) clearTimeout(saveTimer);
+            saveTimer = setTimeout(function() {
+                fetch('/api/projects/' + mica.project + '/canvases/_root/layout', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cards: layout, source: mica.windowId || '' }),
+                }).catch(function() {});
+            }, SAVE_DELAY);
+        }
 
-                // Card creation buttons (skip seed cards, skip canvas types)
-                for (const [name, meta] of Object.entries(classes)) {
+        // ── Position a card based on layout data ─────────────
+        function positionCard(card) {
+            var name = card.getAttribute('data-filename');
+            if (!name) return;
+            var pos = layout[name];
+            if (pos) {
+                card.style.left = pos.x + 'px';
+                card.style.top = pos.y + 'px';
+                card.style.width = (pos.w || CARD_W) + 'px';
+                if (pos.h && pos.h !== CARD_H) {
+                    card.style.height = pos.h + 'px';
+                    card.classList.add('wb-card--resized');
+                }
+            } else {
+                // Auto-position: next open grid slot
+                var cards = Array.from(freeform.querySelectorAll('.wb-card'));
+                var idx = cards.indexOf(card);
+                if (idx < 0) idx = cards.length;
+                var col = idx % COLS;
+                var row = Math.floor(idx / COLS);
+                var x = col * (CARD_W + GAP);
+                var y = row * (CARD_H + GAP);
+                card.style.left = x + 'px';
+                card.style.top = y + 'px';
+                card.style.width = CARD_W + 'px';
+                layout[name] = { x: x, y: y, w: CARD_W, h: CARD_H };
+                persistLayout();
+            }
+        }
+
+        function positionAllCards() {
+            var cards = Array.from(freeform.querySelectorAll('.wb-card'));
+            cards.forEach(positionCard);
+            updateEmptyState();
+        }
+
+        function updateEmptyState() {
+            if (!emptyEl) return;
+            var count = freeform.querySelectorAll('.wb-card').length;
+            emptyEl.style.display = count === 0 ? 'block' : 'none';
+        }
+
+        // ── Drag via event delegation ────────────────────────
+        freeform.addEventListener('pointerdown', function(e) {
+            var header = e.target.closest('.wb-card-header');
+            if (!header) return;
+            if (e.target.closest('.wb-card-btn') || e.target.closest('.wb-card-actions')) return;
+
+            var card = header.closest('.wb-card');
+            if (!card) return;
+
+            e.preventDefault();
+            var startX = e.clientX, startY = e.clientY;
+            var origLeft = card.offsetLeft, origTop = card.offsetTop;
+            card.classList.add('wb-card--dragging');
+            var moved = false;
+
+            function onMove(ev) {
+                moved = true;
+                card.style.left = Math.max(0, origLeft + ev.clientX - startX) + 'px';
+                card.style.top = Math.max(0, origTop + ev.clientY - startY) + 'px';
+            }
+
+            function onUp(ev) {
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                card.classList.remove('wb-card--dragging');
+                if (!moved) return;
+                var x = Math.max(0, origLeft + ev.clientX - startX);
+                var y = Math.max(0, origTop + ev.clientY - startY);
+                var name = card.getAttribute('data-filename');
+                if (name) {
+                    var existing = layout[name] || { x: 0, y: 0, w: CARD_W, h: CARD_H };
+                    layout[name] = { x: x, y: y, w: existing.w, h: existing.h };
+                    persistLayout();
+                }
+            }
+
+            document.addEventListener('pointermove', onMove);
+            document.addEventListener('pointerup', onUp);
+        });
+
+        // ── Resize via event delegation ──────────────────────
+        freeform.addEventListener('pointerdown', function(e) {
+            var handle = e.target.closest('.wb-card-resize-handle');
+            if (!handle) return;
+
+            var card = handle.closest('.wb-card');
+            if (!card) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+            var startX = e.clientX, startY = e.clientY;
+            var origW = card.offsetWidth, origH = card.offsetHeight;
+
+            function onMove(ev) {
+                var w = Math.max(MIN_W, origW + ev.clientX - startX);
+                var h = Math.max(MIN_H, origH + ev.clientY - startY);
+                card.style.width = w + 'px';
+                card.style.height = h + 'px';
+                card.classList.add('wb-card--resized');
+            }
+
+            function onUp(ev) {
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                var w = Math.max(MIN_W, origW + ev.clientX - startX);
+                var h = Math.max(MIN_H, origH + ev.clientY - startY);
+                var name = card.getAttribute('data-filename');
+                if (name) {
+                    var existing = layout[name] || { x: card.offsetLeft, y: card.offsetTop, w: CARD_W, h: CARD_H };
+                    layout[name] = { x: existing.x, y: existing.y, w: w, h: h };
+                    persistLayout();
+                }
+            }
+
+            document.addEventListener('pointermove', onMove);
+            document.addEventListener('pointerup', onUp);
+        });
+
+        // ── Watch for React-portaled child cards ─────────────
+        var childObserver = new MutationObserver(function(mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                var added = mutations[i].addedNodes;
+                for (var j = 0; j < added.length; j++) {
+                    var node = added[j];
+                    if (node.nodeType === 1 && node.classList && node.classList.contains('wb-card')) {
+                        positionCard(node);
+                    }
+                }
+            }
+            updateEmptyState();
+        });
+        childObserver.observe(freeform, { childList: true });
+        mica.onDestroy(function() { childObserver.disconnect(); });
+
+        // ── Cross-window layout sync ─────────────────────────
+        var unsubLayout = mica.on('layout-changed', function(msg) {
+            if (msg.project !== mica.project || msg.canvas !== '_root') return;
+            if (msg.source === (mica.windowId || '')) return;
+            fetch('/api/projects/' + mica.project + '/canvases/_root/layout')
+                .then(function(r) { return r.ok ? r.json() : {}; })
+                .then(function(data) {
+                    if (data.cards) {
+                        layout = data.cards;
+                        positionAllCards();
+                    }
+                })
+                .catch(function() {});
+        });
+        mica.onDestroy(unsubLayout);
+
+        // ── Toolbar: card creation buttons ───────────────────
+        fetch('/api/card-classes')
+            .then(function(r) { return r.json(); })
+            .then(function(classes) {
+                var buttons = [];
+
+                for (var _i = 0, _entries = Object.entries(classes); _i < _entries.length; _i++) {
+                    var name = _entries[_i][0], meta = _entries[_i][1];
                     if (meta.seed || name === 'simple-project' || name === 'canvas') continue;
-                    const btn = document.createElement('button');
+                    var btn = document.createElement('button');
                     btn.className = 'toolbar-btn';
                     btn.textContent = '+ ' + (meta.defaultTitle || name);
-                    btn.addEventListener('click', () => {
-                        const prefix = name.split('-')[0].slice(0, 6);
-                        const cardName = prefix + '-' + Date.now().toString(36) + meta.extension;
-                        fetch('/api/projects/' + mica.project + '/canvases/_root/cards', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ name: cardName }),
-                        }).catch(err => console.error('[project] Card creation failed:', err));
-                    });
+                    btn.addEventListener('click', (function(n, m) {
+                        return function() {
+                            var prefix = n.split('-')[0].slice(0, 6);
+                            var cardName = prefix + '-' + Date.now().toString(36) + m.extension;
+                            fetch('/api/projects/' + mica.project + '/canvases/_root/cards', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ name: cardName }),
+                            }).catch(function(err) { console.error('[project] Card creation failed:', err); });
+                        };
+                    })(name, meta));
                     buttons.push(btn);
                 }
 
-                // Spacer
-                const spacer = document.createElement('span');
+                var spacer = document.createElement('span');
                 spacer.className = 'toolbar-spacer';
                 buttons.push(spacer);
 
-                // Tidy button — auto-arrange cards in a grid
-                const tidyBtn = document.createElement('button');
+                // Tidy button — auto-arrange in grid
+                var tidyBtn = document.createElement('button');
                 tidyBtn.className = 'toolbar-btn';
                 tidyBtn.textContent = 'Tidy';
-                tidyBtn.addEventListener('click', () => {
-                    // Find the freeform container and all card elements
-                    const freeform = document.querySelector('.wb-freeform');
-                    if (!freeform) return;
-                    const cards = Array.from(freeform.querySelectorAll('.wb-card'));
+                tidyBtn.addEventListener('click', function() {
+                    var cards = Array.from(freeform.querySelectorAll('.wb-card'));
                     if (cards.length === 0) return;
 
-                    const CARD_W = 320, CARD_H = 280, GAP = 16, COLS = 3;
-                    const layout = {};
-
-                    // Sort: seed cards first, then alphabetical
-                    cards.sort((a, b) => {
-                        const aName = a.getAttribute('data-filename') || '';
-                        const bName = b.getAttribute('data-filename') || '';
-                        const aSystem = a.classList.contains('wb-card--goal') || a.classList.contains('wb-card--todo');
-                        const bSystem = b.classList.contains('wb-card--goal') || b.classList.contains('wb-card--todo');
-                        if (aSystem && !bSystem) return -1;
-                        if (!aSystem && bSystem) return 1;
+                    cards.sort(function(a, b) {
+                        var aName = a.getAttribute('data-filename') || '';
+                        var bName = b.getAttribute('data-filename') || '';
+                        var aSeed = a.classList.contains('wb-card--goal') || a.classList.contains('wb-card--todo');
+                        var bSeed = b.classList.contains('wb-card--goal') || b.classList.contains('wb-card--todo');
+                        if (aSeed && !bSeed) return -1;
+                        if (!aSeed && bSeed) return 1;
                         return aName.localeCompare(bName);
                     });
 
-                    cards.forEach((card, i) => {
-                        const col = i % COLS;
-                        const row = Math.floor(i / COLS);
-                        const x = col * (CARD_W + GAP);
-                        const y = row * (CARD_H + GAP);
-                        card.style.left = x + 'px';
-                        card.style.top = y + 'px';
+                    // Reset width first so we can measure natural heights
+                    cards.forEach(function(card) {
                         card.style.width = CARD_W + 'px';
-                        const name = card.getAttribute('data-filename');
-                        if (name) layout[name] = { x, y, w: CARD_W, h: parseInt(card.style.height) || CARD_H };
+                        card.style.height = '';
+                        card.classList.remove('wb-card--resized');
                     });
 
-                    // Save layout to server
-                    fetch('/api/projects/' + mica.project + '/canvases/_root/layout', {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ cards: layout, source: 'tidy' }),
-                    }).catch(() => {});
+                    // Place row by row, using tallest card per row for Y offset
+                    layout = {};
+                    var y = 0;
+                    for (var ri = 0; ri < cards.length; ri += COLS) {
+                        var rowCards = cards.slice(ri, ri + COLS);
+                        var rowMaxH = 0;
+                        rowCards.forEach(function(card, ci) {
+                            var x = ci * (CARD_W + GAP);
+                            card.style.left = x + 'px';
+                            card.style.top = y + 'px';
+                            var h = card.offsetHeight || CARD_H;
+                            if (h > rowMaxH) rowMaxH = h;
+                            var name = card.getAttribute('data-filename');
+                            if (name) layout[name] = { x: x, y: y, w: CARD_W, h: h };
+                        });
+                        y += rowMaxH + GAP;
+                    }
+                    persistLayout();
                 });
                 buttons.push(tidyBtn);
 
-                // Append all buttons to toolbar
-                for (const btn of buttons) toolbar.appendChild(btn);
+                for (var k = 0; k < buttons.length; k++) toolbar.appendChild(buttons[k]);
             })
-            .catch(err => console.error('[project] Failed to load card classes:', err));
+            .catch(function(err) { console.error('[project] Failed to load card classes:', err); });
+
+        // ── Load layout then position initial cards ──────────
+        loadLayout().then(function() {
+            positionAllCards();
+        });
     })();
     </script>
   `;
-}
-
-export async function create_file(content, args, mica) {
-  const filename = args.filename || "";
-  const fileContent = args.content || "";
-  if (!filename) return { error: "filename is required" };
-  await mica.createCard(filename);
-  return { ok: true, filename };
 }

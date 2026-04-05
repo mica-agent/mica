@@ -1,18 +1,23 @@
-// CanvasCardRuntime — renders a canvas card (parent) with isolated child cards in slots.
+// CanvasCardRuntime — thin host for the canvas card class.
 //
-// The parent card's HTML contains data-slot elements ("system-cards", "content-cards").
-// This component fills those slots with individually isolated WidgetRuntime instances,
-// one per child card. Each child gets its own container, bridge, and script scope.
+// Responsibilities (host only):
+//   1. Fetch & mount the canvas card via CardRuntime
+//   2. Fetch child cards and portal them into #canvas-freeform (owned by card class)
+//   3. Listen for file-created/file-deleted to add/remove children
+//   4. Provide modals (expand, edit) triggered by child card actions
+//
+// Layout, positioning, drag, resize, and toolbar are all owned by the
+// canvas card class (e.g. simple-project/render.js).
 
-import React, { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
-import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile, convertDrawing, fetchLayout, saveLayout } from "../api/canvasFiles";
-import type { RenderedCard } from "../api/canvasFiles";
-import { on, windowId } from "../api/micaSocket";
-import WidgetRuntime from "./WidgetRuntime";
-import FileCard from "./FileCard";
+import { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
+import { createPortal } from "react-dom";
+import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile } from "../api/canvasFiles";
+import type { RenderedCard, ProjectCardResponse } from "../api/canvasFiles";
+import { on } from "../api/micaSocket";
+import CardRuntime from "./CardRuntime";
+import CardFrame from "./CardFrame";
 import FileEditor from "./FileEditor";
 import ExpandedCardView from "./ExpandedCardView";
-import DrawingCanvas from "./DrawingCanvas";
 import "./whiteboard.css";
 
 interface Props {
@@ -20,53 +25,21 @@ interface Props {
   onReloadRef?: MutableRefObject<(() => void) | null>;
 }
 
-
-interface CardLayout {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-const DEFAULT_CARD_W = 320;
-const DEFAULT_CARD_H = 280;
-const GRID_GAP = 16;
-const FREEFORM_COLS = 3;
-
-// System files ordering
-
-// ── Debounced layout save ───────────────────────────────
-let layoutSaveTimer: ReturnType<typeof setTimeout> | null = null;
-const LAYOUT_SAVE_DELAY = 500;
-
-function debouncedSaveLayout(projectId: string, layouts: Map<string, CardLayout>) {
-  if (layoutSaveTimer) clearTimeout(layoutSaveTimer);
-  layoutSaveTimer = setTimeout(() => {
-    saveLayout(projectId, "_root", {
-      cards: Object.fromEntries(layouts),
-      source: windowId,
-    }).catch(() => {});
-  }, LAYOUT_SAVE_DELAY);
-}
-
 export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
-  const [parentCard, setParentCard] = useState<RenderedCard | null>(null);
+  const [parentCard, setParentCard] = useState<ProjectCardResponse | null>(null);
   const [children, setChildren] = useState<RenderedCard[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Editor/expanded state
+  // Modal state
   const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
   const [expandedCard, setExpandedCard] = useState<RenderedCard | null>(null);
-  const [creatingType, setCreatingType] = useState<"text" | "markdown" | "mermaid" | null>(null);
-  const [drawingMode, setDrawingMode] = useState(false);
-  const [converting, setConverting] = useState(false);
-  const [flashFiles, setFlashFiles] = useState<Set<string>>(new Set());
-  // Layout is always freeform — no mode toggle needed
-  const [cardLayouts, setCardLayouts] = useState<Map<string, CardLayout>>(new Map());
-  const layoutInitialized = useRef(false);
-  const layoutLoaded = useRef(false);
 
-  const parentRef = useRef<HTMLDivElement>(null);
+  // Portal target: the #canvas-freeform element rendered by the card class
+  const [freeformEl, setFreeformEl] = useState<HTMLElement | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Canvas card filename — discovered from server, not hardcoded
+  const canvasFilename = parentCard?.canvasFilename || "project.project";
 
   // ── Data loading ────────────────────────────────────────
 
@@ -90,26 +63,31 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     loadProjectCard();
   }, [loadProjectCard]);
 
-  // Expose reload function so parent can trigger refresh (e.g. after agent writes files)
   useEffect(() => {
     if (onReloadRef) onReloadRef.current = loadProjectCard;
     return () => { if (onReloadRef) onReloadRef.current = null; };
   }, [onReloadRef, loadProjectCard]);
 
-  // ── Load persisted layout from server ───────────────────
+  // ── Find freeform container after card class renders ────
+
   useEffect(() => {
-    fetchLayout(projectId, "_root").then((data) => {
-      const d = data as { mode?: string; cards?: Record<string, CardLayout> };
-      if (d.cards) {
-        const entries = Object.entries(d.cards) as [string, CardLayout][];
-        if (entries.length > 0) {
-          setCardLayouts(new Map(entries));
-          layoutInitialized.current = true;
-        }
+    if (!parentCard || !containerRef.current) return;
+
+    const check = () => {
+      const el = containerRef.current?.querySelector("#canvas-freeform");
+      if (el) {
+        setFreeformEl(el as HTMLElement);
+        return true;
       }
-      layoutLoaded.current = true;
-    }).catch(() => { layoutLoaded.current = true; });
-  }, [projectId]);
+      return false;
+    };
+
+    if (check()) return;
+
+    const obs = new MutationObserver(() => { if (check()) obs.disconnect(); });
+    obs.observe(containerRef.current, { childList: true, subtree: true });
+    return () => obs.disconnect();
+  }, [parentCard]);
 
   // ── Real-time updates via WebSocket ─────────────────────
 
@@ -127,16 +105,15 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       };
       if (m.project !== projectId || m.canvas !== "_root") return;
 
-      // Skip infrastructure files
-      if (m.filename === "project.project" || m.filename === ".chat-history.json" || m.filename === ".config.json") {
-        if (m.filename === "project.project") {
+      // Skip infrastructure files (dot-prefixed) and the canvas card itself
+      if (!m.filename || m.filename.startsWith(".") || m.filename === canvasFilename) {
+        if (m.filename === canvasFilename) {
           fetchProjectCard(projectId).then(setParentCard).catch(() => {});
         }
         return;
       }
 
-      // file-created: add new card to canvas (server sends full render)
-      if (m.type === "file-created" && m.html && m.filename && m.meta) {
+      if (m.type === "file-created" && m.html && m.meta) {
         setChildren((prev) => {
           const card: RenderedCard = {
             filename: m.filename!,
@@ -153,54 +130,23 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           }
           return [...prev, card];
         });
-        setFlashFiles((prev) => new Set(prev).add(m.filename!));
-        setTimeout(() => {
-          setFlashFiles((prev) => { const next = new Set(prev); next.delete(m.filename!); return next; });
-        }, 1200);
-      }
-      // file-changed: event only — card classes handle their own updates via mica.on()
-      // No HTML replacement, no React state update for existing cards.
-      else if (m.type === "file-deleted" && m.filename) {
+      } else if (m.type === "file-deleted") {
         setChildren((prev) => prev.filter((c) => c.filename !== m.filename));
       }
-      // file-changed events are passed through to card scripts via mica.on('file-changed')
-      // (handled by the WebSocket event listener system — no action needed here)
+      // file-changed: card scripts handle via mica.on() — no action here
     }
 
     const unsub1 = on("file-changed", handleFileEvent);
     const unsub2 = on("file-created", handleFileEvent);
     const unsub3 = on("file-deleted", handleFileEvent);
+    return () => { unsub1(); unsub2(); unsub3(); };
+  }, [projectId, canvasFilename]);
 
-    // Layout sync — other windows broadcast layout changes
-    const unsub4 = on("layout-changed", (msg) => {
-      const m = msg as { project?: string; canvas?: string; source?: string };
-      if (m.project !== projectId || m.canvas !== "_root") return;
-      // Skip if this window caused the change
-      if (m.source === windowId) return;
-      // Refetch layout from server — apply only, don't save back
-      fetchLayout(projectId, "_root").then((data: Record<string, unknown>) => {
-        if (data.cards) {
-          const entries = Object.entries(data.cards as Record<string, CardLayout>);
-          setCardLayouts(new Map(entries));
-        }
-      }).catch(() => {});
-    });
-
-    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
-  }, [projectId, loadProjectCard]);
-
-
-  const allNonChat = children;
-
-
-
-  // ── File operations ─────────────────────────────────────
-
+  // ── File operations (for modals) ────────────────────────
 
   const handleSave = useCallback(async (filename: string, content: string) => {
     await saveFile(projectId, "_root", filename, content);
     setEditingFile(null);
-    setCreatingType(null);
   }, [projectId]);
 
   const handleDelete = useCallback(async (filename: string) => {
@@ -217,69 +163,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     }
   }, [projectId]);
 
-  const handleConvertDrawing = useCallback(async (imageBase64: string) => {
-    setConverting(true);
-    try {
-      await convertDrawing(projectId, "_root", imageBase64);
-      setDrawingMode(false);
-    } catch (err) {
-      console.error("Drawing conversion failed:", err);
-    } finally {
-      setConverting(false);
-    }
-  }, [projectId]);
-
-  // ── Freeform layout management ─────────────────────────
-
-  // Auto-position new cards that don't have layout data yet
-  useEffect(() => {
-    if (!layoutInitialized.current || allNonChat.length !== cardLayouts.size) {
-      const existing = new Map(cardLayouts);
-      let nextIndex = existing.size;
-      for (const card of allNonChat) {
-        if (!existing.has(card.filename)) {
-          const col = nextIndex % FREEFORM_COLS;
-          const row = Math.floor(nextIndex / FREEFORM_COLS);
-          existing.set(card.filename, {
-            x: col * (DEFAULT_CARD_W + GRID_GAP),
-            y: row * (DEFAULT_CARD_H + GRID_GAP),
-            w: DEFAULT_CARD_W,
-            h: DEFAULT_CARD_H,
-          });
-          nextIndex++;
-        }
-      }
-      setCardLayouts(existing);
-      layoutInitialized.current = true;
-    }
-  }, [allNonChat.length]);
-
-  const handleCardDragEnd = useCallback((filename: string, x: number, y: number) => {
-    setCardLayouts((prev) => {
-      const next = new Map(prev);
-      const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
-      next.set(filename, { ...layout, x, y });
-      debouncedSaveLayout(projectId, next);
-      return next;
-    });
-  }, [projectId]);
-
-  const handleCardResize = useCallback((filename: string, w: number, h: number) => {
-    setCardLayouts((prev) => {
-      const next = new Map(prev);
-      const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
-      next.set(filename, { ...layout, w, h });
-      debouncedSaveLayout(projectId, next);
-      return next;
-    });
-  }, [projectId]);
-
-  // Layout persistence happens explicitly from user actions
-  // (drag, resize, layout toggle) — not from a React effect.
-  // This prevents save-back loops when applying remote layout syncs.
-
-  // All children rendered in freeform layout — no partitioning needed
-
   // ── Render ──────────────────────────────────────────────
 
   if (loading && !parentCard) {
@@ -290,63 +173,45 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   return (
     <div className="wb-container">
-      {/* Scrollable content area */}
-      <div className="wb-grid">
-        {/* Parent card chrome — rendered by simple-project render.py */}
-        {parentCard && (
-          <div ref={parentRef} className="canvas-card-parent">
-            <WidgetRuntime
-              html={parentCard.html}
-              exports={parentCard.exports}
-              dependencies={parentCard.dependencies}
-              project={projectId}
-              canvas="_root"
-              filename="_project.project"
-            />
-          </div>
-        )}
-
-        {/* Freeform layout — all cards absolutely positioned */}
-        <div className="wb-freeform">
-          {allNonChat.map((card) => {
-            const layout = cardLayouts.get(card.filename);
-            if (!layout) return null;
-            return (
-              <FileCard
-                key={card.filename}
-                filename={card.filename}
-                html={card.html}
-                exports={card.exports}
-                dependencies={card.dependencies}
-                meta={card.meta}
-                projectId={projectId}
-                canvasId="_root"
-                canvasColor={canvasColor}
-                resizable
-                cardStyle={{
-                  left: layout.x,
-                  top: layout.y,
-                  width: layout.w,
-                  height: layout.h,
-                }}
-                flash={flashFiles.has(card.filename)}
-                onEdit={() => handleEdit(card.filename)}
-                onDelete={() => handleDelete(card.filename)}
-                onExpand={() => setExpandedCard(card)}
-                onDragEnd={(x, y) => handleCardDragEnd(card.filename, x, y)}
-                onResize={(w, h) => handleCardResize(card.filename, w, h)}
-              />
-            );
-          })}
+      {/* Canvas card class renders toolbar, header, and freeform container */}
+      {parentCard && (
+        <div ref={containerRef} className="canvas-card-host">
+          <CardRuntime
+            html={parentCard.html}
+            exports={parentCard.exports}
+            dependencies={parentCard.dependencies}
+            project={projectId}
+            canvas="_root"
+            filename={canvasFilename}
+          />
         </div>
+      )}
 
-        {!loading && children.length === 0 && !parentCard && (
-          <div className="wb-empty">
-            <div className="wb-empty-icon">&#9744;</div>
-            <p>No files yet. Create a note, document, or diagram to get started.</p>
-          </div>
-        )}
-      </div>
+      {/* Portal child cards into the card class's freeform container */}
+      {freeformEl && children.map((card) => createPortal(
+        <CardFrame
+          key={card.filename}
+          filename={card.filename}
+          html={card.html}
+          exports={card.exports}
+          dependencies={card.dependencies}
+          meta={card.meta}
+          projectId={projectId}
+          canvasId="_root"
+          canvasColor={canvasColor}
+          onEdit={() => handleEdit(card.filename)}
+          onDelete={() => handleDelete(card.filename)}
+          onExpand={() => setExpandedCard(card)}
+        />,
+        freeformEl,
+      ))}
+
+      {!loading && children.length === 0 && !parentCard && (
+        <div className="wb-empty">
+          <div className="wb-empty-icon">&#9744;</div>
+          <p>No files yet. Create a note, document, or diagram to get started.</p>
+        </div>
+      )}
 
       {/* Expanded card reader */}
       {expandedCard && (
@@ -360,26 +225,12 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       )}
 
       {/* Editor modal */}
-      {(editingFile || creatingType) && (
+      {editingFile && (
         <FileEditor
-          file={editingFile ? { name: editingFile.name, type: "markdown" as const, content: editingFile.content, modifiedAt: "" } : null}
-          defaultType={creatingType ?? undefined}
+          file={{ name: editingFile.name, type: "markdown" as const, content: editingFile.content, modifiedAt: "" }}
           canvasColor={canvasColor}
           onSave={handleSave}
-          onCancel={() => {
-            setEditingFile(null);
-            setCreatingType(null);
-          }}
-        />
-      )}
-
-      {/* Drawing canvas */}
-      {drawingMode && (
-        <DrawingCanvas
-          canvasColor={canvasColor}
-          onConvert={handleConvertDrawing}
-          onCancel={() => setDrawingMode(false)}
-          converting={converting}
+          onCancel={() => setEditingFile(null)}
         />
       )}
     </div>

@@ -12,7 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
-import { readWorkspaceRegistry, getProjectPath } from "./projectConnection.js";
+import { readWorkspaceRegistry, getProjectPath, getCanvasDir } from "./projectConnection.js";
 import { getValidExtensions, getPrimaryFile, resolveCardClassFromFilename } from "./canvasFiles.js";
 
 export interface FileChangeEvent {
@@ -65,10 +65,8 @@ export class FileWatcher extends EventEmitter {
   }
 
   private async watchProjectCanvas(projectId: string, projectPath: string, canvas: string): Promise<void> {
-    // Card files live at project root level, not inside .mica/
-    const dir = canvas === "_root"
-      ? projectPath
-      : path.join(projectPath, canvas);
+    // Resolve canvas directory — for _root, this reads canvasCard from config
+    const dir = await getCanvasDir(projectId, canvas);
     const key = `${projectId}/${canvas}`;
 
     try {

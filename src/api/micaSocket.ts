@@ -322,7 +322,7 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
   const bridgeChannels = new Map<string, Channel>();
 
   return {
-    /** Set the refresh implementation (provided by WidgetRuntime) */
+    /** Set the refresh implementation (provided by CardRuntime) */
     _setRefreshFn: (fn: () => Promise<void>) => { refreshFn = fn; },
     /** Re-fetch and re-render this card's HTML. Card classes call this to opt-in to updates. */
     refresh: async () => { if (refreshFn) await refreshFn(); },
