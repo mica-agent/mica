@@ -2,6 +2,8 @@
  * Markdown card class — rich markdown editor using Toast UI Editor.
  */
 
+import { marked } from 'marked';
+
 export const metadata = { extension: ".md", badge: "MD", primaryFile: "document.md" };
 
 export const dependencies = {
@@ -32,10 +34,12 @@ export default function render(content, config) {
       height: 100%;
       display: flex;
       flex-direction: column;
+      overflow: hidden;
     }
     .card-markdown-editor #editor {
       flex: 1;
       min-height: 0;
+      overflow: hidden;
     }
     .card-markdown-editor .toastui-editor-defaultUI {
       border: none;
@@ -60,6 +64,11 @@ export default function render(content, config) {
         .replace(/&gt;/g, '>')
         .replace(/&quot;/g, '"');
 
+      // Prevent Toast UI from scrolling the canvas when it initializes
+      const scrollParent = container.closest('.wb-freeform') || container.closest('.wb-grid');
+      const scrollX = scrollParent ? scrollParent.scrollLeft : 0;
+      const scrollY = scrollParent ? scrollParent.scrollTop : 0;
+
       const editor = new toastui.Editor({
         el: editorEl,
         height: '100%',
@@ -68,6 +77,7 @@ export default function render(content, config) {
         initialValue: initialContent,
         theme: 'dark',
         usageStatistics: false,
+        autofocus: false,
         toolbarItems: [
           ['heading', 'bold', 'italic', 'strike'],
           ['ul', 'ol', 'task'],
@@ -76,16 +86,13 @@ export default function render(content, config) {
         ],
       });
 
-      // Resize editor when card resizes (only respond to significant changes)
-      let lastHeight = 0;
-      const ro = new ResizeObserver(() => {
-        const h = editorEl.clientHeight;
-        if (h > 0 && Math.abs(h - lastHeight) > 5) {
-          lastHeight = h;
-          editor.setHeight(h + 'px');
-        }
-      });
-      ro.observe(editorEl);
+      // Restore scroll position after editor init
+      if (scrollParent) {
+        requestAnimationFrame(() => {
+          scrollParent.scrollLeft = scrollX;
+          scrollParent.scrollTop = scrollY;
+        });
+      }
 
       // Debounced save
       let saveTimer = null;
@@ -99,7 +106,7 @@ export default function render(content, config) {
         }, 800);
       });
 
-      // Sync from other windows — full refresh on external changes
+      // Sync from other windows
       const unsub = mica.on('file-changed', (e) => {
         if (e.filename === mica.filename && !justSaved) {
           mica.refresh();
@@ -109,7 +116,6 @@ export default function render(content, config) {
       mica.onDestroy(() => {
         unsub();
         if (saveTimer) clearTimeout(saveTimer);
-        ro.disconnect();
         editor.destroy();
       });
     })();
