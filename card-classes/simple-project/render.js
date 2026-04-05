@@ -148,7 +148,44 @@ export default function render(content, config) {
                 tidyBtn.className = 'toolbar-btn';
                 tidyBtn.textContent = 'Tidy';
                 tidyBtn.addEventListener('click', () => {
-                    mica.broadcast('tidy-layout', {});
+                    // Find the freeform container and all card elements
+                    const freeform = document.querySelector('.wb-freeform');
+                    if (!freeform) return;
+                    const cards = Array.from(freeform.querySelectorAll('.wb-card'));
+                    if (cards.length === 0) return;
+
+                    const CARD_W = 320, CARD_H = 280, GAP = 16, COLS = 3;
+                    const layout = {};
+
+                    // Sort: seed cards first, then alphabetical
+                    cards.sort((a, b) => {
+                        const aName = a.getAttribute('data-filename') || '';
+                        const bName = b.getAttribute('data-filename') || '';
+                        const aSystem = a.classList.contains('wb-card--goal') || a.classList.contains('wb-card--todo');
+                        const bSystem = b.classList.contains('wb-card--goal') || b.classList.contains('wb-card--todo');
+                        if (aSystem && !bSystem) return -1;
+                        if (!aSystem && bSystem) return 1;
+                        return aName.localeCompare(bName);
+                    });
+
+                    cards.forEach((card, i) => {
+                        const col = i % COLS;
+                        const row = Math.floor(i / COLS);
+                        const x = col * (CARD_W + GAP);
+                        const y = row * (CARD_H + GAP);
+                        card.style.left = x + 'px';
+                        card.style.top = y + 'px';
+                        card.style.width = CARD_W + 'px';
+                        const name = card.getAttribute('data-filename');
+                        if (name) layout[name] = { x, y, w: CARD_W, h: parseInt(card.style.height) || CARD_H };
+                    });
+
+                    // Save layout to server
+                    fetch('/api/projects/' + mica.project + '/canvases/_root/layout', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cards: layout, source: 'tidy' }),
+                    }).catch(() => {});
                 });
                 buttons.push(tidyBtn);
 

@@ -192,33 +192,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   const allNonChat = children;
 
-  // ── Tidy layout — auto-arrange cards in a grid ──────────
 
-  useEffect(() => {
-    const unsub = on("tidy-layout", () => {
-      const sorted = [...allNonChat].sort((a, b) => {
-        // Seed cards first, then alphabetical
-        if (a.meta.isSystem && !b.meta.isSystem) return -1;
-        if (!a.meta.isSystem && b.meta.isSystem) return 1;
-        return a.filename.localeCompare(b.filename);
-      });
-      const next = new Map<string, CardLayout>();
-      sorted.forEach((card, i) => {
-        const col = i % FREEFORM_COLS;
-        const row = Math.floor(i / FREEFORM_COLS);
-        const existing = cardLayouts.get(card.filename);
-        next.set(card.filename, {
-          x: col * (DEFAULT_CARD_W + GRID_GAP),
-          y: row * (DEFAULT_CARD_H + GRID_GAP),
-          w: existing?.w ?? DEFAULT_CARD_W,
-          h: existing?.h ?? DEFAULT_CARD_H,
-        });
-      });
-      setCardLayouts(next);
-      debouncedSaveLayout(projectId, next);
-    });
-    return unsub;
-  }, [projectId, allNonChat, cardLayouts]);
 
   // ── File operations ─────────────────────────────────────
 
