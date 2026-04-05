@@ -1,12 +1,12 @@
 /**
  * Module channel handler — bridges card class stream exports to ChannelHandler.
  *
- * Card classes that export onConnect/onMessage/onDisconnect get wired into the
+ * Card classes that export onConnect/onMessage/onDestroy get wired into the
  * unified ChannelManager through this handler. The pattern mirrors WebSockets:
  *
  *   onConnect(mica, args)   → called when first client attaches (session start)
  *   onMessage(msg, mica)    → called when any client sends data
- *   onDisconnect(mica)      → called when session is destroyed
+ *   onDestroy(mica)      → called when session is destroyed
  *
  * Supports two execution modes:
  * - Container: card code runs inside Docker, bridge calls cross the boundary
@@ -95,8 +95,8 @@ function createContainerHandler(
     },
 
     onDestroy(): void {
-      runtime.onDisconnect(cardClass, classPath, ctx.filename).catch((err) => {
-        console.error(`[module-handler] Container onDisconnect error for ${ctx.filename}:`, err.message);
+      runtime.onDestroy(cardClass, classPath, ctx.filename).catch((err) => {
+        console.error(`[module-handler] Container onDestroy error for ${ctx.filename}:`, err.message);
       });
     },
   };
@@ -185,9 +185,9 @@ async function createHostHandler(
     onDetach(_clientId: string): void {},
 
     onDestroy(): void {
-      if (handlers.onDisconnect) {
-        Promise.resolve(handlers.onDisconnect(mica)).catch((err) => {
-          console.error(`[module-handler] onDisconnect error for ${ctx.filename}:`, (err as Error).message);
+      if (handlers.onDestroy) {
+        Promise.resolve(handlers.onDestroy(mica)).catch((err) => {
+          console.error(`[module-handler] onDestroy error for ${ctx.filename}:`, (err as Error).message);
         });
       }
     },

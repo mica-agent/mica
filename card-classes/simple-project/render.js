@@ -14,7 +14,7 @@
 
 import { marked } from 'marked';
 
-export const metadata = { extension: ".project", badge: "PROJECT", primaryFile: "project.md", seed: true, defaultTitle: "Project" };
+export const metadata = { extension: ".project", badge: "PROJECT", primaryFile: "project.md", defaultTitle: "Project" };
 
 function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -290,7 +290,7 @@ export default function render(content, config) {
 
                 for (var _i = 0, _entries = Object.entries(classes); _i < _entries.length; _i++) {
                     var name = _entries[_i][0], meta = _entries[_i][1];
-                    if (meta.seed || name === 'simple-project' || name === 'canvas') continue;
+                    if (name === 'simple-project' || name === 'canvas') continue;
                     var btn = document.createElement('button');
                     btn.className = 'toolbar-btn';
                     btn.textContent = '+ ' + (meta.defaultTitle || name);

@@ -2,7 +2,7 @@
  * Claude Chat card class — interactive chat with Claude agent.
  *
  * Browser: Chat UI, opens channel for bidirectional streaming.
- * Server: onConnect/onMessage/onDisconnect wire directly to Claude Agent SDK.
+ * Server: onConnect/onMessage/onDestroy wire directly to Claude Agent SDK.
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -170,7 +170,7 @@ export async function onMessage(msg, mica) {
   await processMessage(session, message, mica);
 }
 
-export function onDisconnect(mica) {
+export function onDestroy(mica) {
   const key = sessionKey(mica);
   sessions.delete(key);
 }

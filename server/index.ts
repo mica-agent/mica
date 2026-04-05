@@ -772,7 +772,7 @@ const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel I
 const channelManager = new ChannelManager();
 
 
-// Module-based channel handler — bridges card class stream exports (onConnect/onMessage/onDisconnect)
+// Module-based channel handler — bridges card class stream exports (onConnect/onMessage/onDestroy)
 // to the ChannelHandler interface. Registered dynamically per card class when stream support is detected.
 const moduleHandlerFactory = createModuleHandlerFactory({
   moduleLoader: cardManager.getModuleLoader(),

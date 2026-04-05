@@ -14,7 +14,7 @@
  *   { id, type: "callExport", className, classPath, fn, content, args, cardName }
  *   { id, type: "onConnect", className, classPath, cardName, args }
  *   { id, type: "onMessage", className, classPath, cardName, msg, replyClientId }
- *   { id, type: "onDisconnect", className, classPath, cardName }
+ *   { id, type: "onDestroy", className, classPath, cardName }
  *   { id, type: "invalidateClass", className }
  *   { id, type: "invalidateAll" }
  *
@@ -65,12 +65,12 @@ async function loadModule(className, classPath) {
 
   if (typeof mod.onConnect === "function") loaded.onConnect = mod.onConnect;
   if (typeof mod.onMessage === "function") loaded.onMessage = mod.onMessage;
-  if (typeof mod.onDisconnect === "function") loaded.onDisconnect = mod.onDisconnect;
+  if (typeof mod.onDestroy === "function") loaded.onDestroy = mod.onDestroy;
   if (mod.dependencies) loaded.dependencies = mod.dependencies;
 
   for (const [name, value] of Object.entries(mod)) {
     if (name === "default" || name === "dependencies") continue;
-    if (name === "onConnect" || name === "onMessage" || name === "onDisconnect") continue;
+    if (name === "onConnect" || name === "onMessage" || name === "onDestroy") continue;
     if (typeof value === "function") {
       loaded.exportNames.push(name);
       loaded[name] = value;
@@ -84,7 +84,7 @@ async function loadModule(className, classPath) {
 // ── Per-card session state for stream handlers ──────────────
 
 // Maps cardName → { mica bridge, active state }
-// Stream handler calls (onConnect/onMessage/onDisconnect) reference this
+// Stream handler calls (onConnect/onMessage/onDestroy) reference this
 const cardSessions = new Map();
 
 // ── MicaBridge factory ──────────────────────────────────────
@@ -275,12 +275,12 @@ async function handleMessage(msg) {
         return;
       }
 
-      case "onDisconnect": {
+      case "onDestroy": {
         const mod = await loadModule(msg.className, msg.classPath);
         const session = cardSessions.get(msg.cardName);
         const mica = session?.mica || createBridge(msg.cardName);
-        if (mod.onDisconnect) {
-          await mod.onDisconnect(mica);
+        if (mod.onDestroy) {
+          await mod.onDestroy(mica);
         }
         cardSessions.delete(msg.cardName);
         sendResult(id, null);

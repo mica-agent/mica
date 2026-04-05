@@ -2,7 +2,7 @@
  * ModuleLoader — Loads card classes as Node.js ES modules.
  *
  * Replaces IsolatePool. Card classes are standard JavaScript modules that
- * export render() and optionally onConnect/onMessage/onDisconnect handlers.
+ * export render() and optionally onConnect/onMessage/onDestroy handlers.
  *
  * Card classes get full Node.js access — require/import any package.
  * Blast radius is the Docker container (per-project isolation).
@@ -57,7 +57,7 @@ interface LoadedModule {
   render?: (content: string, config: Record<string, unknown>) => string | Promise<string>;
   onConnect?: (mica: MicaBridge, args: Record<string, unknown>) => void | Promise<void>;
   onMessage?: (msg: unknown, mica: MicaBridge) => void | Promise<void>;
-  onDisconnect?: (mica: MicaBridge) => void | Promise<void>;
+  onDestroy?: (mica: MicaBridge) => void | Promise<void>;
   dependencies?: CardDependencies;
   exportNames: string[];
   /** Named exports (non-lifecycle) that can be called via mica.call() */
@@ -110,13 +110,13 @@ async function loadModule(className: string, classPath: string): Promise<LoadedM
 
   if (typeof mod.onConnect === "function") loaded.onConnect = mod.onConnect;
   if (typeof mod.onMessage === "function") loaded.onMessage = mod.onMessage;
-  if (typeof mod.onDisconnect === "function") loaded.onDisconnect = mod.onDisconnect;
+  if (typeof mod.onDestroy === "function") loaded.onDestroy = mod.onDestroy;
   if (mod.dependencies) loaded.dependencies = mod.dependencies;
 
   // Collect named exports (for backward compat with mica.call())
   for (const [name, value] of Object.entries(mod)) {
     if (name === "default" || name === "dependencies") continue;
-    if (name === "onConnect" || name === "onMessage" || name === "onDisconnect") continue;
+    if (name === "onConnect" || name === "onMessage" || name === "onDestroy") continue;
     if (typeof value === "function") {
       loaded.exportNames.push(name);
       loaded[name] = value;
@@ -183,14 +183,14 @@ export class ModuleLoader {
   ): Promise<{
     onConnect?: (mica: MicaBridge, args: Record<string, unknown>) => void | Promise<void>;
     onMessage?: (msg: unknown, mica: MicaBridge) => void | Promise<void>;
-    onDisconnect?: (mica: MicaBridge) => void | Promise<void>;
+    onDestroy?: (mica: MicaBridge) => void | Promise<void>;
   } | null> {
     const mod = await loadModule(className, classPath);
     if (!mod.onMessage && !mod.onConnect) return null;
     return {
       onConnect: mod.onConnect,
       onMessage: mod.onMessage,
-      onDisconnect: mod.onDisconnect,
+      onDestroy: mod.onDestroy,
     };
   }
 

@@ -117,16 +117,21 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
   const activeCallsRef = useRef(0);
   const [loadingDeps, setLoadingDeps] = useState(false);
 
-  // Render on mount. Idempotent — safe to re-run (StrictMode, re-render).
-  // The bridge deduplicates channels, scripts re-register callbacks.
+  // Destroy only on true unmount — not on effect re-runs.
+  // Card sessions (PTY, chat) must survive React re-renders.
+  useEffect(() => {
+    return () => {
+      if (bridgeRef.current) {
+        bridgeRef.current._runDestroy();
+      }
+    };
+  }, []);
+
+  // Render on mount or when html changes. Re-injects HTML and re-executes scripts.
+  // Does NOT destroy sessions — channels survive via bridge dedup.
   useEffect(() => {
     const el = widgetRef.current;
     if (!el) return;
-
-    // Run destroy callbacks from previous execution before re-injecting
-    if (bridgeRef.current) {
-      bridgeRef.current._runDestroy();
-    }
 
     // ── Phase 1: Preload declared dependencies ──────────────────
     // If the card class declared `export const dependencies`, load them
@@ -168,7 +173,6 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
         const { fetchRenderedCard } = await import("../api/canvasFiles");
         const rendered = await fetchRenderedCard(project, canvas, filename);
         if (el && rendered.html) {
-          baseBridge._runDestroy();
           el.innerHTML = rendered.html;
           // Re-execute scripts with the same bridge
           const scripts = Array.from(el.querySelectorAll("script"));
@@ -271,14 +275,6 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       continueRender();
     }
 
-    // Cleanup: run onDestroy callbacks (which null channel callbacks via ch.close()).
-    // On StrictMode re-run or unmount, this ensures stale callbacks are cleared.
-    // The bridge dedup ensures the next execution gets the same channel handle.
-    return () => {
-      if (bridgeRef.current) {
-        bridgeRef.current._runDestroy();
-      }
-    };
   }, [html, project, canvas, filename]);
 
   return (

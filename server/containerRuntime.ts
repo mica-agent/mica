@@ -273,14 +273,14 @@ export class ContainerRuntime {
     });
   }
 
-  async onDisconnect(
+  async onDestroy(
     className: string,
     classPath: string,
     cardName: string,
   ): Promise<void> {
     await this.ensureRunning();
     await this.request({
-      type: "onDisconnect",
+      type: "onDestroy",
       className,
       classPath: this.toContainerPath(classPath),
       cardName,

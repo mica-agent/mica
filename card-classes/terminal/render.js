@@ -2,7 +2,7 @@
  * Terminal card class — xterm.js terminal with PTY.
  *
  * Browser: xterm.js UI, opens a logical channel for PTY I/O.
- * Server: onConnect spawns PTY, onMessage forwards input/resize, onDisconnect kills PTY.
+ * Server: onConnect spawns PTY, onMessage forwards input/resize, onDestroy kills PTY.
  */
 
 import * as pty from 'node-pty';
@@ -105,11 +105,12 @@ export function onMessage(msg, mica) {
   }
 }
 
-export function onDisconnect(mica) {
+export function onDestroy(mica) {
   const key = sessionKey(mica);
   const session = sessions.get(key);
+  if (!session) return;
   console.log(`[terminal] Session destroyed for ${key}`);
-  if (session?.proc) {
+  if (session.proc) {
     try {
       session.proc.kill();
     } catch {

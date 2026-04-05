@@ -207,7 +207,7 @@ export async function onMessage(msg, mica) {
   await processMessage(session, message, mica);
 }
 
-export function onDisconnect(mica) {
+export function onDestroy(mica) {
   const key = sessionKey(mica);
   sessions.delete(key);
 }

@@ -6,6 +6,12 @@ import { createPortal } from "react-dom";
 import type { ProjectConfig } from "./api/canvasFiles";
 import { createProject, deleteProjectApi } from "./api/canvasFiles";
 
+interface CardClassInfo {
+  extension?: string;
+  defaultTitle?: string;
+  badge?: string;
+}
+
 interface Props {
   projects: ProjectConfig[];
   activeProject: ProjectConfig;
@@ -17,7 +23,8 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
-  const [agentProvider, setAgentProvider] = useState<"claude" | "local">("claude");
+  const [canvasClass, setCanvasClass] = useState("simple-project");
+  const [cardClasses, setCardClasses] = useState<Record<string, CardClassInfo>>({});
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -29,9 +36,14 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
     setConfirmDelete(null);
   }, []);
 
-  // Focus input when creating
+  // Fetch card classes when create form opens
   useEffect(() => {
-    if (creating) inputRef.current?.focus();
+    if (!creating) return;
+    inputRef.current?.focus();
+    fetch("/api/card-classes")
+      .then(r => r.json())
+      .then(setCardClasses)
+      .catch(() => {});
   }, [creating]);
 
   const handleCreate = useCallback(async () => {
@@ -40,15 +52,15 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
     const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     if (!id) return;
     try {
-      await createProject(id, name, agentProvider);
+      await createProject(id, name, canvasClass);
       setNewName("");
-      setAgentProvider("claude");
+      setCanvasClass("simple-project");
       setCreating(false);
       onProjectsChanged();
     } catch (err) {
       console.error("Failed to create project:", err);
     }
-  }, [newName, onProjectsChanged]);
+  }, [newName, canvasClass, onProjectsChanged]);
 
   const handleDelete = useCallback(async (projectId: string) => {
     try {
@@ -64,6 +76,8 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
   const rect = triggerRef.current?.getBoundingClientRect();
   const dropdownTop = rect ? rect.bottom + 6 : 60;
   const dropdownLeft = rect ? rect.left : 10;
+
+  const classEntries = Object.entries(cardClasses);
 
   return (
     <div className="project-nav">
@@ -98,9 +112,6 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
                   onClick={() => { onSwitch(i); setOpen(false); }}
                 >
                   <span className="project-nav-item-name">{p.name}</span>
-                  <span className="project-nav-item-canvases">
-                    {p.canvases.length} canvas{p.canvases.length !== 1 ? "es" : ""}
-                  </span>
                 </button>
 
                 {p.id !== activeProject.id && (
@@ -138,20 +149,17 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
                   if (e.key === "Escape") { setCreating(false); setNewName(""); }
                 }}
               />
-              <div className="project-nav-agent-toggle">
-                <button
-                  className={`project-nav-agent-btn ${agentProvider === "claude" ? "project-nav-agent-btn--active" : ""}`}
-                  onClick={() => setAgentProvider("claude")}
-                >
-                  Claude
-                </button>
-                <button
-                  className={`project-nav-agent-btn ${agentProvider === "local" ? "project-nav-agent-btn--active" : ""}`}
-                  onClick={() => setAgentProvider("local")}
-                >
-                  Local (Nemotron 30B)
-                </button>
-              </div>
+              <select
+                className="project-nav-class-select"
+                value={canvasClass}
+                onChange={(e) => setCanvasClass(e.target.value)}
+              >
+                {classEntries.map(([name, info]) => (
+                  <option key={name} value={name}>
+                    {info.defaultTitle || name}
+                  </option>
+                ))}
+              </select>
               <button
                 className="project-nav-create-submit"
                 onClick={handleCreate}

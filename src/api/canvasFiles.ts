@@ -49,11 +49,11 @@ export async function fetchProject(projectId: string): Promise<ProjectConfig> {
   return res.json();
 }
 
-export async function createProject(id: string, name: string, agentProvider?: string, canvasClass?: string): Promise<ProjectConfig> {
+export async function createProject(id: string, name: string, canvasClass?: string): Promise<ProjectConfig> {
   const res = await fetch(`${API_BASE}/api/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, name, agentProvider, canvasClass }),
+    body: JSON.stringify({ id, name, canvasClass }),
   });
   if (!res.ok) throw new Error(`Failed to create project: ${res.statusText}`);
   return res.json();
