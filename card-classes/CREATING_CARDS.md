@@ -753,6 +753,25 @@ mica.onDestroy(() => {
 });
 ```
 
+8. **Disable autofocus** — libraries that grab focus on init (editors, terminals, inputs) will scroll the entire canvas to bring the card into view. Disable autofocus and restore the scroll container's position after initialization:
+
+```javascript
+// Save canvas scroll position before init
+const scrollParent = container.closest('.wb-freeform') || container.closest('.wb-grid');
+const scrollX = scrollParent ? scrollParent.scrollLeft : 0;
+const scrollY = scrollParent ? scrollParent.scrollTop : 0;
+
+const editor = new MyEditor({ el, autofocus: false });
+
+// Restore after init
+if (scrollParent) {
+  requestAnimationFrame(() => {
+    scrollParent.scrollLeft = scrollX;
+    scrollParent.scrollTop = scrollY;
+  });
+}
+```
+
 ---
 
 ## 10. Dependencies
