@@ -355,6 +355,9 @@ When asked to create or modify cards, use the tools. Be concise and direct.`;
       // Add assistant message to conversation
       openaiMessages.push(msg);
 
+      // Capture any text content (model may return text + tool calls together)
+      if (msg.content) resultText = msg.content;
+
       // Check for tool calls
       if (msg.tool_calls && msg.tool_calls.length > 0) {
         for (const tc of msg.tool_calls) {
