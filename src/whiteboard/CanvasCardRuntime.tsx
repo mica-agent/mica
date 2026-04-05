@@ -69,7 +69,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("masonry");
   const [cardLayouts, setCardLayouts] = useState<Map<string, CardLayout>>(new Map());
   const layoutInitialized = useRef(false);
-  const applyingRemoteLayout = useRef(false);
   const layoutLoaded = useRef(false);
 
   const parentRef = useRef<HTMLDivElement>(null);
@@ -192,8 +191,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       if (m.project !== projectId || m.canvas !== "_root") return;
       // Skip if this window caused the change
       if (m.source === windowId) return;
-      // Refetch layout from server — flag to prevent save-back loop
-      applyingRemoteLayout.current = true;
+      // Refetch layout from server — apply only, don't save back
       fetchLayout(projectId, "_root").then((data: Record<string, unknown>) => {
         if (data.mode === "freeform") setLayoutMode("freeform");
         else if (data.mode === "masonry") setLayoutMode("masonry");
@@ -201,8 +199,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           const entries = Object.entries(data.cards as Record<string, CardLayout>);
           setCardLayouts(new Map(entries));
         }
-        // Clear flag after React processes the state updates
-        requestAnimationFrame(() => { applyingRemoteLayout.current = false; });
       }).catch(() => {});
     });
 
@@ -298,25 +294,24 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       const next = new Map(prev);
       const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
       next.set(filename, { ...layout, x, y });
+      debouncedSaveLayout(projectId, layoutMode, next);
       return next;
     });
-  }, []);
+  }, [projectId, layoutMode]);
 
   const handleCardResize = useCallback((filename: string, w: number, h: number) => {
     setCardLayouts((prev) => {
       const next = new Map(prev);
       const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
       next.set(filename, { ...layout, w, h });
+      debouncedSaveLayout(projectId, layoutMode, next);
       return next;
     });
-  }, []);
+  }, [projectId, layoutMode]);
 
-  // Persist layout state to server (debounced)
-  useEffect(() => {
-    if (!layoutLoaded.current) return; // Don't save until initial load completes
-    if (applyingRemoteLayout.current) return; // Don't save when applying remote sync
-    debouncedSaveLayout(projectId, layoutMode, cardLayouts);
-  }, [projectId, layoutMode, cardLayouts]);
+  // Layout persistence happens explicitly from user actions
+  // (drag, resize, layout toggle) — not from a React effect.
+  // This prevents save-back loops when applying remote layout syncs.
 
   // ── Partition children into system vs content ───────────
 
@@ -383,13 +378,13 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           <div className="wb-toolbar-right">
             <button
               className={`wb-btn wb-btn--tool ${layoutMode === "masonry" ? "wb-btn--active" : ""}`}
-              onClick={() => setLayoutMode("masonry")}
+              onClick={() => { setLayoutMode("masonry"); debouncedSaveLayout(projectId, "masonry", cardLayouts); }}
             >
               Grid
             </button>
             <button
               className={`wb-btn wb-btn--tool ${layoutMode === "freeform" ? "wb-btn--active" : ""}`}
-              onClick={() => setLayoutMode("freeform")}
+              onClick={() => { setLayoutMode("freeform"); debouncedSaveLayout(projectId, "freeform", cardLayouts); }}
             >
               Free
             </button>
