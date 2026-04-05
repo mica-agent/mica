@@ -42,9 +42,16 @@ Use `list_files` to see what cards are on the canvas. Each entry is a card direc
 | `.md` | Markdown | Rich text document |
 | `.todo` | Todo | Interactive checklist |
 | `.goal` | Goal | Project goals with progress |
-| `.mmd` | Mermaid | Diagram (mermaid syntax) |
+| `.mmd` | Mermaid | Diagram (raw mermaid syntax — NO markdown fences) |
 | `.txt` | Text | Plain text |
 | `.html` | HTML | Raw HTML |
 | `.terminal` | Terminal | Shell session |
 | `.claude-chat` | Claude Chat | AI chat agent |
 | `.llama-chat` | Llama Chat | Local LLM chat agent |
+
+## Content format tips
+
+- **`.mmd` cards**: Write raw mermaid syntax. Do NOT wrap in ` ```mermaid ``` ` fences — the card renders the content directly.
+- **`.md` cards**: Write standard markdown.
+- **`.todo` cards**: Use markdown checklist format (`- [ ] task`, `- [x] done`).
+- **`.goal` cards**: Use markdown with `- [ ]` checklists for progress tracking.
