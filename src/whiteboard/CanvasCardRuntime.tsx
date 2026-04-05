@@ -190,6 +190,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   }, [projectId, loadProjectCard]);
 
 
+  const allNonChat = children;
+
   // ── Tidy layout — auto-arrange cards in a grid ──────────
 
   useEffect(() => {
@@ -254,8 +256,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   }, [projectId]);
 
   // ── Freeform layout management ─────────────────────────
-
-  const allNonChat = children;
 
   // Auto-position new cards that don't have layout data yet
   useEffect(() => {
