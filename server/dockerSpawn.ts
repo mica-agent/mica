@@ -22,7 +22,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = join(__filename, "..");
 export const SANDBOX_IMAGE = "mica-sandbox:base";
 export const CARD_CLASSES_DIR = resolve("card-classes");
-export const SDK_DIR = join(__dirname, "mica_bridge");
 
 // ── Shared project mount config ─────────────────────────────
 // Single source of truth for how project files are mounted into containers.
@@ -45,7 +44,6 @@ const NODE_MODULES_DIR = resolve("node_modules");
 // so cards/agents can't discover or traverse host filesystem structure.
 export const CONTAINER_PROJECT_DIR = "/project";
 const CONTAINER_CARD_CLASSES = "/opt/mica/card-classes";
-const CONTAINER_SDK = "/opt/mica/mica_bridge";
 const CONTAINER_NODE_MODULES = "/opt/mica/node_modules";
 const CONTAINER_RUNTIME_DIR = "/opt/mica/runtime";
 export const RUNTIME_DIR = join(__dirname, "container-runtime");
@@ -57,7 +55,6 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
     volumes: [
       `${projectPath}:${CONTAINER_PROJECT_DIR}:rw`,
       `${CARD_CLASSES_DIR}:${CONTAINER_CARD_CLASSES}:ro`,
-      `${SDK_DIR}:${CONTAINER_SDK}:ro`,
       `${NODE_MODULES_DIR}:${CONTAINER_NODE_MODULES}:ro`,
       `${RUNTIME_DIR}:${CONTAINER_RUNTIME_DIR}:ro`,
       // ~/.claude/ for Claude Code CLI: credentials, settings, plugins, sessions.

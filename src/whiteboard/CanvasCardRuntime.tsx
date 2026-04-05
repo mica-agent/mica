@@ -35,7 +35,7 @@ const GRID_GAP = 16;
 const FREEFORM_COLS = 3;
 
 // System files ordering
-const SYSTEM_ORDER = ["_goal.goal", "_todo.todo", "_brief.brief", "_log.log"];
+const SEED_CARD_ORDER = ["goal.goal", "todo.todo", "brief.md", "log.md"];
 
 // ── Debounced layout save ───────────────────────────────
 let layoutSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -314,7 +314,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   // ── Partition children into system vs content ───────────
 
   const systemCards = children.filter((c) => c.meta.isSystem);
-  const allContent = children.filter((c) => !c.meta.isSystem && !c.filename.startsWith("_"));
+  const allContent = children.filter((c) => !c.meta.isSystem);
   const diagramCards = allContent.filter((c) => c.meta.cardClass === "mermaid");
   const contentCards = allContent.filter((c) => c.meta.cardClass !== "mermaid");
 
