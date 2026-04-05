@@ -72,6 +72,7 @@ async function startServer(): Promise<string> {
     "--model", MODEL_PATH,
     "--host", "0.0.0.0",
     "--port", String(port),
+    "--jinja",
     "--ctx-size", "32768",
     "--flash-attn", "on",
     "--n-gpu-layers", "999",
