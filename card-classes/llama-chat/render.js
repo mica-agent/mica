@@ -199,79 +199,203 @@ export function onDisconnect(mica) {
   sessions.delete(key);
 }
 
+// Tool definitions for OpenAI-compatible function calling
+const TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "list_files",
+      description: "List all cards/files on the canvas",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read the content of a card/file on the canvas",
+      parameters: { type: "object", properties: { filename: { type: "string", description: "Card directory name (e.g., 'notes.md', 'goal.goal')" } }, required: ["filename"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "Create or update a card/file on the canvas. The file is the primary content file inside the card directory.",
+      parameters: { type: "object", properties: { filename: { type: "string", description: "Card directory name (e.g., 'notes.md')" }, content: { type: "string", description: "File content" } }, required: ["filename", "content"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_card",
+      description: "Create a new card on the canvas. Extension determines the card class (e.g., '.md' for markdown, '.todo' for todo list, '.terminal' for terminal).",
+      parameters: { type: "object", properties: { name: { type: "string", description: "Card name with extension (e.g., 'design-notes.md', 'backend.todo')" } }, required: ["name"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "exec",
+      description: "Run a shell command in the project directory",
+      parameters: { type: "object", properties: { command: { type: "string", description: "Shell command to run" } }, required: ["command"] },
+    },
+  },
+];
+
+// Execute a tool call
+async function executeTool(name, args, mica) {
+  switch (name) {
+    case "list_files": {
+      const entries = await fs.promises.readdir(PROJECT_DIR);
+      const cards = entries.filter(e => !e.startsWith(".") && e !== "workspace" && path.extname(e));
+      return cards.join("\n") || "(no cards)";
+    }
+    case "read_file": {
+      const dir = path.join(PROJECT_DIR, args.filename);
+      try {
+        const files = await fs.promises.readdir(dir);
+        const primary = files.find(f => !f.startsWith("."));
+        if (!primary) return "(empty card)";
+        return await fs.promises.readFile(path.join(dir, primary), "utf-8");
+      } catch {
+        return `Error: card "${args.filename}" not found`;
+      }
+    }
+    case "write_file": {
+      const dir = path.join(PROJECT_DIR, args.filename);
+      try {
+        await fs.promises.mkdir(dir, { recursive: true });
+        const ext = path.extname(args.filename);
+        const primaryNames = { ".md": "document.md", ".todo": "tasks.md", ".mmd": "diagram.mmd", ".txt": "content.txt", ".goal": "goals.md" };
+        const primary = primaryNames[ext] || "content";
+        await fs.promises.writeFile(path.join(dir, primary), args.content, "utf-8");
+        return `Written to ${args.filename}/${primary}`;
+      } catch (e) {
+        return `Error: ${e.message}`;
+      }
+    }
+    case "create_card": {
+      try {
+        const res = await fetch(`http://172.18.0.1:3002/api/projects/${mica.project}/canvases/_root/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: args.name }),
+        });
+        if (res.ok) return `Created card: ${args.name}`;
+        return `Error: ${await res.text()}`;
+      } catch (e) {
+        return `Error: ${e.message}`;
+      }
+    }
+    case "exec": {
+      const result = await mica.exec(args.command);
+      return result.stdout + (result.stderr ? "\nSTDERR: " + result.stderr : "") + `\n(exit ${result.exitCode})`;
+    }
+    default:
+      return `Unknown tool: ${name}`;
+  }
+}
+
+const MAX_TOOL_TURNS = 5;
+
 async function processMessage(session, message, mica) {
   session.busy = true;
 
-  // Broadcast user message
   mica.send({ type: "user", content: message });
   await appendHistory(mica, [{ role: "user", content: message }]);
-
-  // Signal thinking
   mica.send({ type: "thinking" });
 
   try {
     const baseUrl = await getLlamaBaseUrl();
     const context = await buildContext(mica);
 
-    const systemPrompt = `You are a helpful local AI assistant (Llama) working on this project. Be concise and direct. When asked to create content or make changes, do it.
+    const systemPrompt = `You are a helpful local AI assistant (Llama) working on this project. You can read, write, and create cards on the canvas. You can also run shell commands.
 
-${context}`;
+${context}
 
-    // Build OpenAI-format messages from display history
-    // (rebuild each time to keep it fresh; conversation state is display history)
+When asked to create or modify cards, use the tools. Be concise and direct.`;
+
     const displayHistory = await loadHistory(mica);
-    const openaiMessages = [
-      { role: "system", content: systemPrompt },
-    ];
+    const openaiMessages = [{ role: "system", content: systemPrompt }];
+    for (const m of displayHistory.slice(-20)) {
+      if (m.role === "user") openaiMessages.push({ role: "user", content: m.content });
+      else if (m.role === "assistant") openaiMessages.push({ role: "assistant", content: m.content });
+    }
 
-    // Convert display history to OpenAI format (last N messages for context window)
-    const recentHistory = displayHistory.slice(-20);
-    for (const m of recentHistory) {
-      if (m.role === "user") {
-        openaiMessages.push({ role: "user", content: m.content });
-      } else if (m.role === "assistant") {
-        openaiMessages.push({ role: "assistant", content: m.content });
+    let resultText = "";
+    let filesChanged = false;
+
+    // Tool loop
+    for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+      mica.send({ type: "progress", description: turn === 0 ? "Thinking..." : `Tool turn ${turn + 1}...` });
+
+      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "local",
+          messages: openaiMessages,
+          tools: TOOLS,
+          temperature: 0.7,
+          max_tokens: 4096,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`llama-server returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
       }
+
+      const data = await res.json();
+      const choice = data.choices?.[0];
+      const msg = choice?.message;
+
+      if (!msg) break;
+
+      // Add assistant message to conversation
+      openaiMessages.push(msg);
+
+      // Check for tool calls
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          const fn = tc.function;
+          let args = {};
+          try { args = JSON.parse(fn.arguments || "{}"); } catch {}
+
+          mica.send({ type: "progress", description: `${fn.name}(${Object.values(args).join(", ").slice(0, 50)})` });
+
+          const result = await executeTool(fn.name, args, mica);
+          if (fn.name === "write_file" || fn.name === "create_card") filesChanged = true;
+
+          openaiMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: result,
+          });
+        }
+        continue; // Loop back for next turn
+      }
+
+      // No tool calls — this is the final text response
+      resultText = msg.content || "";
+      break;
     }
-
-    // Add the current user message (it's already in display history from appendHistory above,
-    // but we built openaiMessages from the saved history which includes it)
-
-    mica.send({ type: "progress", description: "Calling local LLM..." });
-
-    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "local",
-        messages: openaiMessages,
-        temperature: 0.7,
-        max_tokens: 4096,
-      }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`llama-server returned ${res.status}: ${errText.slice(0, 200)}`);
-    }
-
-    const data = await res.json();
-    const choice = data.choices?.[0];
-    let resultText = choice?.message?.content || "";
 
     if (!resultText.trim()) {
-      resultText = "I wasn't able to generate a response. Please try again.";
+      resultText = filesChanged
+        ? "Done — I made changes to the canvas."
+        : "I wasn't able to generate a response. Please try again.";
     }
 
     mica.send({
       type: "assistant",
       content: resultText,
       agent: "Llama",
-      filesChanged: false,
+      filesChanged,
     });
 
     await appendHistory(mica, [
-      { role: "assistant", content: resultText, agent: "Llama" },
+      { role: "assistant", content: resultText, agent: "Llama", filesChanged },
     ]);
   } catch (err) {
     console.error(`[llama-chat] Error:`, err.message);
