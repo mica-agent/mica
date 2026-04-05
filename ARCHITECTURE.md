@@ -217,7 +217,7 @@ Card classes are Node.js ES module `render.js` files that produce interactive HT
 
 Card classes are **self-describing**: each `render.js` exports a `metadata` object that declares its extension, badge, and other properties. The system scans `card-classes/` directories on startup, loads `render.js` from each, and reads the `metadata` export. There is no separate manifest file — the card class itself is the source of truth for its extension mapping.
 
-See `card-classes/CREATING_CARDS.md` for the full API reference for writing card classes.
+See `card-classes/AUTHORING_CARD_CLASSES.md` for the full API reference for writing card classes.
 
 #### 7.1 Card Types
 
@@ -419,7 +419,7 @@ Canvas card classes use the same mechanism. The `simple-project` class has seed 
 
 After creation, seed files are regular files — editable, deletable, no special treatment.
 
-See `card-classes/CREATING_CARDS.md` for the full API reference.
+See `card-classes/AUTHORING_CARD_CLASSES.md` for the full API reference.
 
 #### 7.10 Agent Context Model
 

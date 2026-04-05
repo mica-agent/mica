@@ -2,14 +2,14 @@ import { readCanvasFile, getAllFilesAsContext } from "../canvasFiles.js";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
-// Load CREATING_CARDS.md once at startup — this is the agent's complete
+// Load AUTHORING_CARD_CLASSES.md once at startup — this is the agent's complete
 // reference for building card classes. Injected into every system prompt
 // so the agent always has it in context (not optional reading via cat).
 let _cardClassDocs = "";
 try {
-  _cardClassDocs = readFileSync(resolve("card-classes/CREATING_CARDS.md"), "utf-8");
+  _cardClassDocs = readFileSync(resolve("card-classes/AUTHORING_CARD_CLASSES.md"), "utf-8");
 } catch {
-  console.warn("[systemPrompt] Could not load CREATING_CARDS.md");
+  console.warn("[systemPrompt] Could not load AUTHORING_CARD_CLASSES.md");
 }
 
 export function getAgentIdentity(canvas: string): string {
