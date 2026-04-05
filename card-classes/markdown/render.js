@@ -90,17 +90,22 @@ export default function render(content, config) {
 
       // Debounced save — write back to file after user stops typing
       let saveTimer = null;
+      let justSaved = false;
       editor.on('change', () => {
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
           const md = editor.getMarkdown();
+          justSaved = true;
           mica.send('save', { content: md });
+          // Reset after file watcher debounce window
+          setTimeout(() => { justSaved = false; }, 1000);
         }, 800);
       });
 
-      // Sync from other windows — refresh when the file changes externally
+      // Sync from other windows — refresh when the file changes externally.
+      // Skip if this window just saved (avoid destroying editor mid-typing).
       const unsub = mica.on('file-changed', (e) => {
-        if (e.filename === mica.filename) mica.refresh();
+        if (e.filename === mica.filename && !justSaved) mica.refresh();
       });
 
       mica.onDestroy(() => {
