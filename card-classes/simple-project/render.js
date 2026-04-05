@@ -143,26 +143,14 @@ export default function render(content, config) {
                 spacer.className = 'toolbar-spacer';
                 buttons.push(spacer);
 
-                // Layout toggle (broadcasts to canvas host)
-                const gridBtn = document.createElement('button');
-                gridBtn.className = 'toolbar-btn';
-                gridBtn.textContent = 'Grid';
-                gridBtn.addEventListener('click', () => {
-                    mica.broadcast('layout-mode', { mode: 'masonry' });
-                    gridBtn.classList.add('toolbar-btn--active');
-                    freeBtn.classList.remove('toolbar-btn--active');
+                // Tidy button — auto-arrange cards in a grid
+                const tidyBtn = document.createElement('button');
+                tidyBtn.className = 'toolbar-btn';
+                tidyBtn.textContent = 'Tidy';
+                tidyBtn.addEventListener('click', () => {
+                    mica.broadcast('tidy-layout', {});
                 });
-
-                const freeBtn = document.createElement('button');
-                freeBtn.className = 'toolbar-btn';
-                freeBtn.textContent = 'Free';
-                freeBtn.addEventListener('click', () => {
-                    mica.broadcast('layout-mode', { mode: 'freeform' });
-                    freeBtn.classList.add('toolbar-btn--active');
-                    gridBtn.classList.remove('toolbar-btn--active');
-                });
-
-                buttons.push(gridBtn, freeBtn);
+                buttons.push(tidyBtn);
 
                 // Append all buttons to toolbar
                 for (const btn of buttons) toolbar.appendChild(btn);

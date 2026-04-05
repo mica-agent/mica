@@ -20,7 +20,6 @@ interface Props {
   onReloadRef?: MutableRefObject<(() => void) | null>;
 }
 
-type LayoutMode = "masonry" | "freeform";
 
 interface CardLayout {
   x: number;
@@ -35,17 +34,15 @@ const GRID_GAP = 16;
 const FREEFORM_COLS = 3;
 
 // System files ordering
-const SEED_CARD_ORDER = ["goal.goal", "todo.todo", "brief.md", "log.md"];
 
 // ── Debounced layout save ───────────────────────────────
 let layoutSaveTimer: ReturnType<typeof setTimeout> | null = null;
 const LAYOUT_SAVE_DELAY = 500;
 
-function debouncedSaveLayout(projectId: string, mode: LayoutMode, layouts: Map<string, CardLayout>) {
+function debouncedSaveLayout(projectId: string, layouts: Map<string, CardLayout>) {
   if (layoutSaveTimer) clearTimeout(layoutSaveTimer);
   layoutSaveTimer = setTimeout(() => {
     saveLayout(projectId, "_root", {
-      mode,
       cards: Object.fromEntries(layouts),
       source: windowId,
     }).catch(() => {});
@@ -63,9 +60,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   const [creatingType, setCreatingType] = useState<"text" | "markdown" | "mermaid" | null>(null);
   const [drawingMode, setDrawingMode] = useState(false);
   const [converting, setConverting] = useState(false);
-  const [renderingFiles, setRenderingFiles] = useState<Set<string>>(new Set());
   const [flashFiles, setFlashFiles] = useState<Set<string>>(new Set());
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("masonry");
+  // Layout is always freeform — no mode toggle needed
   const [cardLayouts, setCardLayouts] = useState<Map<string, CardLayout>>(new Map());
   const layoutInitialized = useRef(false);
   const layoutLoaded = useRef(false);
@@ -104,7 +100,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   useEffect(() => {
     fetchLayout(projectId, "_root").then((data) => {
       const d = data as { mode?: string; cards?: Record<string, CardLayout> };
-      if (d.mode === "freeform") setLayoutMode("freeform");
       if (d.cards) {
         const entries = Object.entries(d.cards) as [string, CardLayout][];
         if (entries.length > 0) {
@@ -184,8 +179,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       if (m.source === windowId) return;
       // Refetch layout from server — apply only, don't save back
       fetchLayout(projectId, "_root").then((data: Record<string, unknown>) => {
-        if (data.mode === "freeform") setLayoutMode("freeform");
-        else if (data.mode === "masonry") setLayoutMode("masonry");
         if (data.cards) {
           const entries = Object.entries(data.cards as Record<string, CardLayout>);
           setCardLayouts(new Map(entries));
@@ -196,18 +189,34 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [projectId, loadProjectCard]);
 
-  // ── Listen for layout-mode broadcast from canvas card class ──
+
+  // ── Tidy layout — auto-arrange cards in a grid ──────────
 
   useEffect(() => {
-    const unsub = on("layout-mode", (msg) => {
-      const m = msg as { mode?: string };
-      if (m.mode === "masonry" || m.mode === "freeform") {
-        setLayoutMode(m.mode);
-        debouncedSaveLayout(projectId, m.mode, cardLayouts);
-      }
+    const unsub = on("tidy-layout", () => {
+      const sorted = [...allNonChat].sort((a, b) => {
+        // Seed cards first, then alphabetical
+        if (a.meta.isSystem && !b.meta.isSystem) return -1;
+        if (!a.meta.isSystem && b.meta.isSystem) return 1;
+        return a.filename.localeCompare(b.filename);
+      });
+      const next = new Map<string, CardLayout>();
+      sorted.forEach((card, i) => {
+        const col = i % FREEFORM_COLS;
+        const row = Math.floor(i / FREEFORM_COLS);
+        const existing = cardLayouts.get(card.filename);
+        next.set(card.filename, {
+          x: col * (DEFAULT_CARD_W + GRID_GAP),
+          y: row * (DEFAULT_CARD_H + GRID_GAP),
+          w: existing?.w ?? DEFAULT_CARD_W,
+          h: existing?.h ?? DEFAULT_CARD_H,
+        });
+      });
+      setCardLayouts(next);
+      debouncedSaveLayout(projectId, next);
     });
     return unsub;
-  }, [projectId, cardLayouts]);
+  }, [projectId, allNonChat, cardLayouts]);
 
   // ── File operations ─────────────────────────────────────
 
@@ -248,11 +257,8 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   const allNonChat = children;
 
+  // Auto-position new cards that don't have layout data yet
   useEffect(() => {
-    if (layoutMode !== "freeform") {
-      layoutInitialized.current = false;
-      return;
-    }
     if (!layoutInitialized.current || allNonChat.length !== cardLayouts.size) {
       const existing = new Map(cardLayouts);
       let nextIndex = existing.size;
@@ -272,45 +278,33 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       setCardLayouts(existing);
       layoutInitialized.current = true;
     }
-  }, [layoutMode, allNonChat.length]);
+  }, [allNonChat.length]);
 
   const handleCardDragEnd = useCallback((filename: string, x: number, y: number) => {
     setCardLayouts((prev) => {
       const next = new Map(prev);
       const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
       next.set(filename, { ...layout, x, y });
-      debouncedSaveLayout(projectId, layoutMode, next);
+      debouncedSaveLayout(projectId, next);
       return next;
     });
-  }, [projectId, layoutMode]);
+  }, [projectId]);
 
   const handleCardResize = useCallback((filename: string, w: number, h: number) => {
     setCardLayouts((prev) => {
       const next = new Map(prev);
       const layout = next.get(filename) ?? { x: 0, y: 0, w: DEFAULT_CARD_W, h: DEFAULT_CARD_H };
       next.set(filename, { ...layout, w, h });
-      debouncedSaveLayout(projectId, layoutMode, next);
+      debouncedSaveLayout(projectId, next);
       return next;
     });
-  }, [projectId, layoutMode]);
+  }, [projectId]);
 
   // Layout persistence happens explicitly from user actions
   // (drag, resize, layout toggle) — not from a React effect.
   // This prevents save-back loops when applying remote layout syncs.
 
-  // ── Partition children into system vs content ───────────
-
-  const systemCards = children.filter((c) => c.meta.isSystem);
-  const allContent = children.filter((c) => !c.meta.isSystem);
-  const diagramCards = allContent.filter((c) => c.meta.cardClass === "mermaid");
-  const contentCards = allContent.filter((c) => c.meta.cardClass !== "mermaid");
-
-  // Order system cards
-  const orderedSystem = SEED_CARD_ORDER
-    .map((name) => systemCards.find((c) => c.filename === name))
-    .filter((c): c is RenderedCard => c != null);
-  const extraSystem = systemCards.filter((c) => !SEED_CARD_ORDER.includes(c.filename));
-  const allSystem = [...orderedSystem, ...extraSystem];
+  // All children rendered in freeform layout — no partitioning needed
 
   // ── Render ──────────────────────────────────────────────
 
@@ -338,36 +332,12 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
           </div>
         )}
 
-        {/* Toolbar is rendered by the canvas card class (simple-project/render.js) */}
-
-        {layoutMode === "masonry" ? (
-          <>
-            {/* System cards */}
-            {allSystem.length > 0 && (
-              <div className="wb-system-cards">
-                {allSystem.map((card) => (
-                  <FileCard
-                    key={card.filename}
-                    filename={card.filename}
-                    html={card.html}
-                    exports={card.exports}
-                    dependencies={card.dependencies}
-                    meta={card.meta}
-                    projectId={projectId}
-                    canvasId="_root"
-                    canvasColor={canvasColor}
-                    rendering={renderingFiles.has(card.filename)}
-                    flash={flashFiles.has(card.filename)}
-                    onEdit={() => handleEdit(card.filename)}
-                    onDelete={() => handleDelete(card.filename)}
-                    onExpand={() => setExpandedCard(card)}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Diagram cards — full width, outside masonry */}
-            {diagramCards.map((card) => (
+        {/* Freeform layout — all cards absolutely positioned */}
+        <div className="wb-freeform">
+          {allNonChat.map((card) => {
+            const layout = cardLayouts.get(card.filename);
+            if (!layout) return null;
+            return (
               <FileCard
                 key={card.filename}
                 filename={card.filename}
@@ -378,74 +348,23 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
                 projectId={projectId}
                 canvasId="_root"
                 canvasColor={canvasColor}
-                rendering={renderingFiles.has(card.filename)}
+                resizable
+                cardStyle={{
+                  left: layout.x,
+                  top: layout.y,
+                  width: layout.w,
+                  height: layout.h,
+                }}
                 flash={flashFiles.has(card.filename)}
                 onEdit={() => handleEdit(card.filename)}
                 onDelete={() => handleDelete(card.filename)}
                 onExpand={() => setExpandedCard(card)}
+                onDragEnd={(x, y) => handleCardDragEnd(card.filename, x, y)}
+                onResize={(w, h) => handleCardResize(card.filename, w, h)}
               />
-            ))}
-
-            {/* Content cards — masonry layout */}
-            {contentCards.length > 0 && (
-              <div className="wb-masonry">
-                {contentCards.map((card) => (
-                  <FileCard
-                    key={card.filename}
-                    filename={card.filename}
-                    html={card.html}
-                    exports={card.exports}
-                    dependencies={card.dependencies}
-                    meta={card.meta}
-                    projectId={projectId}
-                    canvasId="_root"
-                    canvasColor={canvasColor}
-                    rendering={renderingFiles.has(card.filename)}
-                    flash={flashFiles.has(card.filename)}
-                    onEdit={() => handleEdit(card.filename)}
-                    onDelete={() => handleDelete(card.filename)}
-                    onExpand={() => setExpandedCard(card)}
-                  />
-                ))}
-              </div>
-            )}
-          </>
-        ) : (
-          /* Freeform layout — all cards absolutely positioned */
-          <div className="wb-freeform">
-            {allNonChat.map((card) => {
-              const layout = cardLayouts.get(card.filename);
-              if (!layout) return null;
-              return (
-                <FileCard
-                  key={card.filename}
-                  filename={card.filename}
-                  html={card.html}
-                  exports={card.exports}
-                  dependencies={card.dependencies}
-                  meta={card.meta}
-                  projectId={projectId}
-                  canvasId="_root"
-                  canvasColor={canvasColor}
-                  resizable
-                  cardStyle={{
-                    left: layout.x,
-                    top: layout.y,
-                    width: layout.w,
-                    height: layout.h,
-                  }}
-                  rendering={renderingFiles.has(card.filename)}
-                  flash={flashFiles.has(card.filename)}
-                  onEdit={() => handleEdit(card.filename)}
-                  onDelete={() => handleDelete(card.filename)}
-                  onExpand={() => setExpandedCard(card)}
-                  onDragEnd={(x, y) => handleCardDragEnd(card.filename, x, y)}
-                  onResize={(w, h) => handleCardResize(card.filename, w, h)}
-                />
-              );
-            })}
-          </div>
-        )}
+            );
+          })}
+        </div>
 
         {!loading && children.length === 0 && !parentCard && (
           <div className="wb-empty">
