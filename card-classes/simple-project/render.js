@@ -129,7 +129,11 @@ export default function render(content, config) {
                     btn.addEventListener('click', () => {
                         const prefix = name.split('-')[0].slice(0, 6);
                         const cardName = prefix + '-' + Date.now().toString(36) + meta.extension;
-                        mica.createCard(cardName);
+                        fetch('/api/projects/' + mica.project + '/canvases/_root/cards', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name: cardName }),
+                        }).catch(err => console.error('[project] Card creation failed:', err));
                     });
                     buttons.push(btn);
                 }
