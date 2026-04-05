@@ -100,7 +100,10 @@ export default function render(content, config) {
         if (e.filename === mica.filename && !justSaved) {
           mica.call('getContent', {}).then((result) => {
             if (result && result.content !== editor.getMarkdown()) {
+              const el = editorEl.querySelector('.toastui-editor-ww-container .ProseMirror');
+              const scroll = el ? el.scrollTop : 0;
               editor.setMarkdown(result.content, false);
+              if (el) requestAnimationFrame(() => { el.scrollTop = scroll; });
             }
           }).catch(() => {});
         }
