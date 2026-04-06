@@ -38,7 +38,7 @@ export default function render(content, config) {
     }
     .card-markdown-editor #editor {
       flex: 1;
-      min-height: 0;
+      min-height: 150px;
       overflow: hidden;
     }
     .card-markdown-editor .toastui-editor-defaultUI {
@@ -94,11 +94,14 @@ export default function render(content, config) {
         });
       }
 
-      // Force editor to recalculate when card gets its final size
+      // Force editor to recalculate when card gets its final size.
+      // Toast UI's '100%' height doesn't resolve until the container has a concrete height.
+      // Use ResizeObserver to set pixel height from the actual container size.
       const ro = new ResizeObserver(() => {
-        editor.setHeight('100%');
+        const h = editorEl.clientHeight;
+        if (h > 0) editor.setHeight(h + 'px');
       });
-      ro.observe(container);
+      ro.observe(editorEl);
       mica.onDestroy(() => ro.disconnect());
 
       // Debounced save
