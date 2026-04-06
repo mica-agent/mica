@@ -388,6 +388,10 @@ const fileWatcher = new FileWatcher();
 // Container runtime management — one per project, started lazily
 const containerRuntimes = new Map<string, ContainerRuntime>();
 
+// Track which card caused a file write — used to populate `source` in file-changed events.
+// Key: "project/filename", Value: cardName that wrote it. Cleared after event fires.
+const writeSourceTracker = new Map<string, string>();
+
 async function getOrCreateContainerRuntime(projectId: string): Promise<ContainerRuntime> {
   let runtime = containerRuntimes.get(projectId);
   if (runtime) return runtime;
@@ -441,6 +445,7 @@ function createMicaBridge(project: string, canvas: string, filename: string): Mi
       return readCardFile(project, canvas, filename, fname);
     },
     async write(fname: string, content: string) {
+      writeSourceTracker.set(`${project}/${fname}`, filename);
       await writeCardFile(project, canvas, filename, fname, content);
     },
     async exec(command: string, opts?: { cwd?: string; timeout?: number }) {
@@ -458,6 +463,10 @@ function createMicaBridge(project: string, canvas: string, filename: string): Mi
     },
     async createCard(name: string) {
       await createCard(project, canvas, name);
+    },
+    on(_event: string, _cb: (data: unknown) => void) {
+      // Host-mode bridge: file-changed events delivered via container runtime only
+      return () => {};
     },
   };
 }
@@ -840,6 +849,21 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
       canvas: event.canvas,
       filename: event.filename,
     });
+  }
+
+  // Deliver file-changed event to server-side card sessions (for reactive agents).
+  // The source is the card that wrote the file, or "user" for direct edits.
+  const sourceKey = `${event.project}/${event.filename}`;
+  const source = writeSourceTracker.get(sourceKey) || "user";
+  writeSourceTracker.delete(sourceKey);
+
+  const runtime = containerRuntimes.get(event.project);
+  if (runtime) {
+    // Notify all active card sessions in this project
+    const sessions = channelManager.getProjectSessions(event.project, event.canvas);
+    for (const cardName of sessions) {
+      runtime.sendFileChanged(cardName, { filename: event.filename, source });
+    }
   }
 
 });

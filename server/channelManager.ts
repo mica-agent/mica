@@ -356,6 +356,21 @@ export class ChannelManager {
     return this.sessions.size;
   }
 
+  /**
+   * Get all active session card filenames for a project/canvas.
+   * Used to deliver file-changed events to card sessions.
+   */
+  getProjectSessions(project: string, canvas: string): string[] {
+    const prefix = `${project}/${canvas}/`;
+    const result: string[] = [];
+    for (const [key, session] of this.sessions) {
+      if (key.startsWith(prefix) && session.state !== "destroyed") {
+        result.push(session.filename);
+      }
+    }
+    return result;
+  }
+
   // ── Internal ───────────────────────────────────────────
 
   private destroySessionByKey(key: string): void {

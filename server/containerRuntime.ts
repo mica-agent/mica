@@ -273,6 +273,18 @@ export class ContainerRuntime {
     });
   }
 
+  /** Deliver a file-changed event to a card session in the container. Fire-and-forget. */
+  sendFileChanged(cardName: string, event: { filename: string; source: string }): void {
+    if (!this.process || !this.running) return;
+    // Fire-and-forget — no request/response needed
+    this.sendRaw({ type: "fileChanged", cardName, event });
+  }
+
+  private sendRaw(msg: Record<string, unknown>): void {
+    if (!this.process?.stdin?.writable) return;
+    this.process.stdin.write(JSON.stringify(msg) + "\n");
+  }
+
   async onDestroy(
     className: string,
     classPath: string,

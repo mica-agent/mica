@@ -46,6 +46,8 @@ export interface MicaBridge {
   log(message: string): Promise<void>;
   /** Create a new card instance on the canvas. Extension determines class. Seeds copied automatically. */
   createCard(name: string): Promise<void>;
+  /** Subscribe to events (e.g. 'file-changed'). Returns unsubscribe function. */
+  on(event: string, cb: (data: unknown) => void): () => void;
   /** Project and canvas identifiers */
   project: string;
   canvas: string;

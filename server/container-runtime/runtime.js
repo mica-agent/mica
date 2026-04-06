@@ -186,6 +186,22 @@ function createBridge(cardName, replyClientId) {
     async createCard(name) {
       sendToHost({ type: "bridge", cardName, method: "createCard", data: { name } });
     },
+
+    on(event, cb) {
+      // Register event listener — stored per card session
+      const session = cardSessions.get(cardName);
+      if (session) {
+        if (!session.listeners) session.listeners = {};
+        if (!session.listeners[event]) session.listeners[event] = [];
+        session.listeners[event].push(cb);
+      }
+      return () => {
+        const s = cardSessions.get(cardName);
+        if (s?.listeners?.[event]) {
+          s.listeners[event] = s.listeners[event].filter(fn => fn !== cb);
+        }
+      };
+    },
   };
 }
 
@@ -298,6 +314,20 @@ async function handleMessage(msg) {
         moduleCache.clear();
         process.stderr.write(`[runtime] Invalidated all classes\n`);
         sendResult(id, null);
+        return;
+      }
+
+      case "fileChanged": {
+        // Deliver file-changed event to card session listeners
+        const session = cardSessions.get(msg.cardName);
+        if (session?.listeners?.["file-changed"]) {
+          for (const cb of session.listeners["file-changed"]) {
+            try { cb(msg.event); } catch (e) {
+              process.stderr.write(`[runtime] file-changed listener error for ${msg.cardName}: ${e.message}\n`);
+            }
+          }
+        }
+        // No result needed — fire-and-forget
         return;
       }
 

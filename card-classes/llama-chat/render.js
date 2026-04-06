@@ -176,7 +176,6 @@ export async function onConnect(mica, args) {
   sessions.set(key, {
     busy: false,
     queue: [],
-    // OpenAI-format conversation history (system + user/assistant messages)
     conversation: [],
   });
 
