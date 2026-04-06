@@ -343,6 +343,7 @@ function resolvePrimaryFile(cardName) {
 }
 
 async function executeTool(name, args, mica) {
+  if (!args) args = {};
   switch (name) {
     case "list_files": {
       const entries = await fs.promises.readdir(PROJECT_DIR);
@@ -482,8 +483,13 @@ When asked to create or modify cards, use the tools. Be concise and direct.`;
 
           mica.send({ type: "progress", description: `${fn.name}(${Object.values(args).join(", ").slice(0, 50)})` });
 
-          const result = await executeTool(fn.name, args, mica);
-          if (fn.name === "write_file" || fn.name === "create_card") filesChanged = true;
+          let result;
+          try {
+            result = await executeTool(fn.name, args, mica);
+          } catch (toolErr) {
+            result = `Error: ${toolErr.message}`;
+          }
+          if (fn.name === "write_file" || fn.name === "create_card" || fn.name === "write_to_path") filesChanged = true;
 
           openaiMessages.push({
             role: "tool",
