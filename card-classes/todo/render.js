@@ -1,32 +1,8 @@
 /**
- * Todo card class — interactive to-do list with assignments, priorities, and agent integration.
+ * Todo card class — interactive to-do list with assignments and priorities.
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
-
-export const metadata = { extension: ".todo", badge: "TODO", primaryFile: "tasks.md", seed: true, defaultTitle: "To Do" };
-
-async function agentChat(mica, message) {
-  let resultText = "";
-  for await (const evt of query({ prompt: message, options: {
-    systemPrompt: "You are a helpful assistant. Be concise.",
-    tools: ["Bash", "Read", "Write", "Edit"],
-    model: "claude-sonnet-4-6",
-    maxTurns: 5,
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-  }})) {
-    if (evt.type === "assistant" && evt.message?.content) {
-      for (const block of evt.message.content) {
-        if (block.type === "text" && block.text) resultText = block.text;
-      }
-    }
-    if (evt.type === "result" && "result" in evt) {
-      resultText = evt.result || resultText;
-    }
-  }
-  return { message: resultText, filesChanged: false };
-}
+export const metadata = { extension: ".todo", badge: "TODO", primaryFile: "tasks.md", defaultTitle: "To Do" };
 
 const PRIORITIES = ["high", "medium", "low"];
 
@@ -171,9 +147,7 @@ export default function render(content, config) {
             <button class="todo-assign-btn todo-assign-custom${customActive}" data-index="${item.index}" data-assignee="custom" title="Assign to...">${customLabel}</button>
         </span>
         <span class="todo-text">${item.text}</span>
-        <span class="todo-actions">
-            <button class="todo-btn todo-btn-discuss" data-index="${item.index}" title="Discuss with agent">&#x1f4ac;</button>
-        </span>
+        <span class="todo-actions"></span>
     </li>`;
   }
 
@@ -280,33 +254,7 @@ export default function render(content, config) {
                     assignee = val.trim().replace('@', '');
                 }
 
-                const group = btn.closest('.todo-assign-group');
-                if (assignee === 'agent') {
-                    group.querySelectorAll('.todo-assign-btn').forEach(b => b.disabled = true);
-                    const agentBtn = group.querySelector('.todo-assign-agent');
-                    agentBtn.textContent = '\u231b';
-                    agentBtn.title = 'Agent is evaluating...';
-                }
-
                 mica.call('reassign', { index: idx, assignee: assignee }).catch(() => {});
-            });
-        });
-
-        container.querySelectorAll('.todo-btn-discuss').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                btn.textContent = '...';
-                btn.disabled = true;
-                mica.call('discuss', { index: parseInt(btn.dataset.index) }).then(result => {
-                    btn.textContent = '\ud83d\udcac';
-                    btn.disabled = false;
-                    if (result && result.message) {
-                        alert('Agent says:\\n\\n' + result.message);
-                    }
-                }).catch(() => {
-                    btn.textContent = '\ud83d\udcac';
-                    btn.disabled = false;
-                });
             });
         });
 
@@ -376,32 +324,10 @@ export async function reassign(content, args, mica) {
 
   if (index >= 0 && index < items.length) {
     items[index].assignee = assignee;
-    const newContent = rebuildContent(items, otherLines);
-    await mica.write('tasks.md', newContent);
-
-    if (assignee === "agent") {
-      const item = items[index];
-      const response = await agentChat(mica,
-        `A task has been assigned to you from the to-do list: "${item.text}"\n\n` +
-        `Priority: ${item.priority || "not set"}\n` +
-        `Section: ${item.section}\n\n` +
-        `Please evaluate this task:\n` +
-        `1. If you can do it now using your tools (write files, create artifacts, etc.), DO IT immediately.\n` +
-        `2. If it's blocked or needs human input, move it to the Blocked section in _todo.todo and explain what's needed.\n` +
-        `3. When done, mark it complete in _todo.todo.\n\n` +
-        `Take action \u2014 don't just discuss.`
-      );
-      return {
-        ok: true,
-        agentActed: true,
-        message: response?.message || "",
-        filesChanged: response?.filesChanged || false,
-      };
-    }
-  } else {
-    const newContent = rebuildContent(items, otherLines);
-    await mica.write('tasks.md', newContent);
   }
+
+  const newContent = rebuildContent(items, otherLines);
+  await mica.write('tasks.md', newContent);
 
   return { ok: true };
 }
@@ -433,21 +359,3 @@ export async function add_item(content, args, mica) {
   return { ok: true };
 }
 
-export async function discuss(content, args, mica) {
-  const index = args.index ?? -1;
-  const { items } = parseItems(content);
-
-  if (index >= 0 && index < items.length) {
-    const item = items[index];
-    const prefix = item.assignee ? `@${item.assignee} ` : "";
-    const taskText = `${prefix}${item.text}`;
-    const response = await agentChat(mica,
-      `Let's discuss this task from the to-do list: "${taskText}". ` +
-      `What's the best approach? Any blockers or dependencies I should know about? ` +
-      `Keep it brief \u2014 2-3 sentences.`
-    );
-    return { message: response?.message || "No response from agent." };
-  }
-
-  return { message: "Item not found." };
-}
