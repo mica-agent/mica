@@ -206,10 +206,10 @@ export async function onConnect(mica, args) {
 
       let message;
       if (hasTodo) {
-        message = `[Canvas update] todo.todo was updated. Read it now with read_file and check for tasks assigned to @agent. If you have assigned tasks, do them immediately using your tools.`;
+        message = `[Canvas update] todo.todo was updated. Use read_file to read todo.todo and look for tasks assigned to @agent. If you find any, do them now.`;
       } else {
         const summary = filenames.join(', ');
-        message = `[Canvas update] ${summary} changed. Acknowledge briefly unless action is clearly needed.`;
+        message = `[Canvas update] ${summary} changed. Check if any action is needed.`;
       }
 
       // Process through normal message pipeline
