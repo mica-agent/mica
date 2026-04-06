@@ -115,6 +115,8 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
   }, [specOriginal, defaultBriefOriginal, briefOriginal]);
 
   const handleExpandClick = useCallback((e: React.MouseEvent) => {
+    // Suppress if card was just dragged — the drag handler adds/removes wb-card--dragging
+    if (cardRef.current?.dataset.justDragged) return;
     e.stopPropagation();
     onExpand();
   }, [onExpand]);

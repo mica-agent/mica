@@ -198,6 +198,9 @@ export default function render(content, config) {
                 document.removeEventListener('pointerup', onUp);
                 card.classList.remove('wb-card--dragging');
                 if (!moved) return;
+                // Suppress click-to-expand after drag
+                card.dataset.justDragged = '1';
+                setTimeout(function() { delete card.dataset.justDragged; }, 0);
                 var x = Math.max(0, origLeft + ev.clientX - startX);
                 var y = Math.max(0, origTop + ev.clientY - startY);
                 var name = card.getAttribute('data-filename');
