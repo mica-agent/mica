@@ -6,8 +6,9 @@ import { spawn, type ChildProcess } from "child_process";
 
 const LLAMA_SERVER_BIN = "/usr/local/bin/llama-server";
 const DEFAULT_PORT = 8012;
-const MODEL_PATH = process.env.MODEL_PATH ||
-  "/home/vscode/.cache/llama.cpp/Qwen3-Coder-Next-MXFP4_MOE.gguf";
+const MODEL_PATH = process.env.MODEL_PATH || "";
+const HF_REPO = process.env.HF_REPO || "unsloth/Qwen3-Coder-Next-GGUF";
+const HF_FILE = process.env.HF_FILE || "Qwen3-Coder-Next-Q4_K_M.gguf";
 
 let serverProcess: ChildProcess | null = null;
 let serverPort: number = DEFAULT_PORT;
@@ -65,11 +66,16 @@ async function startServer(): Promise<string> {
   const port = DEFAULT_PORT;
   serverPort = port;
 
+  // Model can be a local path or a HuggingFace repo+file (auto-downloaded)
+  const modelArgs = MODEL_PATH
+    ? ["--model", MODEL_PATH]
+    : ["-hfr", HF_REPO, "-hff", HF_FILE];
+
   console.log(`[llama-server] Starting on port ${port}...`);
-  console.log(`[llama-server] Model: ${MODEL_PATH}`);
+  console.log(`[llama-server] Model: ${MODEL_PATH || `${HF_REPO}/${HF_FILE}`}`);
 
   const proc = spawn(LLAMA_SERVER_BIN, [
-    "--model", MODEL_PATH,
+    ...modelArgs,
     "--host", "0.0.0.0",
     "--port", String(port),
     "--jinja",
