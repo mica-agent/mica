@@ -86,13 +86,15 @@ export default function render(content, config) {
         ],
       });
 
-      // Restore scroll position after editor init
-      if (scrollParent) {
-        requestAnimationFrame(() => {
+      // Restore scroll position and force editor layout after init
+      requestAnimationFrame(() => {
+        if (scrollParent) {
           scrollParent.scrollLeft = scrollX;
           scrollParent.scrollTop = scrollY;
-        });
-      }
+        }
+        // Force Toast UI to recalculate its height
+        editor.setHeight('100%');
+      });
 
       // Debounced save
       let saveTimer = null;
