@@ -86,15 +86,20 @@ export default function render(content, config) {
         ],
       });
 
-      // Restore scroll position and force editor layout after init
-      requestAnimationFrame(() => {
-        if (scrollParent) {
+      // Restore scroll position after init
+      if (scrollParent) {
+        requestAnimationFrame(() => {
           scrollParent.scrollLeft = scrollX;
           scrollParent.scrollTop = scrollY;
-        }
-        // Force Toast UI to recalculate its height
+        });
+      }
+
+      // Force editor to recalculate when card gets its final size
+      const ro = new ResizeObserver(() => {
         editor.setHeight('100%');
       });
+      ro.observe(container);
+      mica.onDestroy(() => ro.disconnect());
 
       // Debounced save
       let saveTimer = null;
