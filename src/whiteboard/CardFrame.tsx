@@ -46,14 +46,8 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
     return () => clearTimeout(timer);
   }, [html]);
 
-  const [hasBrief, setHasBrief] = useState<boolean | null>(null);
-
-  // Check if brief exists on mount
-  useEffect(() => {
-    readCardInternalFile(projectId, canvasId, filename, "brief.md")
-      .then(() => setHasBrief(true))
-      .catch(() => setHasBrief(false));
-  }, [projectId, canvasId, filename]);
+  // Only show flip button for interactive cards (they have stream handlers = likely have briefs)
+  const hasBrief = exportFns.length > 0;
 
   // Load brief content when flipped
   useEffect(() => {
@@ -66,7 +60,6 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
   const handleFlip = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     if (flipped && briefDirty) {
-      // Flipping back with unsaved changes — revert
       setBriefContent(briefOriginal);
       setBriefDirty(false);
     }

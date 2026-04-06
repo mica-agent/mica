@@ -137,10 +137,47 @@ function describeToolUse(name, input) {
 
 export async function onConnect(mica, args) {
   const key = sessionKey(mica);
-  sessions.set(key, {
+  const session = {
     busy: false,
     queue: [],
     sessionId: undefined,
+    fileChangeTimer: null,
+    pendingChanges: [],
+  };
+  sessions.set(key, session);
+
+  // Subscribe to sibling card changes — debounce and batch
+  mica.on('file-changed', (event) => {
+    if (event.source === mica.filename) return;
+    if (event.filename.startsWith('.')) return;
+    if (event.filename === 'log.md') return;
+    if (event.filename.endsWith('.llama-chat') || event.filename.endsWith('.claude-chat')) return;
+    if (session.busy) return;
+
+    session.pendingChanges.push(event);
+    if (session.fileChangeTimer) clearTimeout(session.fileChangeTimer);
+    session.fileChangeTimer = setTimeout(() => {
+      const changes = [...session.pendingChanges];
+      session.pendingChanges = [];
+      if (changes.length === 0) return;
+
+      const filenames = changes.map(c => c.filename);
+      const hasTodo = filenames.includes('todo.todo');
+
+      let message;
+      if (hasTodo) {
+        message = `[Canvas update] todo.todo was updated. Read it and check for tasks assigned to @agent. If you find any, do them now.`;
+      } else {
+        const summary = filenames.join(', ');
+        message = `[Canvas update] ${summary} changed. Check if any action is needed.`;
+      }
+
+      if (session.busy) {
+        session.queue.push(message);
+      } else {
+        processMessage(session, message, mica);
+      }
+    }, 3000);
   });
 
   const messages = await loadHistory(mica);
