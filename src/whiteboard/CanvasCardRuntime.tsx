@@ -70,33 +70,25 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Find freeform container after card class renders ────
 
+  // Find #canvas-freeform after CardRuntime injects HTML.
+  // Uses a stable interval that clears once found.
   useEffect(() => {
-    if (!parentCard || !containerRef.current) return;
+    if (!parentCard) return;
 
-    const check = () => {
+    // Check immediately
+    const el = containerRef.current?.querySelector("#canvas-freeform");
+    if (el) { setFreeformEl(el as HTMLElement); return; }
+
+    // Poll until found (CardRuntime injects async after deps load)
+    const interval = setInterval(() => {
       const el = containerRef.current?.querySelector("#canvas-freeform");
       if (el) {
         setFreeformEl(el as HTMLElement);
-        return true;
+        clearInterval(interval);
       }
-      return false;
-    };
+    }, 50);
 
-    if (check()) return;
-
-    // Watch for card class HTML injection
-    const obs = new MutationObserver(() => { if (check()) obs.disconnect(); });
-    obs.observe(containerRef.current, { childList: true, subtree: true });
-
-    // Fallback: poll briefly in case MutationObserver misses the injection
-    let retries = 0;
-    const poll = () => {
-      if (check()) { obs.disconnect(); return; }
-      if (++retries < 20) requestAnimationFrame(poll);
-    };
-    requestAnimationFrame(poll);
-
-    return () => obs.disconnect();
+    return () => clearInterval(interval);
   }, [parentCard]);
 
   // ── Real-time updates via WebSocket ─────────────────────
