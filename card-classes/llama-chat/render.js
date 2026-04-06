@@ -251,7 +251,13 @@ export async function onMessage(msg, mica) {
     return;
   }
 
-  await processMessage(session, message, mica);
+  try {
+    await processMessage(session, message, mica);
+  } catch (err) {
+    console.error(`[llama-chat] processMessage error: ${err.message}`);
+    mica.send({ type: "error", error: err.message });
+    session.busy = false;
+  }
 }
 
 export function onDestroy(mica) {
