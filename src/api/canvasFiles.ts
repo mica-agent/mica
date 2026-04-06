@@ -21,7 +21,6 @@ export interface CardMeta {
   cardClass: string;
   title: string;
   badge: string;
-  isSystem: boolean;
   config: Record<string, string>;
 }
 

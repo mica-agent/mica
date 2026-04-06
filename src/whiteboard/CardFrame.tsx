@@ -26,7 +26,7 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
   const cardRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
 
-  const cardClass = (meta.isSystem || meta.cardClass === "mermaid") ? `wb-card--${meta.cardClass}` : "";
+  const cardClass = meta.cardClass === "mermaid" ? `wb-card--${meta.cardClass}` : "";
   const isInteractive = exportFns.length > 0;
   const isResized = cardRef.current?.style.height != null && cardRef.current?.style.height !== "";
 
@@ -58,9 +58,6 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
       >
         <span className="wb-card-type">{meta.badge}</span>
         <span className="wb-card-title">{meta.title}</span>
-        {meta.isSystem && meta.cardClass !== "todo" && meta.cardClass !== "chat" && (
-          <span className="wb-card-system-hint">editable by you &amp; the agent</span>
-        )}
         <div className="wb-card-actions">
           {isInteractive && (
             <button onClick={(e) => { e.stopPropagation(); onExpand(); }} title="Expand" className="wb-card-btn">
@@ -70,11 +67,9 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
           <button onClick={(e) => { e.stopPropagation(); onEdit(); }} title="Edit" className="wb-card-btn">
             &#9998;
           </button>
-          {!meta.isSystem && (
-            <button onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Delete" className="wb-card-btn wb-card-btn--danger">
-              &times;
-            </button>
-          )}
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Delete" className="wb-card-btn wb-card-btn--danger">
+            &times;
+          </button>
         </div>
       </div>
       <div

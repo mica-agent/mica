@@ -13,7 +13,7 @@ import {
   readCanvasFile,
   writeCanvasFile,
   listFiles,
-} from "./canvasFiles.js";
+} from "./cardFiles.js";
 import { getProjectPath } from "./projectConnection.js";
 
 // ── Types ──────────────────────────────────────────────────
@@ -22,7 +22,6 @@ export interface CardMeta {
   cardClass: string;
   title: string;
   badge: string;
-  isSystem: boolean;
   network: boolean;
   config: Record<string, unknown>;
 }
@@ -189,16 +188,10 @@ export class CardManager {
         .replace(/\b\w/g, (c) => c.toUpperCase());
     }
 
-    const isSystem =
-      manifestEntry?.system ||
-      filename.startsWith("_") ||
-      false;
-
     return {
       cardClass,
       title,
       badge: manifestEntry?.badge || cardClass.toUpperCase(),
-      isSystem,
       network: manifestEntry?.network === true,
       config: metadata as Record<string, unknown>,
     };

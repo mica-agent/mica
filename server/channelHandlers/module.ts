@@ -150,7 +150,7 @@ async function createHostHandler(
       }
     },
     async createCard(name: string) {
-      const { createCard: cc } = await import("../canvasFiles.js");
+      const { createCard: cc } = await import("../cardFiles.js");
       await cc(ctx.project, ctx.canvas, name);
     },
   };

@@ -1,14 +1,11 @@
 // Mica AI Team Server
-// Express server bridging the frontend to Claude Agent SDK-powered canvas agents.
-// Auth: Uses Claude Code subscription (Pro/Max) — no API key needed.
+// Express + WebSocket server. Card classes own all behavior.
+// The server provides pipes: file I/O, channels, container lifecycle.
 
 import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { convertDrawingToMermaid } from "./drawingConverter.js";
-import type { CanvasId } from "./agentCore/types.js";
-import type { AgentResponse } from "./agentCore/types.js";
 import {
   listFiles,
   readCanvasFile,
@@ -21,7 +18,7 @@ import {
   deleteProject,
   getProjectConfig,
   validateProjectCanvas,
-} from "./canvasFiles.js";
+} from "./cardFiles.js";
 import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath, getCanvasDir } from "./projectConnection.js";
@@ -40,21 +37,14 @@ import {
   getContainerLogs,
   setContainerExecutor,
 } from "./projectContainer.js";
-import { initializeProjects, seedNewProject } from "./seedCanvases.js";
+import { initializeProjects, seedNewProject } from "./seedCard.js";
 import { CardManager } from "./cardManager.js";
 import type { MicaBridge } from "./moduleLoader.js";
 import { ContainerRuntime } from "./containerRuntime.js";
 import { FileWatcher } from "./fileWatcher.js";
 import { SandboxManager } from "./projectSandbox.js";
-import { ReactiveAgent } from "./reactiveAgent.js";
-import { setLocalAgentWriteHook } from "./localAgent.js";
 import { stopLlamaServer } from "./llamaServer.js";
-import { setExecutor as setSubagentExecutor } from "./agentProviders/claudeCode.js";
 import { ProjectExecutor } from "./projectExecutor.js";
-import { ClaudeProvider } from "./agentProviders/claude.js";
-import { LocalProvider } from "./agentProviders/local.js";
-import { registerProvider, getProvider } from "./agentCore/registry.js";
-import { resolveAgentProvider } from "./agentCore/config.js";
 import { ChannelManager } from "./channelManager.js";
 import { createModuleHandlerFactory } from "./channelHandlers/module.js";
 
@@ -365,7 +355,7 @@ app.get("/api/projects/:project/card", async (req, res) => {
     let projectContent = "";
     try {
       const canvasDir = await getCanvasDir(project, "_root");
-      const { resolveCardClassFromFilename, getPrimaryFile } = await import("./canvasFiles.js");
+      const { resolveCardClassFromFilename, getPrimaryFile } = await import("./cardFiles.js");
       const cardClass = resolveCardClassFromFilename(canvasFilename);
       const primaryFile = getPrimaryFile(cardClass);
       projectContent = await readFile(join(canvasDir, primaryFile), "utf-8");
@@ -382,7 +372,6 @@ app.get("/api/projects/:project/card", async (req, res) => {
         cardClass: meta.cardClass,
         title: meta.title,
         badge: meta.badge,
-        isSystem: meta.isSystem,
       });
     }
 
@@ -507,29 +496,13 @@ app.get("/api/card-classes", (_req, res) => {
   res.json(classes);
 });
 
-// Convert a drawing to mermaid via Claude Vision
-app.post("/api/projects/:project/canvases/:canvas/convert-drawing", async (req, res) => {
-  const { project, canvas } = req.params;
-  const { imageBase64 } = req.body;
-  if (!(await validateParams(res, project, canvas))) return;
-  if (!imageBase64) {
-    res.status(400).json({ error: "imageBase64 required" });
-    return;
-  }
-  try {
-    const result = await convertDrawingToMermaid(project, canvas, imageBase64);
-    res.json(result);
-  } catch (err: unknown) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
+
 
 // ── Widget Card System ──────────────────────────────────────
 
 const sandboxManager = new SandboxManager();
 const executor = new ProjectExecutor(sandboxManager);
 setContainerExecutor(executor);
-setSubagentExecutor(executor);
 const cardManager = new CardManager();
 const fileWatcher = new FileWatcher();
 
@@ -571,32 +544,6 @@ async function getOrCreateContainerRuntime(projectId: string): Promise<Container
   cardManager.setContainerRuntime(projectId, runtime);
   return runtime;
 }
-
-// ── Agent provider registry ──────────────────────────────────
-const claudeProvider = new ClaudeProvider(executor);
-const localProvider = new LocalProvider();
-registerProvider(claudeProvider);
-registerProvider(localProvider);
-
-// Routed chat function — picks provider based on project config
-const routedChat = async (project: string, canvas: CanvasId, message: string, image?: string, onProgress?: (evt: { type: string; tool?: string; elapsed?: number; description?: string }) => void, resumeSessionId?: string): Promise<AgentResponse> => {
-  const providerName = await resolveAgentProvider(project);
-  const provider = getProvider(providerName);
-  if (!provider) throw new Error(`No agent provider found: ${providerName}`);
-  return provider.chat(project, canvas, message, image, onProgress, resumeSessionId);
-};
-
-const reactiveAgent = new ReactiveAgent(routedChat, broadcast);
-
-// Wire agent write suppression — prevents reactive loops when agent writes files
-const writeHook = (project: string, canvas: string, filename: string) => {
-  reactiveAgent.markAgentWrite(project, canvas, filename);
-};
-setLocalAgentWriteHook(writeHook);
-claudeProvider.setWriteHook(writeHook);
-localProvider.setWriteHook(writeHook);
-
-// Legacy RPC handler removed — card classes now use MicaBridge directly.
 
 // MicaBridge factory — creates a bridge instance for a specific card context.
 // Used when calling card class exports that need server-side mica operations.
@@ -1016,7 +963,6 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
     });
   }
 
-  reactiveAgent.onFileChange(event);
 });
 
 // Card class changes → invalidate cache, broadcast so cards can refresh

@@ -58,25 +58,6 @@ export class ProjectExecutor {
     });
   }
 
-  // ── Interactive PTY (bidirectional channel) ─────────────────
-
-  /**
-   * Get spawn override for running a PTY inside the project container.
-   * Used by terminal cards and shell channels — passed to TerminalChannelManager.
-   */
-  async getContainerShell(project: string): Promise<{
-    shell: string;
-    args: string[];
-    cwd: string;
-  }> {
-    const containerName = await this.sandboxManager.getContainerName(project);
-    return {
-      shell: "docker",
-      args: ["exec", "-it", containerName, "/bin/bash", "--login"],
-      cwd: CONTAINER_PROJECT_DIR,
-    };
-  }
-
   // ── Agent subprocess spawning ───────────────────────────────
 
   /**

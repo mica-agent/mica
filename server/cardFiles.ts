@@ -1,7 +1,7 @@
-// Canvas file management — filesystem CRUD for card and infrastructure files.
+// Card file management — filesystem CRUD for cards and infrastructure files.
 // Every card is a directory named {name}.{class}/ containing a primary file
-// and optional supporting files. Infrastructure files (.dot-prefixed) live in
-// {project}/.mica/{canvas}/.
+// and optional supporting files. Cards live inside the canvas card directory.
+// Infrastructure files (.dot-prefixed) live in {project}/.mica/.
 
 import { readdir, readFile, writeFile, unlink, mkdir, stat, rm } from "fs/promises";
 import { readFileSync, existsSync, statSync, readdirSync } from "fs";
@@ -39,8 +39,6 @@ interface ManifestEntry {
   extension?: string;
   primaryFile?: string;
   badge?: string;
-  seed?: boolean;
-  system?: boolean; // legacy alias for seed
   defaultTitle?: string;
   network?: boolean;
 }

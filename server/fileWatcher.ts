@@ -13,7 +13,7 @@ import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
 import { readWorkspaceRegistry, getProjectPath, getCanvasDir } from "./projectConnection.js";
-import { getValidExtensions, getPrimaryFile, resolveCardClassFromFilename } from "./canvasFiles.js";
+import { getValidExtensions, getPrimaryFile, resolveCardClassFromFilename } from "./cardFiles.js";
 
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";

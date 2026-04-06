@@ -12,7 +12,7 @@ import {
   listProjects,
   getCardClassExtension,
   getPrimaryFile,
-} from "./canvasFiles.js";
+} from "./cardFiles.js";
 import {
   connectProject,
   readWorkspaceRegistry,
@@ -87,13 +87,13 @@ export async function seedNewProject(
   // That's wrong. We need to seed the canvas card at the project root level.
 
   // Direct approach: manually copy seed files and write primary file
-  const { resolveCardClassDir } = await import("./canvasFiles.js");
+  const { resolveCardClassDir } = await import("./cardFiles.js");
   const classDir = resolveCardClassDir(canvasClass);
   if (classDir) {
     // copySeedFiles is not exported — replicate the logic for the canvas card
     const { readdir, stat, readFile: fsRead, writeFile: fsWrite } = await import("fs/promises");
     const { extname } = await import("path");
-    const { getValidExtensions, resolveCardClassFromFilename } = await import("./canvasFiles.js");
+    const { getValidExtensions, resolveCardClassFromFilename } = await import("./cardFiles.js");
 
     const entries = await readdir(classDir);
     const validExts = getValidExtensions();
