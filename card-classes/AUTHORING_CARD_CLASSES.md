@@ -907,16 +907,32 @@ const el = container.querySelector('#output');
 
 ### height: 100% resolves to 0
 
-The card container has no explicit height set. Percentage heights resolve to 0.
+The card container has no explicit height set at init time. Cards are portaled into the canvas and positioned asynchronously — your script runs before the card has its final size. Percentage heights and `min-height: 0` resolve to 0.
 
 ```html
-<!-- WRONG — resolves to 0 height -->
-<div id="term" style="height:100%;"></div>
+<!-- WRONG — resolves to 0 height, library renders blank -->
+<div id="editor" style="height:100%;"></div>
+<div id="editor" style="flex:1; min-height:0;"></div>
 
-<!-- RIGHT — fixed pixel height or min-height -->
+<!-- RIGHT — concrete min-height so library always has space -->
+<div id="editor" style="flex:1; min-height:150px;"></div>
 <div id="term" style="height:260px;"></div>
-<div id="term" style="min-height:260px;"></div>
 ```
+
+### Libraries need ResizeObserver for size changes
+
+Libraries that cache their dimensions (Toast UI, xterm.js, CodeMirror) won't re-layout when the card is resized or first positioned. Use a ResizeObserver to tell the library:
+
+```javascript
+const ro = new ResizeObserver(() => {
+  const h = widgetEl.clientHeight;
+  if (h > 0) editor.setHeight(h + 'px');  // or fitAddon.fit(), etc.
+});
+ro.observe(widgetEl);
+mica.onDestroy(() => ro.disconnect());
+```
+
+This handles three cases: initial card positioning, user drag-resize, and cross-window layout sync.
 
 ### Event listener leaks on document
 
