@@ -15,18 +15,14 @@ import {
 } from "./cardFiles.js";
 import {
   connectProject,
-  readWorkspaceRegistry,
+  listProjects as listConnectedProjects,
   migrateLegacyProjects,
   migrateDataFileNames,
   type ConnectedProject,
   type MicaConfig,
 } from "./projectConnection.js";
 
-import os from "os";
-
-// Projects live outside the Mica repo to avoid tsx/bundler scanning issues.
-// Default: ~/mica-projects/ (overridable via MICA_PROJECTS_DIR)
-const PROJECTS_DIR = process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-projects");
+import { PROJECTS_DIR } from "./projectConnection.js";
 
 // ── Seed a new project ──────────────────────────────────────
 
@@ -139,10 +135,10 @@ export async function seedNewProject(
 export async function initializeProjects(): Promise<void> {
   await mkdir(PROJECTS_DIR, { recursive: true });
 
-  const registry = await readWorkspaceRegistry();
+  const projects = await listConnectedProjects();
 
-  if (registry.projects.length > 0) {
-    console.log(`[seed] Found ${registry.projects.length} connected project(s).`);
+  if (projects.length > 0) {
+    console.log(`[seed] Found ${projects.length} connected project(s).`);
     return;
   }
 

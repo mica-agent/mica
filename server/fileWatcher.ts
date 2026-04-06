@@ -12,7 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
-import { readWorkspaceRegistry, getProjectPath, getCanvasDir } from "./projectConnection.js";
+import { listProjects, getProjectPath, getCanvasDir } from "./projectConnection.js";
 import { getValidExtensions, getPrimaryFile, resolveCardClassFromFilename } from "./cardFiles.js";
 
 export interface FileChangeEvent {
@@ -36,10 +36,10 @@ export class FileWatcher extends EventEmitter {
   private knownFiles: Map<string, Set<string>> = new Map(); // "project/canvas" → set of filenames
 
   async start(): Promise<void> {
-    // Read workspace registry to discover connected projects
-    const registry = await readWorkspaceRegistry();
+    // Scan projects directory to discover connected projects
+    const projects = await listProjects();
 
-    for (const project of registry.projects) {
+    for (const project of projects) {
       // Watch .mica/ root for project-level cards
       await this.watchProjectCanvas(project.id, project.path, "_root");
       for (const canvas of project.canvases) {

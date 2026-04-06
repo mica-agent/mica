@@ -50,38 +50,20 @@ export interface MicaConfig {
 const MICA_DIR = ".mica";
 const CONFIG_FILE = ".config.json";
 
-// Workspace registry lives in Mica's own directory
-const WORKSPACE_FILE = join(process.cwd(), "workspaces.json");
+// Projects directory — scanned for projects (any dir with .mica/.config.json)
+export const PROJECTS_DIR = process.env.MICA_PROJECTS_DIR || join(os.homedir(), "mica-projects");
 
-// Legacy path for backward compatibility during migration
-const LEGACY_CANVASES_ROOT = join(process.cwd(), "layers");
-const LEGACY_PROJECTS_FILE = join(LEGACY_CANVASES_ROOT, "_projects.json");
-
-// ── Workspace Registry ─────────────────────────────────────
-
-export async function readWorkspaceRegistry(): Promise<WorkspaceRegistry> {
-  try {
-    const raw = await readFile(WORKSPACE_FILE, "utf-8");
-    return JSON.parse(raw);
-  } catch {
-    return { projects: [] };
-  }
-}
-
-async function writeWorkspaceRegistry(registry: WorkspaceRegistry): Promise<void> {
-  await writeFile(WORKSPACE_FILE, JSON.stringify(registry, null, 2), "utf-8");
-}
+// ── Project Discovery (scan-based, no registry file) ──────
 
 // ── Path Resolution ────────────────────────────────────────
 
-/** Get the absolute filesystem path for a connected project */
+/** Get the absolute filesystem path for a project */
 export async function getProjectPath(projectId: string): Promise<string> {
-  const registry = await readWorkspaceRegistry();
-  const project = registry.projects.find((p) => p.id === projectId);
-  if (!project) {
+  const projectPath = join(PROJECTS_DIR, projectId);
+  if (!existsSync(join(projectPath, MICA_DIR, CONFIG_FILE))) {
     throw new Error(`Project not connected: ${projectId}`);
   }
-  return project.path;
+  return projectPath;
 }
 
 /** Get the .mica directory path for a project */
@@ -214,18 +196,9 @@ export async function connectProject(
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
 
-  // Check not already connected
-  const registry = await readWorkspaceRegistry();
-  if (registry.projects.some((p) => p.id === id)) {
-    throw new Error(`Project already connected: ${id}`);
-  }
-
   // Check if .mica/ already exists (reconnecting)
   const micaDir = join(absPath, MICA_DIR);
   let config: MicaConfig;
-
-  // Migrate old-named data files to dot-prefix convention
-  await migrateDataFileNames(absPath);
 
   if (existsSync(join(micaDir, CONFIG_FILE))) {
     // Reconnecting — read existing config
@@ -240,7 +213,7 @@ export async function connectProject(
     await initMicaDir(absPath, config);
   }
 
-  // Check if it's a git repo; offer to init if not
+  // Check if it's a git repo; init if not
   const isGitRepo = existsSync(join(absPath, ".git"));
   if (!isGitRepo) {
     await execFileAsync("git", ["init"], { cwd: absPath });
@@ -255,23 +228,19 @@ export async function connectProject(
     connectedAt: new Date().toISOString(),
   };
 
-  registry.projects.push(project);
-  await writeWorkspaceRegistry(registry);
-
   console.log(`[connect] Connected project "${config.name}" at ${absPath}`);
   return project;
 }
 
-/** Disconnect a project from the workspace (leaves .mica/ intact) */
+/** Delete a project (removes the entire project directory) */
 export async function disconnectProject(projectId: string): Promise<void> {
-  const registry = await readWorkspaceRegistry();
-  const before = registry.projects.length;
-  registry.projects = registry.projects.filter((p) => p.id !== projectId);
-  if (registry.projects.length === before) {
+  const projectPath = join(PROJECTS_DIR, projectId);
+  if (!existsSync(projectPath)) {
     throw new Error(`Project not found: ${projectId}`);
   }
-  await writeWorkspaceRegistry(registry);
-  console.log(`[connect] Disconnected project "${projectId}" (files preserved)`);
+  const { rm } = await import("fs/promises");
+  await rm(projectPath, { recursive: true, force: true });
+  console.log(`[connect] Deleted project "${projectId}"`);
 }
 
 /** Initialize .mica/ directory and canvas directories in a project */
@@ -304,47 +273,74 @@ export async function addCanvasToProject(
   projectId: string,
   canvasName: string
 ): Promise<void> {
-  const registry = await readWorkspaceRegistry();
-  const project = registry.projects.find((p) => p.id === projectId);
-  if (!project) throw new Error(`Project not found: ${projectId}`);
-  if (project.canvases.includes(canvasName)) {
+  const projectPath = join(PROJECTS_DIR, projectId);
+  const configPath = join(projectPath, MICA_DIR, CONFIG_FILE);
+
+  const raw = await readFile(configPath, "utf-8");
+  const config: MicaConfig = JSON.parse(raw);
+  if (config.canvases.includes(canvasName)) {
     throw new Error(`Canvas already exists: ${canvasName}`);
   }
 
-  project.canvases.push(canvasName);
-  await writeWorkspaceRegistry(registry);
+  config.canvases.push(canvasName);
+  await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
 
-  // Create the canvas directory at project root (for card files)
-  // and inside .mica/ (for infrastructure like .chat-history.json)
-  await mkdir(join(project.path, canvasName), { recursive: true });
-  await mkdir(join(project.path, MICA_DIR, canvasName), { recursive: true });
+  await mkdir(join(projectPath, canvasName), { recursive: true });
+  await mkdir(join(projectPath, MICA_DIR, canvasName), { recursive: true });
+}
 
-  // Update .mica/config.json
-  const configPath = join(project.path, MICA_DIR, CONFIG_FILE);
+// ── Query helpers (scan-based) ─────────────────────────────
+
+/** Scan the projects directory for all connected projects. */
+export async function listProjects(): Promise<ConnectedProject[]> {
   try {
-    const raw = await readFile(configPath, "utf-8");
-    const config: MicaConfig = JSON.parse(raw);
-    config.canvases.push(canvasName);
-    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
+    await mkdir(PROJECTS_DIR, { recursive: true });
+    const entries = await readdir(PROJECTS_DIR, { withFileTypes: true });
+    const projects: ConnectedProject[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith(".")) continue;
+      const projectPath = join(PROJECTS_DIR, entry.name);
+      const configPath = join(projectPath, MICA_DIR, CONFIG_FILE);
+      try {
+        const raw = await readFile(configPath, "utf-8");
+        const config: MicaConfig = JSON.parse(raw);
+        projects.push({
+          id: entry.name,
+          name: config.name || entry.name,
+          path: projectPath,
+          canvases: config.canvases || [],
+          connectedAt: "",
+        });
+      } catch {
+        // No .mica/.config.json — not a Mica project, skip
+      }
+    }
+    return projects;
   } catch {
-    // Config file missing — create it
-    const config: MicaConfig = { name: project.name, canvases: project.canvases };
-    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
+    return [];
   }
 }
 
-// ── Query helpers ──────────────────────────────────────────
-
-export async function listProjects(): Promise<ConnectedProject[]> {
-  const registry = await readWorkspaceRegistry();
-  return registry.projects;
-}
-
+/** Get config for a specific project by scanning its directory. */
 export async function getProjectConfig(
   projectId: string
 ): Promise<ConnectedProject | null> {
-  const registry = await readWorkspaceRegistry();
-  return registry.projects.find((p) => p.id === projectId) || null;
+  const projectPath = join(PROJECTS_DIR, projectId);
+  const configPath = join(projectPath, MICA_DIR, CONFIG_FILE);
+  try {
+    const raw = await readFile(configPath, "utf-8");
+    const config: MicaConfig = JSON.parse(raw);
+    return {
+      id: projectId,
+      name: config.name || projectId,
+      path: projectPath,
+      canvases: config.canvases || [],
+      connectedAt: "",
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function readMicaConfig(
