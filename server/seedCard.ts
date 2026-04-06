@@ -82,40 +82,13 @@ export async function seedNewProject(
   // which now points to project.project/ — creating project.project/project.project/.
   // That's wrong. We need to seed the canvas card at the project root level.
 
-  // Direct approach: manually copy seed files and write primary file
-  const { resolveCardClassDir } = await import("./cardFiles.js");
+  // Copy seed files from the canvas card class into the canvas card directory.
+  // This creates child cards (_goal.goal → goal.goal/) and internal files (_.layout.json).
+  // Each child card also gets its own class's seed files (e.g. todo gets _brief.md).
+  const { resolveCardClassDir, copySeedFiles } = await import("./cardFiles.js");
   const classDir = resolveCardClassDir(canvasClass);
   if (classDir) {
-    // copySeedFiles is not exported — replicate the logic for the canvas card
-    const { readdir, stat, readFile: fsRead, writeFile: fsWrite } = await import("fs/promises");
-    const { extname } = await import("path");
-    const { getValidExtensions, resolveCardClassFromFilename } = await import("./cardFiles.js");
-
-    const entries = await readdir(classDir);
-    const validExts = getValidExtensions();
-
-    for (const entry of entries) {
-      if (!entry.startsWith("_")) continue;
-      const seedName = entry.slice(1);
-      const srcPath = join(classDir, entry);
-      const destPath = join(canvasCardDir, seedName);
-      if (existsSync(destPath)) continue;
-
-      const srcStat = await stat(srcPath);
-      if (srcStat.isFile()) {
-        const seedExt = extname(seedName);
-        if (seedExt && validExts.includes(seedExt) && seedExt !== ".json") {
-          // Card seed → create card subdirectory
-          const cardClass = resolveCardClassFromFilename(seedName);
-          const primaryFile = getPrimaryFile(cardClass);
-          await mkdir(destPath, { recursive: true });
-          await fsWrite(join(destPath, primaryFile), await fsRead(srcPath, "utf-8"), "utf-8");
-        } else {
-          // Internal file → copy as-is
-          await fsWrite(destPath, await fsRead(srcPath, "utf-8"), "utf-8");
-        }
-      }
-    }
+    await copySeedFiles(classDir, canvasCardDir);
   }
 
   // Write the canvas card's primary file

@@ -482,7 +482,7 @@ export function resolveCardClassDir(cardClass: string, projectPath?: string): st
  * - Other files (e.g. `_.layout.json`) → copied as flat files into the instance.
  * - Seed directories → recursively copied.
  */
-async function copySeedFiles(classDir: string, instanceDir: string, projectPath?: string): Promise<void> {
+export async function copySeedFiles(classDir: string, instanceDir: string, projectPath?: string): Promise<void> {
   let entries: string[];
   try {
     entries = await readdir(classDir);
@@ -525,6 +525,11 @@ async function copySeedFiles(classDir: string, instanceDir: string, projectPath?
         const cardDir = destPath;
         await mkdir(cardDir, { recursive: true });
         await writeFile(join(cardDir, primaryFile), await readFile(srcPath, "utf-8"), "utf-8");
+        // Also copy the child card class's own seed files (e.g. _brief.md for todo)
+        const childClassDir = resolveCardClassDir(cardClass, projectPath);
+        if (childClassDir) {
+          await copySeedFiles(childClassDir, cardDir, projectPath);
+        }
       } else {
         // Internal file: copy as-is
         await writeFile(destPath, await readFile(srcPath, "utf-8"), "utf-8");
