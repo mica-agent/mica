@@ -172,6 +172,7 @@ export async function decrement(content, args, mica) {
 1. `mkdir -p /opt/mica/card-classes/{name}`
 2. Write `spec.md` — describe what the card does
 3. Write `render.js` — metadata + render function + optional exports
-4. Create an instance: `curl -X POST http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards -H 'Content-Type: application/json' -d '{"name": "my-thing.{ext}"}'`
+4. Create an instance: `curl -s -X POST http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards -H 'Content-Type: application/json' -d '{"name": "my-thing.{ext}"}'`
+5. **Verify**: check the response from step 4 — if the `html` field contains "Render error", read the error message and fix render.js. Also try: `curl -s http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards/my-thing.{ext}` to re-check after fixing.
 
 For channels (bidirectional streaming like chat/terminal), export functions, CDN dependencies, see the full reference: `read_reference('AUTHORING_CARD_CLASSES.md')`.
