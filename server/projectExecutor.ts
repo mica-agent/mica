@@ -122,45 +122,6 @@ export class ProjectExecutor {
     };
   }
 
-  // ── Docker exec helpers (for app runtime, etc.) ─────────────
-
-  /**
-   * Run a detached command in the project container.
-   * Used by app runtime launcher (projectContainer.ts).
-   */
-  async execDetached(
-    project: string,
-    command: string,
-    opts?: { cwd?: string; env?: Record<string, string> },
-  ): Promise<void> {
-    const containerName = await this.sandboxManager.getContainerName(project);
-
-    const dockerArgs = ["exec", "-d", "-w", opts?.cwd || CONTAINER_PROJECT_DIR];
-    if (opts?.env) {
-      for (const [key, value] of Object.entries(opts.env)) {
-        dockerArgs.push("-e", `${key}=${value}`);
-      }
-    }
-    dockerArgs.push(containerName, "/bin/bash", "-c", command);
-
-    await execFileAsync("docker", dockerArgs);
-  }
-
-  /**
-   * Run a command and capture output.
-   * Used by projectContainer.ts for pkill, docker inspect, etc.
-   */
-  async execCapture(
-    project: string,
-    args: string[],
-    opts?: { timeout?: number },
-  ): Promise<{ stdout: string; stderr: string }> {
-    const containerName = await this.sandboxManager.getContainerName(project);
-    return execFileAsync("docker", ["exec", containerName, ...args], {
-      timeout: opts?.timeout || 10000,
-    });
-  }
-
   /**
    * Get container name for a project (passthrough to SandboxManager).
    * Ensures the container is running.

@@ -22,13 +22,6 @@ import {
 import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath, getCanvasDir } from "./projectConnection.js";
-import {
-  startProjectContainer,
-  stopProjectContainer,
-  getContainerStatus,
-  getContainerLogs,
-  setContainerExecutor,
-} from "./projectContainer.js";
 import { initializeProjects, seedNewProject } from "./seedCard.js";
 import { CardManager } from "./cardManager.js";
 import type { MicaBridge } from "./moduleLoader.js";
@@ -217,45 +210,6 @@ app.post("/api/migrate", async (req, res) => {
 
 // ── Container endpoints (project-scoped) ──────────────────
 
-app.post("/api/projects/:project/container/start", async (req, res) => {
-  try {
-    const info = await startProjectContainer(req.params.project);
-    res.json(info);
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-app.post("/api/projects/:project/container/stop", async (req, res) => {
-  try {
-    await stopProjectContainer(req.params.project);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-app.get("/api/projects/:project/container/status", async (req, res) => {
-  try {
-    const status = await getContainerStatus(req.params.project);
-    res.json(status);
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-app.get("/api/projects/:project/container/logs", async (req, res) => {
-  try {
-    const tail = parseInt(req.query.tail as string) || 100;
-    const logs = await getContainerLogs(req.params.project, tail);
-    res.json({ logs });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// Sidebar chat routes removed — chat happens via card classes (claude-chat, llama-chat).
-
 // ── Project Card (top-level canvas card) ─────────────────────
 
 // Get the canvas card filename from project config
@@ -428,7 +382,6 @@ app.get("/api/card-classes", (_req, res) => {
 
 const sandboxManager = new SandboxManager();
 const executor = new ProjectExecutor(sandboxManager);
-setContainerExecutor(executor);
 const cardManager = new CardManager();
 const fileWatcher = new FileWatcher();
 
