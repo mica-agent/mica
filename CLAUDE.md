@@ -47,7 +47,7 @@ are **generic infrastructure**. They must NEVER contain card-class-specific logi
 
 - **NO** `if (filename.endsWith(".terminal"))` — card class handles its own behavior
 - **NO** `if (cardClass === "mermaid")` — card class renders itself
-- **NO** hardcoded seed content (`NEW_PROJECT_SEEDS`) — card class defines seeds via `_` prefixed files
+- **NO** hardcoded seed content (`NEW_PROJECT_SEEDS`) — card class defines seeds via `_` (child cards) and `~` (flat files) prefixed files
 - **NO** hardcoded card filenames (`"project.project"`) — read from config
 - **NO** special-casing canvas vs non-canvas — any card can contain child cards
 
@@ -64,7 +64,9 @@ things possible in card classes, never to implement features in the server.
 - A canvas is just a card whose card class renders a layout surface.
 - The project's canvas card is stored in `MicaConfig.canvasCard` — config, not convention.
 - `getCanvasDir("_root")` reads this config — the server doesn't hardcode which card is the canvas.
-- Seed files (`_` prefix in card class dir) become child card subdirectories or internal files via one universal mechanism — no special cases for canvas vs non-canvas.
+- Seed files use two prefixes: `_` for child cards, `~` for flat files. One mechanism each — no special cases for canvas vs non-canvas.
+- `spec.md` in each card class directory is the blueprint — source of truth for what the card type does.
+- `brief.md` in each card instance is the assignment — what this specific card is for. Flat file, not a card.
 
 ### Common mistakes to avoid
 
