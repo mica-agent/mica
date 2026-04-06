@@ -301,6 +301,22 @@ const TOOLS = [
       parameters: { type: "object", properties: { command: { type: "string", description: "Shell command to run" } }, required: ["command"] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "read_reference",
+      description: "Load a reference document into context. Use this when you need detailed API docs — e.g., before creating a new card class, call read_reference('AUTHORING_CARD_CLASSES.md').",
+      parameters: { type: "object", properties: { name: { type: "string", description: "Reference doc name (e.g., 'AUTHORING_CARD_CLASSES.md', 'WORKING_WITH_CARDS.md')" } }, required: ["name"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_to_path",
+      description: "Write content to an absolute file path. Creates parent directories if needed. Use this to create card class files (render.js, spec.md) at /opt/mica/card-classes/{name}/.",
+      parameters: { type: "object", properties: { path: { type: "string", description: "Absolute file path (e.g., '/opt/mica/card-classes/calculator/render.js')" }, content: { type: "string", description: "File content" } }, required: ["path", "content"] },
+    },
+  },
 ];
 
 // Execute a tool call
@@ -370,6 +386,26 @@ async function executeTool(name, args, mica) {
     case "exec": {
       const result = await mica.exec(args.command);
       return result.stdout + (result.stderr ? "\nSTDERR: " + result.stderr : "") + `\n(exit ${result.exitCode})`;
+    }
+    case "read_reference": {
+      const refName = args.name || "";
+      try {
+        return await fs.promises.readFile(`/opt/mica/card-classes/${refName}`, "utf-8");
+      } catch {
+        return `Error: reference "${refName}" not found`;
+      }
+    }
+    case "write_to_path": {
+      const filePath = args.path || "";
+      const fileContent = args.content || "";
+      if (!filePath) return "Error: path is required";
+      try {
+        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.promises.writeFile(filePath, fileContent, "utf-8");
+        return `Written: ${filePath}`;
+      } catch (e) {
+        return `Error: ${e.message}`;
+      }
     }
     default:
       return `Unknown tool: ${name}`;
