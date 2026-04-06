@@ -23,14 +23,6 @@ import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
 import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath, getCanvasDir } from "./projectConnection.js";
 import {
-  getGitStatus,
-  gitCommit,
-  gitLog,
-  gitDiff,
-  gitBranch,
-  gitCheckout,
-} from "./projectGit.js";
-import {
   startProjectContainer,
   stopProjectContainer,
   getContainerStatus,
@@ -222,72 +214,6 @@ app.post("/api/migrate", async (req, res) => {
 });
 
 // ── Git endpoints (project-scoped) ────────────────────────
-
-app.get("/api/projects/:project/git/status", async (req, res) => {
-  try {
-    const status = await getGitStatus(req.params.project);
-    res.json(status);
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-app.post("/api/projects/:project/git/commit", async (req, res) => {
-  const { message } = req.body;
-  if (!message) {
-    res.status(400).json({ error: "message required" });
-    return;
-  }
-  try {
-    const result = await gitCommit(req.params.project, message);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-app.get("/api/projects/:project/git/log", async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit as string) || 50;
-    const log = await gitLog(req.params.project, limit);
-    res.json(log);
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-app.get("/api/projects/:project/git/diff", async (req, res) => {
-  try {
-    const ref = req.query.ref as string | undefined;
-    const diff = await gitDiff(req.params.project, ref);
-    res.json({ diff });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-app.get("/api/projects/:project/git/branches", async (req, res) => {
-  try {
-    const info = await gitBranch(req.params.project);
-    res.json(info);
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-app.post("/api/projects/:project/git/checkout", async (req, res) => {
-  const { branch, create } = req.body;
-  if (!branch) {
-    res.status(400).json({ error: "branch required" });
-    return;
-  }
-  try {
-    await gitCheckout(req.params.project, branch, create);
-    res.json({ success: true, branch });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
 
 // ── Container endpoints (project-scoped) ──────────────────
 
