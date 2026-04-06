@@ -179,14 +179,20 @@ export default function render(content, config) {
             border: 1px solid rgba(255,255,255,0.12); flex-shrink: 0;
         }
         .card-todo--interactive .todo-assign-btn {
-            background: rgba(255,255,255,0.03); border: none; color: rgba(255,255,255,0.35);
-            font-size: 0.7em; padding: 2px 5px; cursor: pointer; transition: all 0.15s;
-            border-right: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.03); border: none; color: rgba(255,255,255,0.25);
+            font-size: 0.8em; padding: 3px 6px; cursor: pointer; transition: all 0.15s;
+            border-right: 1px solid rgba(255,255,255,0.08); opacity: 0.5;
         }
         .card-todo--interactive .todo-assign-btn:last-child { border-right: none; }
-        .card-todo--interactive .todo-assign-btn:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }
-        .card-todo--interactive .todo-assign--active { background: rgba(138,170,255,0.15); color: #8af; }
-        .card-todo--interactive .todo-assign-agent.todo-assign--active { background: rgba(74,202,160,0.15); color: #4acaa0; }
+        .card-todo--interactive .todo-assign-btn:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.8); opacity: 1; }
+        .card-todo--interactive .todo-assign--active {
+            background: rgba(96,165,250,0.25); color: #60a5fa; opacity: 1;
+            box-shadow: inset 0 0 0 1px rgba(96,165,250,0.4);
+        }
+        .card-todo--interactive .todo-assign-agent.todo-assign--active {
+            background: rgba(74,222,128,0.25); color: #4ade80;
+            box-shadow: inset 0 0 0 1px rgba(74,222,128,0.4);
+        }
         .card-todo--interactive .todo-pri-btn {
             font-size: 0.65em; font-weight: 700; width: 18px; height: 18px;
             display: inline-flex; align-items: center; justify-content: center;
@@ -252,6 +258,17 @@ export default function render(content, config) {
                     const val = prompt('Assign to (name):');
                     if (!val || !val.trim()) return;
                     assignee = val.trim().replace('@', '');
+                }
+
+                // Optimistic UI — toggle active state immediately
+                const group = btn.closest('.todo-assign-group');
+                group.querySelectorAll('.todo-assign-btn').forEach(b => b.classList.remove('todo-assign--active'));
+                if (assignee !== 'human' && assignee !== 'agent') {
+                    const customBtn = group.querySelector('.todo-assign-custom');
+                    customBtn.textContent = '@' + assignee;
+                    customBtn.classList.add('todo-assign--active');
+                } else {
+                    btn.classList.add('todo-assign--active');
                 }
 
                 mica.call('reassign', { index: idx, assignee: assignee }).catch(() => {});
