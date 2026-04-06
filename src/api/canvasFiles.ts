@@ -254,3 +254,26 @@ export async function callCardExport(
   const data = await res.json();
   return data.result;
 }
+
+// ── Card internal file API (for flip/inspect) ────────────
+
+export async function readCardInternalFile(
+  project: string, canvas: CanvasId, cardName: string, fileName: string
+): Promise<string> {
+  const res = await fetch(
+    `${projectCanvasUrl(project, canvas)}/cards/${encodeURIComponent(cardName)}/files/${encodeURIComponent(fileName)}`
+  );
+  if (!res.ok) throw new Error(`Failed to read card file: ${res.statusText}`);
+  const data = await res.json();
+  return data.content;
+}
+
+export async function writeCardInternalFile(
+  project: string, canvas: CanvasId, cardName: string, fileName: string, content: string
+): Promise<void> {
+  const res = await fetch(
+    `${projectCanvasUrl(project, canvas)}/cards/${encodeURIComponent(cardName)}/files/${encodeURIComponent(fileName)}`,
+    { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) }
+  );
+  if (!res.ok) throw new Error(`Failed to write card file: ${res.statusText}`);
+}

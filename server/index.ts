@@ -502,6 +502,30 @@ app.get("/api/projects/:project/canvases/:canvas/cards/:filename", async (req, r
   }
 });
 
+// Read a file inside a card's directory (for flip/inspect)
+app.get("/api/projects/:project/canvases/:canvas/cards/:cardName/files/:fileName", async (req, res) => {
+  const { project, canvas, cardName, fileName } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
+  try {
+    const content = await readCardFile(project, canvas, cardName, fileName);
+    res.json({ content });
+  } catch (err: unknown) {
+    res.status(404).json({ error: (err as Error).message });
+  }
+});
+
+// Write a file inside a card's directory (for flip/inspect)
+app.put("/api/projects/:project/canvases/:canvas/cards/:cardName/files/:fileName", async (req, res) => {
+  const { project, canvas, cardName, fileName } = req.params;
+  if (!(await validateParams(res, project, canvas))) return;
+  try {
+    await writeCardFile(project, canvas, cardName, fileName, req.body.content);
+    res.json({ success: true });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // Create a new card instance (with seed files from card class)
 app.post("/api/projects/:project/canvases/:canvas/cards", async (req, res) => {
   const { project, canvas } = req.params;
