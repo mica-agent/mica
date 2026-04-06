@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import type { CanvasId, CardMeta } from "../api/canvasFiles";
-import { readCardInternalFile, writeCardInternalFile } from "../api/canvasFiles";
+import { readCardInternalFile, writeCardInternalFile, readClassFile, writeClassFile } from "../api/canvasFiles";
 import CardRuntime from "./CardRuntime";
 
 interface CardDependencies {
@@ -27,14 +27,23 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
   const cardRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
   const [flipped, setFlipped] = useState(false);
-  const [briefContent, setBriefContent] = useState<string | null>(null);
-  const [briefOriginal, setBriefOriginal] = useState<string | null>(null);
-  const [briefDirty, setBriefDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Class-level state (spec + default brief)
+  const [specContent, setSpecContent] = useState("");
+  const [specOriginal, setSpecOriginal] = useState("");
+  const [defaultBrief, setDefaultBrief] = useState("");
+  const [defaultBriefOriginal, setDefaultBriefOriginal] = useState("");
+
+  // Instance-level state (brief)
+  const [briefContent, setBriefContent] = useState("");
+  const [briefOriginal, setBriefOriginal] = useState("");
 
   const cardClass = meta.cardClass === "mermaid" ? `wb-card--${meta.cardClass}` : "";
   const isInteractive = exportFns.length > 0;
   const isResized = cardRef.current?.style.height != null && cardRef.current?.style.height !== "";
+
+  const isDirty = specContent !== specOriginal || defaultBrief !== defaultBriefOriginal || briefContent !== briefOriginal;
 
   // Detect overflow after render
   useEffect(() => {
@@ -46,46 +55,64 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
     return () => clearTimeout(timer);
   }, [html]);
 
-  // Only show flip button for interactive cards (they have stream handlers = likely have briefs)
-  const hasBrief = exportFns.length > 0;
-
-  // Load brief content when flipped
+  // Load all config files when flipped
   useEffect(() => {
     if (!flipped) return;
+    // Class-level: spec.md
+    readClassFile(meta.cardClass, "spec.md")
+      .then((c) => { setSpecContent(c); setSpecOriginal(c); })
+      .catch(() => { setSpecContent(""); setSpecOriginal(""); });
+    // Class-level: _brief.md (default brief)
+    readClassFile(meta.cardClass, "_brief.md")
+      .then((c) => { setDefaultBrief(c); setDefaultBriefOriginal(c); })
+      .catch(() => { setDefaultBrief(""); setDefaultBriefOriginal(""); });
+    // Instance-level: brief.md
     readCardInternalFile(projectId, canvasId, filename, "brief.md")
-      .then((content) => { setBriefContent(content); setBriefOriginal(content); })
-      .catch(() => { setBriefContent(null); setBriefOriginal(null); });
-  }, [flipped, projectId, canvasId, filename]);
+      .then((c) => { setBriefContent(c); setBriefOriginal(c); })
+      .catch(() => { setBriefContent(""); setBriefOriginal(""); });
+  }, [flipped, meta.cardClass, projectId, canvasId, filename]);
 
   const handleFlip = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    if (flipped && briefDirty) {
+    if (flipped && isDirty) {
+      setSpecContent(specOriginal);
+      setDefaultBrief(defaultBriefOriginal);
       setBriefContent(briefOriginal);
-      setBriefDirty(false);
     }
     setFlipped(!flipped);
-  }, [flipped, briefDirty, briefOriginal]);
+  }, [flipped, isDirty, specOriginal, defaultBriefOriginal, briefOriginal]);
 
-  const handleCancelBrief = useCallback(() => {
-    setBriefContent(briefOriginal);
-    setBriefDirty(false);
-    setFlipped(false);
-  }, [briefOriginal]);
-
-  const handleSaveBrief = useCallback(async () => {
-    if (briefContent === null) return;
+  const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      await writeCardInternalFile(projectId, canvasId, filename, "brief.md", briefContent);
+      const promises: Promise<void>[] = [];
+      if (specContent !== specOriginal) {
+        promises.push(writeClassFile(meta.cardClass, "spec.md", specContent));
+      }
+      if (defaultBrief !== defaultBriefOriginal) {
+        promises.push(writeClassFile(meta.cardClass, "_brief.md", defaultBrief));
+      }
+      if (briefContent !== briefOriginal) {
+        promises.push(writeCardInternalFile(projectId, canvasId, filename, "brief.md", briefContent));
+      }
+      await Promise.all(promises);
+      setSpecOriginal(specContent);
+      setDefaultBriefOriginal(defaultBrief);
       setBriefOriginal(briefContent);
-      setBriefDirty(false);
       setFlipped(false);
     } catch (err) {
-      console.error("Failed to save brief:", err);
+      console.error("Failed to save:", err);
     } finally {
       setSaving(false);
     }
-  }, [projectId, canvasId, filename, briefContent]);
+  }, [meta.cardClass, projectId, canvasId, filename, specContent, specOriginal, defaultBrief, defaultBriefOriginal, briefContent, briefOriginal]);
+
+  const handleCancel = useCallback(() => {
+    setSpecContent(specOriginal);
+    setDefaultBrief(defaultBriefOriginal);
+    setBriefContent(briefOriginal);
+    setFlipped(false);
+  }, [specOriginal, defaultBriefOriginal, briefOriginal]);
 
   const handleExpandClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -104,13 +131,11 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
         onClick={!isInteractive && !flipped ? handleExpandClick : undefined}
       >
         <span className="wb-card-type">{meta.badge}</span>
-        <span className="wb-card-title">{flipped ? `${meta.title} — Brief` : meta.title}</span>
+        <span className="wb-card-title">{flipped ? `${meta.title} — Config` : meta.title}</span>
         <div className="wb-card-actions">
-          {hasBrief && (
-            <button onClick={handleFlip} title={flipped ? "Show front" : "Show brief"} className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}>
-              &#x21BB;
-            </button>
-          )}
+          <button onClick={handleFlip} title={flipped ? "Show front" : "Configure"} className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}>
+            &#x2699;
+          </button>
           {!flipped && isInteractive && (
             <button onClick={(e) => { e.stopPropagation(); onExpand(); }} title="Expand" className="wb-card-btn">
               &#x26F6;
@@ -128,37 +153,43 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
       </div>
 
       {flipped ? (
-        <div className="wb-card-body wb-card-brief">
-          {briefContent !== null ? (
-            <>
-              <textarea
-                className="wb-card-brief-editor"
-                value={briefContent}
-                onChange={(e) => { setBriefContent(e.target.value); setBriefDirty(true); }}
-                placeholder="No brief — write agent instructions here..."
-                spellCheck={false}
-              />
-              <div className="wb-card-brief-actions">
-                <button
-                  className="wb-card-brief-cancel"
-                  onClick={handleCancelBrief}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="wb-card-brief-save"
-                  onClick={handleSaveBrief}
-                  disabled={saving || !briefDirty}
-                >
-                  {saving ? "Saving..." : "Save"}
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="wb-card-brief-empty">
-              No brief file for this card.
-            </div>
-          )}
+        <div className="wb-card-body wb-card-config">
+          <div className="wb-card-config-section">
+            <div className="wb-card-config-label">Spec <span className="wb-card-config-scope">all {meta.cardClass} cards</span></div>
+            <textarea
+              className="wb-card-config-editor"
+              value={specContent}
+              onChange={(e) => setSpecContent(e.target.value)}
+              placeholder="What this card type does..."
+              spellCheck={false}
+            />
+          </div>
+          <div className="wb-card-config-section">
+            <div className="wb-card-config-label">Default Brief <span className="wb-card-config-scope">new {meta.cardClass} cards</span></div>
+            <textarea
+              className="wb-card-config-editor wb-card-config-editor--small"
+              value={defaultBrief}
+              onChange={(e) => setDefaultBrief(e.target.value)}
+              placeholder="Default brief for new instances..."
+              spellCheck={false}
+            />
+          </div>
+          <div className="wb-card-config-section">
+            <div className="wb-card-config-label">Brief <span className="wb-card-config-scope">this card only</span></div>
+            <textarea
+              className="wb-card-config-editor"
+              value={briefContent}
+              onChange={(e) => setBriefContent(e.target.value)}
+              placeholder="What this specific card is for..."
+              spellCheck={false}
+            />
+          </div>
+          <div className="wb-card-config-actions">
+            <button className="wb-card-brief-cancel" onClick={handleCancel}>Cancel</button>
+            <button className="wb-card-brief-save" onClick={handleSave} disabled={saving || !isDirty}>
+              {saving ? "Saving..." : "Save"}
+            </button>
+          </div>
         </div>
       ) : (
         <div

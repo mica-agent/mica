@@ -371,9 +371,34 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
 
 // Get available card classes (for toolbar, card creation)
 app.get("/api/card-classes", (_req, res) => {
-  // CardManager's manifest is built from scanning card class directories
   const classes = cardManager.getManifest();
   res.json(classes);
+});
+
+// Read a file from a card class directory (spec.md, _brief.md)
+app.get("/api/card-classes/:className/files/:fileName", async (req, res) => {
+  const { className, fileName } = req.params;
+  try {
+    const classPath = cardManager.getClassPath(className);
+    const classDir = classPath.replace(/\/render\.js$/, "");
+    const content = await readFile(join(classDir, fileName), "utf-8");
+    res.json({ content });
+  } catch (err: unknown) {
+    res.status(404).json({ error: (err as Error).message });
+  }
+});
+
+// Write a file to a card class directory (spec.md, _brief.md)
+app.put("/api/card-classes/:className/files/:fileName", async (req, res) => {
+  const { className, fileName } = req.params;
+  try {
+    const classPath = cardManager.getClassPath(className);
+    const classDir = classPath.replace(/\/render\.js$/, "");
+    await writeFile(join(classDir, fileName), req.body.content, "utf-8");
+    res.json({ success: true });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 
