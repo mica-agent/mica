@@ -31,6 +31,18 @@ Cards are the fundamental unit of work in Mica. Every card is a **directory** wi
 
 The canvas card directory (`my-project.project/`) IS the canvas. Its extension (`.project`) determines which card class renders the canvas layout. All child cards live inside it.
 
+## Spec and Brief
+
+Every card has two configuration files:
+
+- **`spec.md`** (class-level) — what this type of card does. Shared by all cards of the same type. Lives in the card class directory. This is the blueprint — an agent can read it to understand or regenerate the card's code.
+
+- **`brief.md`** (instance-level) — what THIS specific card is for. Optional. Lives in the card's own directory. This is the assignment — it tells agents the card's purpose and how to maintain it.
+
+Example: A markdown card's spec says "renders rich text with Toast UI editor." An instance's brief might say "this is the project requirements doc — keep it aligned with goals."
+
+**Reactive briefs:** Writing a brief on any card turns it into a reactive participant. Agents on the canvas read briefs to understand each card's role. A brief like "when goals change, update this document" tells agents to maintain the card when related cards change. The brief is an agent-readable contract.
+
 ## Creating cards
 
 Use the `create_card` tool (or `mica.createCard(name)` bridge method):

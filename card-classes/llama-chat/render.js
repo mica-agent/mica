@@ -90,6 +90,12 @@ async function readCardContent(cardName) {
 async function buildContext(mica) {
   const parts = [];
 
+  // Read the card class spec (what this card type does)
+  try {
+    const spec = await fs.promises.readFile('/opt/mica/card-classes/llama-chat/spec.md', 'utf-8');
+    if (spec.trim()) parts.push(`## Card Class Spec\n${spec.trim()}`);
+  } catch { /* no spec */ }
+
   // Read the agent's own brief and expand @file references
   try {
     let brief = await mica.read("brief.md");
