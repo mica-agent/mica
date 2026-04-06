@@ -420,9 +420,10 @@ async function getOrCreateContainerRuntime(projectId: string): Promise<Container
         console.error(`[container] createCard failed for "${name}":`, (err as Error).message);
       });
     },
-    onWriteNotify: (cardName, filename) => {
-      // Tag this file write with the card that caused it — file watcher will pick it up
-      writeSourceTracker.set(`${projectId}/${filename}`, cardName);
+    onWriteNotify: (cardName, _filename) => {
+      // Tag this card as the source of the next file change.
+      // The file watcher reports card-level changes (cardName), not internal files.
+      writeSourceTracker.set(`${projectId}/${cardName}`, cardName);
     },
   });
 
@@ -449,7 +450,7 @@ function createMicaBridge(project: string, canvas: string, filename: string): Mi
       return readCardFile(project, canvas, filename, fname);
     },
     async write(fname: string, content: string) {
-      writeSourceTracker.set(`${project}/${fname}`, filename);
+      writeSourceTracker.set(`${project}/${filename}`, filename);
       await writeCardFile(project, canvas, filename, fname, content);
     },
     async exec(command: string, opts?: { cwd?: string; timeout?: number }) {
@@ -887,7 +888,6 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
 
   const runtime = containerRuntimes.get(event.project);
   if (runtime) {
-    // Notify all active card sessions in this project
     const sessions = channelManager.getProjectSessions(event.project, event.canvas);
     for (const cardName of sessions) {
       runtime.sendFileChanged(cardName, { filename: event.filename, source });

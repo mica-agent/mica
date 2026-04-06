@@ -173,10 +173,52 @@ async function appendHistory(mica, newMessages) {
 
 export async function onConnect(mica, args) {
   const key = sessionKey(mica);
-  sessions.set(key, {
+  const session = {
     busy: false,
     queue: [],
     conversation: [],
+    fileChangeTimer: null,
+    pendingChanges: [],
+  };
+  sessions.set(key, session);
+
+  // Subscribe to sibling card changes — debounce and batch
+  mica.on('file-changed', (event) => {
+    // Ignore own writes
+    if (event.source === mica.filename) return;
+    // Ignore dot files
+    if (event.filename.startsWith('.')) return;
+    // Ignore log and other chat cards (conversation writes are noise)
+    if (event.filename === 'log.md') return;
+    if (event.filename.endsWith('.llama-chat') || event.filename.endsWith('.claude-chat')) return;
+    // Ignore if agent is already busy (don't queue reactive work)
+    if (session.busy) return;
+
+    session.pendingChanges.push(event);
+    if (session.fileChangeTimer) clearTimeout(session.fileChangeTimer);
+    session.fileChangeTimer = setTimeout(() => {
+      const changes = [...session.pendingChanges];
+      session.pendingChanges = [];
+      if (changes.length === 0) return;
+
+      const filenames = changes.map(c => c.filename);
+      const hasTodo = filenames.includes('todo.todo');
+
+      let message;
+      if (hasTodo) {
+        message = `[Canvas update] todo.todo was updated. Read it now with read_file and check for tasks assigned to @agent. If you have assigned tasks, do them immediately using your tools.`;
+      } else {
+        const summary = filenames.join(', ');
+        message = `[Canvas update] ${summary} changed. Acknowledge briefly unless action is clearly needed.`;
+      }
+
+      // Process through normal message pipeline
+      if (session.busy) {
+        session.queue.push(message);
+      } else {
+        processMessage(session, message, mica);
+      }
+    }, 3000); // 3 second debounce
   });
 
   const messages = await loadHistory(mica);
