@@ -557,6 +557,8 @@ pre.mermaid svg {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  flex: 1;
+  min-height: 0;
 }
 
 .wb-card-config-label {
@@ -587,11 +589,8 @@ pre.mermaid svg {
   line-height: 1.4;
   resize: none;
   outline: none;
-  min-height: 60px;
-}
-
-.wb-card-config-editor--small {
-  min-height: 40px;
+  flex: 1;
+  min-height: 0;
 }
 
 .wb-card-config-editor:focus {
@@ -608,6 +607,7 @@ pre.mermaid svg {
   justify-content: flex-end;
   gap: 6px;
   padding-top: 2px;
+  flex-shrink: 0;
 }
 
 .wb-card-brief-cancel {
