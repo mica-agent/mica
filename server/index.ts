@@ -420,6 +420,10 @@ async function getOrCreateContainerRuntime(projectId: string): Promise<Container
         console.error(`[container] createCard failed for "${name}":`, (err as Error).message);
       });
     },
+    onWriteNotify: (cardName, filename) => {
+      // Tag this file write with the card that caused it — file watcher will pick it up
+      writeSourceTracker.set(`${projectId}/${filename}`, cardName);
+    },
   });
 
   await runtime.start();

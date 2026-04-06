@@ -25,6 +25,7 @@ export interface BridgeCallbacks {
   onReply: (cardName: string, clientId: string, data: unknown) => void;
   onLog: (cardName: string, message: string) => void;
   onCreateCard: (name: string) => void;
+  onWriteNotify?: (cardName: string, filename: string) => void;
 }
 
 // ── ContainerRuntime ───────────────────────────────────────
@@ -180,6 +181,9 @@ export class ContainerRuntime {
           break;
         case "createCard":
           this.bridgeCallbacks?.onCreateCard((msg.data as { name: string }).name);
+          break;
+        case "writeNotify":
+          this.bridgeCallbacks?.onWriteNotify?.(cardName, (msg.data as { filename: string }).filename);
           break;
       }
       return;

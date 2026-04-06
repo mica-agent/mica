@@ -152,6 +152,8 @@ function createBridge(cardName, replyClientId) {
     },
 
     async write(filename, content) {
+      // Notify host of write source before writing — so file watcher can tag the source
+      sendToHost({ type: "bridge", cardName, method: "writeNotify", data: { filename } });
       await fs.promises.mkdir(cardDir, { recursive: true });
       const filepath = await resolveCardPath(path.join(cardDir, filename));
       await fs.promises.mkdir(path.dirname(filepath), { recursive: true });
