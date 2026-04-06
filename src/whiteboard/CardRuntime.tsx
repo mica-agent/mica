@@ -155,6 +155,13 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       // ── Phase 2: Inject HTML ──────────────────────────────────
       el.innerHTML = html;
 
+      // Keyboard isolation: stop key events from bubbling out of this card.
+      // Prevents one card's keyboard handler from interfering with others.
+      // Uses bubble phase so card-internal document.addEventListener still works.
+      el.addEventListener("keydown", (e: Event) => e.stopPropagation());
+      el.addEventListener("keyup", (e: Event) => e.stopPropagation());
+      el.addEventListener("keypress", (e: Event) => e.stopPropagation());
+
       // ── Phase 3: Process inline dependencies from HTML ────────
       // Handle <link> and <script src> tags that weren't declared
       // via the dependencies export (legacy / inline approach).
