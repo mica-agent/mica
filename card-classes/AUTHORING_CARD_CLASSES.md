@@ -193,11 +193,9 @@ Cards interact with two file scopes. Confusing them is the most common source of
 **Card directory** — `mica.read()` / `mica.write()`:
 ```
 Scope:     This card's own directory
-Contains:  Primary content, supplementary state, dot-prefixed infrastructure
-Examples:  document.md, conversation.json, .session.json
-Note:      If a filename resolves to a card subdirectory, the primary file is
-           read/written automatically (e.g., mica.read('brief.md') reads
-           brief.md/document.md transparently)
+Contains:  Primary content, flat files (brief.md, conversation.json),
+           dot-prefixed infrastructure, child card subdirectories
+Examples:  document.md, brief.md, conversation.json, .session.json
 ```
 
 **Canvas directory** — `mica.exec()`:
@@ -207,33 +205,48 @@ Contains:  All sibling cards, the canvas primary file
 Access:    mica.exec('ls'), mica.exec('cat goal.goal/goals.md')
 ```
 
-### Example: reading sibling card content
-
-```javascript
-// WRONG — reads from THIS card's directory, not a sibling
-const goals = await mica.read('goal.goal');
-
-// RIGHT — read via the canvas directory
-const result = await mica.exec('cat goal.goal/goals.md');
-
-// ALSO RIGHT — use the read_file tool pattern (resolves primary file)
-const goals = await mica.read('goal.goal');  // works if goal.goal/ is inside this card
-```
-
-### Seed files
-
-Card classes define seed files using the `_` prefix convention. Files prefixed with `_` in the card class directory are copied into new card instances with the prefix stripped:
+### Card directory file conventions
 
 ```
-card-classes/simple-project/
-  render.js                 # Card class code
-  _.layout.json             # Internal seed → project.project/.layout.json
-  _goal.goal                # Card seed → project.project/goal.goal/goals.md
-  _brief.md                 # Card seed → project.project/brief.md/document.md
-  _welcome.md               # Card seed → project.project/welcome.md/document.md
+my-agent.claude-chat/
+  conversation.json   ← flat file (content/state)
+  brief.md            ← flat file (card's purpose, read by agents)
+  .session.json       ← dot-prefixed (infrastructure, hidden)
+  sub-task.todo/      ← child card (directory with card extension)
+    tasks.md
 ```
 
-Files with valid card extensions (`.goal`, `.md`, `.mmd`, etc.) become **child card subdirectories** with their content written to the primary file. Files without card extensions (`.json`, etc.) are copied as **flat internal files**.
+- **Primary file** — the card's main content (determined by card class metadata)
+- **`brief.md`** — describes the card's purpose. Agents read it to understand what the card is for. Optional. Does not appear on the canvas.
+- **Flat files** — supplementary state (conversation.json, etc.)
+- **Dot-prefixed files** — infrastructure, hidden from listings and agents
+- **Child card subdirectories** — cards within cards (nested canvases, sub-agents)
+
+### Card class directory structure
+
+```
+card-classes/todo/
+  render.js           # Card class code (implementation)
+  spec.md             # Card class spec (what this type does — the blueprint)
+  ~brief.md           # Seed: flat file → instance brief.md
+  ~conversation.json  # Seed: flat file → instance conversation.json
+  _goal.goal          # Seed: child card → instance goal.goal/goals.md
+  _.layout.json       # Seed: internal file → instance .layout.json
+```
+
+**Class-level files** (no prefix):
+- `render.js` — the implementation, derived from the spec
+- `spec.md` — what this card type does. The blueprint. An agent reads this to understand or regenerate render.js.
+
+**Seed files** (prefixed, copied to new instances with prefix stripped):
+
+| Prefix | Behavior | Example |
+|--------|----------|---------|
+| `~` | Copied as **flat file** | `~brief.md` → `brief.md` |
+| `_` + card extension | Created as **child card subdirectory** | `_goal.goal` → `goal.goal/goals.md` |
+| `_` + no card extension | Copied as **flat internal file** | `_.layout.json` → `.layout.json` |
+
+When a child card is created from a `_` seed, the child card class's own seed files are also copied (e.g., a seeded `todo.todo` gets `brief.md` from the todo class's `~brief.md`).
 
 ---
 

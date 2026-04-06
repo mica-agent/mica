@@ -35,13 +35,31 @@ The canvas card directory (`my-project.project/`) IS the canvas. Its extension (
 
 Every card has two configuration files:
 
-- **`spec.md`** (class-level) — what this type of card does. Shared by all cards of the same type. Lives in the card class directory. This is the blueprint — an agent can read it to understand or regenerate the card's code.
+- **`spec.md`** (class-level) — what this type of card does. Shared by all cards of the same type. Lives in the card class directory (`card-classes/{name}/spec.md`). This is the blueprint — an agent can read it to understand or regenerate the card's code.
 
-- **`brief.md`** (instance-level) — what THIS specific card is for. Optional. Lives in the card's own directory. This is the assignment — it tells agents the card's purpose and how to maintain it.
+- **`brief.md`** (instance-level) — what THIS specific card is for. Optional. A flat file inside the card's own directory. This is the assignment — it tells agents the card's purpose and how to maintain it.
 
 Example: A markdown card's spec says "renders rich text with Toast UI editor." An instance's brief might say "this is the project requirements doc — keep it aligned with goals."
 
+**Briefs are flat files, not cards.** `brief.md` lives inside the card directory alongside the primary file (e.g. `todo.todo/brief.md`). It does not appear on the canvas — it's metadata about the card, not content. Access it via the card's config view (gear button) or `mica.read('brief.md')`.
+
 **Reactive briefs:** Writing a brief on any card turns it into a reactive participant. Agents on the canvas read briefs to understand each card's role. A brief like "when goals change, update this document" tells agents to maintain the card when related cards change. The brief is an agent-readable contract.
+
+## File conventions inside a card directory
+
+```
+my-task.todo/
+  tasks.md            ← primary file (content)
+  brief.md            ← brief (optional, flat file, not a card)
+  .layout.json        ← infrastructure (dot-prefixed, hidden)
+  sub-card.md/        ← child card (directory with extension)
+    document.md
+```
+
+- **Primary file** — the card's content, determined by card class metadata
+- **`brief.md`** — optional, describes the card's purpose for agents
+- **Dot-prefixed files** — infrastructure (hidden from listings and agents)
+- **Subdirectories with card extensions** — child cards (shown on nested canvases)
 
 ## Creating cards
 
