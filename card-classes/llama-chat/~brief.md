@@ -23,7 +23,7 @@ Card classes live in `/opt/mica/card-classes/{name}/`. To create one:
 
 After creating the class, create an instance on the canvas with `create_card({ name: "my-thing.{ext}" })`.
 
-Before writing render.js, use `read_reference('AUTHORING_CARD_CLASSES.md')` to load the full API reference. Also read an existing card class for a working example: `exec("cat /opt/mica/card-classes/mermaid/render.js")`.
+Before writing render.js, use `read_reference('CARD_CLASS_QUICKREF.md')` to load the API reference. Also read an existing card class for a working example: `exec("cat /opt/mica/card-classes/mermaid/render.js")`.
 
 ## When canvas cards change
 
