@@ -474,13 +474,13 @@ export function resolveCardClassDir(cardClass: string, projectPath?: string): st
 
 /**
  * Copy seed files from a card class directory into a card instance directory.
- * Seed files are prefixed with `_` — the prefix is stripped on copy.
  *
- * Two kinds of seed files:
- * - Files with a valid card extension (e.g. `_goal.goal`, `_brief.md`) →
- *   created as card subdirectories with the seed content in the primary file.
- * - Other files (e.g. `_.layout.json`) → copied as flat files into the instance.
- * - Seed directories → recursively copied.
+ * Three seed prefixes:
+ * - `_` (underscore) — card seed. Files with card extensions become child card
+ *   subdirectories. Files without card extensions become flat internal files.
+ * - `~` (tilde) — flat file seed. Always copied as a flat file, never a card directory.
+ *   Used for config/metadata files (brief.md, conversation.json).
+ * - Directories prefixed with `_` are recursively copied.
  */
 export async function copySeedFiles(classDir: string, instanceDir: string, projectPath?: string): Promise<void> {
   let entries: string[];
@@ -493,9 +493,19 @@ export async function copySeedFiles(classDir: string, instanceDir: string, proje
   const validExts = getValidExtensions(projectPath);
 
   for (const entry of entries) {
-    if (!entry.startsWith("_")) continue;
+    // Determine prefix type
+    let seedName: string;
+    let isFlat = false;
 
-    const seedName = entry.slice(1); // Strip _ prefix
+    if (entry.startsWith("~")) {
+      seedName = entry.slice(1);
+      isFlat = true;
+    } else if (entry.startsWith("_")) {
+      seedName = entry.slice(1);
+    } else {
+      continue; // Not a seed file
+    }
+
     const srcPath = join(classDir, entry);
     const destPath = join(instanceDir, seedName);
 
@@ -515,23 +525,25 @@ export async function copySeedFiles(classDir: string, instanceDir: string, proje
           await writeFile(subDest, await readFile(subSrc, "utf-8"), "utf-8");
         }
       }
+    } else if (isFlat) {
+      // ~ prefix: always copy as flat file
+      await writeFile(destPath, await readFile(srcPath, "utf-8"), "utf-8");
     } else {
-      // Check if this seed file has a card extension → create as card subdirectory
+      // _ prefix: check if this has a card extension → create as card subdirectory
       const ext = extname(seedName);
       if (ext && validExts.includes(ext) && ext !== ".json") {
-        // Card seed: create subdirectory with primary file
         const cardClass = resolveCardClassFromFilename(seedName, projectPath);
         const primaryFile = getPrimaryFile(cardClass, projectPath);
         const cardDir = destPath;
         await mkdir(cardDir, { recursive: true });
         await writeFile(join(cardDir, primaryFile), await readFile(srcPath, "utf-8"), "utf-8");
-        // Also copy the child card class's own seed files (e.g. _brief.md for todo)
+        // Also copy the child card class's own seed files
         const childClassDir = resolveCardClassDir(cardClass, projectPath);
         if (childClassDir) {
           await copySeedFiles(childClassDir, cardDir, projectPath);
         }
       } else {
-        // Internal file: copy as-is
+        // No card extension: copy as flat file
         await writeFile(destPath, await readFile(srcPath, "utf-8"), "utf-8");
       }
     }
