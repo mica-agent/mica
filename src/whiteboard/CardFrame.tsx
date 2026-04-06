@@ -62,8 +62,8 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
     readClassFile(meta.cardClass, "spec.md")
       .then((c) => { setSpecContent(c); setSpecOriginal(c); })
       .catch(() => { setSpecContent(""); setSpecOriginal(""); });
-    // Class-level: _brief.md (default brief)
-    readClassFile(meta.cardClass, "_brief.md")
+    // Class-level: ~brief.md (default brief)
+    readClassFile(meta.cardClass, "~brief.md")
       .then((c) => { setDefaultBrief(c); setDefaultBriefOriginal(c); })
       .catch(() => { setDefaultBrief(""); setDefaultBriefOriginal(""); });
     // Instance-level: brief.md
@@ -90,7 +90,7 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
         promises.push(writeClassFile(meta.cardClass, "spec.md", specContent));
       }
       if (defaultBrief !== defaultBriefOriginal) {
-        promises.push(writeClassFile(meta.cardClass, "_brief.md", defaultBrief));
+        promises.push(writeClassFile(meta.cardClass, "~brief.md", defaultBrief));
       }
       if (briefContent !== briefOriginal) {
         promises.push(writeCardInternalFile(projectId, canvasId, filename, "brief.md", briefContent));
