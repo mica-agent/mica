@@ -28,7 +28,7 @@ import type { MicaBridge } from "./moduleLoader.js";
 import { ContainerRuntime } from "./containerRuntime.js";
 import { FileWatcher } from "./fileWatcher.js";
 import { SandboxManager } from "./projectSandbox.js";
-import { stopLlamaServer } from "./llamaServer.js";
+import { ensureLlamaServer, stopLlamaServer } from "./llamaServer.js";
 import { ProjectExecutor } from "./projectExecutor.js";
 import { ChannelManager } from "./channelManager.js";
 import { createModuleHandlerFactory } from "./channelHandlers/module.js";
@@ -975,6 +975,11 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
   } catch (err) {
     console.error("[startup] Failed to start container runtimes:", (err as Error).message);
   }
+
+  // Start llama-server eagerly so local LLM agents can connect
+  ensureLlamaServer().catch((err) => {
+    console.warn("[startup] llama-server failed to start:", (err as Error).message);
+  });
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`
