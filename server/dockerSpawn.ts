@@ -56,7 +56,7 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
     projectPath,
     volumes: [
       `${canvasDir}:${CONTAINER_PROJECT_DIR}:rw`,
-      `${CARD_CLASSES_DIR}:${CONTAINER_CARD_CLASSES}:ro`,
+      `${CARD_CLASSES_DIR}:${CONTAINER_CARD_CLASSES}:rw`,
       `${NODE_MODULES_DIR}:${CONTAINER_NODE_MODULES}:ro`,
       `${RUNTIME_DIR}:${CONTAINER_RUNTIME_DIR}:ro`,
       // ~/.claude/ for Claude Code CLI: credentials, settings, plugins, sessions.

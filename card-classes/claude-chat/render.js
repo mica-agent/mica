@@ -244,7 +244,7 @@ Be concise and direct. Take action — don't just discuss. When asked to create 
       systemPrompt,
       tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
       model: MODEL,
-      maxTurns: 10,
+      maxTurns: 25,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       ...(session.sessionId ? { resume: session.sessionId } : {}),

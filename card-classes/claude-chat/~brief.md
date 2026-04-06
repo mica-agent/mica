@@ -22,9 +22,14 @@ Card classes live in `/opt/mica/card-classes/{name}/`. To create one:
    - `export default function render(content, config) { return "<html>..."; }`
 4. Optionally write `~brief.md` — default brief for new instances
 
-After creating the class, create an instance on the canvas with `create_card({ name: "my-thing.{ext}" })`.
+After writing the files, you MUST create an instance on the canvas. Use Bash to call the API:
+```
+curl -s -X POST http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "my-thing.{ext}"}'
+```
 
-Read an existing card class for a working example: `exec("cat /opt/mica/card-classes/mermaid/render.js")`.
+Read an existing card class for a working example: `cat /opt/mica/card-classes/mermaid/render.js`.
 
 ## When canvas cards change
 

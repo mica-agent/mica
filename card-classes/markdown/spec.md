@@ -3,7 +3,7 @@
 Rich WYSIWYG markdown editor using Toast UI Editor.
 
 ## Rendering
-Embeds Toast UI Editor in dark theme with WYSIWYG mode as default. Toolbar includes: heading, bold, italic, strike, unordered/ordered lists, task lists, tables, links, code, and code blocks. The markdown tab switcher and mode switch are hidden via CSS.
+Embeds Toast UI Editor in light theme with WYSIWYG mode as default. Toolbar includes: heading, bold, italic, strike, unordered/ordered lists, task lists, tables, links, code, and code blocks. The markdown tab switcher and mode switch are hidden via CSS.
 
 ## Interactions
 - Full WYSIWYG editing with toolbar controls.
