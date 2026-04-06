@@ -548,9 +548,10 @@ pre.mermaid svg {
   flex-direction: column;
   gap: 6px;
   padding: 8px 12px;
-  flex: 1;
+  flex: 1 !important;
   min-height: 0;
   overflow-y: auto;
+  max-height: none !important;
 }
 
 .wb-card-config-section {

@@ -155,7 +155,7 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
       </div>
 
       {flipped ? (
-        <div className="wb-card-body wb-card-config">
+        <div className="wb-card-config">
           <div className="wb-card-config-section">
             <div className="wb-card-config-label">Spec <span className="wb-card-config-scope">all {meta.cardClass} cards</span></div>
             <textarea
