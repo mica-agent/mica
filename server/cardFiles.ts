@@ -543,7 +543,8 @@ export async function copySeedFiles(classDir: string, instanceDir: string, proje
           await copySeedFiles(childClassDir, cardDir, projectPath);
         }
       } else {
-        // No card extension: copy as flat file
+        // _ prefix without card extension — use ~ prefix for flat files instead
+        console.warn(`[seed] ${entry} has _ prefix but no card extension — use ~ prefix for flat files`);
         await writeFile(destPath, await readFile(srcPath, "utf-8"), "utf-8");
       }
     }

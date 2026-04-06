@@ -229,9 +229,15 @@ card-classes/todo/
   render.js           # Card class code (implementation)
   spec.md             # Card class spec (what this type does — the blueprint)
   ~brief.md           # Seed: flat file → instance brief.md
-  ~conversation.json  # Seed: flat file → instance conversation.json
+
+card-classes/simple-project/
+  render.js           # Canvas card class code
+  spec.md             # Canvas spec
+  ~.layout.json       # Seed: flat file → instance .layout.json
+  ~brief.md           # Seed: flat file → instance brief.md
   _goal.goal          # Seed: child card → instance goal.goal/goals.md
-  _.layout.json       # Seed: internal file → instance .layout.json
+  _todo.todo          # Seed: child card → instance todo.todo/tasks.md
+  _welcome.md         # Seed: child card → instance welcome.md/document.md
 ```
 
 **Class-level files** (no prefix):
@@ -242,9 +248,10 @@ card-classes/todo/
 
 | Prefix | Behavior | Example |
 |--------|----------|---------|
-| `~` | Copied as **flat file** | `~brief.md` → `brief.md` |
-| `_` + card extension | Created as **child card subdirectory** | `_goal.goal` → `goal.goal/goals.md` |
-| `_` + no card extension | Copied as **flat internal file** | `_.layout.json` → `.layout.json` |
+| `~` | Copied as **flat file** | `~brief.md` → `brief.md`, `~.layout.json` → `.layout.json` |
+| `_` | Created as **child card subdirectory** | `_goal.goal` → `goal.goal/goals.md` |
+
+Use `~` for all flat files (config, metadata, state). Use `_` only for child cards.
 
 When a child card is created from a `_` seed, the child card class's own seed files are also copied (e.g., a seeded `todo.todo` gets `brief.md` from the todo class's `~brief.md`).
 
