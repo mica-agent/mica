@@ -576,8 +576,30 @@ pre.mermaid svg {
   font-style: italic;
 }
 
+.wb-card-brief-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.wb-card-brief-cancel {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  font-family: inherit;
+  padding: 4px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.wb-card-brief-cancel:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+}
+
 .wb-card-brief-save {
-  align-self: flex-end;
   background: rgba(96, 165, 250, 0.2);
   border: 1px solid rgba(96, 165, 250, 0.4);
   color: #60a5fa;
@@ -594,7 +616,7 @@ pre.mermaid svg {
 }
 
 .wb-card-brief-save:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: default;
 }
 

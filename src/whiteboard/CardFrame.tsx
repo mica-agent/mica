@@ -28,6 +28,7 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
   const [overflows, setOverflows] = useState(false);
   const [flipped, setFlipped] = useState(false);
   const [briefContent, setBriefContent] = useState<string | null>(null);
+  const [briefOriginal, setBriefOriginal] = useState<string | null>(null);
   const [briefDirty, setBriefDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -58,22 +59,34 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
   useEffect(() => {
     if (!flipped) return;
     readCardInternalFile(projectId, canvasId, filename, "brief.md")
-      .then(setBriefContent)
-      .catch(() => setBriefContent(null));
+      .then((content) => { setBriefContent(content); setBriefOriginal(content); })
+      .catch(() => { setBriefContent(null); setBriefOriginal(null); });
   }, [flipped, projectId, canvasId, filename]);
 
   const handleFlip = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
+    if (flipped && briefDirty) {
+      // Flipping back with unsaved changes — revert
+      setBriefContent(briefOriginal);
+      setBriefDirty(false);
+    }
     setFlipped(!flipped);
+  }, [flipped, briefDirty, briefOriginal]);
+
+  const handleCancelBrief = useCallback(() => {
+    setBriefContent(briefOriginal);
     setBriefDirty(false);
-  }, [flipped]);
+    setFlipped(false);
+  }, [briefOriginal]);
 
   const handleSaveBrief = useCallback(async () => {
     if (briefContent === null) return;
     setSaving(true);
     try {
       await writeCardInternalFile(projectId, canvasId, filename, "brief.md", briefContent);
+      setBriefOriginal(briefContent);
       setBriefDirty(false);
+      setFlipped(false);
     } catch (err) {
       console.error("Failed to save brief:", err);
     } finally {
@@ -132,15 +145,21 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
                 placeholder="No brief — write agent instructions here..."
                 spellCheck={false}
               />
-              {briefDirty && (
+              <div className="wb-card-brief-actions">
+                <button
+                  className="wb-card-brief-cancel"
+                  onClick={handleCancelBrief}
+                >
+                  Cancel
+                </button>
                 <button
                   className="wb-card-brief-save"
                   onClick={handleSaveBrief}
-                  disabled={saving}
+                  disabled={saving || !briefDirty}
                 >
-                  {saving ? "Saving..." : "Save Brief"}
+                  {saving ? "Saving..." : "Save"}
                 </button>
-              )}
+              </div>
             </>
           ) : (
             <div className="wb-card-brief-empty">
