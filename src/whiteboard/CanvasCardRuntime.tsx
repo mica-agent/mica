@@ -84,8 +84,18 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
     if (check()) return;
 
+    // Watch for card class HTML injection
     const obs = new MutationObserver(() => { if (check()) obs.disconnect(); });
     obs.observe(containerRef.current, { childList: true, subtree: true });
+
+    // Fallback: poll briefly in case MutationObserver misses the injection
+    let retries = 0;
+    const poll = () => {
+      if (check()) { obs.disconnect(); return; }
+      if (++retries < 20) requestAnimationFrame(poll);
+    };
+    requestAnimationFrame(poll);
+
     return () => obs.disconnect();
   }, [parentCard]);
 
