@@ -79,10 +79,10 @@ async function startServer(): Promise<string> {
     "--host", "0.0.0.0",
     "--port", String(port),
     "--jinja",
-    "--ctx-size", "32768",
+    "--ctx-size", "65536",
     "--flash-attn", "on",
     "--n-gpu-layers", "999",
-    "-np", "2",
+    "-np", "1",
   ], {
     stdio: ["ignore", "pipe", "pipe"],
   });

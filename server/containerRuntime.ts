@@ -269,11 +269,6 @@ export class ContainerRuntime {
     await this.ensureRunning();
     await this.request({
       type: "onMessage",
-      className,
-      classPath: this.toContainerPath(classPath),
-      cardName,
-      msg,
-      replyClientId,
     });
   }
 

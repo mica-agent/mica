@@ -288,8 +288,12 @@ async function handleMessage(msg) {
             sendToHost({ type: "bridge", cardName: msg.cardName, method: "reply", data, replyClientId: msg.replyClientId });
           };
         }
-        await mod.onMessage(msg.msg, mica);
+        // Send result immediately — onMessage runs in background (agent tool loops can take minutes).
+        // The agent streams results to the browser via mica.send(), not via the return value.
         sendResult(id, null);
+        mod.onMessage(msg.msg, mica).catch((err) => {
+          process.stderr.write(`[runtime] onMessage error for ${msg.cardName}: ${err.message}\n`);
+        });
         return;
       }
 
