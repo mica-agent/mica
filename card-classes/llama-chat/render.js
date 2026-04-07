@@ -319,8 +319,8 @@ const TOOLS = [
     type: "function",
     function: {
       name: "write_to_path",
-      description: "Write content to an absolute file path. Creates parent directories if needed. Use this to create card class files (render.js, spec.md) at /opt/mica/card-classes/{name}/.",
-      parameters: { type: "object", properties: { path: { type: "string", description: "Absolute file path (e.g., '/opt/mica/card-classes/calculator/render.js')" }, content: { type: "string", description: "File content" } }, required: ["path", "content"] },
+      description: "Write content to an absolute file path. Creates parent directories if needed. Use this to create card class files (render.js, spec.md) at /opt/mica/project-card-classes/{name}/.",
+      parameters: { type: "object", properties: { path: { type: "string", description: "Absolute file path (e.g., '/opt/mica/project-card-classes/calculator/render.js')" }, content: { type: "string", description: "File content" } }, required: ["path", "content"] },
     },
   },
 ];

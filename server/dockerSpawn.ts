@@ -52,11 +52,16 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
   const projectPath = await getProjectPath(projectId);
   // Mount the canvas card directory (where child cards live) as /project
   const canvasDir = await getCanvasDir(projectId, "_root");
+  // Ensure project-level card classes directory exists
+  const projectClassesDir = join(projectPath, ".mica", ".card-classes");
+  const { mkdirSync } = await import("fs");
+  mkdirSync(projectClassesDir, { recursive: true });
   return {
     projectPath,
     volumes: [
       `${canvasDir}:${CONTAINER_PROJECT_DIR}:rw`,
-      `${CARD_CLASSES_DIR}:${CONTAINER_CARD_CLASSES}:rw`,
+      `${CARD_CLASSES_DIR}:${CONTAINER_CARD_CLASSES}:ro`,
+      `${projectClassesDir}:/opt/mica/project-card-classes:rw`,
       `${NODE_MODULES_DIR}:${CONTAINER_NODE_MODULES}:ro`,
       `${RUNTIME_DIR}:${CONTAINER_RUNTIME_DIR}:ro`,
       // ~/.claude/ for Claude Code CLI: credentials, settings, plugins, sessions.

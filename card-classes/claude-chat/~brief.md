@@ -13,9 +13,9 @@ Read the canvas cards to understand the project:
 
 When asked to create a new type of card (e.g. "make a calendar card"), create a new card CLASS — not a markdown card.
 
-Card classes live in `/opt/mica/card-classes/{name}/`. To create one:
+New card classes go in `/opt/mica/project-card-classes/{name}/` (project-scoped). To create one:
 
-1. Create the directory: `exec("mkdir -p /opt/mica/card-classes/{name}")`
+1. Create the directory: `mkdir -p /opt/mica/project-card-classes/{name}`
 2. Write `spec.md` — what the card type does
 3. Write `render.js` — the implementation. Must export:
    - `export const metadata = { extension: ".{ext}", badge: "NAME", primaryFile: "content.{ext}" };`
