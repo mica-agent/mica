@@ -337,10 +337,10 @@ export class ContainerRuntime {
       const rel = hostPath.slice(hostPath.indexOf("/card-classes/") + "/card-classes/".length);
       return `/opt/mica/card-classes/${rel}`;
     }
-    // Project .mica/.card-classes/ → /project/.mica/.card-classes/
+    // Project .mica/.card-classes/ → /opt/mica/project-card-classes/
     if (hostPath.includes("/.mica/.card-classes/")) {
-      const rel = hostPath.slice(hostPath.indexOf("/.mica/.card-classes/"));
-      return `/project${rel}`;
+      const rel = hostPath.slice(hostPath.indexOf("/.mica/.card-classes/") + "/.mica/.card-classes/".length);
+      return `/opt/mica/project-card-classes/${rel}`;
     }
     return hostPath;
   }
