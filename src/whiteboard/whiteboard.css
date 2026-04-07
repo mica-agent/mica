@@ -364,17 +364,24 @@
   opacity: 0.5;
 }
 
+/* Fade overlay for overflowing cards.
+   Uses position:absolute on a relatively-positioned parent instead of
+   position:sticky on a pseudo-element — Safari doesn't reliably composite
+   sticky pseudo-elements inside overflow:auto flex containers. */
+.wb-card:not(.wb-card--expanded) .wb-card-body--overflows {
+  position: relative;
+}
+
 .wb-card:not(.wb-card--expanded) .wb-card-body--overflows::after {
   content: "";
-  position: sticky;
+  position: absolute;
   bottom: 0;
   left: 0;
-  display: block;
   width: 100%;
   height: 60px;
-  margin-top: -60px;
   background: linear-gradient(transparent, rgba(10, 10, 14, 0.95));
   pointer-events: none;
+  z-index: 1;
 }
 
 /* System cards get more room */
@@ -656,6 +663,7 @@ pre.mermaid svg {
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -769,6 +777,7 @@ pre.mermaid svg {
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -893,6 +902,7 @@ pre.mermaid svg {
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
   backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;

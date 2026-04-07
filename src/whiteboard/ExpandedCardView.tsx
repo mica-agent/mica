@@ -53,9 +53,12 @@ export default function ExpandedCardView({ filename, meta, canvasColor, onClose,
 
     sourceCardBodyRef.current = cardBody;
 
-    // Leave a placeholder in the original position so the card doesn't collapse
+    // Leave a placeholder in the original position so the card doesn't collapse.
+    // getBoundingClientRect is more reliable than offsetHeight in Safari when
+    // the element is inside a flex container that hasn't fully resolved yet.
     const placeholder = document.createElement("div");
-    placeholder.style.cssText = `width:100%;height:${cardBody.offsetHeight}px;`;
+    const measuredHeight = cardBody.getBoundingClientRect().height || cardBody.offsetHeight;
+    placeholder.style.cssText = `width:100%;height:${measuredHeight}px;`;
     placeholder.className = "wb-card-body";
     cardBody.parentElement?.insertBefore(placeholder, cardBody);
     placeholderRef.current = placeholder;

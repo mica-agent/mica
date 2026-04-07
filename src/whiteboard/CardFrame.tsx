@@ -45,14 +45,21 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
 
   const isDirty = specContent !== specOriginal || defaultBrief !== defaultBriefOriginal || briefContent !== briefOriginal;
 
-  // Detect overflow after render
+  // Detect overflow after render.
+  // Uses double-rAF so the browser (including Safari) has completed flex
+  // layout before we read scrollHeight/clientHeight.
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
-    const timer = setTimeout(() => {
-      setOverflows(el.scrollHeight > el.clientHeight + 10);
-    }, 100);
-    return () => clearTimeout(timer);
+    let cancelled = false;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!cancelled) {
+          setOverflows(el.scrollHeight > el.clientHeight + 10);
+        }
+      });
+    });
+    return () => { cancelled = true; };
   }, [html]);
 
   // Load all config files when flipped
