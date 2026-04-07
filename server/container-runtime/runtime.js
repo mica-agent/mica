@@ -337,6 +337,19 @@ async function handleMessage(msg) {
         return;
       }
 
+      case "event": {
+        // Deliver generic event to card session listeners (e.g., card-error)
+        const session = cardSessions.get(msg.cardName);
+        if (session?.listeners?.[msg.eventType]) {
+          for (const cb of session.listeners[msg.eventType]) {
+            try { cb(msg.data); } catch (e) {
+              process.stderr.write(`[runtime] ${msg.eventType} listener error for ${msg.cardName}: ${e.message}\n`);
+            }
+          }
+        }
+        return;
+      }
+
       default:
         sendError(id, `Unknown message type: ${type}`);
     }

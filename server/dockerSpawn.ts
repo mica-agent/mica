@@ -11,7 +11,7 @@
 
 import { spawn, execSync } from "child_process";
 import { createHash } from "crypto";
-import { writeFileSync, unlinkSync } from "fs";
+import { writeFileSync, unlinkSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import { tmpdir } from "os";
 import { fileURLToPath } from "url";
@@ -48,6 +48,19 @@ const CONTAINER_NODE_MODULES = "/opt/mica/node_modules";
 const CONTAINER_RUNTIME_DIR = "/opt/mica/runtime";
 export const RUNTIME_DIR = join(__dirname, "container-runtime");
 
+/** Find libnvidia-ml.so.1 for bind-mounting into containers (architecture-independent). */
+function findNvidiaML(): string[] {
+  const candidates = [
+    "/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1",
+    "/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
+    "/usr/lib64/libnvidia-ml.so.1",
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return [`${p}:${p}:ro`];
+  }
+  return [];
+}
+
 export async function getProjectMounts(projectId: string): Promise<ProjectMounts> {
   const projectPath = await getProjectPath(projectId);
   // Mount the canvas card directory (where child cards live) as /project
@@ -67,6 +80,9 @@ export async function getProjectMounts(projectId: string): Promise<ProjectMounts
       // ~/.claude/ for Claude Code CLI: credentials, settings, plugins, sessions.
       `${process.env.HOME}/.claude:/home/sandbox/.claude:rw`,
       `${process.env.HOME}/.claude.json:/home/sandbox/.claude.json:ro`,
+      // GPU monitoring — bind-mount nvidia-smi and its library if available
+      ...(existsSync("/usr/bin/nvidia-smi") ? [`/usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro`] : []),
+      ...findNvidiaML(),
     ],
     workdir: CONTAINER_PROJECT_DIR,
   };

@@ -15,8 +15,12 @@ export default function App() {
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
   const [activeProjectIndex, setActiveProjectIndex] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
+  const [wasConnected, setWasConnected] = useState(false);
 
-  useEffect(() => onConnectionChange(setWsConnected), []);
+  useEffect(() => onConnectionChange((val) => {
+    setWsConnected(val);
+    if (val) setWasConnected(true);
+  }), []);
 
   const loadProjects = useCallback(() => {
     fetchProjects()
@@ -74,6 +78,15 @@ export default function App() {
             projectId={projectId}
           />
         </div>
+
+        {wasConnected && !wsConnected && (
+          <div className="ws-overlay">
+            <div className="ws-overlay-content">
+              <div className="ws-overlay-spinner" />
+              <div className="ws-overlay-text">Reconnecting...</div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

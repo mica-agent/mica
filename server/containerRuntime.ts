@@ -285,6 +285,13 @@ export class ContainerRuntime {
     this.proc.stdin?.write(msg + "\n");
   }
 
+  /** Deliver a generic event to a card session in the container. Fire-and-forget. */
+  sendEvent(cardName: string, eventType: string, data: Record<string, unknown>): void {
+    if (!this.proc || !this.ready) return;
+    const msg = JSON.stringify({ type: "event", cardName, eventType, data });
+    this.proc.stdin?.write(msg + "\n");
+  }
+
   async onDestroy(
     className: string,
     classPath: string,

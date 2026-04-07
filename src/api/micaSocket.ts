@@ -36,6 +36,7 @@ const eventListeners = new Map<string, Set<(data: unknown) => void>>();
 let idCounter = 0;
 let wsUrl = "";
 let connected = false;
+let wasEverConnected = false;
 const connectionListeners = new Set<(connected: boolean) => void>();
 
 /** Subscribe to WebSocket connection state changes. */
@@ -60,7 +61,16 @@ function nextId(): string {
 // ── Connection management ────────────────────────────────────
 
 export function connect(url?: string): void {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (ws) {
+    if (ws.readyState === WebSocket.OPEN) return;
+    // Clean up stale socket (CONNECTING or CLOSING) to prevent orphaned handlers
+    ws.onopen = null;
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.onmessage = null;
+    try { ws.close(); } catch {}
+    ws = null;
+  }
 
   const apiPort = import.meta.env.VITE_MICA_WS_PORT || "3002";
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -69,13 +79,12 @@ export function connect(url?: string): void {
 
   ws.onopen = () => {
     console.log("[mica-socket] Connected");
+    wasEverConnected = true;
     setConnected(true);
-    // No channel re-registration needed — card scripts re-execute on re-render
-    // and each openChannel() sends a fresh channel_open to the server.
   };
 
   ws.onclose = () => {
-    console.log("[mica-socket] Disconnected, reconnecting in 2s...");
+    console.log("[mica-socket] Disconnected");
     setConnected(false);
     ws = null;
     // Reject all pending calls
@@ -89,7 +98,18 @@ export function connect(url?: string): void {
       ch.onClose?.();
       activeChannels.delete(id);
     }
-    reconnectTimer = setTimeout(() => connect(wsUrl), 2000);
+    // Poll the server with HTTP until it's back, then reload the page
+    if (wasEverConnected) {
+      const poll = setInterval(() => {
+        fetch(`${location.protocol}//${location.hostname}:${import.meta.env.VITE_MICA_WS_PORT || "3002"}/api/card-classes`, { method: "HEAD" })
+          .then(() => {
+            clearInterval(poll);
+            console.log("[mica-socket] Server is back — reloading page");
+            location.reload();
+          })
+          .catch(() => {}); // server still down, try again
+      }, 2000);
+    }
   };
 
   ws.onerror = (err) => {

@@ -50,8 +50,8 @@ export class FileWatcher extends EventEmitter {
     // Watch card-classes directory
     this.watchCardClasses();
 
-    const totalCanvases = registry.projects.reduce((sum, p) => sum + p.canvases.length, 0);
-    console.log(`[file-watcher] Watching ${totalCanvases} canvas(es) across ${registry.projects.length} project(s), and card-classes.`);
+    const totalCanvases = projects.reduce((sum, p) => sum + p.canvases.length, 0);
+    console.log(`[file-watcher] Watching ${totalCanvases} canvas(es) across ${projects.length} project(s), and card-classes.`);
   }
 
   /** Add a watcher for a newly connected project's canvases */

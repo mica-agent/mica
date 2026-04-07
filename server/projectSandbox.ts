@@ -14,10 +14,41 @@
 
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { existsSync } from "fs";
 import { getProjectConfig } from "./projectConnection.js";
 import { getProjectMounts, SANDBOX_IMAGE } from "./dockerSpawn.js";
 
 const execFileAsync = promisify(execFile);
+
+/** Detect GPU passthrough strategy. Cached after first probe. */
+let gpuArgs: string[] | null = null;
+async function getGpuArgs(): Promise<string[]> {
+  if (gpuArgs !== null) return gpuArgs;
+
+  // Try --gpus all (works when host has NVIDIA Container Toolkit)
+  try {
+    await execFileAsync("docker", [
+      "run", "--rm", "--gpus", "all", SANDBOX_IMAGE, "true",
+    ], { timeout: 15000 });
+    gpuArgs = ["--gpus", "all"];
+    console.log("[sandbox] GPU passthrough: --gpus all");
+    return gpuArgs;
+  } catch { /* not available */ }
+
+  // Fallback: device mounts (Docker-in-Docker)
+  const devices = ["/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm"];
+  if (devices.every((d) => existsSync(d))) {
+    gpuArgs = [];
+    for (const d of devices) gpuArgs.push("--device", d);
+    console.log("[sandbox] GPU passthrough: device mounts");
+    return gpuArgs;
+  }
+
+  // No GPU available
+  gpuArgs = [];
+  console.log("[sandbox] GPU passthrough: none (no GPU detected)");
+  return gpuArgs;
+}
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -180,6 +211,7 @@ export class SandboxManager {
       "--network", "bridge",
       "--memory", memory,
       "--cpus", "2.0",
+      ...await getGpuArgs(),
     ];
 
     for (const vol of mounts.volumes) {

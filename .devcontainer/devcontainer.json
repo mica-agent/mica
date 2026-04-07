@@ -19,6 +19,11 @@
 			"type": "bind",
 			"source": "${localEnv:HOME}/.cache/llama.cpp",
 			"target": "/home/vscode/.cache/llama.cpp"
+		},
+		{
+			"type": "bind",
+			"source": "${localEnv:HOME}/.claude",
+			"target": "/home/vscode/.claude"
 		}
 	],
 	"features": {

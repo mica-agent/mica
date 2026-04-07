@@ -221,6 +221,7 @@ async function createPiSession(projectContext) {
     noPromptTemplates: true,
     noThemes: true,
   });
+  await resourceLoader.reload();
 
   const { session } = await createAgentSession({
     cwd: PROJECT_DIR,
@@ -245,6 +246,16 @@ export async function onConnect(mica, args) {
     pendingChanges: [],
   };
   sessions.set(key, session);
+
+  // Auto-respond to card render errors (e.g., broken card class code)
+  mica.on('card-error', (event) => {
+    const message = `[Card render error] ${event.filename} (class: ${event.cardClass}) failed to render:\n\n${event.error}\n\nRead the render.js for this card class and fix the error.`;
+    if (session.busy) {
+      session.queue.push(message);
+    } else {
+      processMessage(session, message, mica);
+    }
+  });
 
   // Subscribe to sibling card changes — debounce and batch
   mica.on('file-changed', (event) => {

@@ -855,7 +855,20 @@ function broadcast(msg: Record<string, unknown>) {
   }
 }
 
-// Wire broadcast for agent lifecycle events
+// Broadcast card render errors to browsers and server-side agent sessions
+function broadcastCardError(project: string, canvas: string, filename: string, error: string, cardClass?: string) {
+  console.log(`[card-error] ${project}/${canvas}/${filename}: ${error.slice(0, 100)}`);
+  broadcast({ type: "card-error", project, canvas, filename, error, cardClass });
+
+  // Deliver to server-side agent sessions so they can auto-fix
+  const runtime = containerRuntimes.get(project);
+  if (runtime) {
+    const sessions = channelManager.getProjectSessions(project, canvas);
+    for (const cardName of sessions) {
+      runtime.sendEvent(cardName, "card-error", { filename, error, cardClass });
+    }
+  }
+}
 
 // File watcher → broadcast events (card classes own their own update lifecycle)
 fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {
@@ -891,6 +904,9 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
         hasStream: rendered.hasStream,
         meta: rendered.meta,
       });
+      if (rendered.error) {
+        broadcastCardError(event.project, event.canvas, event.filename, rendered.error, rendered.meta?.cardClass);
+      }
     } catch (err) {
       console.error(`[file-watcher] Render failed for new card ${event.filename}:`, (err as Error).message);
     }
@@ -926,6 +942,9 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
   console.log(`[file-watcher] Card class changed: ${event.className}`);
   cardManager.invalidateClass(event.className);
 
+  // Notify all clients that the available card classes have changed
+  broadcast({ type: "classes-updated" });
+
   // Broadcast class-changed so all cards of this class can refresh themselves
   try {
     const projects = await listProjects();
@@ -938,12 +957,26 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
           if (file.name.startsWith(".")) continue;
           const { cardClass } = cardManager.resolveCardClass(file.name, file.content);
           if (cardClass === event.className) {
-            broadcast({
-              type: "file-changed",
-              project: project.id,
-              canvas,
-              filename: file.name,
-            });
+            try {
+              const rendered = await cardManager.renderCard(
+                project.id, canvas, file.name, file.content
+              );
+              broadcast({
+                type: "class-changed",
+                project: project.id,
+                canvas,
+                filename: file.name,
+                html: rendered.html,
+                exports: rendered.exports,
+                dependencies: rendered.dependencies,
+                meta: rendered.meta,
+              });
+              if (rendered.error) {
+                broadcastCardError(project.id, canvas, file.name, rendered.error, rendered.meta?.cardClass);
+              }
+            } catch (err) {
+              console.error(`[file-watcher] Re-render failed for ${file.name}:`, (err as Error).message);
+            }
           }
         }
       }

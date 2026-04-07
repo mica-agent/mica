@@ -51,6 +51,15 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       ]);
       setParentCard(card);
       setChildren(childCards);
+      // If no children returned, the container runtime may still be starting — retry
+      if (childCards.length === 0) {
+        setTimeout(async () => {
+          try {
+            const retry = await fetchProjectChildren(projectId);
+            if (retry.length > 0) setChildren(retry);
+          } catch { /* ignore */ }
+        }, 2000);
+      }
     } catch (err) {
       console.error("[CanvasCardRuntime] Failed to load project card:", err);
     } finally {
@@ -134,14 +143,34 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
         });
       } else if (m.type === "file-deleted") {
         setChildren((prev) => prev.filter((c) => c.filename !== m.filename));
-      }
       // file-changed: card scripts handle via mica.on() — no action here
+      }
+
+      // class-changed: card class was updated — replace card with re-rendered version
+      if (m.type === "class-changed" && m.html && m.meta) {
+        setChildren((prev) => {
+          const idx = prev.findIndex((c) => c.filename === m.filename);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = {
+              filename: m.filename!,
+              html: m.html!,
+              exports: m.exports || [],
+              dependencies: m.dependencies,
+              meta: m.meta!,
+            };
+            return next;
+          }
+          return prev;
+        });
+      }
     }
 
     const unsub1 = on("file-changed", handleFileEvent);
     const unsub2 = on("file-created", handleFileEvent);
     const unsub3 = on("file-deleted", handleFileEvent);
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const unsub4 = on("class-changed", handleFileEvent);
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [projectId, canvasFilename]);
 
   // ── File operations (for modals) ────────────────────────

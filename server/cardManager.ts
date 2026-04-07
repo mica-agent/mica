@@ -217,7 +217,7 @@ export class CardManager {
     filename: string,
     content: string,
     config?: Record<string, unknown>
-  ): Promise<{ html: string; exports: string[]; dependencies?: CardDependencies; hasStream?: boolean; meta: CardMeta }> {
+  ): Promise<{ html: string; exports: string[]; dependencies?: CardDependencies; hasStream?: boolean; meta: CardMeta; error?: string }> {
     const key = this.cacheKey(project, canvas, filename);
     let projectPath: string | undefined;
     try { projectPath = await getProjectPath(project); } catch { /* fallback */ }
@@ -227,8 +227,9 @@ export class CardManager {
 
     const classPath = this.getClassPath(cardClass, projectPath);
     if (!fs.existsSync(classPath)) {
-      const html = `<pre style="color: #f87171;">Card class "${cardClass}" not found.\nFile: ${filename}</pre>`;
-      return { html, exports: [], meta };
+      const error = `Card class "${cardClass}" not found.`;
+      const html = `<pre style="color: #f87171;">${error}\nFile: ${filename}</pre>`;
+      return { html, exports: [], meta, error };
     }
 
     const maxRetries = 3;
@@ -260,7 +261,7 @@ export class CardManager {
           continue;
         }
         const errorHtml = `<pre style="color: #f87171; white-space: pre-wrap;">Render error (${cardClass}):\n${msg}</pre>`;
-        return { html: errorHtml, exports: [], meta };
+        return { html: errorHtml, exports: [], meta, error: msg };
       }
     }
     return { html: "", exports: [], meta };

@@ -286,9 +286,8 @@ export default function render(content, config) {
         mica.onDestroy(unsubLayout);
 
         // ── Toolbar: card creation buttons ───────────────────
-        fetch('/api/card-classes')
-            .then(function(r) { return r.json(); })
-            .then(function(classes) {
+        function buildToolbar(classes) {
+                toolbar.innerHTML = '';
                 var buttons = [];
 
                 for (var _i = 0, _entries = Object.entries(classes); _i < _entries.length; _i++) {
@@ -359,8 +358,19 @@ export default function render(content, config) {
                 buttons.push(tidyBtn);
 
                 for (var k = 0; k < buttons.length; k++) toolbar.appendChild(buttons[k]);
-            })
-            .catch(function(err) { console.error('[project] Failed to load card classes:', err); });
+        }
+
+        function refreshToolbar() {
+            fetch('/api/card-classes')
+                .then(function(r) { return r.json(); })
+                .then(buildToolbar)
+                .catch(function(err) { console.error('[project] Failed to load card classes:', err); });
+        }
+        refreshToolbar();
+
+        // Rebuild toolbar when card classes change (e.g. agent creates a new class)
+        var unsubClasses = mica.on('classes-updated', refreshToolbar);
+        mica.onDestroy(unsubClasses);
 
         // ── Load layout then position initial cards ──────────
         loadLayout().then(function() {
