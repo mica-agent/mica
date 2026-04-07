@@ -100,14 +100,17 @@ export function connect(url?: string): void {
     }
     // Poll the server with HTTP until it's back, then reload the page
     if (wasEverConnected) {
-      const poll = setInterval(() => {
-        fetch(`${location.protocol}//${location.hostname}:${import.meta.env.VITE_MICA_WS_PORT || "3002"}/api/card-classes`, { method: "HEAD" })
-          .then(() => {
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch(`${location.protocol}//${location.hostname}:${import.meta.env.VITE_MICA_WS_PORT || "3002"}/api/card-classes`);
+          if (r.ok) {
             clearInterval(poll);
             console.log("[mica-socket] Server is back — reloading page");
             location.reload();
-          })
-          .catch(() => {}); // server still down, try again
+          }
+        } catch {
+          // server still down, try again
+        }
       }, 2000);
     }
   };
@@ -386,12 +389,17 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
     onDestroy: (fn: () => void) => {
       destroyCallbacks.push(fn);
     },
-    /** Run onDestroy callbacks. Channels close via ch.close() in the callbacks. */
+    /** Run onDestroy callbacks and hard-close all channels. */
     _runDestroy: () => {
       for (const cb of destroyCallbacks) {
         try { cb(); } catch (e) { console.error("[mica-bridge] onDestroy error:", e); }
       }
       destroyCallbacks.length = 0;
+      // Hard-close all channels so server cleans up sessions
+      for (const ch of bridgeChannels.values()) {
+        ch.destroy();
+      }
+      bridgeChannels.clear();
     },
   };
 }
