@@ -384,8 +384,13 @@ async function executeTool(name, args, mica) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: args.name }),
         });
-        if (res.ok) return `Created card: ${args.name}`;
-        return `Error: ${await res.text()}`;
+        if (!res.ok) return `Error: ${await res.text()}`;
+        const data = await res.json();
+        // Check for render errors in the returned HTML
+        if (data.card?.html?.includes("Render error")) {
+          return `Created card ${args.name} but it has a RENDER ERROR. Fix render.js and try again. Error: ${data.card.html.replace(/<[^>]+>/g, '')}`;
+        }
+        return `Created card: ${args.name}`;
       } catch (e) {
         return `Error: ${e.message}`;
       }
