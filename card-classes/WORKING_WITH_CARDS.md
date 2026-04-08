@@ -43,6 +43,8 @@ Example: A markdown card's spec says "renders rich text with Toast UI editor." A
 
 **Briefs are flat files, not cards.** `brief.md` lives inside the card directory alongside the primary file (e.g. `todo.todo/brief.md`). It does not appear on the canvas — it's metadata about the card, not content. Access it via the card's config view (gear button) or `mica.read('brief.md')`.
 
+**`~brief.md` in a card class directory is a template** — it seeds `brief.md` into every new card instance automatically. Card class authors write `~brief.md` to give instances a default purpose; users can then edit it per-instance.
+
 **Reactive briefs:** Writing a brief on any card turns it into a reactive participant. Agents on the canvas read briefs to understand each card's role. A brief like "when goals change, update this document" tells agents to maintain the card when related cards change. The brief is an agent-readable contract.
 
 ## File conventions inside a card directory

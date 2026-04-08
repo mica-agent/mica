@@ -16,20 +16,30 @@ When asked to create a new type of card (e.g. "make a calendar card"), create a 
 New card classes go in `/opt/mica/project-card-classes/{name}/` (project-scoped). To create one:
 
 1. Create the directory: `mkdir -p /opt/mica/project-card-classes/{name}`
-2. Write `spec.md` — what the card type does
-3. Write `render.js` — the implementation. Must export:
+2. Read an existing card class first: `cat /opt/mica/card-classes/mermaid/render.js`
+3. Write `spec.md` — describe what the card does, its content format, and interactions
+4. Write `render.js` — the implementation. Must export:
    - `export const metadata = { extension: ".{ext}", badge: "NAME", primaryFile: "content.{ext}" };`
    - `export default function render(content, config) { return "<html>..."; }`
-4. Optionally write `~brief.md` — default brief for new instances
+5. Write `~brief.md` — default brief seeded into new instances (recommended)
+6. Create an instance on the canvas:
+   ```
+   curl -s -X POST http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards \
+     -H 'Content-Type: application/json' \
+     -d '{"name": "my-thing.{ext}"}'
+   ```
+7. Verify it rendered: check the response `html` field for "Render error". If found, fix render.js — the card will auto-refresh once fixed.
 
-After writing the files, you MUST create an instance on the canvas. Use Bash to call the API:
-```
-curl -s -X POST http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "my-thing.{ext}"}'
+## Module-level state
+
+Module-level variables are shared across ALL cards of this class. Always key session state by card identity:
+
+```javascript
+const sessions = new Map();
+// key = `${mica.project}/${mica.canvas}/${mica.filename}`
 ```
 
-Read an existing card class for a working example: `cat /opt/mica/card-classes/mermaid/render.js`.
+Never use bare module-level variables like `let currentData = null`.
 
 ## When canvas cards change
 
