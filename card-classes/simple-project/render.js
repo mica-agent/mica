@@ -108,6 +108,7 @@ export default function render(content, config) {
         const CARD_W = 320, CARD_H = 280, GAP = 16, COLS = 3;
         const MIN_W = 200, MIN_H = 120;
         let layout = {};  // { filename: { x, y, w, h } }
+        let layoutLoaded = false;
         let saveTimer = null;
         const SAVE_DELAY = 500;
 
@@ -115,8 +116,8 @@ export default function render(content, config) {
         function loadLayout() {
             return fetch('/api/projects/' + mica.project + '/canvases/_root/layout')
                 .then(function(r) { return r.ok ? r.json() : {}; })
-                .then(function(data) { if (data.cards) layout = data.cards; })
-                .catch(function() {});
+                .then(function(data) { if (data.cards) layout = data.cards; layoutLoaded = true; })
+                .catch(function() { layoutLoaded = true; });
         }
 
         function persistLayout() {
@@ -254,13 +255,18 @@ export default function render(content, config) {
         });
 
         // ── Watch for React-portaled child cards ─────────────
+        var pendingCards = [];
         var childObserver = new MutationObserver(function(mutations) {
             for (var i = 0; i < mutations.length; i++) {
                 var added = mutations[i].addedNodes;
                 for (var j = 0; j < added.length; j++) {
                     var node = added[j];
                     if (node.nodeType === 1 && node.classList && node.classList.contains('wb-card')) {
-                        positionCard(node);
+                        if (layoutLoaded) {
+                            positionCard(node);
+                        } else {
+                            pendingCards.push(node);
+                        }
                     }
                 }
             }
@@ -372,9 +378,11 @@ export default function render(content, config) {
         var unsubClasses = mica.on('classes-updated', refreshToolbar);
         mica.onDestroy(unsubClasses);
 
-        // ── Load layout then position initial cards ──────────
+        // ── Load layout then position initial + pending cards ──
         loadLayout().then(function() {
             positionAllCards();
+            for (var i = 0; i < pendingCards.length; i++) positionCard(pendingCards[i]);
+            pendingCards = [];
         });
     })();
     </script>

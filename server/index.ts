@@ -270,12 +270,13 @@ app.get("/api/projects/:project/children", async (req, res) => {
   const { project } = req.params;
   try {
     const files = await listFiles(project, "_root");
-    const results = [];
-    for (const file of files) {
-      if (file.name.startsWith(".")) continue;
-      const rendered = await cardManager.renderCard(project, "_root", file.name, file.content);
-      results.push({ filename: file.name, ...rendered });
-    }
+    const renderPromises = files
+      .filter((f) => !f.name.startsWith("."))
+      .map(async (file) => {
+        const rendered = await cardManager.renderCard(project, "_root", file.name, file.content);
+        return { filename: file.name, ...rendered };
+      });
+    const results = await Promise.all(renderPromises);
     res.json(results);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -910,22 +911,25 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
     } catch (err) {
       console.error(`[file-watcher] Render failed for new card ${event.filename}:`, (err as Error).message);
     }
-  } else {
-    // file-changed: broadcast event only — no re-render, card classes handle updates
+  }
+
+  // Resolve write source — which card (or "user") caused this file change.
+  // Used by both browser broadcast and server-side session delivery.
+  const sourceKey = `${event.project}/${event.filename}`;
+  const source = writeSourceTracker.get(sourceKey) || "user";
+  writeSourceTracker.delete(sourceKey);
+
+  if (event.type === "changed") {
+    // file-changed: broadcast with source so cards can distinguish self-writes from external edits
     cardManager.invalidateCard(event.project, event.canvas, event.filename);
     broadcast({
       type: "file-changed",
       project: event.project,
       canvas: event.canvas,
       filename: event.filename,
+      source,
     });
   }
-
-  // Deliver file-changed event to server-side card sessions (for reactive agents).
-  // The source is the card that wrote the file, or "user" for direct edits.
-  const sourceKey = `${event.project}/${event.filename}`;
-  const source = writeSourceTracker.get(sourceKey) || "user";
-  writeSourceTracker.delete(sourceKey);
 
   const runtime = containerRuntimes.get(event.project);
   if (runtime) {

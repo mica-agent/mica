@@ -43,15 +43,20 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Data loading ────────────────────────────────────────
 
-  const loadProjectCard = useCallback(async () => {
+  const loadProjectCard = useCallback(async (signal?: AbortSignal) => {
     try {
       const [card, childCards] = await Promise.all([
-        fetchProjectCard(projectId),
-        fetchProjectChildren(projectId),
+        fetchProjectCard(projectId, signal),
+        fetchProjectChildren(projectId, signal),
       ]);
-      setParentCard(card);
-      setChildren(childCards);
-      // If no children returned, the container runtime may still be starting — retry
+      // Use functional updates to preserve object identity when data is unchanged.
+      // This prevents the freeformEl effect from restarting on StrictMode double-loads.
+      setParentCard((prev) => (prev?.html === card.html ? prev : card));
+      setChildren((prev) =>
+        prev.length === childCards.length && prev.every((c, i) => c.html === childCards[i].html)
+          ? prev
+          : childCards
+      );
       if (childCards.length === 0) {
         setTimeout(async () => {
           try {
@@ -61,15 +66,19 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
         }, 2000);
       }
     } catch (err) {
+      if (signal?.aborted) return; // Aborted by unmount — ignore
       console.error("[CanvasCardRuntime] Failed to load project card:", err);
+      setTimeout(() => { loadProjectCard(); }, 2000);
     } finally {
       setLoading(false);
     }
   }, [projectId]);
 
   useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
-    loadProjectCard();
+    loadProjectCard(controller.signal);
+    return () => controller.abort();
   }, [loadProjectCard]);
 
   useEffect(() => {

@@ -118,7 +118,7 @@ export default function render(content, config) {
 
       // Sync from other windows
       const unsub = mica.on('file-changed', (e) => {
-        if (e.filename === mica.filename && !justSaved) {
+        if (e.filename === mica.filename && e.source !== mica.filename && !justSaved) {
           mica.refresh();
         }
       });

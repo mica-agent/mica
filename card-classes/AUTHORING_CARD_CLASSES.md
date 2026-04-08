@@ -117,7 +117,9 @@ Card code runs in three distinct environments. Understanding which code runs whe
 
 ### Rendering lifecycle
 
-`render()` runs **once** to produce the initial HTML. The server does not re-render cards when files change on disk. Instead, file-change events are delivered to card scripts via `mica.on('file-changed', cb)` with metadata only (filename, event type — no HTML). Card scripts decide whether to update by calling `mica.refresh()`, which fetches fresh HTML from the server and re-injects the card.
+`render()` runs **once** to produce the initial HTML. The server does not re-render cards when files change on disk. Instead, file-change events are delivered to card scripts via `mica.on('file-changed', cb)` with metadata including `filename` and `source` (who wrote the file — `"user"` for direct edits, or the card filename for card-initiated writes). Card scripts decide whether to update by calling `mica.refresh()`, which fetches fresh HTML from the server and re-injects the card.
+
+**Important:** Always check `e.source !== mica.filename` before calling `mica.refresh()` to avoid infinite loops when the card writes to its own primary file.
 
 ### Data flow
 

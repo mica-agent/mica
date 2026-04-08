@@ -291,7 +291,7 @@ export default function render(content, config) {
 
         // Cross-window sync
         const unsub = mica.on('file-changed', (e) => {
-            if (e.filename === mica.filename) mica.refresh();
+            if (e.filename === mica.filename && e.source !== mica.filename) mica.refresh();
         });
         mica.onDestroy(() => unsub());
     })();

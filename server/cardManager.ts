@@ -13,6 +13,7 @@ import {
   readCanvasFile,
   writeCanvasFile,
   listFiles,
+  invalidateExtensionCache,
 } from "./cardFiles.js";
 import { getProjectPath } from "./projectConnection.js";
 
@@ -349,6 +350,8 @@ export class CardManager {
       }
     }
     this.loadManifest();
+    // Also invalidate the extension cache in cardFiles so listFiles() sees new extensions
+    invalidateExtensionCache();
   }
 
   invalidateAll() {

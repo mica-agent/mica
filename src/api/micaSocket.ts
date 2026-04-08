@@ -364,7 +364,7 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
     /** Set the refresh implementation (provided by CardRuntime) */
     _setRefreshFn: (fn: () => Promise<void>) => { refreshFn = fn; },
     /** Re-fetch and re-render this card's HTML. Card classes call this to opt-in to updates. */
-    refresh: async () => { if (refreshFn) await refreshFn(); },
+    refresh: async () => { try { if (refreshFn) await refreshFn(); } catch {} },
     call: (fn: string, args: Record<string, unknown> = {}) =>
       call(project, canvas, filename, fn, args),
     send: (fn: string, args: Record<string, unknown> = {}) =>

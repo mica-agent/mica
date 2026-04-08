@@ -71,10 +71,10 @@ export default function render(content, config) {
 
 4. **Disable autofocus** — libraries that grab focus will scroll the canvas.
 
-5. **File-changed sync** — listen for external edits:
+5. **File-changed sync** — listen for external edits. The `source` field tells you who wrote the file (`"user"` for direct edits, or the card filename for card-initiated writes). Always skip your own writes to avoid infinite loops:
    ```javascript
    const unsub = mica.on('file-changed', (e) => {
-     if (e.filename === mica.filename) mica.refresh();
+     if (e.filename === mica.filename && e.source !== mica.filename) mica.refresh();
    });
    mica.onDestroy(unsub);
    ```

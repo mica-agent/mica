@@ -189,15 +189,15 @@ export interface ProjectCardResponse extends RenderedCard {
 }
 
 /** Fetch the rendered canvas card (layout shell with child metadata) */
-export async function fetchProjectCard(project: string): Promise<ProjectCardResponse> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card`);
+export async function fetchProjectCard(project: string, signal?: AbortSignal): Promise<ProjectCardResponse> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card`, { signal });
   if (!res.ok) throw new Error(`Failed to fetch project card: ${res.statusText}`);
   return res.json();
 }
 
 /** Fetch all rendered child cards for a project's _root canvas */
-export async function fetchProjectChildren(project: string): Promise<RenderedCard[]> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/children`);
+export async function fetchProjectChildren(project: string, signal?: AbortSignal): Promise<RenderedCard[]> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/children`, { signal });
   if (!res.ok) throw new Error(`Failed to fetch project children: ${res.statusText}`);
   return res.json();
 }
