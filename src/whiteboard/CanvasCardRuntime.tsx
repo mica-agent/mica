@@ -43,36 +43,48 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Data loading ────────────────────────────────────────
 
+  const retryChildren = useCallback(() => {
+    setTimeout(async () => {
+      try {
+        const retry = await fetchProjectChildren(projectId);
+        if (retry.length > 0) setChildren(retry);
+      } catch { /* ignore */ }
+    }, 2000);
+  }, [projectId]);
+
   const loadProjectCard = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [card, childCards] = await Promise.all([
+      // allSettled: children failure doesn't prevent parentCard from rendering
+      const [cardResult, childrenResult] = await Promise.allSettled([
         fetchProjectCard(projectId, signal),
         fetchProjectChildren(projectId, signal),
       ]);
-      // Use functional updates to preserve object identity when data is unchanged.
-      // This prevents the freeformEl effect from restarting on StrictMode double-loads.
-      setParentCard((prev) => (prev?.html === card.html ? prev : card));
-      setChildren((prev) =>
-        prev.length === childCards.length && prev.every((c, i) => c.html === childCards[i].html)
-          ? prev
-          : childCards
-      );
-      if (childCards.length === 0) {
-        setTimeout(async () => {
-          try {
-            const retry = await fetchProjectChildren(projectId);
-            if (retry.length > 0) setChildren(retry);
-          } catch { /* ignore */ }
-        }, 2000);
+      if (signal?.aborted) return;
+
+      if (cardResult.status === "fulfilled") {
+        const card = cardResult.value;
+        setParentCard((prev) => (prev?.html === card.html ? prev : card));
+      }
+
+      if (childrenResult.status === "fulfilled") {
+        const childCards = childrenResult.value;
+        setChildren((prev) =>
+          prev.length === childCards.length && prev.every((c, i) => c.html === childCards[i].html)
+            ? prev
+            : childCards
+        );
+        if (childCards.length === 0) retryChildren();
+      } else {
+        retryChildren();
       }
     } catch (err) {
-      if (signal?.aborted) return; // Aborted by unmount — ignore
+      if (signal?.aborted) return;
       console.error("[CanvasCardRuntime] Failed to load project card:", err);
       setTimeout(() => { loadProjectCard(); }, 2000);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, retryChildren]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -88,25 +100,30 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
 
   // ── Find freeform container after card class renders ────
 
-  // Find #canvas-freeform after CardRuntime injects HTML.
-  // Uses a stable interval that clears once found.
+  // Watch containerRef for #canvas-freeform using MutationObserver.
+  // Depends on parentCard so it runs after the container div is rendered.
+  // With the abort guard + functional updates above, parentCard identity is
+  // stable across StrictMode double-mounts — effect only fires once per real change.
   useEffect(() => {
-    if (!parentCard) return;
+    const container = containerRef.current;
+    if (!container) return;
 
-    // Check immediately
-    const el = containerRef.current?.querySelector("#canvas-freeform");
-    if (el) { setFreeformEl(el as HTMLElement); return; }
+    // Reset freeformEl — clear any stale reference from a previous render.
+    setFreeformEl(null);
 
-    // Poll until found (CardRuntime injects async after deps load)
-    const interval = setInterval(() => {
-      const el = containerRef.current?.querySelector("#canvas-freeform");
-      if (el) {
-        setFreeformEl(el as HTMLElement);
-        clearInterval(interval);
+    // CardRuntime (child) runs its effect before this (parent) effect.
+    // For simple-project (no declared deps), innerHTML is injected synchronously
+    // in CardRuntime's effect, so #canvas-freeform is already in the DOM here.
+    // For card classes with async dep loading, we poll until it appears.
+    // Always check isConnected to reject stale elements from previous renders.
+    const poll = setInterval(() => {
+      const el = container.querySelector("#canvas-freeform");
+      if (el && (el as HTMLElement).isConnected) {
+          setFreeformEl(el as HTMLElement);
+        clearInterval(poll);
       }
     }, 50);
-
-    return () => clearInterval(interval);
+    return () => clearInterval(poll);
   }, [parentCard]);
 
   // ── Real-time updates via WebSocket ─────────────────────
@@ -204,8 +221,7 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
   }, [projectId]);
 
   // ── Render ──────────────────────────────────────────────
-
-  if (loading && !parentCard) {
+if (loading && !parentCard) {
     return <div className="wb-container"><div className="wb-empty">Loading project...</div></div>;
   }
 

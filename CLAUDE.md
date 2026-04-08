@@ -79,6 +79,25 @@ things possible in card classes, never to implement features in the server.
 - **Derive, don't hardcode.** Canvas card filename = project name + class extension (from config).
   Primary file = from card class metadata. Don't hardcode `"project.project"` or `"project.md"` anywhere.
 
+## React host implementation notes
+
+### CanvasCardRuntime and freeformEl
+
+`CanvasCardRuntime` portals child cards into `#canvas-freeform`, a DOM element created by the canvas card class's inline script. Finding this element reliably requires understanding React's effect ordering:
+
+- **Child effects run before parent effects.** `CardRuntime` (child) injects `innerHTML` in its `useEffect([html])` *before* `CanvasCardRuntime` (parent) runs its `useEffect([parentCard])`. For card classes with no async dependencies (like `simple-project`), `#canvas-freeform` is already in the DOM by the time the parent effect polls for it.
+- **Poll with `isConnected` check.** Use a 50ms interval and check `el.isConnected` to reject stale references from previous renders. Do NOT check immediately without `isConnected` — the element may exist but be detached from a prior render cycle.
+- **Reset freeformEl on parentCard change.** Always call `setFreeformEl(null)` at the start of the effect so a stale reference from a previous render doesn't remain active while CardRuntime re-injects HTML.
+- **Do NOT use MutationObserver here.** It only fires for future mutations — if CardRuntime has already injected HTML before the observer is set up (which it has, since child effects run first), the mutation is missed. Polling handles both the "already done" and "still in progress" cases.
+
+### StrictMode
+
+The app runs with React StrictMode. StrictMode double-invokes effects (mount → unmount → remount) in development. Code must handle this correctly:
+
+- **Use AbortController** for all fetch calls in effects. Pass `signal` to `fetch()` and check `signal.aborted` after `await` before calling any state setters — the fetch may complete before the abort fires.
+- **Use functional state updates** (`setState(prev => ...)`) to preserve object identity when data is unchanged, preventing unnecessary effect re-runs.
+- **`Promise.allSettled` over `Promise.all`** for independent fetches — one failure shouldn't prevent the other from setting state.
+
 ## How we work
 
 - **Reason from design, not symptoms.** When debugging, ask what the architecture says should happen. Don't pattern-match fixes — trace the lifecycle, read the docs.
