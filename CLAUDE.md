@@ -16,6 +16,11 @@ Read these documents first:
 - `SPEC.md` — Product definition and card model
 - `card-classes/AUTHORING_CARD_CLASSES.md` — Full reference for building card classes
 
+When working on the React host (`src/`), consult:
+- [React beta docs — useEffect](https://react.dev/reference/react/useEffect) — effect ordering, cleanup, StrictMode behavior
+- [React beta docs — Synchronizing with Effects](https://react.dev/learn/synchronizing-with-effects) — when effects run, how cleanup works
+- [React beta docs — You Might Not Need an Effect](https://react.dev/learn/you-might-not-need-an-effect) — avoid fighting the framework
+
 ## Before delegating to subagents
 
 When spawning subagents for implementation work:
