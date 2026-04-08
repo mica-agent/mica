@@ -15,7 +15,7 @@ export default function render(content, config) {
   return `<div class="html-widget">${body}</div>
     <script>
       const unsub = mica.on('file-changed', (e) => {
-        if (e.filename === mica.filename && e.source !== mica.filename) mica.refresh();
+        if (e.filename === mica.filename) mica.refresh();
       });
       mica.onDestroy(() => unsub());
     </script>`;

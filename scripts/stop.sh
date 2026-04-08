@@ -49,4 +49,5 @@ else
   echo "Stopped $stopped process(es)."
 fi
 
+
 rm -f "$PID_DIR"/*.log "$PID_DIR"/*.pid 2>/dev/null || true

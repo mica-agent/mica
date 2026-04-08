@@ -289,9 +289,9 @@ export default function render(content, config) {
         });
         addInput.addEventListener('click', (e) => e.stopPropagation());
 
-        // Cross-window sync
+        // Refresh when primary file changes (external edits or own export writes)
         const unsub = mica.on('file-changed', (e) => {
-            if (e.filename === mica.filename && e.source !== mica.filename) mica.refresh();
+            if (e.filename === mica.filename) mica.refresh();
         });
         mica.onDestroy(() => unsub());
     })();

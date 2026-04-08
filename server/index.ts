@@ -370,16 +370,40 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   }
 });
 
+// Report a browser-side card script error — triggers card-error event so agents can auto-fix
+app.post("/api/projects/:project/canvases/:canvas/cards/:filename/error", (req, res) => {
+  const { project, canvas, filename } = req.params;
+  const { error } = req.body as { error?: string };
+  if (error) {
+    const { cardClass } = cardManager.resolveCardClass(filename, "");
+    broadcastCardError(project, canvas, filename, `[browser] ${error}`, cardClass);
+  }
+  res.json({ ok: true });
+});
+
 // Get available card classes (for toolbar, card creation)
 app.get("/api/card-classes", (_req, res) => {
   const classes = cardManager.getManifest();
   res.json(classes);
 });
 
-// Read a file from a card class directory (spec.md, _brief.md)
+// Read a file from a card class directory (spec.md, ~brief.md)
+// Checks project-scoped classes first (across all connected projects), then built-in
 app.get("/api/card-classes/:className/files/:fileName", async (req, res) => {
   const { className, fileName } = req.params;
   try {
+    const projects = await listProjects();
+    for (const project of projects) {
+      const classPath = cardManager.getClassPath(className, project.path);
+      if (classPath.includes(".card-classes")) {
+        const classDir = classPath.replace(/\/render\.js$/, "");
+        try {
+          const content = await readFile(join(classDir, fileName), "utf-8");
+          return res.json({ content });
+        } catch { /* try next */ }
+      }
+    }
+    // Fall back to built-in
     const classPath = cardManager.getClassPath(className);
     const classDir = classPath.replace(/\/render\.js$/, "");
     const content = await readFile(join(classDir, fileName), "utf-8");
@@ -389,10 +413,20 @@ app.get("/api/card-classes/:className/files/:fileName", async (req, res) => {
   }
 });
 
-// Write a file to a card class directory (spec.md, _brief.md)
+// Write a file to a card class directory (spec.md, ~brief.md)
 app.put("/api/card-classes/:className/files/:fileName", async (req, res) => {
   const { className, fileName } = req.params;
   try {
+    const projects = await listProjects();
+    for (const project of projects) {
+      const classPath = cardManager.getClassPath(className, project.path);
+      if (classPath.includes(".card-classes")) {
+        const classDir = classPath.replace(/\/render\.js$/, "");
+        await writeFile(join(classDir, fileName), req.body.content, "utf-8");
+        return res.json({ success: true });
+      }
+    }
+    // Fall back to built-in
     const classPath = cardManager.getClassPath(className);
     const classDir = classPath.replace(/\/render\.js$/, "");
     await writeFile(join(classDir, fileName), req.body.content, "utf-8");

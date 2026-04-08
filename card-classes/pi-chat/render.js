@@ -6,7 +6,7 @@
  *         using llama-server as the OpenAI-compatible LLM backend.
  */
 
-import { createAgentSession, SessionManager, DefaultResourceLoader, codingTools, ModelRegistry, AuthStorage, InMemoryAuthStorageBackend } from "@mariozechner/pi-coding-agent";
+import { createAgentSession, SessionManager, DefaultResourceLoader, createCodingTools, ModelRegistry, AuthStorage, InMemoryAuthStorageBackend } from "@mariozechner/pi-coding-agent";
 import fs from 'fs';
 import path from 'path';
 
@@ -213,7 +213,9 @@ async function createPiSession(projectContext) {
 
   const model = modelRegistry.find("llama-server", "local-llama");
 
-  // Append project context to pi's built-in system prompt
+  // Append Mica project context to Pi's built-in system prompt.
+  // We keep Pi's base prompt (tool descriptions + coding guidelines) intact —
+  // replacing it caused the model to lose tool-use confidence and stop executing commands.
   const resourceLoader = new DefaultResourceLoader({
     cwd: PROJECT_DIR,
     appendSystemPromptOverride: (base) => [...base, projectContext],
@@ -228,7 +230,7 @@ async function createPiSession(projectContext) {
     model,
     modelRegistry,
     authStorage,
-    tools: codingTools,
+    tools: createCodingTools(PROJECT_DIR),
     resourceLoader,
     sessionManager: SessionManager.inMemory(),
   });

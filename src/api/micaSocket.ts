@@ -360,6 +360,15 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
   // Prevents duplicate channel_open for the same card during React lifecycle.
   const bridgeChannels = new Map<string, Channel>();
 
+  const reportError = (msg: string) => {
+    console.error(`[card-runtime] Script error in ${filename}:`, msg);
+    fetch(`/api/projects/${project}/canvases/${canvas}/cards/${encodeURIComponent(filename)}/error`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ error: msg }),
+    }).catch(() => {});
+  };
+
   return {
     /** Set the refresh implementation (provided by CardRuntime) */
     _setRefreshFn: (fn: () => Promise<void>) => { refreshFn = fn; },
@@ -369,6 +378,10 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
       call(project, canvas, filename, fn, args),
     send: (fn: string, args: Record<string, unknown> = {}) =>
       send(project, canvas, filename, fn, args),
+    // Server-only methods — provide helpful stubs that report the error
+    read: (..._args: unknown[]) => { reportError("mica.read() is server-side only — use mica.call() to invoke an export function instead"); return Promise.resolve(""); },
+    write: (..._args: unknown[]) => { reportError("mica.write() is server-side only — use mica.call() to invoke an export function instead"); return Promise.resolve(); },
+    exec: (..._args: unknown[]) => { reportError("mica.exec() is server-side only — use mica.call() to invoke an export function instead"); return Promise.resolve({ stdout: "", stderr: "", exitCode: 1 }); },
     on: (event: string, cb: (data: unknown) => void) =>
       on(event, cb),
     openChannel: (fn: string, args: Record<string, unknown> = {}) => {

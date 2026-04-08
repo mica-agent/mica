@@ -236,11 +236,28 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
           Array.from(oldScript.attributes).forEach((attr) => {
             newScript.setAttribute(attr.name, attr.value);
           });
-          // Wrap in try-catch so a single card's script failure doesn't crash the page
+          // Wrap in try-catch so a single card's script failure doesn't crash the page.
+          // On error (sync or async), report back to server so agents can auto-fix.
           newScript.textContent =
-            `try{(function(mica, container) {${oldScript.textContent}})(` +
-            `document.currentScript.__mica, document.currentScript.parentElement);}` +
-            `catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}`;
+            `(function(){` +
+            `const _m=document.currentScript.__mica;` +
+            `const _f=_m.filename;` +
+            `let _reported=new Set();` +
+            `function _reportErr(msg){` +
+            `if(!msg||_reported.has(msg))return;` +
+            `_reported.add(msg);` +
+            `console.error("[card-runtime] Script error in ${filename}:",msg);` +
+            `fetch('/api/projects/'+_m.project+'/canvases/'+_m.canvas+'/cards/'+encodeURIComponent(_f)+'/error',` +
+            `{method:'POST',headers:{'Content-Type':'application/json'},` +
+            `body:JSON.stringify({error:msg})}).catch(()=>{});` +
+            `}` +
+            `window.addEventListener('unhandledrejection',function(e){` +
+            `const msg=e.reason&&(e.reason.message||String(e.reason))||String(e.reason);` +
+            `_reportErr(msg);});` +
+            `try{(function(mica,container){${oldScript.textContent}})(` +
+            `_m,document.currentScript.parentElement);` +
+            `}catch(e){_reportErr(e.message||String(e));}` +
+            `})()`;
           oldScript.remove();
           (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
           el.appendChild(newScript);

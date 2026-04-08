@@ -73,13 +73,14 @@ export default function render(content, config) {
 
 4. **Disable autofocus** — libraries that grab focus will scroll the canvas.
 
-5. **File-changed sync** — listen for external edits. The `source` field tells you who wrote the file (`"user"` for direct edits, or the card filename for card-initiated writes). Always skip your own writes to avoid infinite loops:
+5. **File-changed sync** — refresh when the card's primary file changes. The `source` field is `"user"` for direct edits, or the card filename when a server export wrote it. For most cards, refresh on any change to your own file:
    ```javascript
    const unsub = mica.on('file-changed', (e) => {
-     if (e.filename === mica.filename && e.source !== mica.filename) mica.refresh();
+     if (e.filename === mica.filename) mica.refresh();
    });
    mica.onDestroy(unsub);
    ```
+   Only filter by source if your card writes to its own file on a **timer** (not in response to user interaction) — otherwise you'll miss updates from your own export functions.
 
 6. **Use `mica.write()` in server-side code** — not shell commands. `mica.write()` tracks the source so `file-changed` events correctly identify who made the change, preventing spurious re-renders.
 
@@ -89,6 +90,7 @@ export default function render(content, config) {
 - **Always clean up in `mica.onDestroy()`** — timers, event listeners, observers, and channels all leak if not cleaned up. Every `setInterval`, `addEventListener`, `ResizeObserver`, and `mica.on()` needs a corresponding cleanup.
 - **Channels survive re-renders** — `mica.openChannel()` with the same fn returns the existing channel. Don't close and reopen manually on refresh.
 - **`document.querySelector()` reaches outside your card** — always use `container.querySelector()`.
+- **`mica.read()`, `mica.write()`, `mica.exec()` are server-only** — they don't exist in browser scripts. To read/write files from the browser, create a server export function and call it with `mica.call('my_fn', args)`.
 
 ## Module-level state
 

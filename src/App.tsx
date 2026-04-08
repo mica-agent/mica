@@ -26,7 +26,10 @@ export default function App() {
     fetchProjects()
       .then((p) => {
         setProjects(p);
-        setActiveProjectIndex((prev) => Math.min(prev, Math.max(0, p.length - 1)));
+        // Restore last selected project by ID, fallback to first
+        const savedId = localStorage.getItem('mica-active-project');
+        const savedIdx = savedId ? p.findIndex(proj => proj.id === savedId) : -1;
+        setActiveProjectIndex(savedIdx >= 0 ? savedIdx : 0);
       })
       .catch((err) => console.error('Failed to fetch projects:', err));
   }, []);
@@ -62,7 +65,10 @@ export default function App() {
           <ProjectNav
             projects={projects}
             activeProject={activeProject}
-            onSwitch={(i) => { setActiveProjectIndex(i); }}
+            onSwitch={(i) => {
+              setActiveProjectIndex(i);
+              if (projects[i]) localStorage.setItem('mica-active-project', projects[i].id);
+            }}
             onProjectsChanged={loadProjects}
           />
           <span className="breadcrumb-spacer" />

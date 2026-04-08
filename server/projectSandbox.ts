@@ -88,21 +88,26 @@ export class SandboxManager {
     return this.dockerAvailable;
   }
 
-  private async cleanupStaleContainers(): Promise<void> {
+  private async discoverExistingContainers(): Promise<void> {
     if (this.cleanedUp) return;
     this.cleanedUp = true;
     if (!(await this.isDockerAvailable())) return;
 
     try {
       const { stdout } = await execFileAsync("docker", [
-        "ps", "-a", "--filter", `name=${CONTAINER_PREFIX}`, "--format", "{{.Names}}",
+        "ps", "-a", "--filter", `name=${CONTAINER_PREFIX}`, "--format", "{{.Names}}\t{{.State}}",
       ], { timeout: 5000 });
-      const names = stdout.trim().split("\n").filter(Boolean);
-      if (names.length === 0) return;
-      console.log(`[sandbox] Cleaning up ${names.length} stale container(s): ${names.join(", ")}`);
-      await execFileAsync("docker", ["rm", "-f", ...names], { timeout: 15000 });
+      const lines = stdout.trim().split("\n").filter(Boolean);
+      for (const line of lines) {
+        const [name, state] = line.split("\t");
+        const projectId = name.replace(CONTAINER_PREFIX, "");
+        if (state === "running") {
+          console.log(`[sandbox] Discovered existing container for "${projectId}" — reusing`);
+          this.sandboxes.set(projectId, { projectId, containerName: name, status: "running" });
+        }
+      }
     } catch (err) {
-      console.warn("[sandbox] Stale container cleanup failed:", (err as Error).message);
+      console.warn("[sandbox] Container discovery failed:", (err as Error).message);
     }
   }
 
@@ -119,7 +124,7 @@ export class SandboxManager {
 
   /** Ensure the container for a project is running. Returns the container name. */
   async ensureContainer(projectId: string): Promise<string> {
-    await this.cleanupStaleContainers();
+    await this.discoverExistingContainers();
 
     const existing = this.sandboxes.get(projectId);
     if (existing && existing.status === "running") {
@@ -198,9 +203,14 @@ export class SandboxManager {
     containerName: string,
     config: SandboxConfig
   ): Promise<void> {
-    try {
-      await execFileAsync("docker", ["rm", "-f", containerName], { timeout: 10000 });
-    } catch { /* not running */ }
+    // If container already exists and is running, nothing to do
+    if (await this.isContainerAlive(containerName)) {
+      console.log(`[sandbox] Container ${containerName} already running — reusing`);
+      return;
+    }
+    // Remove stopped/dead container with this name if it exists, then create fresh
+    await execFileAsync("docker", ["rm", "-f", containerName], { timeout: 10000 }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 200));
 
     const mounts = await getProjectMounts(projectId);
     const memory = config.memory ?? "1g";

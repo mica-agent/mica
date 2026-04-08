@@ -66,10 +66,18 @@ async function startServer(): Promise<string> {
   const port = DEFAULT_PORT;
   serverPort = port;
 
-  // Model can be a local path or a HuggingFace repo+file (auto-downloaded)
-  const modelArgs = MODEL_PATH
-    ? ["--model", MODEL_PATH]
+  // Resolve model path: prefer explicit MODEL_PATH, then check local cache, then fall back to HF download
+  const cachedPath = `/home/${process.env.USER || "vscode"}/.cache/llama.cpp/${HF_REPO.replace(/\//g, "_")}_${HF_FILE}`;
+  const { existsSync } = await import("fs");
+  const resolvedModelPath = MODEL_PATH || (existsSync(cachedPath) ? cachedPath : null);
+
+  const modelArgs = resolvedModelPath
+    ? ["--model", resolvedModelPath]
     : ["-hfr", HF_REPO, "-hff", HF_FILE];
+
+  if (resolvedModelPath) {
+    console.log(`[llama-server] Using cached model: ${resolvedModelPath}`);
+  }
 
   console.log(`[llama-server] Starting on port ${port}...`);
   console.log(`[llama-server] Model: ${MODEL_PATH || `${HF_REPO}/${HF_FILE}`}`);

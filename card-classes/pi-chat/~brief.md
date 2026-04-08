@@ -30,6 +30,8 @@ New card classes go in `/opt/mica/project-card-classes/{name}/` (project-scoped)
    ```
 7. Verify it rendered: check the response `html` field for "Render error". If found, fix render.js — the card will auto-refresh once fixed.
 
+**The server is always running while you are active.** Never tell the user to restart the server — card classes hot-reload automatically. If you cannot reach the API, investigate why rather than telling the user to restart.
+
 ## Module-level state
 
 Module-level variables are shared across ALL cards of this class. Always key session state by card identity:

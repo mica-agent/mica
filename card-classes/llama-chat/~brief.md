@@ -25,6 +25,8 @@ New card classes go in `/opt/mica/project-card-classes/{name}/` (project-scoped)
 7. Create an instance on the canvas with `create_card({ name: "my-thing.{ext}" })`
 8. Verify it rendered: `exec("curl -s http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards/my-thing.{ext}")` — check for "Render error" in the html field. If found, fix render.js — the card will auto-refresh once fixed.
 
+**Never tell the user to restart the server.** Card classes hot-reload automatically via the file watcher.
+
 ## Module-level state
 
 Module-level variables are shared across ALL cards of this class. Always key session state by card identity:
