@@ -115,9 +115,24 @@ export class CardManager {
     return { ...this.manifest };
   }
 
-  /** Reload manifest including project-scoped classes. */
+  /** Reload manifest including project-scoped classes from multiple projects. */
   reloadManifest(projectPath?: string) {
     this.loadManifest(projectPath);
+  }
+
+  /** Reload manifest scanning all provided project paths. */
+  reloadManifestAll(projectPaths: string[]) {
+    this.manifest = {};
+    this.scanCardClassDir(CARD_CLASSES_DIR);
+    for (const pp of projectPaths) {
+      this.scanCardClassDir(path.join(pp, ".mica", ".card-classes"), true);
+    }
+    this.extensionMap.clear();
+    for (const [className, entry] of Object.entries(this.manifest)) {
+      if (entry.extension) {
+        this.extensionMap.set(entry.extension, className);
+      }
+    }
   }
 
   /** Get all valid card extensions (for file validation and watching). */

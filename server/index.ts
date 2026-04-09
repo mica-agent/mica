@@ -390,9 +390,7 @@ app.post("/api/projects/:project/canvases/:canvas/cards/:filename/error", (req, 
 app.get("/api/card-classes", async (_req, res) => {
   try {
     const projects = await listProjects();
-    for (const project of projects) {
-      cardManager.reloadManifest(project.path);
-    }
+    cardManager.reloadManifestAll(projects.map(p => p.path));
   } catch { /* use whatever manifest we have */ }
   res.json(cardManager.getManifest());
 });
