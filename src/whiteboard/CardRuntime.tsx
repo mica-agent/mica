@@ -241,23 +241,14 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
           newScript.textContent =
             `(function(){` +
             `const _m=document.currentScript.__mica;` +
-            `const _f=_m.filename;` +
-            `let _reported=new Set();` +
-            `function _reportErr(msg){` +
-            `if(!msg||_reported.has(msg))return;` +
-            `_reported.add(msg);` +
-            `console.error("[card-runtime] Script error in ${filename}:",msg);` +
-            `fetch('/api/projects/'+_m.project+'/canvases/'+_m.canvas+'/cards/'+encodeURIComponent(_f)+'/error',` +
-            `{method:'POST',headers:{'Content-Type':'application/json'},` +
-            `body:JSON.stringify({error:msg})}).catch(()=>{});` +
-            `}` +
-            `window.addEventListener('unhandledrejection',function(e){` +
-            `const msg=e.reason&&(e.reason.message||String(e.reason))||String(e.reason);` +
-            `_reportErr(msg);});` +
             `try{(function(mica,container){${oldScript.textContent}})(` +
             `_m,document.currentScript.parentElement);` +
-            `}catch(e){_reportErr(e.message||String(e));}` +
-            `})()`;
+            `}catch(e){` +
+            `console.error("[card-runtime] Script error in ${filename}:",e);` +
+            `fetch('/api/projects/'+_m.project+'/canvases/'+_m.canvas+'/cards/'+encodeURIComponent(_m.filename)+'/error',` +
+            `{method:'POST',headers:{'Content-Type':'application/json'},` +
+            `body:JSON.stringify({error:e.message||String(e)})}).catch(()=>{});` +
+            `}})()`;
           oldScript.remove();
           (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
           el.appendChild(newScript);

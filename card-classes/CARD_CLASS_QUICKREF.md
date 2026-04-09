@@ -67,7 +67,8 @@ export default function render(content, config) {
    };
    // Then in the inline <script>: use THREE.Scene(), THREE.Mesh(), etc.
    ```
-   **Three.js:** Use r128 from cdnjs (NOT r150+ which removed non-module builds). OrbitControls is not available as a standalone script in r128 — implement camera controls manually or skip them.
+   **Before adding a CDN URL**, verify it works: `curl -sI <url> | head -1` should return `200`. Many CDN URLs are outdated or removed — always test first.
+   **Three.js note:** Use r128 from cdnjs (r150+ removed non-module builds). OrbitControls is not available as a standalone global script — implement camera controls manually.
 
 3. **File-changed sync** — refresh when the card's data file changes:
    ```javascript
