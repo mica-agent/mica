@@ -392,7 +392,7 @@ export default function render(content, config) {
         }
 
         function refreshToolbar() {
-            fetch('/api/card-classes')
+            fetch('/api/card-classes?project=' + encodeURIComponent(mica.project))
                 .then(function(r) { return r.json(); })
                 .then(buildToolbar)
                 .catch(function(err) { console.error('[project] Failed to load card classes:', err); });

@@ -386,11 +386,16 @@ app.post("/api/projects/:project/canvases/:canvas/cards/:filename/error", (req, 
 });
 
 // Get available card classes (for toolbar, card creation)
-// Scans all connected projects for project-scoped classes
-app.get("/api/card-classes", async (_req, res) => {
+// Optional ?project= param scopes to that project's custom classes
+app.get("/api/card-classes", async (req, res) => {
   try {
-    const projects = await listProjects();
-    cardManager.reloadManifestAll(projects.map(p => p.path));
+    const projectId = req.query.project as string | undefined;
+    if (projectId) {
+      const projectPath = await getProjectPath(projectId);
+      cardManager.reloadManifest(projectPath);
+    } else {
+      cardManager.reloadManifest();
+    }
   } catch { /* use whatever manifest we have */ }
   res.json(cardManager.getManifest());
 });
