@@ -540,6 +540,38 @@ app.post("/api/projects/:project/card-classes/:className/setup/approve", async (
   }
 });
 
+// Run approved setup.sh scripts on container startup
+async function runApprovedSetups(projectId: string, projectPath: string) {
+  try {
+    const approvalPath = join(projectPath, ".mica", ".setup-approved.json");
+    let approvals: Record<string, boolean> = {};
+    try {
+      approvals = JSON.parse(await readFile(approvalPath, "utf-8"));
+    } catch { return; /* no approvals */ }
+
+    const containerName = `mica-project-${projectId}`;
+    for (const [className, approved] of Object.entries(approvals)) {
+      if (!approved) continue;
+      const classPath = cardManager.getClassPath(className, projectPath);
+      const classDir = classPath.replace(/\/render\.js$/, "");
+      const setupPath = join(classDir, "setup.sh");
+      try {
+        const script = await readFile(setupPath, "utf-8");
+        console.log(`[setup] Running approved setup for "${className}" in project "${projectId}"...`);
+        const { stdout, stderr } = await execFileAsync("docker", [
+          "exec", "-u", "root", containerName, "/bin/bash", "-c", script,
+        ], { timeout: 120000 });
+        console.log(`[setup] ${className} setup complete`);
+        if (stderr.trim()) console.log(`[setup] stderr: ${stderr.trim().slice(0, 200)}`);
+      } catch (err) {
+        console.error(`[setup] ${className} setup failed: ${(err as Error).message.slice(0, 200)}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[setup] runApprovedSetups failed: ${(err as Error).message}`);
+  }
+}
+
 // ── Widget Card System ──────────────────────────────────────
 
 const sandboxManager = new SandboxManager();
@@ -1142,6 +1174,8 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
       try {
         await getOrCreateContainerRuntime(project.id);
         console.log(`[startup] Container runtime ready for "${project.id}"`);
+        // Run approved setup.sh scripts for this project's card classes
+        await runApprovedSetups(project.id, project.path);
       } catch (err) {
         console.error(`[startup] Container runtime failed for "${project.id}":`, (err as Error).message);
       }

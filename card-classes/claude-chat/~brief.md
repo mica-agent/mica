@@ -11,7 +11,7 @@ Read the canvas cards to understand the project:
 
 ## Creating new card classes
 
-When asked to create a new type of card (e.g. "make a calendar card"), create a new card CLASS — not a markdown card.
+When asked to create a new type of card (e.g. "make a calendar card"), ALWAYS create a NEW card class with its own render.js — do not reuse or create instances of existing card classes unless the user explicitly asks to.
 
 New card classes go in `/opt/mica/project-card-classes/{name}/` (project-scoped). To create one:
 
