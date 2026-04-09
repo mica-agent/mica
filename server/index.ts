@@ -400,6 +400,36 @@ app.get("/api/card-classes", async (req, res) => {
   res.json(cardManager.getManifest());
 });
 
+// Test render a card class without creating an instance
+// Agents call this after writing render.js to verify it works before creating cards
+app.post("/api/card-classes/:className/test", async (req, res) => {
+  const { className } = req.params;
+  const content = req.body?.content || "{}";
+  try {
+    // Find the class path (check all projects, then built-in)
+    let classPath: string | undefined;
+    const projects = await listProjects();
+    for (const project of projects) {
+      const cp = cardManager.getClassPath(className, project.path);
+      if (cp.includes(".card-classes")) { classPath = cp; break; }
+    }
+    if (!classPath) classPath = cardManager.getClassPath(className);
+
+    // Invalidate cache to get fresh render
+    cardManager.invalidateClass(className);
+
+    // Render with test content
+    const rendered = await cardManager.renderCard("__test__", "_root", `test.${className}`, content);
+    res.json({
+      ok: !rendered.error,
+      html: rendered.html?.slice(0, 500),
+      error: rendered.error || null,
+    });
+  } catch (err: unknown) {
+    res.json({ ok: false, error: (err as Error).message });
+  }
+});
+
 // Read a file from a card class directory (spec.md, ~brief.md)
 // Checks project-scoped classes first (across all connected projects), then built-in
 app.get("/api/card-classes/:className/files/:fileName", async (req, res) => {
