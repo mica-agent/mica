@@ -54,7 +54,7 @@ export default function render(content, config) {
 
 ## Key rules
 
-1. **Always `container.querySelector()`** — never `document.querySelector()`. Cards are isolated.
+1. **Use `container.querySelector()` for DOM access** — `container` is pre-defined as your card's root element. Never use `document.querySelector()` or `document.getElementById()`. Never redeclare `container` (`const container = ...` will crash).
 
 2. **render.js is self-contained** — define every function you call. There are no implicit imports or shared libraries. If you use `hexToRgb()`, you must define it in the same file.
 
@@ -67,6 +67,7 @@ export default function render(content, config) {
    };
    // Then in the inline <script>: use THREE.Scene(), THREE.Mesh(), etc.
    ```
+   **Three.js:** Use r128 from cdnjs (NOT r150+ which removed non-module builds). OrbitControls is not available as a standalone script in r128 — implement camera controls manually or skip them.
 
 3. **File-changed sync** — refresh when the card's data file changes:
    ```javascript
