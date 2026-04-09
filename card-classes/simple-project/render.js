@@ -77,6 +77,11 @@ export default function render(content, config) {
         background: rgba(255,255,255,0.1); color: #fff;
     }
     .project-toolbar .toolbar-spacer { flex: 1; }
+    .project-toolbar .toolbar-btn-delete {
+        margin-left: 6px; color: #f87171; font-size: 0.9rem; font-weight: bold;
+        cursor: pointer; font-style: normal;
+    }
+    .project-toolbar .toolbar-btn-delete:hover { color: #ff4444; }
     .project-header {
         display: flex; align-items: baseline; gap: 16px; padding: 4px 0;
         border-bottom: 1px solid rgba(255,255,255,0.06);
@@ -301,6 +306,7 @@ export default function render(content, config) {
                     if (name === 'simple-project' || name === 'canvas') continue;
                     var btn = document.createElement('button');
                     btn.className = 'toolbar-btn';
+                    if (meta.projectScoped) btn.style.fontStyle = 'italic';
                     btn.textContent = '+ ' + (meta.defaultTitle || name);
                     btn.addEventListener('click', (function(n, m) {
                         return function() {
@@ -313,6 +319,25 @@ export default function render(content, config) {
                             }).catch(function(err) { console.error('[project] Card creation failed:', err); });
                         };
                     })(name, meta));
+                    // Delete button for project-scoped classes
+                    if (meta.projectScoped) {
+                        var del = document.createElement('span');
+                        del.textContent = '×';
+                        del.className = 'toolbar-btn-delete';
+                        del.title = 'Delete card class "' + name + '"';
+                        del.addEventListener('click', (function(n) {
+                            return function(e) {
+                                e.stopPropagation();
+                                if (!confirm('Delete card class "' + n + '"? Existing cards of this type will stop rendering.')) return;
+                                fetch('/api/card-classes/' + encodeURIComponent(n), {
+                                    method: 'DELETE',
+                                }).then(function() { refreshToolbar(); })
+                                  .catch(function(err) { console.error('[project] Card class deletion failed:', err); });
+                            };
+                        })(name));
+                        btn.style.position = 'relative';
+                        btn.appendChild(del);
+                    }
                     buttons.push(btn);
                 }
 

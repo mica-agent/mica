@@ -22,12 +22,20 @@ interface Props {
   onExpand: () => void;
 }
 
+const API_BASE = import.meta.env.VITE_MICA_API || "";
+
 export default function CardFrame({ filename, html, exports: exportFns, dependencies, meta, projectId, canvasId, canvasColor, onEdit, onDelete, onExpand }: Props) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
   const [flipped, setFlipped] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Setup approval state
+  const [setupRequired, setSetupRequired] = useState(false);
+  const [setupScript, setSetupScript] = useState("");
+  const [setupRunning, setSetupRunning] = useState(false);
+  const [setupOutput, setSetupOutput] = useState("");
 
   // Class-level state (spec + default brief)
   const [specContent, setSpecContent] = useState("");
@@ -44,6 +52,43 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
   const isResized = cardRef.current?.style.height != null && cardRef.current?.style.height !== "";
 
   const isDirty = specContent !== specOriginal || defaultBrief !== defaultBriefOriginal || briefContent !== briefOriginal;
+
+  // Check if card class needs setup
+  useEffect(() => {
+    fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}/card-classes/${encodeURIComponent(meta.cardClass)}/setup`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.required && !data.approved) {
+          setSetupRequired(true);
+          setSetupScript(data.script);
+        } else {
+          setSetupRequired(false);
+        }
+      })
+      .catch(() => {});
+  }, [projectId, meta.cardClass]);
+
+  const handleApproveSetup = useCallback(async () => {
+    setSetupRunning(true);
+    setSetupOutput("");
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/card-classes/${encodeURIComponent(meta.cardClass)}/setup/approve`,
+        { method: "POST", headers: { "Content-Type": "application/json" } }
+      );
+      const data = await res.json();
+      if (res.ok) {
+        setSetupOutput(data.output || "Setup complete.");
+        setSetupRequired(false);
+      } else {
+        setSetupOutput(`Error: ${data.error}`);
+      }
+    } catch (err) {
+      setSetupOutput(`Error: ${(err as Error).message}`);
+    } finally {
+      setSetupRunning(false);
+    }
+  }, [projectId, meta.cardClass]);
 
   // Detect overflow after render.
   // Uses double-rAF so the browser (including Safari) has completed flex
@@ -198,6 +243,40 @@ export default function CardFrame({ filename, html, exports: exportFns, dependen
             <button className="wb-card-brief-save" onClick={handleSave} disabled={saving || !isDirty}>
               {saving ? "Saving..." : "Save"}
             </button>
+          </div>
+        </div>
+      ) : setupRequired ? (
+        <div className="wb-card-body" style={{ padding: "16px", color: "#e6edf3", fontSize: "13px" }}>
+          <div style={{ marginBottom: "12px", fontWeight: 600 }}>
+            Setup required for <em>{meta.cardClass}</em>
+          </div>
+          <div style={{ marginBottom: "8px", fontSize: "12px", color: "#8b949e" }}>
+            This card class needs to install dependencies in the project container:
+          </div>
+          <pre style={{
+            background: "#161b22", border: "1px solid #30363d", borderRadius: "6px",
+            padding: "10px", fontSize: "11px", color: "#c9d1d9", overflow: "auto",
+            maxHeight: "120px", whiteSpace: "pre-wrap", marginBottom: "12px",
+          }}>{setupScript}</pre>
+          {setupOutput && (
+            <pre style={{
+              background: "#0d1117", border: "1px solid #21262d", borderRadius: "4px",
+              padding: "8px", fontSize: "10px", color: "#8b949e", maxHeight: "80px",
+              overflow: "auto", whiteSpace: "pre-wrap", marginBottom: "12px",
+            }}>{setupOutput}</pre>
+          )}
+          <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+            <button
+              onClick={handleApproveSetup}
+              disabled={setupRunning}
+              style={{
+                background: "#238636", color: "#fff", border: "none", borderRadius: "6px",
+                padding: "6px 16px", fontSize: "12px", fontWeight: 600, cursor: "pointer",
+              }}
+            >{setupRunning ? "Installing..." : "Approve & Install"}</button>
+          </div>
+          <div style={{ marginTop: "8px", fontSize: "11px", color: "#6e7681" }}>
+            Runs inside the project container (isolated from host). One-time only.
           </div>
         </div>
       ) : (

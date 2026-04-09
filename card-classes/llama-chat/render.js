@@ -188,14 +188,10 @@ export async function onConnect(mica, args) {
   };
   sessions.set(key, session);
 
-  // Auto-respond to card render errors (e.g., broken card class code)
+  // Card render errors are logged but not auto-responded to — avoids endless fix loops.
+  // The user can paste the error into chat to trigger a fix manually.
   mica.on('card-error', (event) => {
-    const message = `[Card render error] ${event.filename} (class: ${event.cardClass}) failed to render:\n\n${event.error}\n\nRead the render.js for this card class and fix the error.`;
-    if (session.busy) {
-      session.queue.push(message);
-    } else {
-      processMessage(session, message, mica);
-    }
+    console.log(`[llama-chat] Card error: ${event.filename} — ${event.error}`);
   });
 
   // Subscribe to sibling card changes — debounce and batch
@@ -434,7 +430,7 @@ async function executeTool(name, args, mica) {
   }
 }
 
-const MAX_TOOL_TURNS = 5;
+const MAX_TOOL_TURNS = 15;
 
 async function processMessage(session, message, mica) {
   session.busy = true;
@@ -474,8 +470,9 @@ When asked to create or modify cards, use the tools. Be concise and direct.`;
           model: "local",
           messages: openaiMessages,
           tools: TOOLS,
+          tool_choice: "auto",
           temperature: 0.7,
-          max_tokens: 4096,
+          max_tokens: 16384,
         }),
       });
 
@@ -487,10 +484,14 @@ When asked to create or modify cards, use the tools. Be concise and direct.`;
       const choice = data.choices?.[0];
       const msg = choice?.message;
 
+      console.log(`[llama-chat] Turn ${turn}: finish_reason=${choice?.finish_reason} content=${JSON.stringify(msg?.content)?.slice(0, 200)} tool_calls=${msg?.tool_calls?.map(tc => tc.function?.name).join(',') || 'none'} reasoning=${msg?.reasoning_content?.length || 0}`);
+
       if (!msg) break;
 
-      // Add assistant message to conversation
-      openaiMessages.push(msg);
+      // Add assistant message to conversation (strip reasoning_content to save context)
+      const cleanMsg = { ...msg };
+      delete cleanMsg.reasoning_content;
+      openaiMessages.push(cleanMsg);
 
       // Capture any text content (model may return text + tool calls together)
       if (msg.content) resultText = msg.content;
@@ -524,6 +525,32 @@ When asked to create or modify cards, use the tools. Be concise and direct.`;
       // No tool calls — this is the final text response
       resultText = msg.content || "";
       break;
+    }
+
+    // If tool loop ended without text, make one final call without tools to force a summary
+    if (!resultText.trim() && openaiMessages.length > 1) {
+      try {
+        const finalRes = await fetch(`${baseUrl}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "local",
+            messages: [...openaiMessages, { role: "user", content: "Summarize what you did in 1-2 sentences. Do not use any tools." }],
+            temperature: 0.7,
+            max_tokens: 4096,
+          }),
+        });
+        if (finalRes.ok) {
+          const finalData = await finalRes.json();
+          const finalMsg = finalData.choices?.[0]?.message;
+          console.log(`[llama-chat] Final (no tools): content=${JSON.stringify(finalMsg?.content)?.slice(0, 300)} tool_calls=${finalMsg?.tool_calls?.length || 0}`);
+          let text = finalMsg?.content?.trim() || "";
+          // Strip any tool-call XML the model outputs when tools are removed
+          text = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "").trim();
+          text = text.replace(/<\|tool_call\|>[\s\S]*?(<\|\/tool_call\|>|$)/g, "").trim();
+          if (text) resultText = text;
+        }
+      } catch { /* ignore */ }
     }
 
     if (!resultText.trim()) {

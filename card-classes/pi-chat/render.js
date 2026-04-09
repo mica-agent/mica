@@ -206,7 +206,7 @@ async function createPiSession(projectContext) {
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 32768,
-      maxTokens: 4096,
+      maxTokens: 16384,
       compat: { maxTokensField: "max_tokens" },
     }],
   });
@@ -249,14 +249,10 @@ export async function onConnect(mica, args) {
   };
   sessions.set(key, session);
 
-  // Auto-respond to card render errors (e.g., broken card class code)
+  // Card render errors are logged but not auto-responded to — avoids endless fix loops.
+  // The user can paste the error into chat to trigger a fix manually.
   mica.on('card-error', (event) => {
-    const message = `[Card render error] ${event.filename} (class: ${event.cardClass}) failed to render:\n\n${event.error}\n\nRead the render.js for this card class and fix the error.`;
-    if (session.busy) {
-      session.queue.push(message);
-    } else {
-      processMessage(session, message, mica);
-    }
+    console.log(`[pi-chat] Card error: ${event.filename} — ${event.error}`);
   });
 
   // Subscribe to sibling card changes — debounce and batch
@@ -365,6 +361,7 @@ ${context}`;
     const unsub = session.piSession.subscribe((event) => {
       switch (event.type) {
         case "tool_execution_start":
+          console.log(`[pi-chat] Tool: ${event.toolName} ${JSON.stringify(event.args || {}).slice(0, 100)}`);
           mica.send({
             type: "progress",
             tool: event.toolName,
@@ -383,6 +380,7 @@ ${context}`;
           break;
 
         case "agent_end":
+          console.log(`[pi-chat] agent_end: ${event.messages?.length || 0} messages`);
           // Extract the final assistant text from the last message
           if (event.messages && event.messages.length > 0) {
             for (let i = event.messages.length - 1; i >= 0; i--) {

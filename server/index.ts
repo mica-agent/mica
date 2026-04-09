@@ -20,7 +20,11 @@ import {
   validateProjectCanvas,
 } from "./cardFiles.js";
 import { readFile, writeFile } from "fs/promises";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { join } from "path";
+
+const execFileAsync = promisify(execFile);
 import { connectProject, addCanvasToProject, migrateLegacyProjects, readMicaConfig, getProjectPath, getCanvasDir } from "./projectConnection.js";
 import { initializeProjects, seedNewProject } from "./seedCard.js";
 import { CardManager } from "./cardManager.js";
@@ -382,9 +386,15 @@ app.post("/api/projects/:project/canvases/:canvas/cards/:filename/error", (req, 
 });
 
 // Get available card classes (for toolbar, card creation)
-app.get("/api/card-classes", (_req, res) => {
-  const classes = cardManager.getManifest();
-  res.json(classes);
+// Scans all connected projects for project-scoped classes
+app.get("/api/card-classes", async (_req, res) => {
+  try {
+    const projects = await listProjects();
+    for (const project of projects) {
+      cardManager.reloadManifest(project.path);
+    }
+  } catch { /* use whatever manifest we have */ }
+  res.json(cardManager.getManifest());
 });
 
 // Read a file from a card class directory (spec.md, ~brief.md)
@@ -437,6 +447,98 @@ app.put("/api/card-classes/:className/files/:fileName", async (req, res) => {
 });
 
 
+
+// Delete a project-scoped card class
+app.delete("/api/card-classes/:className", async (req, res) => {
+  const { className } = req.params;
+  try {
+    const projects = await listProjects();
+    for (const project of projects) {
+      const classDir = join(project.path, ".mica", ".card-classes", className);
+      try {
+        await import("fs").then(fs => fs.promises.rm(classDir, { recursive: true }));
+        cardManager.invalidateClass(className);
+        broadcast({ type: "classes-updated" });
+        return res.json({ success: true });
+      } catch { /* not in this project */ }
+    }
+    res.status(404).json({ error: `Card class "${className}" not found in any project` });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── Card class setup (setup.sh) ─────────────────────────────
+
+// Check if a card class needs setup and its approval status
+app.get("/api/projects/:project/card-classes/:className/setup", async (req, res) => {
+  const { project, className } = req.params;
+  try {
+    const projectPath = await getProjectPath(project);
+    const classPath = cardManager.getClassPath(className, projectPath);
+    const classDir = classPath.replace(/\/render\.js$/, "");
+    const setupPath = join(classDir, "setup.sh");
+
+    let script = "";
+    try {
+      script = await readFile(setupPath, "utf-8");
+    } catch {
+      return res.json({ required: false });
+    }
+
+    // Check approval state
+    const approvalPath = join(projectPath, ".mica", ".setup-approved.json");
+    let approvals: Record<string, boolean> = {};
+    try {
+      approvals = JSON.parse(await readFile(approvalPath, "utf-8"));
+    } catch { /* no approvals yet */ }
+
+    res.json({
+      required: true,
+      approved: approvals[className] === true,
+      script,
+    });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Approve and run setup.sh for a card class
+app.post("/api/projects/:project/card-classes/:className/setup/approve", async (req, res) => {
+  const { project, className } = req.params;
+  try {
+    const projectPath = await getProjectPath(project);
+    const classPath = cardManager.getClassPath(className, projectPath);
+    const classDir = classPath.replace(/\/render\.js$/, "");
+    const setupPath = join(classDir, "setup.sh");
+
+    const script = await readFile(setupPath, "utf-8");
+
+    // Save approval
+    const approvalPath = join(projectPath, ".mica", ".setup-approved.json");
+    let approvals: Record<string, boolean> = {};
+    try {
+      approvals = JSON.parse(await readFile(approvalPath, "utf-8"));
+    } catch { /* fresh */ }
+    approvals[className] = true;
+    await writeFile(approvalPath, JSON.stringify(approvals, null, 2), "utf-8");
+
+    // Run setup.sh in the project container
+    const containerName = await sandboxManager.getContainerName(project);
+    const { stdout, stderr } = await execFileAsync("docker", [
+      "exec", "-u", "root", containerName, "/bin/bash", "-c", script,
+    ], { timeout: 120000 });
+
+    console.log(`[setup] ${className} setup complete for project "${project}"`);
+    if (stdout.trim()) console.log(`[setup] stdout: ${stdout.trim().slice(0, 500)}`);
+    if (stderr.trim()) console.log(`[setup] stderr: ${stderr.trim().slice(0, 500)}`);
+
+    res.json({ success: true, output: (stdout + stderr).trim().slice(0, 2000) });
+  } catch (err: unknown) {
+    console.error(`[setup] ${className} setup failed:`, (err as Error).message);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
 
 // ── Widget Card System ──────────────────────────────────────
 
@@ -981,6 +1083,7 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
   cardManager.invalidateClass(event.className);
 
   // Notify all clients that the available card classes have changed
+  console.log(`[file-watcher] Broadcasting classes-updated`);
   broadcast({ type: "classes-updated" });
 
   // Broadcast class-changed so all cards of this class can refresh themselves

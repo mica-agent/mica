@@ -8,7 +8,7 @@ const LLAMA_SERVER_BIN = "/usr/local/bin/llama-server";
 const DEFAULT_PORT = 8012;
 const MODEL_PATH = process.env.MODEL_PATH || "";
 const HF_REPO = process.env.HF_REPO || "unsloth/Qwen3-Coder-Next-GGUF";
-const HF_FILE = process.env.HF_FILE || "Qwen3-Coder-Next-Q4_K_M.gguf";
+const HF_FILE = process.env.HF_FILE || "Qwen3-Coder-Next-UD-Q4_K_XL.gguf";
 
 let serverProcess: ChildProcess | null = null;
 let serverPort: number = DEFAULT_PORT;
@@ -87,10 +87,11 @@ async function startServer(): Promise<string> {
     "--host", "0.0.0.0",
     "--port", String(port),
     "--jinja",
-    "--ctx-size", "65536",
+    "--ctx-size", "131072",
     "--flash-attn", "on",
     "--n-gpu-layers", "999",
-    "-np", "1",
+    "-np", "3",
+    "--reasoning-format", "deepseek",
   ], {
     stdio: ["ignore", "pipe", "pipe"],
   });

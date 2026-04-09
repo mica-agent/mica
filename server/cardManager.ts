@@ -43,6 +43,7 @@ interface ClassManifestEntry {
   defaultTitle?: string;
   network?: boolean;
   primaryFile?: string;
+  projectScoped?: boolean;
 }
 
 // ── Constants ──────────────────────────────────────────────
@@ -114,6 +115,11 @@ export class CardManager {
     return { ...this.manifest };
   }
 
+  /** Reload manifest including project-scoped classes. */
+  reloadManifest(projectPath?: string) {
+    this.loadManifest(projectPath);
+  }
+
   /** Get all valid card extensions (for file validation and watching). */
   getValidExtensions(): string[] {
     return [...this.extensionMap.keys(), ".json"];
@@ -132,7 +138,7 @@ export class CardManager {
 
     // Scan project-level card classes (override built-in)
     if (projectPath) {
-      this.scanCardClassDir(path.join(projectPath, ".mica", ".card-classes"));
+      this.scanCardClassDir(path.join(projectPath, ".mica", ".card-classes"), true);
     }
 
     this.extensionMap.clear();
@@ -144,7 +150,7 @@ export class CardManager {
   }
 
   /** Scan a card class directory for render.js files with metadata exports. */
-  private scanCardClassDir(dir: string) {
+  private scanCardClassDir(dir: string, projectScoped = false) {
     try {
       const entries = fs.readdirSync(dir);
       for (const entry of entries) {
@@ -155,7 +161,7 @@ export class CardManager {
             const match = source.match(/export\s+const\s+metadata\s*=\s*(\{[^}]+\})/);
             if (match) {
               const meta = new Function(`return ${match[1]}`)() as ClassManifestEntry;
-              this.manifest[entry] = { ...this.manifest[entry], ...meta };
+              this.manifest[entry] = { ...this.manifest[entry], ...meta, projectScoped };
             }
           } catch { /* parse error */ }
         }
