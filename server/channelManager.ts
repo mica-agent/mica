@@ -72,6 +72,9 @@ export class ChannelManager {
   /** Handler factories keyed by card class (file extension without dot) */
   private factories = new Map<string, HandlerFactory>();
 
+  /** tabId → set of clientIds currently tracked under that tab */
+  private tabClients = new Map<string, Set<string>>();
+
   // ── Factory registration ───────────────────────────────
 
   /**
@@ -199,6 +202,7 @@ export class ChannelManager {
     filename: string,
     fn: string | undefined,
     args: Record<string, unknown>,
+    tabId: string | null,
     onData: (data: unknown) => void,
     onClose: () => void,
   ): Promise<void> {
@@ -263,16 +267,45 @@ export class ChannelManager {
       console.log(`[channel-mgr] Session ${key} resumed from idle`);
     }
 
-    // Evict stale clients before attaching new one.
-    // A session should have at most 2 clients (current + StrictMode ghost).
-    // More than that means old WebSocket connections didn't clean up in time.
-    if (session.clients.size >= 2) {
-      const staleIds = [...session.clients.keys()];
-      for (const staleId of staleIds) {
-        session.clients.get(staleId)?.onClose?.();
-        session.clients.delete(staleId);
-        this.clientToSession.delete(staleId);
+    // Evict stale clients before attaching the new one.
+    // If tabId is provided: evict only clients from the same tab (same tabId, same session).
+    //   This allows multiple tabs to share a session while still cleaning up stale clients
+    //   from a previous page load in the same tab.
+    // If tabId is absent (non-browser callers, tests): evict all clients as a safe fallback.
+    if (tabId) {
+      const peers = this.tabClients.get(tabId);
+      if (peers) {
+        const staleIds = [...peers].filter((peerId) => this.clientToSession.get(peerId) === key);
+        for (const peerId of staleIds) {
+          const peerHandle = session.clients.get(peerId);
+          try { session.handler?.onDetach?.(peerId); } catch { /* ignore */ }
+          try { peerHandle?.onClose(); } catch { /* already gone */ }
+          session.clients.delete(peerId);
+          this.clientToSession.delete(peerId);
+          peers.delete(peerId);
+        }
+        if (staleIds.length > 0) {
+          console.log(`[channel-mgr] Evicted ${staleIds.length} stale client(s) from ${key} (tab ${tabId})`);
+        }
       }
+    } else {
+      // No tabId — evict all existing clients
+      if (session.clients.size > 0) {
+        const staleCount = session.clients.size;
+        for (const [staleId, client] of session.clients) {
+          try { session.handler?.onDetach?.(staleId); } catch { /* ignore */ }
+          try { client.onClose(); } catch { /* already gone */ }
+          this.clientToSession.delete(staleId);
+        }
+        session.clients.clear();
+        console.log(`[channel-mgr] Evicted ${staleCount} stale client(s) from ${key} (no tabId)`);
+      }
+    }
+
+    // Track this client under its tabId
+    if (tabId) {
+      if (!this.tabClients.has(tabId)) this.tabClients.set(tabId, new Set());
+      this.tabClients.get(tabId)!.add(clientId);
     }
 
     // Attach client (existing session)
@@ -310,6 +343,13 @@ export class ChannelManager {
 
     session.clients.delete(clientId);
     console.log(`[channel-mgr] Client ${clientId} detached from ${key} (${session.clients.size} remaining)`);
+
+    // Clean up tabClients tracking
+    for (const [tid, clients] of this.tabClients) {
+      if (clients.delete(clientId) && clients.size === 0) {
+        this.tabClients.delete(tid);
+      }
+    }
 
     // Notify handler
     session.handler?.onDetach?.(clientId);
@@ -406,6 +446,12 @@ export class ChannelManager {
         // Client may already be gone
       }
       this.clientToSession.delete(clientId);
+      // Clean up tabClients tracking
+      for (const [tid, clients] of this.tabClients) {
+        if (clients.delete(clientId) && clients.size === 0) {
+          this.tabClients.delete(tid);
+        }
+      }
     }
     session.clients.clear();
 

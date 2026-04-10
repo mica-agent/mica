@@ -54,6 +54,26 @@ function setConnected(value: boolean) {
 /** Unique ID for this browser window — used for event source attribution. */
 export const windowId = `win-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+/**
+ * Stable ID for this browser tab, persisted in sessionStorage.
+ * Survives page refreshes within the same tab, but is isolated between tabs.
+ * Used by the server to evict stale clients from the same tab on reconnect.
+ */
+function getTabId(): string {
+  try {
+    let id = sessionStorage.getItem("mica-tab-id");
+    if (!id) {
+      id = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      sessionStorage.setItem("mica-tab-id", id);
+    }
+    return id;
+  } catch {
+    // sessionStorage unavailable — fall back to a per-session random ID
+    return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+}
+export const tabId = getTabId();
+
 function nextId(): string {
   return `mc-${++idCounter}-${Date.now()}`;
 }
@@ -298,7 +318,7 @@ export function openChannel(
   activeChannels.set(id, handle);
 
   waitForConnection().then(() => {
-    sendMsg({ type: "channel_open", id, project, canvas, filename, fn, args });
+    sendMsg({ type: "channel_open", id, project, canvas, filename, fn, args, tabId });
   }).catch((err) => {
     console.error("[mica-socket] channel open failed:", err);
     activeChannels.delete(id);

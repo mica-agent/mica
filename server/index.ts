@@ -977,6 +977,7 @@ wss.on("connection", (ws) => {
           const channelArgs = (args || {}) as Record<string, unknown>;
           const proj = project as string;
           const canv = canvas as string;
+          const msgTabId = (msg.tabId as string | undefined) ?? null;
 
           const onData = (data: unknown) => {
             if (ws.readyState === WebSocket.OPEN) {
@@ -1021,7 +1022,7 @@ wss.on("connection", (ws) => {
               wsChannels.get(ws)?.delete(oldCid);
             }
 
-            await channelManager.open(cid, proj, canv, fname, fn as string, channelArgs, onData, onClose);
+            await channelManager.open(cid, proj, canv, fname, fn as string, channelArgs, msgTabId, onData, onClose);
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(cid);
             cardMap.set(cardKey, cid);
