@@ -170,6 +170,18 @@ export async function onMessage(msg, mica) {
     return;
   }
 
+  if (msg.type === 'get_context') {
+    const context = await buildContext(mica);
+    const baseUrl = await getLlamaBaseUrl();
+    mica.reply({
+      type: 'context_info',
+      context,
+      baseUrl,
+      contextLength: context.length,
+    });
+    return;
+  }
+
   if (msg.type === 'interrupt') {
     if (session.activeQuery) {
       try { await session.activeQuery.interrupt(); } catch {}
@@ -304,7 +316,10 @@ export default function render(content, config) {
   ">
     <span style="color:${color};font-size:14px;">Q</span>
     <span style="color:#e6edf3;font-size:13px;font-weight:600;">Qwen Code</span>
-    <span style="margin-left:auto;font-size:11px;color:#6e7681;font-family:monospace;">llama:8012</span>
+    <button id="qwen-ctx-btn" title="Show context" style="
+      margin-left:auto;background:transparent;border:1px solid #30363d;border-radius:4px;
+      color:#6e7681;font-size:11px;cursor:pointer;padding:2px 6px;font-family:monospace;
+    ">ctx</button>
   </div>
 
   <div id="qwen-messages" style="
@@ -357,6 +372,7 @@ export default function render(content, config) {
   var statusDot = container.querySelector('#qwen-dot');
   var statusLabel = container.querySelector('#qwen-status-label');
   var statusMeta = container.querySelector('#qwen-status-meta');
+  var ctxBtn = container.querySelector('#qwen-ctx-btn');
   var ACCENT = '${color}';
   var busy = false;
   var elapsedSec = 0;
@@ -438,6 +454,17 @@ export default function render(content, config) {
         setStatus('Error', '#f87171', false);
         addMessage('assistant', 'Error: ' + (data.error || 'Unknown'), 'System');
         break;
+      case 'context_info':
+        var ctx = data.context || '';
+        var sections = ctx.split(/^## /gm).filter(Boolean);
+        var summary = 'Context: ' + data.contextLength + ' chars\\nBase URL: ' + data.baseUrl + '\\n\\nSections:\\n';
+        for (var s = 0; s < sections.length; s++) {
+          var title = sections[s].split(String.fromCharCode(10))[0].trim();
+          var chars = sections[s].length;
+          summary += '  - ' + title + ' (' + chars + ' chars)\\n';
+        }
+        addMessage('assistant', summary, 'Context');
+        break;
     }
   });
 
@@ -453,6 +480,10 @@ export default function render(content, config) {
   sendBtn.addEventListener('click', send);
   inputEl.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  ctxBtn.addEventListener('click', function() {
+    ch.send({ type: 'get_context' });
   });
 
   mica.onDestroy(function() { ch.close(); if (elapsedTimer) clearInterval(elapsedTimer); });
