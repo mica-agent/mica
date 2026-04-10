@@ -57,8 +57,14 @@ export default function render(content, config) {
       el.textContent = 'Hello';
 
       // Call server exports: mica.call('my_export', { key: 'value' })
+
+      // Re-render when card data file changes (e.g. updated by agent or export)
+      var unsub = mica.on('file-changed', function(e) {
+        if (e.filename === mica.filename) mica.refresh();
+      });
+
       // Always clean up timers, listeners, observers
-      mica.onDestroy(function() { /* cleanup */ });
+      mica.onDestroy(function() { unsub(); });
     </script>
   `;
 }
@@ -119,6 +125,24 @@ Do NOT use `window.addEventListener('resize')` — it only fires for browser win
 Do NOT use fixed pixel widths/heights.
 Do NOT skip `mica.onDestroy()` cleanup — animation frames and observers leak without it.
 
+## Using CDN libraries
+
+When using a CDN library (Three.js, D3, Chart.js, etc.), verify the API before writing code:
+
+```bash
+# Check the library version and available API
+curl -s https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js | head -1
+# Read docs for the specific version you're using
+curl -s https://raw.githubusercontent.com/mrdoob/three.js/r128/docs/api/en/math/Color.html 2>/dev/null | head -50
+```
+
+Do NOT assume API signatures — different versions have different APIs. When debugging color, material, or rendering issues, read the library source or docs for the exact version loaded via CDN.
+
+For Three.js r128 specifically:
+- `new THREE.Color("#ff8800")` — accepts CSS hex strings directly
+- `new THREE.Color(0xff8800)` — accepts hex integers
+- Do NOT pass `{r, g, b}` objects — use `THREE.Color` constructor or `.set()` method
+
 ## Common mistakes to avoid
 
 - `document.querySelector()` — use `container.querySelector()` instead
@@ -129,4 +153,5 @@ Do NOT skip `mica.onDestroy()` cleanup — animation frames and observers leak w
 - Skipping the test step — always test before creating an instance
 - `window.addEventListener('resize')` — WRONG for cards, use `ResizeObserver` on the container
 - Missing `mica.onDestroy()` — animation frames, observers, event listeners all leak without cleanup
+- Missing `file-changed` listener — card won't update when its data file is modified by an agent or export function
 - Fixed pixel dimensions — use `height:100%;flex:1` to fill the card

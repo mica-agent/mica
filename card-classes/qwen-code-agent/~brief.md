@@ -47,8 +47,13 @@ export default function render(content, config) {
       // Call server exports via mica.call()
       // mica.call('my_export', { key: 'value' }).then(result => { ... });
 
+      // Re-render when card data changes
+      var unsub = mica.on('file-changed', function(e) {
+        if (e.filename === mica.filename) mica.refresh();
+      });
+
       // Always clean up timers, listeners, observers
-      mica.onDestroy(function() { /* cleanup */ });
+      mica.onDestroy(function() { unsub(); });
     </script>
   `;
 }
