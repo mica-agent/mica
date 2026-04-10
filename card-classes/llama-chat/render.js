@@ -149,6 +149,16 @@ async function buildContext(mica) {
     }
   } catch { /* no cards */ }
 
+  // CRITICAL RULES — placed last for recency (models attend most to start and end)
+  parts.push(`## Critical Rules (MUST follow)
+- The server is ALWAYS running. NEVER tell the user to restart it.
+- NEVER redeclare \`container\` — it is pre-defined as your card's root element.
+- NEVER use \`document.getElementById()\` or \`document.querySelector()\` — use \`container.querySelector()\`.
+- NEVER use ES module \`import\` in browser scripts — load CDN libs via \`dependencies.scripts\`.
+- Before using a CDN URL, verify it works: \`curl -sI <url> | head -1\` should return 200.
+- After writing render.js, test it: \`curl -s -X POST http://localhost:3002/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}'\`
+- All functions in render.js must be defined in the same file — no implicit imports.`);
+
   return parts.join("\n\n");
 }
 
