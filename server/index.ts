@@ -657,6 +657,16 @@ async function getOrCreateContainerRuntime(projectId: string): Promise<Container
   await runtime.start();
   containerRuntimes.set(projectId, runtime);
   cardManager.setContainerRuntime(projectId, runtime);
+
+  // Ensure file watcher is watching this project's card classes.
+  // Projects created after server start wouldn't have watchers otherwise.
+  try {
+    const config = await getProjectConfig(projectId);
+    await fileWatcher.addProject(projectId, config?.canvases || ["_root"]);
+  } catch {
+    // Config may not exist yet — watcher will be added on project connect
+  }
+
   return runtime;
 }
 
@@ -1177,7 +1187,9 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
     const projects = await listProjects();
     for (const project of projects) {
       const config = await getProjectConfig(project.id);
-      const canvases = config?.canvases || ["_root"];
+      const canvases = ["_root", ...(config?.canvases || [])];
+      // Reload manifest with project path so extensionMap includes project-scoped card classes
+      cardManager.reloadManifest(project.path);
       for (const canvas of canvases) {
         const files = await listFiles(project.id, canvas);
         for (const file of files) {
@@ -1188,6 +1200,7 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
               const rendered = await cardManager.renderCard(
                 project.id, canvas, file.name, file.content
               );
+              console.log(`[file-watcher] Broadcasting class-changed for ${project.id}/${canvas}/${file.name}`);
               broadcast({
                 type: "class-changed",
                 project: project.id,

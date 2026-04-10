@@ -980,7 +980,24 @@ pre.mermaid svg {
   opacity: 1 !important;
 }
 
-/* When card has explicit height from resize, body fills available space */
+/* Freeform canvas cards: body fills available space.
+   Cards on the freeform canvas always have explicit dimensions from the layout,
+   so the 280px max-height cap (for vertical list mode) must be removed. */
+#canvas-freeform .wb-card .wb-card-body {
+  max-height: none !important;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Remove fade gradient on freeform cards */
+#canvas-freeform .wb-card .wb-card-body--overflows::after {
+  display: none;
+}
+
+/* Legacy: resized class kept for backward compat */
 .wb-card--resized .wb-card-body {
   max-height: none !important;
   overflow-y: auto;
@@ -990,7 +1007,6 @@ pre.mermaid svg {
   flex-direction: column;
 }
 
-/* Remove fade gradient on resized cards */
 .wb-card--resized .wb-card-body--overflows::after {
   display: none;
 }
@@ -1025,16 +1041,13 @@ pre.mermaid svg {
   flex-direction: column;
 }
 
-/* Widget content div fills the runtime container */
+/* Widget content div fills the runtime container.
+   height:0 + flex:1 forces height from flex allocation (not content),
+   making height:100% on card class elements resolve correctly. */
 .card-runtime > div {
   flex: 1;
   min-height: 0;
-}
-
-/* Canvas host: widget content must be a flex container so card class can fill it */
-.canvas-card-host .card-runtime > div {
-  display: flex;
-  flex-direction: column;
+  height: 0;
 }
 
 /* Activity indicator — subtle animated bar at top of card */

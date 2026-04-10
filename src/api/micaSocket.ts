@@ -119,20 +119,18 @@ export function connect(url?: string): void {
       activeChannels.delete(id);
     }
     // Poll the server with HTTP until it's back, then reload the page
-    if (wasEverConnected) {
-      const poll = setInterval(async () => {
-        try {
-          const r = await fetch(`${location.protocol}//${location.hostname}:${import.meta.env.VITE_MICA_WS_PORT || "3002"}/api/card-classes`);
-          if (r.ok) {
-            clearInterval(poll);
-            console.log("[mica-socket] Server is back — reloading page");
-            location.reload();
-          }
-        } catch {
-          // server still down, try again
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch(`${location.protocol}//${location.hostname}:${import.meta.env.VITE_MICA_WS_PORT || "3002"}/api/card-classes`);
+        if (r.ok) {
+          clearInterval(poll);
+          console.log("[mica-socket] Server is back — reloading page");
+          location.reload();
         }
-      }, 2000);
-    }
+      } catch {
+        // server still down, try again
+      }
+    }, 2000);
   };
 
   ws.onerror = (err) => {

@@ -107,14 +107,34 @@ async function buildContext(mica) {
   } catch {}
 
   // CRITICAL RULES — placed last for recency (models attend most to start and end)
-  parts.push(`## Critical Rules (MUST follow)
-- The server is ALWAYS running. NEVER tell the user to restart it.
-- NEVER redeclare \`container\` — it is pre-defined as your card's root element.
-- NEVER use \`document.getElementById()\` or \`document.querySelector()\` — use \`container.querySelector()\`.
-- NEVER use ES module \`import\` in browser scripts — load CDN libs via \`dependencies.scripts\`.
-- Before using a CDN URL, verify it works: \`curl -sI <url> | head -1\` should return 200.
-- After writing render.js, test it: \`curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}'\`
-- All functions in render.js must be defined in the same file — no implicit imports.`);
+  parts.push(`## Critical Rules for Card Classes
+
+When writing render.js, use this correct pattern:
+
+\`\`\`javascript
+// container is pre-defined — do NOT redeclare it
+var el = container.querySelector('#my-element');  // correct
+// document.querySelector('#my-element');  // WRONG — will find elements in other cards
+// const container = ...;  // WRONG — crashes because container already exists
+
+// CDN libraries go in dependencies export, then use as globals in scripts
+// No ES module import in browser scripts
+// All functions must be defined in the same file — no implicit imports
+
+// SIZING: root element must fill the card with height:100% and flex layout
+// <div style="display:flex;flex-direction:column;height:100%;min-height:0;">
+//   <div id="content" style="flex:1;min-height:0;overflow:auto;"></div>
+// </div>
+// For canvas/WebGL: use ResizeObserver — NOT window resize events.
+// Card drag-resize does NOT fire window resize. Always clean up with mica.onDestroy().
+\`\`\`
+
+After writing render.js, ALWAYS test it before creating an instance:
+\`curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}'\`
+If the response contains an error, fix render.js and re-test until clean.
+
+Before using any CDN URL, verify it: \`curl -sI <url> | head -1\` should return 200.
+The server is always running — never tell the user to restart it.`);
 
   return parts.join("\n\n");
 }
@@ -174,16 +194,20 @@ export async function onConnect(mica, args) {
         console.log(`[qwen-code-agent] Auto-fix limit reached for ${filename}, skipping`);
         return;
       }
+
+      // Skip if already busy — don't queue auto-fix messages, they pile up
+      // and overwhelm the agent. The next render error will re-trigger.
+      if (session.busy) {
+        console.log(`[qwen-code-agent] Auto-fix skipped for ${filename} (agent busy)`);
+        return;
+      }
+
       session.errorCounts.set(filename, count);
 
       const autoMessage = `The card "${filename}" has a render error (auto-fix attempt ${count}/3):\n\n${error}\n\nPlease read its render.js and fix the error.`;
       console.log(`[qwen-code-agent] Auto-fix triggered for ${filename} (attempt ${count})`);
 
-      if (session.busy) {
-        session.queue.push(autoMessage);
-      } else {
-        processMessage(session, autoMessage, mica);
-      }
+      processMessage(session, autoMessage, mica);
     });
   }
 
