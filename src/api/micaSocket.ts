@@ -118,16 +118,15 @@ export function connect(url?: string): void {
       ch.onClose?.();
       activeChannels.delete(id);
     }
-    // Poll the server with HTTP until it's back, then reconnect the WebSocket.
-    // We reconnect instead of reloading the page because location.reload()
-    // can fail in iframe environments (Codespaces) or race with Vite HMR.
+    // Poll the server until it's back, then force reload the page.
+    // Uses relative URL so it works through Vite's proxy in dev containers.
     const poll = setInterval(async () => {
       try {
-        const r = await fetch(`${location.protocol}//${location.hostname}:${import.meta.env.VITE_MICA_WS_PORT || "3002"}/api/card-classes`);
+        const r = await fetch("/api/card-classes");
         if (r.ok) {
           clearInterval(poll);
-          console.log("[mica-socket] Server is back — reconnecting");
-          connect();
+          console.log("[mica-socket] Server is back — reloading page");
+          window.location.replace(window.location.pathname + "?t=" + Date.now());
         }
       } catch {
         // server still down, try again

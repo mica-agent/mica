@@ -173,9 +173,6 @@ export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
       }
 
       // class-changed: card class was updated — replace card with re-rendered version
-      if (m.type === "class-changed") {
-        console.log(`[canvas] class-changed for ${m.filename}, html=${!!m.html}, meta=${!!m.meta}, project=${m.project}`);
-      }
       if (m.type === "class-changed" && m.html && m.meta) {
         setChildren((prev) => {
           const idx = prev.findIndex((c) => c.filename === m.filename);
