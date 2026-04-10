@@ -263,6 +263,18 @@ export class ChannelManager {
       console.log(`[channel-mgr] Session ${key} resumed from idle`);
     }
 
+    // Evict stale clients before attaching new one.
+    // A session should have at most 2 clients (current + StrictMode ghost).
+    // More than that means old WebSocket connections didn't clean up in time.
+    if (session.clients.size >= 2) {
+      const staleIds = [...session.clients.keys()];
+      for (const staleId of staleIds) {
+        session.clients.get(staleId)?.onClose?.();
+        session.clients.delete(staleId);
+        this.clientToSession.delete(staleId);
+      }
+    }
+
     // Attach client (existing session)
     session.clients.set(clientId, { onData, onClose });
     this.clientToSession.set(clientId, key);
