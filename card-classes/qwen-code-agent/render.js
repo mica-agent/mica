@@ -153,7 +153,39 @@ function describeToolUse(name, input) {
 
 export async function onConnect(mica, args) {
   const key = sessionKey(mica);
-  sessions.set(key, { busy: false, queue: [], sessionId: null, activeQuery: null });
+
+  if (!sessions.has(key)) {
+    sessions.set(key, { busy: false, queue: [], sessionId: null, activeQuery: null, errorCounts: new Map() });
+  }
+
+  // Auto-fix: inject card errors into the conversation so the agent fixes them.
+  // Registered on every onConnect call (not just first) because the channelManager
+  // session-creation race can cause onConnect to be called twice, with the second
+  // call overwriting the container's cardSession and erasing listeners from the first.
+  // Capped at 3 attempts per card to prevent infinite loops.
+  if (typeof mica.on === 'function') {
+    mica.on('card-error', async (event) => {
+      const session = sessions.get(key);
+      if (!session) return;
+
+      const { filename, error } = event;
+      const count = (session.errorCounts.get(filename) || 0) + 1;
+      if (count > 3) {
+        console.log(`[qwen-code-agent] Auto-fix limit reached for ${filename}, skipping`);
+        return;
+      }
+      session.errorCounts.set(filename, count);
+
+      const autoMessage = `The card "${filename}" has a render error (auto-fix attempt ${count}/3):\n\n${error}\n\nPlease read its render.js and fix the error.`;
+      console.log(`[qwen-code-agent] Auto-fix triggered for ${filename} (attempt ${count})`);
+
+      if (session.busy) {
+        session.queue.push(autoMessage);
+      } else {
+        processMessage(session, autoMessage, mica);
+      }
+    });
+  }
 
   const messages = await loadHistory(mica);
   mica.send({ type: 'history', messages });
@@ -284,6 +316,8 @@ async function processMessage(session, message, mica) {
 
     mica.send({ type: 'assistant', content: resultText, agent: 'Qwen', filesChanged });
     await appendHistory(mica, [{ role: 'assistant', content: resultText, agent: 'Qwen' }]);
+    // Reset auto-fix retry counts on any successful response
+    session.errorCounts?.clear();
 
   } catch (err) {
     session.activeQuery = null;

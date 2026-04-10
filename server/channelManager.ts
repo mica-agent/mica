@@ -245,6 +245,10 @@ export class ChannelManager {
       const ctx = this.buildContext(session);
       session.ctx = ctx;
 
+      // Register session BEFORE the factory await so concurrent open() calls
+      // find this session instead of creating a second one.
+      this.sessions.set(key, session);
+
       // Attach client BEFORE creating handler so onConnect can broadcast to first client
       session.clients.set(clientId, { onData, onClose });
       this.clientToSession.set(clientId, key);
@@ -253,7 +257,6 @@ export class ChannelManager {
       const handler = await factory(content, args, ctx);
       session.handler = handler;
       session.state = "active";
-      this.sessions.set(key, session);
 
       console.log(`[channel-mgr] Created session ${key} (cardClass=${cardClass})`);
       console.log(`[channel-mgr] Client ${clientId} attached to ${key} (${session.clients.size} clients)`);
