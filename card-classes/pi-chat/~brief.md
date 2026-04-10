@@ -25,7 +25,7 @@ New card classes go in `/opt/mica/project-card-classes/{name}/` (project-scoped)
 
 After writing the files, you MUST create an instance on the canvas:
 ```
-curl -s -X POST http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards \
+curl -s -X POST $MICA_API_URL/api/projects/$MICA_PROJECT/canvases/_root/cards \
   -H 'Content-Type: application/json' \
   -d '{"name": "my-thing.{ext}"}'
 ```

@@ -18,9 +18,9 @@ New card classes go in `/opt/mica/project-card-classes/{name}/` (project-scoped)
 2. Read an existing card class first: `cat /opt/mica/card-classes/mermaid/render.js`
 3. Write `spec.md` — what the card type does
 4. Write `render.js` — the implementation
-5. Create an instance on the canvas:
+5. Create an instance on the canvas (use $MICA_API_URL, NOT localhost):
    ```
-   curl -s -X POST http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards \
+   curl -s -X POST $MICA_API_URL/api/projects/$MICA_PROJECT/canvases/_root/cards \
      -H 'Content-Type: application/json' \
      -d '{"name": "my-thing.{ext}"}'
    ```

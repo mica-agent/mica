@@ -174,8 +174,8 @@ export async function decrement(content, args, mica) {
 3. Write `spec.md` — describe what the card does
 4. Write `render.js` — metadata + render function + optional exports
 5. Write `~{primaryFile}` — seed content for new instances (e.g. `~data.json` with default data). Without this, new instances start with an empty primary file and may not render.
-6. **Test before creating**: `curl -s -X POST http://localhost:3002/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}' | grep error` — if `error` is not null, fix render.js before proceeding.
-7. Create an instance: `curl -s -X POST http://localhost:3002/api/projects/$MICA_PROJECT/canvases/_root/cards -H 'Content-Type: application/json' -d '{"name": "my-thing.{ext}"}'`
+6. **Test before creating**: `curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}' | grep error` — if `error` is not null, fix render.js before proceeding.
+7. Create an instance: `curl -s -X POST $MICA_API_URL/api/projects/$MICA_PROJECT/canvases/_root/cards -H 'Content-Type: application/json' -d '{"name": "my-thing.{ext}"}'`
 
 ## Container dependencies (setup.sh)
 

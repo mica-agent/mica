@@ -156,7 +156,7 @@ async function buildContext(mica) {
 - NEVER use \`document.getElementById()\` or \`document.querySelector()\` — use \`container.querySelector()\`.
 - NEVER use ES module \`import\` in browser scripts — load CDN libs via \`dependencies.scripts\`.
 - Before using a CDN URL, verify it works: \`curl -sI <url> | head -1\` should return 200.
-- After writing render.js, test it: \`curl -s -X POST http://localhost:3002/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}'\`
+- After writing render.js, test it: \`curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}'\`
 - All functions in render.js must be defined in the same file — no implicit imports.`);
 
   return parts.join("\n\n");

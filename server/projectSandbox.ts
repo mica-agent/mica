@@ -238,6 +238,7 @@ export class SandboxManager {
       "-e", `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       "-e", `HOME=/home/sandbox`,
       "-e", `TERM=xterm-256color`,
+      "-e", `MICA_PORT=${process.env.MICA_PORT || "3002"}`,
       "--entrypoint", "sleep",
       SANDBOX_IMAGE,
       "infinity",
