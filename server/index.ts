@@ -857,6 +857,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>(); // ws → set of channel IDs
+const wsCardChannels = new Map<WebSocket, Map<string, string>>(); // ws → { cardKey → channelId } for dedup
 
 // Unified channel manager — handles chat, terminal, and future card types.
 // Transport-agnostic: index.ts is the WebSocket adapter.
@@ -904,6 +905,7 @@ wss.on("connection", (ws) => {
       }
       wsChannels.delete(ws);
     }
+    wsCardChannels.delete(ws);
   };
 
   ws.on("close", cleanupWsChannels);
@@ -1009,9 +1011,20 @@ wss.on("connection", (ws) => {
           }
 
           if (channelManager.hasHandler(cardClass)) {
+            // Dedup: if this WebSocket already has a channel for this card, detach old one first
+            const cardKey = `${proj}/${canv}/${fname}#${fn}`;
+            if (!wsCardChannels.has(ws)) wsCardChannels.set(ws, new Map());
+            const cardMap = wsCardChannels.get(ws)!;
+            const oldCid = cardMap.get(cardKey);
+            if (oldCid && channelManager.has(oldCid)) {
+              channelManager.detach(oldCid);
+              wsChannels.get(ws)?.delete(oldCid);
+            }
+
             await channelManager.open(cid, proj, canv, fname, fn as string, channelArgs, onData, onClose);
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(cid);
+            cardMap.set(cardKey, cid);
           } else {
             throw new Error(`No channel handler for card class "${cardClass}" (file: ${fname})`);
           }
@@ -1038,6 +1051,13 @@ wss.on("connection", (ws) => {
           channelManager.detach(cid);
         }
         wsChannels.get(ws)?.delete(cid);
+        // Remove from card dedup map
+        const cardMap = wsCardChannels.get(ws);
+        if (cardMap) {
+          for (const [key, val] of cardMap) {
+            if (val === cid) { cardMap.delete(key); break; }
+          }
+        }
         break;
       }
     }
