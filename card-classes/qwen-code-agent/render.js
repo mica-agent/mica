@@ -113,6 +113,26 @@ async function buildContext(mica) {
     parts.push(`## Recent Activity\n${recentLines}`);
   }
 
+  // Card errors — scan for .error files in card directories
+  try {
+    const entries = await fs.promises.readdir(PROJECT_DIR);
+    const errorLines = [];
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      try {
+        const errorPath = path.join(PROJECT_DIR, entry, ".error");
+        const errorContent = await fs.promises.readFile(errorPath, "utf-8");
+        const err = JSON.parse(errorContent);
+        errorLines.push(`- **${entry}**: ${err.error} (${err.source}, ${err.cardClass || 'unknown class'})`);
+      } catch {
+        // No .error file — card is fine
+      }
+    }
+    if (errorLines.length > 0) {
+      parts.push(`## Card Errors (fix these)\n${errorLines.join("\n")}`);
+    }
+  } catch {}
+
   // CRITICAL RULES — placed last for recency (models attend most to start and end)
   parts.push(`## Critical Rules
 - The server is always running — never tell the user to restart it.
@@ -160,40 +180,13 @@ export async function onConnect(mica, args) {
   const key = sessionKey(mica);
 
   if (!sessions.has(key)) {
-    sessions.set(key, { busy: false, queue: [], activeQuery: null, errorCounts: new Map() });
+    sessions.set(key, { busy: false, queue: [], activeQuery: null });
   }
 
-  // Auto-fix: inject card errors into the conversation so the agent fixes them.
-  // Registered on every onConnect call (not just first) because the channelManager
-  // session-creation race can cause onConnect to be called twice, with the second
-  // call overwriting the container's cardSession and erasing listeners from the first.
-  // Capped at 3 attempts per card to prevent infinite loops.
+  // Card errors are now handled via .error files — buildContext() reads them
+  // and includes them in the agent's context. No reactive listener needed.
+
   if (typeof mica.on === 'function') {
-    mica.on('card-error', async (event) => {
-      const session = sessions.get(key);
-      if (!session) return;
-
-      const { filename, error } = event;
-      const count = (session.errorCounts.get(filename) || 0) + 1;
-      if (count > 3) {
-        return; // limit reached
-      }
-
-      // Skip if busy or cooling down (30s between auto-fix attempts)
-      if (session.busy) return;
-      const now = Date.now();
-      const lastFix = session.lastAutoFix || 0;
-      if (now - lastFix < 30000) return;
-
-      session.errorCounts.set(filename, count);
-      session.lastAutoFix = now;
-
-      const autoMessage = `The card "${filename}" has a render error (auto-fix attempt ${count}/3):\n\n${error}\n\nPlease read its render.js and fix the error.`;
-      console.log(`[qwen-code-agent] Auto-fix triggered for ${filename} (attempt ${count})`);
-
-      processMessage(session, autoMessage, mica);
-    });
-
     // Reactive canvas: wake the agent when canvas cards are edited by the user.
     // The agent reads the change and responds (e.g., user edits architecture → agent adjusts).
     // Throttled: 30s cooldown, skip if busy, ignore own writes.
@@ -348,8 +341,6 @@ async function processMessage(session, message, mica) {
 
     mica.send({ type: 'assistant', content: resultText, agent: 'Qwen', filesChanged });
     await appendHistory(mica, [{ role: 'assistant', content: resultText, agent: 'Qwen' }]);
-    // Reset auto-fix retry counts on any successful response
-    session.errorCounts?.clear();
 
     // Log activity to canvas log.md so future sessions have context
     try {

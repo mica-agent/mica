@@ -68,7 +68,7 @@ window.addEventListener=function(t,fn,o){
   _origAEL(t,w,o);_cleanups.push(function(){_origREL(t,w,o)});
 };
 var _ro=new ResizeObserver(function(){for(var i=0;i<_resizeCbs.length;i++){try{_resizeCbs[i]()}catch(e){}}});
-_ro.observe(container);
+_ro.observe(_c);
 _cleanups.push(function(){_ro.disconnect()});
 mica.onDestroy(function(){for(var i=0;i<_cleanups.length;i++){try{_cleanups[i]()}catch(e){}}});
 `;
@@ -248,7 +248,8 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
             const newScript = document.createElement("script");
             newScript.textContent =
               `try{(function(mica, _c) {${CARD_SHIM}${oldScript.textContent}})(` +
-              `document.currentScript.__mica, document.currentScript.parentElement);}` +
+              `document.currentScript.__mica, document.currentScript.parentElement);` +
+              `fetch('/api/projects/'+document.currentScript.__mica.project+'/canvases/'+document.currentScript.__mica.canvas+'/cards/'+encodeURIComponent(document.currentScript.__mica.filename)+'/ok',{method:'POST'}).catch(function(){});}` +
               `catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}`;
             oldScript.remove();
             (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
@@ -303,6 +304,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
             `const _m=document.currentScript.__mica;` +
             `try{(function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
             `_m,document.currentScript.parentElement);` +
+            `fetch('/api/projects/'+_m.project+'/canvases/'+_m.canvas+'/cards/'+encodeURIComponent(_m.filename)+'/ok',{method:'POST'}).catch(function(){});` +
             `}catch(e){` +
             `console.error("[card-runtime] Script error in ${filename}:",e);` +
             `fetch('/api/projects/'+_m.project+'/canvases/'+_m.canvas+'/cards/'+encodeURIComponent(_m.filename)+'/error',` +

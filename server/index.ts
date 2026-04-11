@@ -374,7 +374,7 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   }
 });
 
-// Report a browser-side card script error — triggers card-error event so agents can auto-fix
+// Report a browser-side card script error — writes .error file for agent context
 app.post("/api/projects/:project/canvases/:canvas/cards/:filename/error", (req, res) => {
   const { project, canvas, filename } = req.params;
   const { error } = req.body as { error?: string };
@@ -382,6 +382,13 @@ app.post("/api/projects/:project/canvases/:canvas/cards/:filename/error", (req, 
     const { cardClass } = cardManager.resolveCardClass(filename, "");
     broadcastCardError(project, canvas, filename, `[browser] ${error}`, cardClass);
   }
+  res.json({ ok: true });
+});
+
+// Browser reports successful card script execution — clears .error file
+app.post("/api/projects/:project/canvases/:canvas/cards/:filename/ok", (req, res) => {
+  const { project, canvas, filename } = req.params;
+  clearCardError(project, canvas, filename);
   res.json({ ok: true });
 });
 
@@ -1089,9 +1096,23 @@ function broadcast(msg: Record<string, unknown>) {
 }
 
 // Broadcast card render errors to browsers and server-side agent sessions
-function broadcastCardError(project: string, canvas: string, filename: string, error: string, cardClass?: string) {
+async function broadcastCardError(project: string, canvas: string, filename: string, error: string, cardClass?: string) {
   console.log(`[card-error] ${project}/${canvas}/${filename}: ${error.slice(0, 100)}`);
   broadcast({ type: "card-error", project, canvas, filename, error, cardClass });
+
+  // Write .error file in the card's directory — agents read this via buildContext
+  try {
+    const dir = await getCanvasDir(project, canvas);
+    const errorPath = join(dir, filename, ".error");
+    const { writeFile, mkdir } = await import("fs/promises");
+    await mkdir(join(dir, filename), { recursive: true });
+    await writeFile(errorPath, JSON.stringify({
+      error, cardClass: cardClass || "", source: error.startsWith("[browser]") ? "browser" : "render",
+      timestamp: new Date().toISOString(),
+    }, null, 2));
+  } catch (err) {
+    console.warn(`[card-error] Failed to write .error for ${filename}:`, (err as Error).message);
+  }
 
   // Deliver to server-side agent sessions so they can auto-fix
   const runtime = containerRuntimes.get(project);
@@ -1100,6 +1121,17 @@ function broadcastCardError(project: string, canvas: string, filename: string, e
     for (const cardName of sessions) {
       runtime.sendEvent(cardName, "card-error", { filename, error, cardClass });
     }
+  }
+}
+
+async function clearCardError(project: string, canvas: string, filename: string) {
+  try {
+    const dir = await getCanvasDir(project, canvas);
+    const errorPath = join(dir, filename, ".error");
+    const { unlink } = await import("fs/promises");
+    await unlink(errorPath);
+  } catch {
+    // .error may not exist — that's fine
   }
 }
 
@@ -1139,6 +1171,8 @@ fileWatcher.on("file-change", async (event: { type: string; project: string; can
       });
       if (rendered.error) {
         broadcastCardError(event.project, event.canvas, event.filename, rendered.error, rendered.meta?.cardClass);
+      } else {
+        clearCardError(event.project, event.canvas, event.filename);
       }
     } catch (err) {
       console.error(`[file-watcher] Render failed for new card ${event.filename}:`, (err as Error).message);
@@ -1213,6 +1247,8 @@ fileWatcher.on("class-change", async (event: { className: string }) => {
               });
               if (rendered.error) {
                 broadcastCardError(project.id, canvas, file.name, rendered.error, rendered.meta?.cardClass);
+              } else {
+                clearCardError(project.id, canvas, file.name);
               }
             } catch (err) {
               console.error(`[file-watcher] Re-render failed for ${file.name}:`, (err as Error).message);
