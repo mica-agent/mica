@@ -106,6 +106,13 @@ async function buildContext(mica) {
     if (cards.length > 0) parts.push(`## Canvas Cards\n${cards.map(c => `- ${c}`).join("\n")}`);
   } catch {}
 
+  // Recent activity log — gives the agent context about what was done in previous sessions
+  const logContent = await readCardContent('log.md');
+  if (logContent?.trim()) {
+    const recentLines = logContent.split('\n').slice(-15).join('\n');
+    parts.push(`## Recent Activity\n${recentLines}`);
+  }
+
   // CRITICAL RULES — placed last for recency (models attend most to start and end)
   parts.push(`## Critical Rules
 - The server is always running — never tell the user to restart it.
@@ -153,7 +160,7 @@ export async function onConnect(mica, args) {
   const key = sessionKey(mica);
 
   if (!sessions.has(key)) {
-    sessions.set(key, { busy: false, queue: [], sessionId: null, activeQuery: null, errorCounts: new Map() });
+    sessions.set(key, { busy: false, queue: [], activeQuery: null, errorCounts: new Map() });
   }
 
   // Auto-fix: inject card errors into the conversation so the agent fixes them.
@@ -294,7 +301,8 @@ async function processMessage(session, message, mica) {
         OPENAI_BASE_URL: baseUrl,
         MICA_API_URL: `http://${baseUrl.split('//')[1].split(':')[0]}:3002`,
       },
-      ...(session.sessionId ? { resume: session.sessionId } : {}),
+      // Fresh session every time — canvas cards provide context, not chat history.
+      // This prevents context overflow (131K limit) on long conversations.
     };
 
     let resultText = "";
@@ -303,11 +311,6 @@ async function processMessage(session, message, mica) {
     const queryFn = await getQuery();
     const q = queryFn({ prompt: message, options });
     session.activeQuery = q;
-
-    // Capture session ID for resume
-    if (!session.sessionId) {
-      try { session.sessionId = q.getSessionId(); } catch {}
-    }
 
     for await (const evt of q) {
       if (evt.type === 'assistant' && evt.message?.content) {
@@ -334,7 +337,6 @@ async function processMessage(session, message, mica) {
 
       if (evt.type === 'result') {
         if (evt.result?.text) resultText = evt.result.text;
-        if (!session.sessionId && evt.sessionId) session.sessionId = evt.sessionId;
       }
     }
 
@@ -349,10 +351,23 @@ async function processMessage(session, message, mica) {
     // Reset auto-fix retry counts on any successful response
     session.errorCounts?.clear();
 
+    // Log activity to canvas log.md so future sessions have context
+    try {
+      const msgSummary = message.slice(0, 100);
+      const resSummary = resultText.slice(0, 100);
+      await mica.log(msgSummary + ' → ' + resSummary);
+    } catch {}
+
+
   } catch (err) {
     session.activeQuery = null;
-    console.error(`[qwen-code-agent] Error:`, err.message || err);
-    mica.send({ type: 'error', error: err.message || String(err) });
+    const errMsg = err.message || String(err);
+    console.error(`[qwen-code-agent] Error:`, errMsg);
+    if (errMsg.includes('context size') || errMsg.includes('exceeds')) {
+      mica.send({ type: 'error', error: 'Context limit reached. Try a shorter message.' });
+    } else {
+      mica.send({ type: 'error', error: errMsg });
+    }
   } finally {
     session.busy = false;
 

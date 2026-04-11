@@ -42,23 +42,29 @@ var document={
   get head(){return _rd.head},
   get documentElement(){return _rd.documentElement}
 };
+function _reportError(e){
+  fetch('/api/projects/'+mica.project+'/canvases/'+mica.canvas+'/cards/'+encodeURIComponent(mica.filename)+'/error',
+    {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({error:e.message||String(e)})}).catch(function(){});
+}
 var _si=window.setInterval.bind(window),_st=window.setTimeout.bind(window);
 var _ci=window.clearInterval.bind(window),_ct=window.clearTimeout.bind(window);
-function setInterval(fn,ms){var id=_si(fn,ms);_cleanups.push(function(){_ci(id)});return id}
-function setTimeout(fn,ms){var id=_st(fn,ms);_cleanups.push(function(){_ct(id)});return id}
+function setInterval(fn,ms){var w=function(){try{fn()}catch(e){_reportError(e)}};var id=_si(w,ms);_cleanups.push(function(){_ci(id)});return id}
+function setTimeout(fn,ms){var w=function(){try{fn()}catch(e){_reportError(e)}};var id=_st(w,ms);_cleanups.push(function(){_ct(id)});return id}
 function clearInterval(id){_ci(id)}
 function clearTimeout(id){_ct(id)}
 var _raf=window.requestAnimationFrame.bind(window),_caf=window.cancelAnimationFrame.bind(window);
 var _lastRaf=0;
-function requestAnimationFrame(fn){_lastRaf=_raf(fn);return _lastRaf}
+function requestAnimationFrame(fn){_lastRaf=_raf(function(){try{fn()}catch(e){_reportError(e)}});return _lastRaf}
 function cancelAnimationFrame(id){_caf(id)}
 _cleanups.push(function(){_caf(_lastRaf)});
 var _resizeCbs=[];
 var _origAEL=window.addEventListener.bind(window);
 var _origREL=window.removeEventListener.bind(window);
 window.addEventListener=function(t,fn,o){
-  if(t==='resize'){_resizeCbs.push(fn);return}
-  _origAEL(t,fn,o);_cleanups.push(function(){_origREL(t,fn,o)});
+  var w=function(ev){try{fn(ev)}catch(e){_reportError(e)}};
+  if(t==='resize'){_resizeCbs.push(w);return}
+  _origAEL(t,w,o);_cleanups.push(function(){_origREL(t,w,o)});
 };
 var _ro=new ResizeObserver(function(){for(var i=0;i<_resizeCbs.length;i++){try{_resizeCbs[i]()}catch(e){}}});
 _ro.observe(container);
