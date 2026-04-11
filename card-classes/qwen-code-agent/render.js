@@ -188,6 +188,36 @@ export async function onConnect(mica, args) {
     });
   }
 
+    // Reactive canvas: wake the agent when canvas cards are edited by the user.
+    // The agent reads the change and responds (e.g., user edits architecture → agent adjusts).
+    // Throttled: 30s cooldown, skip if busy, ignore own writes.
+    mica.on('file-changed', async (event) => {
+      const session = sessions.get(key);
+      if (!session) return;
+
+      const { filename, source } = event;
+
+      // Ignore our own writes
+      if (source === mica.filename) return;
+
+      // Only react to design-relevant cards (not every file change)
+      const designCards = ['.goal', '.todo', '.mmd', '-spec.md', '-ux.mmd'];
+      if (!designCards.some(suffix => filename.endsWith(suffix))) return;
+
+      // Skip if busy or cooling down
+      if (session.busy) return;
+      const now = Date.now();
+      const lastReact = session.lastCanvasReact || 0;
+      if (now - lastReact < 30000) return;
+      session.lastCanvasReact = now;
+
+      console.log(`[qwen-code-agent] Canvas change detected: ${filename} (source: ${source || 'user'})`);
+
+      const reactMessage = `The canvas card "${filename}" was just updated by the user. Read its current content and respond appropriately — update related cards, answer questions, or acknowledge the change.`;
+      processMessage(session, reactMessage, mica);
+    });
+  }
+
   const messages = await loadHistory(mica);
   mica.send({ type: 'history', messages });
 }
@@ -388,6 +418,11 @@ export default function render(content, config) {
         padding:6px 10px;color:#e6edf3;font-size:13px;outline:none;font-family:inherit;
       "
     />
+    <button id="qwen-stop" style="
+      background:#f87171;color:#fff;border:none;border-radius:6px;
+      padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;
+      display:none;
+    ">Stop</button>
     <button id="qwen-send" style="
       background:${color};color:#fff;border:none;border-radius:6px;
       padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;
@@ -404,6 +439,7 @@ export default function render(content, config) {
   var messagesEl = container.querySelector('#qwen-messages');
   var inputEl = container.querySelector('#qwen-input');
   var sendBtn = container.querySelector('#qwen-send');
+  var stopBtn = container.querySelector('#qwen-stop');
   var statusBar = container.querySelector('#qwen-statusbar');
   var statusDot = container.querySelector('#qwen-dot');
   var statusLabel = container.querySelector('#qwen-status-label');
@@ -471,7 +507,8 @@ export default function render(content, config) {
         break;
       case 'user': addMessage('user', data.content); break;
       case 'thinking':
-        busy = true; sendBtn.disabled = true; stepCount = 0; elapsedSec = 0;
+        busy = true; sendBtn.disabled = true; sendBtn.style.display = 'none'; stopBtn.style.display = '';
+        stepCount = 0; elapsedSec = 0;
         setStatus('Thinking...', ACCENT, true);
         elapsedTimer = setInterval(function() { elapsedSec++; updateMeta(); }, 1000);
         break;
@@ -479,13 +516,13 @@ export default function render(content, config) {
         if (data.description) { stepCount++; setStatus(data.description, ACCENT, true); updateMeta(); }
         break;
       case 'assistant':
-        busy = false; sendBtn.disabled = false;
+        busy = false; sendBtn.disabled = false; sendBtn.style.display = ''; stopBtn.style.display = 'none';
         if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
         setStatus(data.filesChanged ? 'Canvas updated' : 'Done', '#3fb950', false);
         addMessage('assistant', data.content, data.agent || 'Qwen');
         break;
       case 'error':
-        busy = false; sendBtn.disabled = false;
+        busy = false; sendBtn.disabled = false; sendBtn.style.display = ''; stopBtn.style.display = 'none';
         if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
         setStatus('Error', '#f87171', false);
         addMessage('assistant', 'Error: ' + (data.error || 'Unknown'), 'System');
@@ -514,6 +551,12 @@ export default function render(content, config) {
   }
 
   sendBtn.addEventListener('click', send);
+  stopBtn.addEventListener('click', function() {
+    ch.send({ type: 'interrupt' });
+    busy = false; sendBtn.disabled = false; sendBtn.style.display = ''; stopBtn.style.display = 'none';
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+    setStatus('Stopped', '#fbbf24', false);
+  });
   inputEl.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
