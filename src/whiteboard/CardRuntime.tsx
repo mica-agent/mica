@@ -292,18 +292,19 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       });
 
       const executeInlineScripts = () => {
-        // Catch syntax errors that bypass try-catch (script rejected at parse time)
-        const syntaxErrorHandler = (event: ErrorEvent) => {
-          if (event.filename && event.filename.includes("localhost")) {
+        inlineScripts.forEach((oldScript) => {
+          // Skip module scripts — they use import/export which can't work in IIFE wrappers.
+          // Report as error so agents know to use dependencies.scripts instead.
+          if (oldScript.type === "module") {
+            console.error(`[card-runtime] Module scripts not supported in ${filename} — use dependencies.scripts for CDN libraries`);
             fetch(`/api/projects/${project}/canvases/${canvas}/cards/${encodeURIComponent(filename)}/error`, {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ error: event.message }),
+              body: JSON.stringify({ error: "Module scripts (<script type=\"module\">) are not supported in cards. Use the dependencies.scripts export for CDN libraries instead of import statements." }),
             }).catch(() => {});
+            oldScript.remove();
+            return;
           }
-        };
-        window.addEventListener("error", syntaxErrorHandler);
 
-        inlineScripts.forEach((oldScript) => {
           const newScript = document.createElement("script");
           Array.from(oldScript.attributes).forEach((attr) => {
             newScript.setAttribute(attr.name, attr.value);
@@ -327,9 +328,6 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
           el.appendChild(newScript);
         });
 
-        // Remove syntax error handler after scripts are injected
-        // (small delay to catch async parse errors)
-        setTimeout(() => window.removeEventListener("error", syntaxErrorHandler), 100);
       };
 
       // Load any inline-declared scripts not already loaded via dependencies
