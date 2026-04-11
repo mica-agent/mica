@@ -348,8 +348,8 @@ async function processMessage(session, message, mica) {
 
     // Log activity to canvas log.md so future sessions have context
     try {
-      const msgSummary = message.slice(0, 100);
-      const resSummary = resultText.slice(0, 100);
+      const msgSummary = message.slice(0, 200);
+      const resSummary = resultText.slice(0, 500);
       await mica.log(msgSummary + ' → ' + resSummary);
     } catch {}
 
