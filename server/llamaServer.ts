@@ -92,6 +92,9 @@ async function startServer(): Promise<string> {
     "--n-gpu-layers", "999",
     "-np", "2",
     "--reasoning-format", "deepseek",
+    // Sampling defaults for Qwen3-Coder
+    "--min-p", "0.01",
+    "--repeat-penalty", "1.0",
   ], {
     stdio: ["ignore", "pipe", "pipe"],
   });
