@@ -14,6 +14,52 @@ interface CardDependencies {
   styles?: string[];
 }
 
+/**
+ * Card runtime shim — injected before each card's inline script.
+ *
+ * Makes standard web patterns work inside cards:
+ * - document.querySelector/getElementById → scoped to card container
+ * - window.addEventListener('resize') → redirected to ResizeObserver on container
+ * - setInterval/setTimeout/requestAnimationFrame → auto-cleaned on card destroy
+ * - window.addEventListener (non-resize) → auto-cleaned on card destroy
+ *
+ * All overrides are IIFE-scoped (shadow globals via const/function declarations).
+ * No global state is modified. Existing cards using container.querySelector still work.
+ */
+const CARD_SHIM = `
+var _cleanups=[];
+var _realDoc=window.document;
+var document=new Proxy(_realDoc,{get:function(t,p){
+  if(p==='querySelector')return function(s){return container.querySelector(s)};
+  if(p==='querySelectorAll')return function(s){return container.querySelectorAll(s)};
+  if(p==='getElementById')return function(id){return container.querySelector('#'+CSS.escape(id))};
+  var v=t[p];return typeof v==='function'?v.bind(t):v;
+}});
+var _si=window.setInterval.bind(window),_st=window.setTimeout.bind(window);
+var _ci=window.clearInterval.bind(window),_ct=window.clearTimeout.bind(window);
+function setInterval(fn,ms){var id=_si(fn,ms);_cleanups.push(function(){_ci(id)});return id}
+function setTimeout(fn,ms){var id=_st(fn,ms);_cleanups.push(function(){_ct(id)});return id}
+function clearInterval(id){_ci(id)}
+function clearTimeout(id){_ct(id)}
+var _raf=window.requestAnimationFrame.bind(window),_caf=window.cancelAnimationFrame.bind(window);
+var _lastRaf=0;
+function requestAnimationFrame(fn){_lastRaf=_raf(fn);return _lastRaf}
+function cancelAnimationFrame(id){_caf(id)}
+_cleanups.push(function(){_caf(_lastRaf)});
+var _resizeCbs=[];
+var _origAEL=window.addEventListener.bind(window);
+var _origREL=window.removeEventListener.bind(window);
+window.addEventListener=function(t,fn,o){
+  if(t==='resize'){_resizeCbs.push(fn);return}
+  _origAEL(t,fn,o);_cleanups.push(function(){_origREL(t,fn,o)});
+};
+var _ro=new ResizeObserver(function(){for(var i=0;i<_resizeCbs.length;i++){try{_resizeCbs[i]()}catch(e){}}});
+_ro.observe(container);
+_cleanups.push(function(){_ro.disconnect()});
+mica.onDestroy(function(){for(var i=0;i<_cleanups.length;i++){try{_cleanups[i]()}catch(e){}}});
+`;
+
+
 interface Props {
   html: string;
   exports?: string[];
@@ -187,7 +233,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
             if (oldScript.getAttribute("src")) { oldScript.remove(); return; }
             const newScript = document.createElement("script");
             newScript.textContent =
-              `try{(function(mica, container) {${oldScript.textContent}})(` +
+              `try{(function(mica, container) {${CARD_SHIM}${oldScript.textContent}})(` +
               `document.currentScript.__mica, document.currentScript.parentElement);}` +
               `catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}`;
             oldScript.remove();
@@ -241,7 +287,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
           newScript.textContent =
             `(function(){` +
             `const _m=document.currentScript.__mica;` +
-            `try{(function(mica,container){${oldScript.textContent}})(` +
+            `try{(function(mica,container){${CARD_SHIM}${oldScript.textContent}})(` +
             `_m,document.currentScript.parentElement);` +
             `}catch(e){` +
             `console.error("[card-runtime] Script error in ${filename}:",e);` +

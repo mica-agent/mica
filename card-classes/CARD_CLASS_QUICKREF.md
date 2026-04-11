@@ -2,6 +2,8 @@
 
 API reference for card class development. For the creation workflow and templates, use the `create-card-class` skill. For the full runtime deep-dive, see `AUTHORING_CARD_CLASSES.md`.
 
+**Runtime shim:** Card scripts run with a compatibility shim that auto-scopes DOM queries to the card, redirects window resize to card resize, and auto-cleans timers/observers/listeners. Standard DOM APIs (`document.querySelector`, `getElementById`, `window.addEventListener('resize')`) work inside card scripts.
+
 ## Metadata export
 
 ```javascript

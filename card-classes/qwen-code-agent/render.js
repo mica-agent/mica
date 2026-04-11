@@ -109,9 +109,9 @@ async function buildContext(mica) {
   // CRITICAL RULES — placed last for recency (models attend most to start and end)
   parts.push(`## Critical Rules
 - The server is always running — never tell the user to restart it.
-- When creating card classes, use the \`create-card-class\` skill. It has the complete workflow, template, API reference, and common mistakes.
-- Use \`container.querySelector()\` for DOM access — never \`document.querySelector()\`.
-- Use \`ResizeObserver\` for sizing — never \`window.addEventListener('resize')\`.
+- When creating card classes, use the \`create-card-class\` skill.
+- Write standard HTML/CSS/JS. DOM APIs like document.querySelector and window.addEventListener('resize') work inside cards.
+- Use \`mica.call()\` for data persistence and \`mica.on('file-changed')\` for external updates.
 - Always test render.js before creating an instance.`);
 
   return parts.join("\n\n");

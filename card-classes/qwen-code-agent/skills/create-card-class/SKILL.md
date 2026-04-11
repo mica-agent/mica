@@ -28,6 +28,8 @@ Follow this exact workflow to create a working card class.
 
 ## render.js Template
 
+Write standard HTML/CSS/JS. The card runtime includes a compatibility shim that makes standard DOM APIs work inside cards automatically.
+
 ```javascript
 export const metadata = {
   extension: ".my-card",
@@ -50,21 +52,20 @@ export default function render(content, config) {
       <div id="output" style="flex:1;min-height:0;overflow:auto;padding:16px;"></div>
     </div>
     <script>
-      // container is pre-defined — NEVER redeclare it
-      // Use container.querySelector() — NEVER document.querySelector()
-      var el = container.querySelector('#output');
+      // Standard DOM APIs work — document.querySelector, getElementById, etc.
+      var el = document.getElementById('output');
       el.textContent = 'Hello';
 
-      // Call server exports via mica.call()
-      // var result = await mica.call('save', { data: { key: 'value' } });
+      // window.addEventListener('resize') works for card resize (auto-handled)
+      // Timers, observers, event listeners auto-cleaned on card removal
 
-      // Re-render when card data file changes
-      var unsub = mica.on('file-changed', function(e) {
+      // Persist data via server exports
+      // var result = await mica.call('save', { data: myData });
+
+      // React to external data changes
+      mica.on('file-changed', function(e) {
         if (e.filename === mica.filename) mica.refresh();
       });
-
-      // Always clean up timers, listeners, observers
-      mica.onDestroy(function() { unsub(); });
     </script>
   `;
 }
@@ -76,6 +77,18 @@ export async function save(content, args, mica) {
 }
 ```
 
+## What works automatically (runtime shim)
+
+The card runtime provides a compatibility shim so you can write standard web code:
+
+- **`document.querySelector()` / `getElementById()`** — auto-scoped to your card (no cross-card leaks)
+- **`window.addEventListener('resize')`** — auto-redirected to card container resize (drag-resize works)
+- **`setInterval` / `setTimeout`** — auto-cleaned when card is removed
+- **`requestAnimationFrame`** — auto-cleaned when card is removed
+- **Event listeners on `window`** — auto-cleaned when card is removed
+
+You do NOT need `container.querySelector()`, `ResizeObserver`, or `mica.onDestroy()` for these. They just work.
+
 ## Server-side exports
 
 Named exports become callable from the browser via `mica.call()`. They run in Node.js with the server bridge.
@@ -86,8 +99,8 @@ export async function toggle_item(content, args, mica) {
   // content = fresh read of primary file (re-read on each call)
   // args = arguments from browser
   // mica = server bridge (read, write, exec, send, reply, log, createCard)
-  var data = JSON.parse(content || '{"items":[]}');
-  var item = data.items.find(function(i) { return i.id === args.id; });
+  let data = JSON.parse(content || '{"items":[]}');
+  let item = data.items.find(function(i) { return i.id === args.id; });
   if (item) item.done = !item.done;
   await mica.write('tasks.md', JSON.stringify(data, null, 2));
   return { items: data.items };
@@ -106,7 +119,7 @@ After `mica.call()` modifies data, call `mica.refresh()` to re-render with updat
 | `mica.openChannel(fn, args)` | Open bidirectional channel (for streaming, chat, terminal) |
 | `mica.broadcast(event, data)` | Send event to other cards on canvas |
 | `mica.refresh()` | Fetch fresh HTML and re-render this card |
-| `mica.onDestroy(cb)` | Register cleanup callback |
+| `mica.onDestroy(cb)` | Register cleanup callback (rarely needed — shim auto-cleans) |
 | `mica.project` | Project ID (string) |
 | `mica.canvas` | Canvas ID (string) |
 | `mica.filename` | Card filename (string) |
@@ -125,75 +138,52 @@ After `mica.call()` modifies data, call `mica.refresh()` to re-render with updat
 
 ## Sizing: fill the card
 
-Cards are placed on a resizable canvas. Your root element MUST expand to fill the card's dimensions:
+Your root element should fill the card dimensions:
 
 ```html
-<!-- Root element: flex column, height 100% -->
 <div style="display:flex;flex-direction:column;height:100%;min-height:0;">
-  <!-- Content area: flex:1 fills remaining space -->
   <div id="content" style="flex:1;min-height:0;overflow:auto;"></div>
 </div>
 ```
 
-For canvas/WebGL/Three.js cards, the container and renderer MUST resize with the card:
+For canvas/WebGL, `window.addEventListener('resize')` works automatically — no ResizeObserver needed:
+
 ```javascript
-var el = container.querySelector('#canvas-container');
-var renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(el.clientWidth, el.clientHeight);
-el.appendChild(renderer.domElement);
+var canvas = document.getElementById('viewport');
+var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+renderer.setSize(canvas.clientWidth, canvas.clientHeight);
 
-// CRITICAL: use ResizeObserver, NOT window.addEventListener('resize')
-// Cards are resized by dragging on the canvas — this does NOT fire window resize events.
-var ro = new ResizeObserver(function() {
-  if (el.clientWidth > 0 && el.clientHeight > 0) {
-    camera.aspect = el.clientWidth / el.clientHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(el.clientWidth, el.clientHeight);
-  }
-});
-ro.observe(el);
-
-// Always clean up animation frames, observers, and renderer
-var animFrame;
-function animate() {
-  animFrame = requestAnimationFrame(animate);
-  renderer.render(scene, camera);
-}
-animate();
-
-mica.onDestroy(function() {
-  ro.disconnect();
-  cancelAnimationFrame(animFrame);
-  renderer.dispose();
+// This fires on card drag-resize (shim handles it)
+window.addEventListener('resize', function() {
+  camera.aspect = canvas.clientWidth / canvas.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(canvas.clientWidth, canvas.clientHeight);
 });
 ```
 
 ## Using CDN libraries
 
-When using a CDN library (Three.js, D3, Chart.js, etc.), verify the API before writing code:
-
-```bash
-# Verify URL works
-curl -sI https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js | head -1
-```
+Verify URLs before using: `curl -sI <url> | head -1`
 
 Do NOT assume API signatures — different versions have different APIs.
 
-For Three.js r128 specifically:
-- `new THREE.Color("#ff8800")` — accepts CSS hex strings directly
+For Three.js r128:
+- `new THREE.Color("#ff8800")` — accepts CSS hex strings
 - `new THREE.Color(0xff8800)` — accepts hex integers
-- Do NOT pass `{r, g, b}` objects — use `THREE.Color` constructor
 
-## Common mistakes to avoid
+## Common mistakes
 
-- `document.querySelector()` — use `container.querySelector()` instead
-- `const container = ...` — container is already defined, redeclaring it crashes
-- `import x from 'y'` in browser scripts — use `dependencies.scripts` for CDN libs
-- Calling undefined functions — all functions must be defined in the same file
-- Untested CDN URLs — verify with `curl -sI <url> | head -1` before using
-- Skipping the test step — always test before creating an instance
-- `window.addEventListener('resize')` — WRONG for cards, use `ResizeObserver` on the container
-- Missing `mica.onDestroy()` — animation frames, observers, event listeners all leak without cleanup
-- Missing `file-changed` listener — card won't update when its data file is modified
-- Fixed pixel dimensions — use `height:100%;flex:1` to fill the card
-- `const` for variables you reassign — use `let` instead (e.g. in export functions)
+- **No nested template literals in `<script>` blocks** — the render function returns a template literal, so `${...}` inside inline scripts is interpreted by Node.js, not the browser. Use string concatenation instead:
+  ```javascript
+  // WRONG — ${rect.left} is evaluated by Node.js, not the browser
+  el.style.cssText = `left: ${rect.left}px`;
+
+  // RIGHT — string concatenation runs in the browser
+  el.style.cssText = 'left: ' + rect.left + 'px';
+  ```
+- Use `mica.call()` to persist data (browser state is ephemeral)
+- Add `file-changed` listener if data can be modified externally
+- Verify CDN URLs with curl before using
+- All functions must be defined in the same file — no `import` in browser scripts
+- Use `let` not `const` for variables you reassign in export functions
+- Use `dependencies.scripts` for CDN libraries, not inline `<script src>`
