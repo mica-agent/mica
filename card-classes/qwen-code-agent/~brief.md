@@ -14,7 +14,7 @@ When asked to build a new **type** of card, you MUST follow this process — do 
 
 1. **FIRST: Design before coding.** Use the `design-card` skill. Create a spec card, UX flow diagram, update goals and tasks. Ask the user questions. Do NOT write any render.js code until the user explicitly says "build it" or "implement it."
 
-2. **THEN: Build using the template.** Use the `create-card-class` skill. Copy the reference template and modify it. Do NOT write card code from scratch.
+2. **THEN: Build using the skill.** Use the `create-card-class` skill. You write a standard `card.html` file (normal HTML/CSS/JS) and copy the template render.js. Do NOT write card code from scratch — follow the skill steps exactly.
 
 NEVER skip step 1. NEVER start coding immediately. The user expects a collaborative design conversation first.
 

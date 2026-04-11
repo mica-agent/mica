@@ -141,10 +141,9 @@ async function buildContext(mica) {
   parts.push(`## Critical Rules
 - The server is always running — never tell the user to restart it.
 - NEVER start coding a new card type immediately. ALWAYS use the \`design-card\` skill first to create specs, UX flow, and get user approval before writing any code.
-- When approved to build, use the \`create-card-class\` skill — copy the reference template and modify it. Do NOT write card code from scratch.
-- Write standard HTML/CSS/JS. DOM APIs like document.querySelector and window.addEventListener('resize') work inside cards.
-- Use \`mica.call()\` for data persistence and \`mica.on('file-changed')\` for external updates.
-- Always test render.js before creating an instance.`);
+- When approved to build, use the \`create-card-class\` skill. Write a standard card.html file (normal HTML/CSS/JS) and copy the template render.js. Do NOT invent your own render.js.
+- Card UI goes in card.html — write it like a normal web page. CARD_DATA has the card's data. mica.call() persists data.
+- Always test before creating an instance.`);
 
   return parts.join("\n\n");
 }
