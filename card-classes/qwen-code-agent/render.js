@@ -186,7 +186,6 @@ export async function onConnect(mica, args) {
 
       processMessage(session, autoMessage, mica);
     });
-  }
 
     // Reactive canvas: wake the agent when canvas cards are edited by the user.
     // The agent reads the change and responds (e.g., user edits architecture → agent adjusts).
