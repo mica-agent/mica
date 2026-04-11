@@ -5,185 +5,217 @@ description: Create a new Mica card class with render.js, spec.md, seed files, a
 
 # Create a New Card Class
 
-Follow this exact workflow to create a working card class.
-
 ## Steps
 
-1. **Read a working example**: `cat /opt/mica/card-classes/todo/render.js`
-2. **Create the directory**: `mkdir -p /opt/mica/project-card-classes/{name}`
-3. **Write spec.md**: Describe what the card type does
-4. **Write render.js**: Use the template below as your starting point
-5. **Write seed file**: `~{primaryFile}` with sensible default content (e.g. `~data.json` with `{}`)
-6. **Test**: Run this command and check the output:
-   ```bash
-   curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test \
-     -H 'Content-Type: application/json' -d '{"content":"{}"}'
-   ```
-   If `error` is not null, read the error, fix render.js, and re-test. Repeat until clean.
-7. **Create an instance**:
-   ```bash
-   curl -s -X POST $MICA_API_URL/api/projects/$MICA_PROJECT/canvases/_root/cards \
-     -H 'Content-Type: application/json' -d '{"name": "my-thing.{ext}"}'
-   ```
+1. `mkdir -p /opt/mica/project-card-classes/{name}`
+2. Write `spec.md` — what the card type does
+3. Write `render.js` — **copy the reference template below and modify it**
+4. Write `~data.json` (or `~config.json`) — seed data for new instances
+5. Test: `curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}'` — fix until error is null
+6. Create instance: `curl -s -X POST $MICA_API_URL/api/projects/$MICA_PROJECT/canvases/_root/cards -H 'Content-Type: application/json' -d '{"name":"my-thing.{ext}"}'`
 
-## render.js Template
+## Reference Template — copy and modify this
 
-Write standard HTML/CSS/JS. The card runtime includes a compatibility shim that makes standard DOM APIs work inside cards automatically.
+This is a complete, working card class. Copy it, then change the domain logic.
+Every structural decision is correct — do not change the structure, only the content.
 
 ```javascript
+// ═══════════════════════════════════════════════════════════════
+// METADATA — describes the card type
+// ═══════════════════════════════════════════════════════════════
 export const metadata = {
-  extension: ".my-card",
-  badge: "CARD",
-  primaryFile: "data.json"
+  extension: ".my-card",       // unique extension for this card type
+  badge: "CARD",               // short label shown in card header
+  primaryFile: "data.json",    // ALWAYS use .json — never .mmd, .md, .txt
+  defaultTitle: "My Card"
 };
 
-// Optional: CDN libraries (verify URLs with curl -sI first)
+// ═══════════════════════════════════════════════════════════════
+// CDN DEPENDENCIES — loaded as globals before scripts run
+// Verify URLs work: curl -sI <url> | head -1
+// These become window globals (THREE, Chart, d3, etc.)
+// NEVER use <script type="module"> or import statements
+// ═══════════════════════════════════════════════════════════════
 export const dependencies = {
-  scripts: ['https://cdn.example.com/lib.min.js']
+  scripts: [
+    'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js'
+  ]
 };
 
+// ═══════════════════════════════════════════════════════════════
+// RENDER FUNCTION — returns HTML string with ONE script block
+// Runs in Node.js. ${...} here is Node.js interpolation (OK).
+// ═══════════════════════════════════════════════════════════════
 export default function render(content, config) {
-  // content = string from primaryFile, config = { project, canvas, filename }
   var data = {};
   try { data = JSON.parse(content); } catch(e) {}
 
+  // Server-side data preparation (Node.js — full JS works here)
+  var labels = JSON.stringify(data.labels || ['Jan','Feb','Mar']);
+  var values = JSON.stringify(data.values || [10, 20, 30]);
+
   return `
     <div style="display:flex;flex-direction:column;height:100%;min-height:0;">
-      <div id="output" style="flex:1;min-height:0;overflow:auto;padding:16px;"></div>
+      <div style="padding:8px 12px;border-bottom:1px solid #333;flex-shrink:0;">
+        <strong style="color:#e6edf3;">My Chart</strong>
+      </div>
+      <div style="flex:1;min-height:0;padding:8px;">
+        <canvas id="myChart" style="width:100%;height:100%;"></canvas>
+      </div>
     </div>
+
     <script>
-      // Standard DOM APIs work — document.querySelector, getElementById, etc.
-      var el = document.getElementById('output');
-      el.textContent = 'Hello';
+    // ═══════════════════════════════════════════════════════
+    // ALL browser code goes in this ONE <script> block.
+    //
+    // RULES:
+    // • Do NOT add <script type="module"> — it will not work
+    // • Do NOT use import or require — CDN libs are globals
+    // • Do NOT use backtick template literals here — they
+    //   conflict with the outer render() template literal.
+    //   Use string concatenation instead:
+    //     WRONG:  el.innerHTML = \`<div>\${x}</div>\`
+    //     RIGHT:  el.innerHTML = '<div>' + x + '</div>'
+    // • Do NOT split code across multiple <script> tags
+    // • Standard DOM APIs work: document.querySelector,
+    //   getElementById, window.addEventListener('resize')
+    // ═══════════════════════════════════════════════════════
 
-      // window.addEventListener('resize') works for card resize (auto-handled)
-      // Timers, observers, event listeners auto-cleaned on card removal
+    // DOM access — standard APIs work (auto-scoped to this card)
+    var canvas = document.getElementById('myChart');
 
-      // Persist data via server exports
-      // var result = await mica.call('save', { data: myData });
+    // CDN library is available as a global (loaded via dependencies)
+    var chart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: ${labels},
+        datasets: [{
+          label: 'Values',
+          data: ${values},
+          backgroundColor: 'rgba(74, 138, 255, 0.6)'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false
+      }
+    });
 
-      // React to external data changes
-      mica.on('file-changed', function(e) {
-        if (e.filename === mica.filename) mica.refresh();
-      });
+    // Resize — window.addEventListener('resize') works for card resize
+    // (the runtime shim redirects it to the card container automatically)
+    window.addEventListener('resize', function() {
+      chart.resize();
+    });
+
+    // Persist data — call server export functions
+    // var result = await mica.call('update_data', { labels: ['A','B'], values: [1,2] });
+
+    // React to external data changes (agent or another card updates data.json)
+    mica.on('file-changed', function(e) {
+      if (e.filename === mica.filename) mica.refresh();
+    });
     </script>
   `;
 }
 
-// Optional: server-side export callable from browser via mica.call('save', {...})
-export async function save(content, args, mica) {
-  await mica.write('data.json', JSON.stringify(args.data));
+// ═══════════════════════════════════════════════════════════════
+// SERVER EXPORTS — called from browser via mica.call('name', args)
+// Run in Node.js with full access to mica bridge
+// ═══════════════════════════════════════════════════════════════
+export async function update_data(content, args, mica) {
+  // content = fresh read of primaryFile (re-read on each call)
+  // args = arguments from browser mica.call()
+  // mica = server bridge (read, write, exec, send, log, createCard)
+  var data = {};
+  try { data = JSON.parse(content); } catch(e) {}
+
+  data.labels = args.labels || data.labels;
+  data.values = args.values || data.values;
+
+  await mica.write('data.json', JSON.stringify(data, null, 2));
   return { ok: true };
 }
 ```
 
-## What works automatically (runtime shim)
+## What the runtime shim handles automatically
 
-The card runtime provides a compatibility shim so you can write standard web code:
+You do NOT need to handle these — they just work:
+- `document.querySelector()` → auto-scoped to your card
+- `window.addEventListener('resize')` → fires on card drag-resize
+- `setInterval` / `setTimeout` / `requestAnimationFrame` → auto-cleaned on card removal
+- Event listeners on `window` → auto-cleaned on card removal
 
-- **`document.querySelector()` / `getElementById()`** — auto-scoped to your card (no cross-card leaks)
-- **`window.addEventListener('resize')`** — auto-redirected to card container resize (drag-resize works)
-- **`setInterval` / `setTimeout`** — auto-cleaned when card is removed
-- **`requestAnimationFrame`** — auto-cleaned when card is removed
-- **Event listeners on `window`** — auto-cleaned when card is removed
+## Three.js card pattern
 
-You do NOT need `container.querySelector()`, `ResizeObserver`, or `mica.onDestroy()` for these. They just work.
-
-## Server-side exports
-
-Named exports become callable from the browser via `mica.call()`. They run in Node.js with the server bridge.
-
+For Three.js/WebGL cards, replace the Chart.js example with:
 ```javascript
-// Read-modify-write pattern (most common)
-export async function toggle_item(content, args, mica) {
-  // content = fresh read of primary file (re-read on each call)
-  // args = arguments from browser
-  // mica = server bridge (read, write, exec, send, reply, log, createCard)
-  let data = JSON.parse(content || '{"items":[]}');
-  let item = data.items.find(function(i) { return i.id === args.id; });
-  if (item) item.done = !item.done;
-  await mica.write('tasks.md', JSON.stringify(data, null, 2));
-  return { items: data.items };
-}
+export const dependencies = {
+  scripts: ['https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js']
+  // OrbitControls is NOT available as a CDN global in r128
+  // Implement mouse drag controls manually (see template above)
+};
 ```
 
-After `mica.call()` modifies data, call `mica.refresh()` to re-render with updated content.
+In the script block:
+```javascript
+var el = document.getElementById('viewport');
+var scene = new THREE.Scene();
+var camera = new THREE.PerspectiveCamera(60, el.clientWidth/el.clientHeight, 0.1, 1000);
+var renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(el.clientWidth, el.clientHeight);
+el.appendChild(renderer.domElement);
 
-## Browser bridge (mica) — available in inline scripts
+// Mouse drag controls (OrbitControls not available in r128 CDN)
+var drag=false, px=0, py=0, rx=0, ry=0.3;
+renderer.domElement.addEventListener('mousedown', function(e) { drag=true; px=e.clientX; py=e.clientY; });
+window.addEventListener('mouseup', function() { drag=false; });
+window.addEventListener('mousemove', function(e) {
+  if (!drag) return;
+  rx += (e.clientX-px)*0.005;
+  ry = Math.max(-1.5, Math.min(1.5, ry+(e.clientY-py)*0.005));
+  px = e.clientX; py = e.clientY;
+  var d = camera.position.length();
+  camera.position.set(d*Math.sin(rx)*Math.cos(ry), d*Math.sin(ry), d*Math.cos(rx)*Math.cos(ry));
+  camera.lookAt(0,0,0);
+});
+
+// Resize — shim handles window resize → card resize
+window.addEventListener('resize', function() {
+  camera.aspect = el.clientWidth / el.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(el.clientWidth, el.clientHeight);
+});
+
+// Animation loop (auto-cleaned by shim on card removal)
+(function loop() {
+  requestAnimationFrame(loop);
+  // update scene...
+  renderer.render(scene, camera);
+})();
+
+// Data sync
+mica.on('file-changed', function(e) {
+  if (e.filename === mica.filename) mica.refresh();
+});
+```
+
+## Browser bridge (mica)
 
 | Method | Description |
 |--------|-------------|
-| `await mica.call(fn, args)` | Call server export, returns Promise with result |
-| `mica.send(fn, args)` | Fire-and-forget to server |
-| `mica.on(event, cb)` | Subscribe to events (e.g. `file-changed`). Returns unsubscribe function |
-| `mica.openChannel(fn, args)` | Open bidirectional channel (for streaming, chat, terminal) |
-| `mica.broadcast(event, data)` | Send event to other cards on canvas |
-| `mica.refresh()` | Fetch fresh HTML and re-render this card |
-| `mica.onDestroy(cb)` | Register cleanup callback (rarely needed — shim auto-cleans) |
-| `mica.project` | Project ID (string) |
-| `mica.canvas` | Canvas ID (string) |
+| `await mica.call(fn, args)` | Call server export, returns Promise |
+| `mica.on(event, cb)` | Subscribe to events. Returns unsubscribe fn |
+| `mica.refresh()` | Re-render card with fresh data |
+| `mica.onDestroy(cb)` | Cleanup callback (rarely needed — shim auto-cleans) |
 | `mica.filename` | Card filename (string) |
 
-## Server bridge (mica) — available in export functions
+## Server bridge (mica)
 
 | Method | Description |
 |--------|-------------|
 | `await mica.read(filename)` | Read file from card directory |
 | `await mica.write(filename, content)` | Write file to card directory |
-| `await mica.exec(command, opts?)` | Run shell command in container. Returns `{ stdout, stderr, exitCode }` |
-| `mica.send(data)` | Broadcast to all connected browsers |
-| `mica.reply(data)` | Reply to sender only |
+| `await mica.exec(command)` | Run shell command. Returns `{ stdout, stderr, exitCode }` |
+| `mica.send(data)` | Broadcast to all browsers |
 | `await mica.log(message)` | Append to activity log |
 | `await mica.createCard(name)` | Create new card on canvas |
-
-## Sizing: fill the card
-
-Your root element should fill the card dimensions:
-
-```html
-<div style="display:flex;flex-direction:column;height:100%;min-height:0;">
-  <div id="content" style="flex:1;min-height:0;overflow:auto;"></div>
-</div>
-```
-
-For canvas/WebGL, `window.addEventListener('resize')` works automatically — no ResizeObserver needed:
-
-```javascript
-var canvas = document.getElementById('viewport');
-var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
-renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-
-// This fires on card drag-resize (shim handles it)
-window.addEventListener('resize', function() {
-  camera.aspect = canvas.clientWidth / canvas.clientHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-});
-```
-
-## Using CDN libraries
-
-Verify URLs before using: `curl -sI <url> | head -1`
-
-Do NOT assume API signatures — different versions have different APIs.
-
-For Three.js r128:
-- `new THREE.Color("#ff8800")` — accepts CSS hex strings
-- `new THREE.Color(0xff8800)` — accepts hex integers
-
-## Common mistakes
-
-- **No nested template literals in `<script>` blocks** — the render function returns a template literal, so `${...}` inside inline scripts is interpreted by Node.js, not the browser. Use string concatenation instead:
-  ```javascript
-  // WRONG — ${rect.left} is evaluated by Node.js, not the browser
-  el.style.cssText = `left: ${rect.left}px`;
-
-  // RIGHT — string concatenation runs in the browser
-  el.style.cssText = 'left: ' + rect.left + 'px';
-  ```
-- Use `mica.call()` to persist data (browser state is ephemeral)
-- Add `file-changed` listener if data can be modified externally
-- Verify CDN URLs with curl before using
-- All functions must be defined in the same file — no `import` in browser scripts
-- Use `let` not `const` for variables you reassign in export functions
-- Use `dependencies.scripts` for CDN libraries, not inline `<script src>`
