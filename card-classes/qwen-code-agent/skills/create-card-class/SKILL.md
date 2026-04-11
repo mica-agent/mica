@@ -1,6 +1,6 @@
 ---
 name: create-card-class
-description: Create a new Mica card class with render.js, spec.md, seed files, and verified rendering
+description: Create a new Mica card class with render.js, spec.md, seed files, and verified rendering. Use when asked to create a new type of card.
 ---
 
 # Create a New Card Class
@@ -9,19 +9,18 @@ Follow this exact workflow to create a working card class.
 
 ## Steps
 
-1. **Read the reference**: `cat /opt/mica/card-classes/CARD_CLASS_QUICKREF.md`
-2. **Read a working example**: `cat /opt/mica/card-classes/todo/render.js`
-3. **Create the directory**: `mkdir -p /opt/mica/project-card-classes/{name}`
-4. **Write spec.md**: Describe what the card type does
-5. **Write render.js**: Use the template below as your starting point
-6. **Write seed file**: `~{primaryFile}` with sensible default content (e.g. `~data.json` with `{}`)
-7. **Test**: Run this command and check the output:
+1. **Read a working example**: `cat /opt/mica/card-classes/todo/render.js`
+2. **Create the directory**: `mkdir -p /opt/mica/project-card-classes/{name}`
+3. **Write spec.md**: Describe what the card type does
+4. **Write render.js**: Use the template below as your starting point
+5. **Write seed file**: `~{primaryFile}` with sensible default content (e.g. `~data.json` with `{}`)
+6. **Test**: Run this command and check the output:
    ```bash
    curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test \
      -H 'Content-Type: application/json' -d '{"content":"{}"}'
    ```
    If `error` is not null, read the error, fix render.js, and re-test. Repeat until clean.
-8. **Create an instance**:
+7. **Create an instance**:
    ```bash
    curl -s -X POST $MICA_API_URL/api/projects/$MICA_PROJECT/canvases/_root/cards \
      -H 'Content-Type: application/json' -d '{"name": "my-thing.{ext}"}'
@@ -56,9 +55,10 @@ export default function render(content, config) {
       var el = container.querySelector('#output');
       el.textContent = 'Hello';
 
-      // Call server exports: mica.call('my_export', { key: 'value' })
+      // Call server exports via mica.call()
+      // var result = await mica.call('save', { data: { key: 'value' } });
 
-      // Re-render when card data file changes (e.g. updated by agent or export)
+      // Re-render when card data file changes
       var unsub = mica.on('file-changed', function(e) {
         if (e.filename === mica.filename) mica.refresh();
       });
@@ -75,6 +75,53 @@ export async function save(content, args, mica) {
   return { ok: true };
 }
 ```
+
+## Server-side exports
+
+Named exports become callable from the browser via `mica.call()`. They run in Node.js with the server bridge.
+
+```javascript
+// Read-modify-write pattern (most common)
+export async function toggle_item(content, args, mica) {
+  // content = fresh read of primary file (re-read on each call)
+  // args = arguments from browser
+  // mica = server bridge (read, write, exec, send, reply, log, createCard)
+  var data = JSON.parse(content || '{"items":[]}');
+  var item = data.items.find(function(i) { return i.id === args.id; });
+  if (item) item.done = !item.done;
+  await mica.write('tasks.md', JSON.stringify(data, null, 2));
+  return { items: data.items };
+}
+```
+
+After `mica.call()` modifies data, call `mica.refresh()` to re-render with updated content.
+
+## Browser bridge (mica) — available in inline scripts
+
+| Method | Description |
+|--------|-------------|
+| `await mica.call(fn, args)` | Call server export, returns Promise with result |
+| `mica.send(fn, args)` | Fire-and-forget to server |
+| `mica.on(event, cb)` | Subscribe to events (e.g. `file-changed`). Returns unsubscribe function |
+| `mica.openChannel(fn, args)` | Open bidirectional channel (for streaming, chat, terminal) |
+| `mica.broadcast(event, data)` | Send event to other cards on canvas |
+| `mica.refresh()` | Fetch fresh HTML and re-render this card |
+| `mica.onDestroy(cb)` | Register cleanup callback |
+| `mica.project` | Project ID (string) |
+| `mica.canvas` | Canvas ID (string) |
+| `mica.filename` | Card filename (string) |
+
+## Server bridge (mica) — available in export functions
+
+| Method | Description |
+|--------|-------------|
+| `await mica.read(filename)` | Read file from card directory |
+| `await mica.write(filename, content)` | Write file to card directory |
+| `await mica.exec(command, opts?)` | Run shell command in container. Returns `{ stdout, stderr, exitCode }` |
+| `mica.send(data)` | Broadcast to all connected browsers |
+| `mica.reply(data)` | Reply to sender only |
+| `await mica.log(message)` | Append to activity log |
+| `await mica.createCard(name)` | Create new card on canvas |
 
 ## Sizing: fill the card
 
@@ -121,27 +168,21 @@ mica.onDestroy(function() {
 });
 ```
 
-Do NOT use `window.addEventListener('resize')` — it only fires for browser window resize, not card resize.
-Do NOT use fixed pixel widths/heights.
-Do NOT skip `mica.onDestroy()` cleanup — animation frames and observers leak without it.
-
 ## Using CDN libraries
 
 When using a CDN library (Three.js, D3, Chart.js, etc.), verify the API before writing code:
 
 ```bash
-# Check the library version and available API
-curl -s https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js | head -1
-# Read docs for the specific version you're using
-curl -s https://raw.githubusercontent.com/mrdoob/three.js/r128/docs/api/en/math/Color.html 2>/dev/null | head -50
+# Verify URL works
+curl -sI https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js | head -1
 ```
 
-Do NOT assume API signatures — different versions have different APIs. When debugging color, material, or rendering issues, read the library source or docs for the exact version loaded via CDN.
+Do NOT assume API signatures — different versions have different APIs.
 
 For Three.js r128 specifically:
 - `new THREE.Color("#ff8800")` — accepts CSS hex strings directly
 - `new THREE.Color(0xff8800)` — accepts hex integers
-- Do NOT pass `{r, g, b}` objects — use `THREE.Color` constructor or `.set()` method
+- Do NOT pass `{r, g, b}` objects — use `THREE.Color` constructor
 
 ## Common mistakes to avoid
 
@@ -153,5 +194,6 @@ For Three.js r128 specifically:
 - Skipping the test step — always test before creating an instance
 - `window.addEventListener('resize')` — WRONG for cards, use `ResizeObserver` on the container
 - Missing `mica.onDestroy()` — animation frames, observers, event listeners all leak without cleanup
-- Missing `file-changed` listener — card won't update when its data file is modified by an agent or export function
+- Missing `file-changed` listener — card won't update when its data file is modified
 - Fixed pixel dimensions — use `height:100%;flex:1` to fill the card
+- `const` for variables you reassign — use `let` instead (e.g. in export functions)

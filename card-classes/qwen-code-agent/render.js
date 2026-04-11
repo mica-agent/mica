@@ -107,34 +107,12 @@ async function buildContext(mica) {
   } catch {}
 
   // CRITICAL RULES — placed last for recency (models attend most to start and end)
-  parts.push(`## Critical Rules for Card Classes
-
-When writing render.js, use this correct pattern:
-
-\`\`\`javascript
-// container is pre-defined — do NOT redeclare it
-var el = container.querySelector('#my-element');  // correct
-// document.querySelector('#my-element');  // WRONG — will find elements in other cards
-// const container = ...;  // WRONG — crashes because container already exists
-
-// CDN libraries go in dependencies export, then use as globals in scripts
-// No ES module import in browser scripts
-// All functions must be defined in the same file — no implicit imports
-
-// SIZING: root element must fill the card with height:100% and flex layout
-// <div style="display:flex;flex-direction:column;height:100%;min-height:0;">
-//   <div id="content" style="flex:1;min-height:0;overflow:auto;"></div>
-// </div>
-// For canvas/WebGL: use ResizeObserver — NOT window resize events.
-// Card drag-resize does NOT fire window resize. Always clean up with mica.onDestroy().
-\`\`\`
-
-After writing render.js, ALWAYS test it before creating an instance:
-\`curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}'\`
-If the response contains an error, fix render.js and re-test until clean.
-
-Before using any CDN URL, verify it: \`curl -sI <url> | head -1\` should return 200.
-The server is always running — never tell the user to restart it.`);
+  parts.push(`## Critical Rules
+- The server is always running — never tell the user to restart it.
+- When creating card classes, use the \`create-card-class\` skill. It has the complete workflow, template, API reference, and common mistakes.
+- Use \`container.querySelector()\` for DOM access — never \`document.querySelector()\`.
+- Use \`ResizeObserver\` for sizing — never \`window.addEventListener('resize')\`.
+- Always test render.js before creating an instance.`);
 
   return parts.join("\n\n");
 }
