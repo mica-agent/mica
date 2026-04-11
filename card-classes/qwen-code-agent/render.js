@@ -26,6 +26,10 @@ export const metadata = {
   defaultTitle: "Qwen Code",
 };
 
+export const dependencies = {
+  scripts: ['https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.7/marked.min.js'],
+};
+
 const PROJECT_DIR = process.env.PROJECT_DIR || "/project";
 const HISTORY_FILE = "conversation.json";
 const MAX_HISTORY = 100;
@@ -437,6 +441,21 @@ export default function render(content, config) {
 
 <style>
 @keyframes qpulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+.qwen-md p { margin:0 0 8px; }
+.qwen-md p:last-child { margin-bottom:0; }
+.qwen-md code { background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px;font-size:12px;font-family:monospace; }
+.qwen-md pre { background:rgba(0,0,0,0.3);padding:8px 10px;border-radius:6px;overflow-x:auto;margin:6px 0; }
+.qwen-md pre code { background:none;padding:0;font-size:12px; }
+.qwen-md ul, .qwen-md ol { margin:4px 0;padding-left:20px; }
+.qwen-md li { margin:2px 0; }
+.qwen-md h1,.qwen-md h2,.qwen-md h3 { margin:8px 0 4px;color:#e6edf3; }
+.qwen-md h1 { font-size:16px; } .qwen-md h2 { font-size:14px; } .qwen-md h3 { font-size:13px; }
+.qwen-md blockquote { border-left:3px solid #444;margin:6px 0;padding:2px 10px;color:#999; }
+.qwen-md strong { color:#fff; }
+.qwen-md a { color:#58a6ff; }
+.qwen-md table { border-collapse:collapse;margin:6px 0;font-size:12px; }
+.qwen-md th,.qwen-md td { border:1px solid #333;padding:4px 8px; }
+.qwen-md th { background:rgba(255,255,255,0.05); }
 </style>
 
 <script>
@@ -468,6 +487,15 @@ export default function render(content, config) {
     return div.innerHTML;
   }
 
+  function renderMarkdown(text) {
+    try {
+      if (typeof marked !== 'undefined' && marked.parse) {
+        return marked.parse(text, { breaks: true, gfm: true });
+      }
+    } catch(e) {}
+    return escapeHtml(text);
+  }
+
   function addMessage(role, content, agent) {
     if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === 'center') {
       messagesEl.innerHTML = '';
@@ -479,7 +507,7 @@ export default function render(content, config) {
     } else {
       msg.style.cssText = 'align-self:flex-start;background:rgba(255,255,255,0.05);border-radius:12px 12px 12px 4px;padding:8px 12px;max-width:90%;';
       var header = agent ? '<div style="color:' + ACCENT + ';font-size:11px;font-weight:600;margin-bottom:4px;">' + escapeHtml(agent) + '</div>' : '';
-      msg.innerHTML = header + '<div style="color:#e6edf3;font-size:13px;line-height:1.5;white-space:pre-wrap;">' + escapeHtml(content) + '</div>';
+      msg.innerHTML = header + '<div class="qwen-md" style="color:#e6edf3;font-size:13px;line-height:1.5;">' + renderMarkdown(content) + '</div>';
     }
     messagesEl.appendChild(msg);
     scrollMessages();
