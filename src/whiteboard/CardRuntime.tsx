@@ -28,13 +28,20 @@ interface CardDependencies {
  */
 const CARD_SHIM = `
 var _cleanups=[];
-var _realDoc=window.document;
-var document=new Proxy(_realDoc,{get:function(t,p){
-  if(p==='querySelector')return function(s){return container.querySelector(s)};
-  if(p==='querySelectorAll')return function(s){return container.querySelectorAll(s)};
-  if(p==='getElementById')return function(id){return container.querySelector('#'+CSS.escape(id))};
-  var v=t[p];return typeof v==='function'?v.bind(t):v;
-}});
+var _rd=window.document;
+var document={
+  querySelector:function(s){return container.querySelector(s)},
+  querySelectorAll:function(s){return container.querySelectorAll(s)},
+  getElementById:function(id){return container.querySelector('#'+CSS.escape(id))},
+  createElement:function(){return _rd.createElement.apply(_rd,arguments)},
+  createTextNode:function(){return _rd.createTextNode.apply(_rd,arguments)},
+  createDocumentFragment:function(){return _rd.createDocumentFragment()},
+  addEventListener:function(){return _rd.addEventListener.apply(_rd,arguments)},
+  removeEventListener:function(){return _rd.removeEventListener.apply(_rd,arguments)},
+  get body(){return _rd.body},
+  get head(){return _rd.head},
+  get documentElement(){return _rd.documentElement}
+};
 var _si=window.setInterval.bind(window),_st=window.setTimeout.bind(window);
 var _ci=window.clearInterval.bind(window),_ct=window.clearTimeout.bind(window);
 function setInterval(fn,ms){var id=_si(fn,ms);_cleanups.push(function(){_ci(id)});return id}

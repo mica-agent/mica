@@ -169,18 +169,17 @@ export async function onConnect(mica, args) {
       const { filename, error } = event;
       const count = (session.errorCounts.get(filename) || 0) + 1;
       if (count > 3) {
-        console.log(`[qwen-code-agent] Auto-fix limit reached for ${filename}, skipping`);
-        return;
+        return; // limit reached
       }
 
-      // Skip if already busy — don't queue auto-fix messages, they pile up
-      // and overwhelm the agent. The next render error will re-trigger.
-      if (session.busy) {
-        console.log(`[qwen-code-agent] Auto-fix skipped for ${filename} (agent busy)`);
-        return;
-      }
+      // Skip if busy or cooling down (30s between auto-fix attempts)
+      if (session.busy) return;
+      const now = Date.now();
+      const lastFix = session.lastAutoFix || 0;
+      if (now - lastFix < 30000) return;
 
       session.errorCounts.set(filename, count);
+      session.lastAutoFix = now;
 
       const autoMessage = `The card "${filename}" has a render error (auto-fix attempt ${count}/3):\n\n${error}\n\nPlease read its render.js and fix the error.`;
       console.log(`[qwen-code-agent] Auto-fix triggered for ${filename} (attempt ${count})`);
