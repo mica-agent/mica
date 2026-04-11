@@ -95,13 +95,23 @@ async function buildContext(mica) {
   } catch {}
 
   // Project context
+  let todoContent = '';
   for (const { name, label } of [
     { name: "goal.goal", label: "Project Goals" },
     { name: "todo.todo", label: "Tasks" },
     { name: "brief.md", label: "Project Brief" },
   ]) {
     const content = await readCardContent(name);
-    if (content?.trim()) parts.push(`## ${label}\n${content.trim()}`);
+    if (content?.trim()) {
+      parts.push(`## ${label}\n${content.trim()}`);
+      if (name === 'todo.todo') todoContent = content;
+    }
+  }
+
+  // Check for pending user approvals — block building if user hasn't approved
+  const pendingUserTasks = (todoContent.match(/- \[ \] @user/g) || []).length;
+  if (pendingUserTasks > 0) {
+    parts.push(`## BLOCKED — ${pendingUserTasks} pending @user task(s)\nDo NOT build or implement any card classes. There are unchecked @user tasks in the todo. Wait for the user to complete them first. Ask the user to review and approve.`);
   }
 
   try {
