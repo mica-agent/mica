@@ -489,10 +489,13 @@ export default function render(content, config) {
 
   function renderMarkdown(text) {
     try {
-      if (typeof marked !== 'undefined' && marked.parse) {
-        return marked.parse(text, { breaks: true, gfm: true });
+      if (typeof window.marked !== 'undefined' && window.marked.parse) {
+        return window.marked.parse(text, { breaks: true, gfm: true });
       }
-    } catch(e) {}
+      console.warn('[qwen-chat] marked not available, falling back to plain text');
+    } catch(e) {
+      console.error('[qwen-chat] marked.parse error:', e);
+    }
     return escapeHtml(text);
   }
 
