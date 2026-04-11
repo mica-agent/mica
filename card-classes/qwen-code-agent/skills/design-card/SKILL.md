@@ -1,6 +1,6 @@
 ---
 name: design-card
-description: Collaboratively design a new card type before building it. Use when asked to build, create, or make a new type of card, widget, or visualization.
+description: Design and plan a new card before coding it. Use BEFORE coding when asked to build, create, make, or implement any card, widget, visualization, chart, dashboard, game, 3D scene, or interactive component. This skill runs FIRST — create specs, UX flow, and get user approval before writing any code.
 ---
 
 # Design a Card Collaboratively

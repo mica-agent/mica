@@ -1,6 +1,6 @@
 ---
 name: create-card-class
-description: Create a new Mica card class with render.js, spec.md, seed files, and verified rendering. Use when asked to create a new type of card.
+description: Build, create, or implement a card, widget, visualization, chart, dashboard, calculator, game, 3D scene, or any interactive UI component. Use when writing render.js, HTML, CSS, JavaScript, Three.js, D3, or Chart.js code for a card. ALWAYS use this skill when coding a card — never write card code without it.
 ---
 
 # Create a New Card Class
