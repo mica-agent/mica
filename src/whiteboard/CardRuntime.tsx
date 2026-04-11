@@ -27,12 +27,13 @@ interface CardDependencies {
  * No global state is modified. Existing cards using container.querySelector still work.
  */
 const CARD_SHIM = `
+var container=_c;
 var _cleanups=[];
 var _rd=window.document;
 var document={
-  querySelector:function(s){return container.querySelector(s)},
-  querySelectorAll:function(s){return container.querySelectorAll(s)},
-  getElementById:function(id){return container.querySelector('#'+CSS.escape(id))},
+  querySelector:function(s){return _c.querySelector(s)},
+  querySelectorAll:function(s){return _c.querySelectorAll(s)},
+  getElementById:function(id){return _c.querySelector('#'+CSS.escape(id))},
   createElement:function(){return _rd.createElement.apply(_rd,arguments)},
   createTextNode:function(){return _rd.createTextNode.apply(_rd,arguments)},
   createDocumentFragment:function(){return _rd.createDocumentFragment()},
@@ -246,7 +247,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
             if (oldScript.getAttribute("src")) { oldScript.remove(); return; }
             const newScript = document.createElement("script");
             newScript.textContent =
-              `try{(function(mica, container) {${CARD_SHIM}${oldScript.textContent}})(` +
+              `try{(function(mica, _c) {${CARD_SHIM}${oldScript.textContent}})(` +
               `document.currentScript.__mica, document.currentScript.parentElement);}` +
               `catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}`;
             oldScript.remove();
@@ -300,7 +301,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
           newScript.textContent =
             `(function(){` +
             `const _m=document.currentScript.__mica;` +
-            `try{(function(mica,container){${CARD_SHIM}${oldScript.textContent}})(` +
+            `try{(function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
             `_m,document.currentScript.parentElement);` +
             `}catch(e){` +
             `console.error("[card-runtime] Script error in ${filename}:",e);` +
