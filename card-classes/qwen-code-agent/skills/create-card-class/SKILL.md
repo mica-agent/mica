@@ -107,20 +107,26 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
 <head>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <style>
-    body { margin: 0; overflow: hidden; background: #000; }
-    canvas { display: block; width: 100%; height: 100vh; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+    #viewport { display: block; width: 100%; height: 100%; }
   </style>
 </head>
 <body>
-  <canvas id="viewport"></canvas>
+  <div id="viewport"></div>
   <script>
-    var canvas = document.getElementById('viewport');
+    // Use a div container, not a canvas — let Three.js create and size the canvas
+    var el = document.getElementById('viewport');
+    var w = el.clientWidth || window.innerWidth;
+    var h = el.clientHeight || window.innerHeight;
+
     var scene = new THREE.Scene();
     scene.background = new THREE.Color(0x050510);
-    var camera = new THREE.PerspectiveCamera(60, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
+    var camera = new THREE.PerspectiveCamera(60, w / h, 0.1, 1000);
     camera.position.set(0, 2, 5);
-    var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
-    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    var renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(w, h);
+    el.appendChild(renderer.domElement);
 
     var sphere = new THREE.Mesh(
       new THREE.SphereGeometry(1, 32, 32),
@@ -132,7 +138,7 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
 
     // Mouse drag (OrbitControls not in r128 CDN)
     var drag = false, px = 0, py = 0, rx = 0, ry = 0.3;
-    canvas.addEventListener('mousedown', function(e) { drag = true; px = e.clientX; py = e.clientY; });
+    renderer.domElement.addEventListener('mousedown', function(e) { drag = true; px = e.clientX; py = e.clientY; });
     window.addEventListener('mouseup', function() { drag = false; });
     window.addEventListener('mousemove', function(e) {
       if (!drag) return;
@@ -144,10 +150,13 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
       camera.lookAt(0, 0, 0);
     });
 
+    // Resize — fires on card drag-resize (shim handles it)
     window.addEventListener('resize', function() {
-      camera.aspect = canvas.clientWidth / canvas.clientHeight;
+      var w = el.clientWidth || window.innerWidth;
+      var h = el.clientHeight || window.innerHeight;
+      camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+      renderer.setSize(w, h);
     });
 
     (function loop() {
