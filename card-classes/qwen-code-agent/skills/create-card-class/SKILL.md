@@ -18,26 +18,17 @@ Ask the user clarifying questions about what they want. Update canvas cards with
 - Add tasks to `todo.todo` with `@agent` and `@user` assignments
 - Update `architecture.mmd` if relevant
 
-## 2. Build
+## 2. Initialize the card class
 
-Create the card class directory and files:
+Use the helper script — it creates the directory, copies the template, and sets metadata:
 
 ```bash
-mkdir -p /opt/mica/project-card-classes/{name}
-cp /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/template-render.js /opt/mica/project-card-classes/{name}/render.js
+bash /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/init-card-class.sh {name} {BADGE} "{Title}"
 ```
 
-Edit `render.js` — change ONLY the metadata:
-```javascript
-export const metadata = {
-  extension: ".my-card",       // unique extension
-  badge: "CARD",               // short header label
-  primaryFile: "data.json",    // ALWAYS .json
-  defaultTitle: "My Card"
-};
-```
+Example: `bash /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/init-card-class.sh moon-orbit 3D "Moon Orbit"`
 
-Do NOT modify the render function or anything else in render.js. Add server exports at the bottom if needed.
+This creates the directory with render.js and ~data.json ready to go. Do NOT create these files manually.
 
 ## 3. Write card.html
 
@@ -171,11 +162,9 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
 </html>
 ```
 
-## 4. Finish
+## 4. Add server exports (if needed)
 
-Write `~data.json` seed file with default data (e.g. `{}`).
-
-Add server exports to render.js if the card needs persistence:
+Add export functions to render.js for data persistence:
 ```javascript
 export async function save(content, args, mica) {
   await mica.write('data.json', JSON.stringify(args, null, 2));
@@ -183,9 +172,11 @@ export async function save(content, args, mica) {
 }
 ```
 
-Test: `curl -s -X POST $MICA_API_URL/api/card-classes/{name}/test -H 'Content-Type: application/json' -d '{"content":"{}"}'`
+## 5. Test and deploy
 
-Create instance: `curl -s -X POST $MICA_API_URL/api/projects/$MICA_PROJECT/canvases/_root/cards -H 'Content-Type: application/json' -d '{"name":"my-thing.{ext}"}'`
+Test: `bash /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/test-card-class.sh {name}`
+
+Deploy: `bash /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/deploy-card.sh {name} {instance-name}`
 
 ## mica API reference
 
