@@ -30,19 +30,12 @@ const CARD_SHIM = `
 var container=_c;
 var _cleanups=[];
 var _rd=window.document;
-var document={
-  querySelector:function(s){return _c.querySelector(s)},
-  querySelectorAll:function(s){return _c.querySelectorAll(s)},
-  getElementById:function(id){return _c.querySelector('#'+CSS.escape(id))},
-  createElement:function(){return _rd.createElement.apply(_rd,arguments)},
-  createTextNode:function(){return _rd.createTextNode.apply(_rd,arguments)},
-  createDocumentFragment:function(){return _rd.createDocumentFragment()},
-  addEventListener:function(){return _rd.addEventListener.apply(_rd,arguments)},
-  removeEventListener:function(){return _rd.removeEventListener.apply(_rd,arguments)},
-  get body(){return _rd.body},
-  get head(){return _rd.head},
-  get documentElement(){return _rd.documentElement}
-};
+var document=new Proxy(_rd,{get:function(t,p){
+  if(p==='querySelector')return function(s){return _c.querySelector(s)};
+  if(p==='querySelectorAll')return function(s){return _c.querySelectorAll(s)};
+  if(p==='getElementById')return function(id){return _c.querySelector('#'+CSS.escape(id))};
+  var v=t[p];return typeof v==='function'?v.bind(t):v;
+}});
 function _reportError(e){
   fetch('/api/projects/'+mica.project+'/canvases/'+mica.canvas+'/cards/'+encodeURIComponent(mica.filename)+'/error',
     {method:'POST',headers:{'Content-Type':'application/json'},
