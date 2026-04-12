@@ -5,47 +5,46 @@ description: Build, create, or implement a card, widget, visualization, chart, d
 
 # Create a Card Class
 
-## 1. Understand
+## How you work with the user
 
-Read the canvas cards for context:
-- `goal.goal` — project goals
-- `todo.todo` — existing tasks
-- `architecture.mmd` — system architecture
-- `brief.md` — project identity
+The canvas cards are the shared surface — use them to align with the user on what you're building.
 
-Ask the user clarifying questions about what they want. Update canvas cards with the plan:
-- Add the objective to `goal.goal`
-- Add tasks to `todo.todo` with `@agent` and `@user` assignments
-- Update `architecture.mmd` if relevant
+- **goal.goal** — add the objective. Why are we building this?
+- **todo.todo** — add tasks. Use `@agent` for your work, `@user` for decisions the user needs to make. The user sees these and can reprioritize, reassign, or add their own.
+- **architecture.mmd** — show how the card fits into the project (mermaid syntax, no fences)
+- **{name}-spec.md** — for complex cards, create a spec card with requirements, data model, technology choices. The user can edit it.
+- **{name}-ux.mmd** — for non-obvious UX flows, create a diagram card showing how the user interacts
 
-## 2. Initialize the card class
+Read canvas cards before coding. Update them as you work. Log what you did to **log.md**.
 
-Use the helper script — it creates the directory, copies the template, and sets metadata:
+The canvas IS the conversation. Use it.
+
+## Building the card
+
+### 1. Initialize
 
 ```bash
 bash /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/init-card-class.sh {name} {BADGE} "{Title}"
 ```
 
-Example: `bash /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/init-card-class.sh moon-orbit 3D "Moon Orbit"`
+This creates the directory with render.js and ~data.json. Do NOT create these files manually.
 
-This creates the directory with render.js and ~data.json ready to go. Do NOT create these files manually.
-
-## 3. Write card.html
+### 2. Write card.html
 
 This is where ALL your UI code goes. Write a standard HTML file — normal HTML, CSS, JavaScript.
 
-**Before using any CDN library**, use `web_fetch` to look up its API docs for the specific version you're loading. Do NOT assume API signatures from memory — they may be wrong for that version. Example: `web_fetch https://threejs.org/docs/#api/en/math/Color`
+**Before using any CDN library**, use `web_fetch` to look up its API docs for the specific version you're loading. Do NOT assume API signatures from memory — they may be wrong for that version.
 
 The runtime provides these globals:
 - `CARD_DATA` — the card's data (JSON string from data.json)
-- `mica.call(fn, args)` — call server exports (returns Promise)
-- `mica.on('file-changed', cb)` — react when data changes externally
-- `mica.refresh()` — re-render card with fresh data
-- `mica.filename` — card filename
+- `mica.call(fn, args)` — call server export functions (returns Promise)
+- `mica.on('file-changed', cb)` — react to data changes
+- `mica.refresh()` — re-render with fresh data
+- `document.querySelector()` — auto-scoped to this card
+- `window.addEventListener('resize')` — fires on card resize (auto-handled)
+- Timers/listeners — auto-cleaned on card removal
 
-Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addEventListener('resize')`, template literals, ES6+, everything.
-
-### Example card.html:
+#### Chart card example:
 
 ```html
 <!DOCTYPE html>
@@ -53,7 +52,9 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
 <head>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <style>
-    body { margin: 0; display: flex; flex-direction: column; height: 100vh; font-family: system-ui; background: #0d1117; color: #e6edf3; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; font-family: system-ui; background: #0d1117; color: #e6edf3; }
+    body { display: flex; flex-direction: column; }
     .header { padding: 8px 12px; border-bottom: 1px solid #333; }
     .content { flex: 1; padding: 8px; min-height: 0; }
     canvas { width: 100% !important; height: 100% !important; }
@@ -68,7 +69,6 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
   <div class="content">
     <canvas id="chart"></canvas>
   </div>
-
   <script>
     var data = {};
     try { data = JSON.parse(CARD_DATA); } catch(e) {}
@@ -99,7 +99,7 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
 </html>
 ```
 
-### Three.js card.html:
+#### Three.js card example:
 
 ```html
 <!DOCTYPE html>
@@ -115,7 +115,6 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
 <body>
   <div id="viewport"></div>
   <script>
-    // Use a div container, not a canvas — let Three.js create and size the canvas
     var el = document.getElementById('viewport');
     var w = el.clientWidth || window.innerWidth;
     var h = el.clientHeight || window.innerHeight;
@@ -150,7 +149,6 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
       camera.lookAt(0, 0, 0);
     });
 
-    // Resize — fires on card drag-resize (shim handles it)
     window.addEventListener('resize', function() {
       var w = el.clientWidth || window.innerWidth;
       var h = el.clientHeight || window.innerHeight;
@@ -173,9 +171,10 @@ Standard DOM APIs work: `document.querySelector`, `getElementById`, `window.addE
 </html>
 ```
 
-## 4. Add server exports (if needed)
+### 3. Server exports (if needed)
 
 Add export functions to render.js for data persistence:
+
 ```javascript
 export async function save(content, args, mica) {
   await mica.write('data.json', JSON.stringify(args, null, 2));
@@ -183,16 +182,14 @@ export async function save(content, args, mica) {
 }
 ```
 
-## 5. Test and deploy
+### 4. Test and deploy
 
 Test: `bash /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/test-card-class.sh {name}`
 
 Deploy: `bash /opt/mica/card-classes/qwen-code-agent/skills/create-card-class/deploy-card.sh {name} {instance-name}`
 
-## mica API reference
+## mica API
 
-**Browser (in card.html):**
-`mica.call(fn, args)` → Promise | `mica.on(event, cb)` → unsubscribe | `mica.refresh()` | `mica.filename`
+**Browser (card.html):** `mica.call(fn, args)` → Promise | `mica.on(event, cb)` → unsubscribe | `mica.refresh()` | `mica.filename`
 
-**Server (in render.js exports):**
-`mica.read(f)` | `mica.write(f, content)` | `mica.exec(cmd)` → {stdout, stderr, exitCode} | `mica.send(data)` | `mica.log(msg)` | `mica.createCard(name)`
+**Server (render.js exports):** `mica.read(f)` | `mica.write(f, content)` | `mica.exec(cmd)` → {stdout, stderr, exitCode} | `mica.send(data)` | `mica.log(msg)` | `mica.createCard(name)`
