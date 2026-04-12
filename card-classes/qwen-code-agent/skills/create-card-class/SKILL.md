@@ -34,6 +34,8 @@ This creates the directory with render.js and ~data.json ready to go. Do NOT cre
 
 This is where ALL your UI code goes. Write a standard HTML file — normal HTML, CSS, JavaScript.
 
+**Before using any CDN library**, use `web_fetch` to look up its API docs for the specific version you're loading. Do NOT assume API signatures from memory — they may be wrong for that version. Example: `web_fetch https://threejs.org/docs/#api/en/math/Color`
+
 The runtime provides these globals:
 - `CARD_DATA` — the card's data (JSON string from data.json)
 - `mica.call(fn, args)` — call server exports (returns Promise)
