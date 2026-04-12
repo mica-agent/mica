@@ -1,4 +1,4 @@
-// Frontend API client for canvas file operations
+// Frontend API client for Mica Lite — file operations and project management
 
 export type CanvasId = string;
 
@@ -12,24 +12,8 @@ export interface ProjectConfig {
 
 export interface CanvasFile {
   name: string;
-  type: "text" | "markdown" | "mermaid";
   content: string;
-  modifiedAt: string;
-}
-
-export interface CardMeta {
-  cardClass: string;
-  title: string;
-  badge: string;
-  config: Record<string, string>;
-}
-
-export interface RenderedCard {
-  filename: string;
-  html: string;
-  exports: string[];
-  dependencies?: { scripts?: string[]; styles?: string[] };
-  meta: CardMeta;
+  modifiedAt?: string;
 }
 
 const API_BASE = import.meta.env.VITE_MICA_API || "";
@@ -48,16 +32,6 @@ export async function fetchProject(projectId: string): Promise<ProjectConfig> {
   return res.json();
 }
 
-export async function createProject(id: string, name: string, canvasClass?: string): Promise<ProjectConfig> {
-  const res = await fetch(`${API_BASE}/api/projects`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, name, canvasClass }),
-  });
-  if (!res.ok) throw new Error(`Failed to create project: ${res.statusText}`);
-  return res.json();
-}
-
 export async function connectProjectApi(path: string, name?: string): Promise<ProjectConfig> {
   const res = await fetch(`${API_BASE}/api/projects/connect`, {
     method: "POST",
@@ -68,13 +42,6 @@ export async function connectProjectApi(path: string, name?: string): Promise<Pr
   return res.json();
 }
 
-export async function disconnectProjectApi(projectId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}/disconnect`, {
-    method: "POST",
-  });
-  if (!res.ok) throw new Error(`Failed to disconnect project: ${res.statusText}`);
-}
-
 export async function deleteProjectApi(projectId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}`, {
     method: "DELETE",
@@ -82,7 +49,7 @@ export async function deleteProjectApi(projectId: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to delete project: ${res.statusText}`);
 }
 
-// ── File API (project-scoped) ────────────────────────────
+// ── File API ─────────────────────────────────────────────
 
 function projectCanvasUrl(project: string, canvas: string): string {
   return `${API_BASE}/api/projects/${encodeURIComponent(project)}/canvases/${encodeURIComponent(canvas)}`;
@@ -94,42 +61,13 @@ export async function fetchFiles(project: string, canvas: CanvasId): Promise<Can
   return res.json();
 }
 
-export async function fetchFile(
-  project: string,
-  canvas: CanvasId,
-  filename: string
-): Promise<CanvasFile> {
-  const res = await fetch(
-    `${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`
-  );
+export async function fetchFile(project: string, canvas: CanvasId, filename: string): Promise<CanvasFile> {
+  const res = await fetch(`${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`);
   if (!res.ok) throw new Error(`Failed to fetch file: ${res.statusText}`);
   return res.json();
 }
 
-export async function createCardApi(
-  project: string,
-  canvas: CanvasId,
-  name: string
-): Promise<RenderedCard> {
-  const res = await fetch(
-    `${projectCanvasUrl(project, canvas)}/cards`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    }
-  );
-  if (!res.ok) throw new Error(`Failed to create card: ${res.statusText}`);
-  const data = await res.json();
-  return data.card;
-}
-
-export async function saveFile(
-  project: string,
-  canvas: CanvasId,
-  filename: string,
-  content: string
-): Promise<void> {
+export async function saveFile(project: string, canvas: CanvasId, filename: string, content: string): Promise<void> {
   const res = await fetch(
     `${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`,
     {
@@ -141,11 +79,7 @@ export async function saveFile(
   if (!res.ok) throw new Error(`Failed to save file: ${res.statusText}`);
 }
 
-export async function deleteFile(
-  project: string,
-  canvas: CanvasId,
-  filename: string
-): Promise<void> {
+export async function deleteFile(project: string, canvas: CanvasId, filename: string): Promise<void> {
   const res = await fetch(
     `${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`,
     { method: "DELETE" }
@@ -153,73 +87,7 @@ export async function deleteFile(
   if (!res.ok) throw new Error(`Failed to delete file: ${res.statusText}`);
 }
 
-export async function convertDrawing(
-  project: string,
-  canvas: CanvasId,
-  imageBase64: string
-): Promise<{ mermaid: string; filename: string }> {
-  const res = await fetch(
-    `${projectCanvasUrl(project, canvas)}/convert-drawing`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageBase64 }),
-    }
-  );
-  if (!res.ok) throw new Error(`Failed to convert drawing: ${res.statusText}`);
-  return res.json();
-}
-
-export async function fetchCards(project: string, canvas: CanvasId): Promise<RenderedCard[]> {
-  const res = await fetch(`${projectCanvasUrl(project, canvas)}/cards`);
-  if (!res.ok) throw new Error(`Failed to fetch cards: ${res.statusText}`);
-  return res.json();
-}
-
-export async function fetchRenderedCard(project: string, canvas: CanvasId, filename: string): Promise<RenderedCard> {
-  const res = await fetch(`${projectCanvasUrl(project, canvas)}/cards/${encodeURIComponent(filename)}`);
-  if (!res.ok) throw new Error(`Failed to fetch card: ${res.statusText}`);
-  return res.json();
-}
-
-// ── Project Card API ──────────────────────────────────────
-
-export interface ProjectCardResponse extends RenderedCard {
-  canvasFilename: string;
-}
-
-/** Fetch the rendered canvas card (layout shell with child metadata) */
-export async function fetchProjectCard(project: string, signal?: AbortSignal): Promise<ProjectCardResponse> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card`, { signal });
-  if (!res.ok) throw new Error(`Failed to fetch project card: ${res.statusText}`);
-  return res.json();
-}
-
-/** Fetch all rendered child cards for a project's _root canvas */
-export async function fetchProjectChildren(project: string, signal?: AbortSignal): Promise<RenderedCard[]> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/children`, { signal });
-  if (!res.ok) throw new Error(`Failed to fetch project children: ${res.statusText}`);
-  return res.json();
-}
-
-export interface ContextStats {
-  project: string;
-  canvas: string;
-  files: number;
-  fileContentChars: number;
-  systemPromptChars: number;
-  chatHistoryChars: number;
-  totalContextChars: number;
-  estimatedTokens: number;
-}
-
-export async function fetchContextStats(project: string, canvas: CanvasId): Promise<ContextStats> {
-  const res = await fetch(`${projectCanvasUrl(project, canvas)}/context-stats`);
-  if (!res.ok) throw new Error(`Failed to fetch context stats: ${res.statusText}`);
-  return res.json();
-}
-
-// ── Layout persistence (UI metadata, not a card) ────────────
+// ── Layout persistence ───────────────────────────────────
 
 export async function fetchLayout(project: string, canvas: CanvasId): Promise<Record<string, unknown>> {
   const res = await fetch(`${projectCanvasUrl(project, canvas)}/layout`);
@@ -233,64 +101,4 @@ export async function saveLayout(project: string, canvas: CanvasId, data: Record
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
-}
-
-export async function callCardExport(
-  project: string,
-  canvas: CanvasId,
-  filename: string,
-  fn: string,
-  args: Record<string, unknown> = {}
-): Promise<unknown> {
-  const res = await fetch(
-    `${projectCanvasUrl(project, canvas)}/cards/${encodeURIComponent(filename)}/call/${encodeURIComponent(fn)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(args),
-    }
-  );
-  if (!res.ok) throw new Error(`Export call failed: ${res.statusText}`);
-  const data = await res.json();
-  return data.result;
-}
-
-// ── Card class file API (for flip/inspect — class-level files) ────
-
-export async function readClassFile(className: string, fileName: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/card-classes/${encodeURIComponent(className)}/files/${encodeURIComponent(fileName)}`);
-  if (!res.ok) throw new Error(`Failed to read class file: ${res.statusText}`);
-  const data = await res.json();
-  return data.content;
-}
-
-export async function writeClassFile(className: string, fileName: string, content: string): Promise<void> {
-  const res = await fetch(
-    `${API_BASE}/api/card-classes/${encodeURIComponent(className)}/files/${encodeURIComponent(fileName)}`,
-    { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) }
-  );
-  if (!res.ok) throw new Error(`Failed to write class file: ${res.statusText}`);
-}
-
-// ── Card internal file API (for flip/inspect — instance-level files) ────
-
-export async function readCardInternalFile(
-  project: string, canvas: CanvasId, cardName: string, fileName: string
-): Promise<string> {
-  const res = await fetch(
-    `${projectCanvasUrl(project, canvas)}/cards/${encodeURIComponent(cardName)}/files/${encodeURIComponent(fileName)}`
-  );
-  if (!res.ok) throw new Error(`Failed to read card file: ${res.statusText}`);
-  const data = await res.json();
-  return data.content;
-}
-
-export async function writeCardInternalFile(
-  project: string, canvas: CanvasId, cardName: string, fileName: string, content: string
-): Promise<void> {
-  const res = await fetch(
-    `${projectCanvasUrl(project, canvas)}/cards/${encodeURIComponent(cardName)}/files/${encodeURIComponent(fileName)}`,
-    { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) }
-  );
-  if (!res.ok) throw new Error(`Failed to write card file: ${res.statusText}`);
 }

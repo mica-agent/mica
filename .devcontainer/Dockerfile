@@ -28,12 +28,12 @@ ENV PATH=/workspace/.venv/bin:$PATH
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# Build llama.cpp with CUDA support (pinned to b8400)
-RUN git clone --branch b8400 --depth 1 https://github.com/ggerganov/llama.cpp.git /opt/llama.cpp && \
+# Build llama.cpp with CUDA support (latest — gemma4, qwen3next support)
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp && \
     cd /opt/llama.cpp && \
     cmake -B build -DGGML_CUDA=ON && \
     cmake --build build --config Release -j$(nproc) && \
-    ln -s /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli && \
-    ln -s /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+    ln -sf /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli && \
+    ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
 
 

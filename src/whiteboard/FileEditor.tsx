@@ -3,11 +3,10 @@ import mermaid from "mermaid";
 import type { CanvasFile } from "../api/canvasFiles";
 
 interface Props {
-  file: CanvasFile | null; // null = new file
-  defaultType?: "text" | "markdown" | "mermaid";
-  canvasColor: string;
-  onSave: (filename: string, content: string) => void;
-  onCancel: () => void;
+  file?: CanvasFile;
+  isNew?: boolean;
+  onSave: (content: string, filename?: string) => void;
+  onClose: () => void;
 }
 
 let mermaidCounter = 0;
@@ -55,98 +54,111 @@ function MermaidPreview({ content }: { content: string }) {
     };
   }, [content]);
 
-  if (error) return <pre className="wb-editor-preview-error">{error}</pre>;
-  if (!hasContent) return <div className="wb-editor-preview-empty">Mermaid preview</div>;
+  if (error) return <pre style={{ color: "#f66", fontSize: 12 }}>{error}</pre>;
+  if (!hasContent) return <div style={{ color: "#666" }}>Mermaid preview</div>;
   return <div ref={containerRef} />;
 }
 
-export default function FileEditor({
-  file,
-  defaultType,
-  canvasColor,
-  onSave,
-  onCancel,
-}: Props) {
-  const isNew = !file;
+export default function FileEditor({ file, isNew, onSave, onClose }: Props) {
   const [filename, setFilename] = useState(file?.name ?? "");
   const [content, setContent] = useState(file?.content ?? "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const ext = filename.match(/\.(txt|md|mmd)$/)?.[0] ?? "";
-  const isMermaid =
-    ext === ".mmd" || (!ext && defaultType === "mermaid");
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  const isMermaid = ext === "mmd" || ext === "mermaid";
 
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
 
   function handleSave() {
-    let finalName = filename.trim();
-    if (!finalName) return;
-    // Auto-add extension if missing
-    if (!/\.(txt|mmd|md)$/.test(finalName)) {
-      if (defaultType === "mermaid") finalName += ".mmd";
-      else if (defaultType === "markdown") finalName += ".md";
-      else finalName += ".txt";
+    if (isNew) {
+      let finalName = filename.trim();
+      if (!finalName) return;
+      if (!/\.\w+$/.test(finalName)) finalName += ".md";
+      onSave(content, finalName);
+    } else {
+      onSave(content);
     }
-    // Fix wrong extension: user typed .md but this is a mermaid file
-    if (defaultType === "mermaid" && finalName.endsWith(".md") && !finalName.endsWith(".mmd")) {
-      finalName = finalName.slice(0, -3) + ".mmd";
-    }
-    onSave(finalName, content);
   }
 
   return (
-    <div className="wb-editor-overlay" onClick={onCancel}>
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
+        display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000,
+      }}
+    >
       <div
-        className="wb-editor"
-        style={{ "--canvas-color": canvasColor } as React.CSSProperties}
         onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "#1e1e38", borderRadius: 12, width: isMermaid ? "80vw" : "60vw",
+          maxWidth: 900, maxHeight: "80vh", display: "flex", flexDirection: "column",
+          border: "1px solid #333",
+        }}
       >
-        <div className="wb-editor-header">
-          <span>{isNew ? "New File" : "Edit File"}</span>
-          <button onClick={onCancel} className="wb-editor-close">
+        {/* Header */}
+        <div style={{
+          padding: "12px 16px", borderBottom: "1px solid #333",
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+        }}>
+          <span style={{ color: "#ccc", fontWeight: 600 }}>
+            {isNew ? "New File" : `Edit: ${file?.name}`}
+          </span>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#888", fontSize: 20, cursor: "pointer" }}>
             &times;
           </button>
         </div>
 
+        {/* Filename input for new files */}
         {isNew && (
           <input
-            className="wb-editor-filename"
             type="text"
-            placeholder={defaultType === "mermaid" ? "diagram.mmd" : defaultType === "text" ? "note.txt" : "filename.md"}
+            placeholder="filename.md"
             value={filename}
             onChange={(e) => setFilename(e.target.value)}
+            style={{
+              margin: "12px 16px 0", padding: "8px 12px",
+              background: "#252540", color: "#ccc", border: "1px solid #444",
+              borderRadius: 6, fontSize: 14, outline: "none",
+            }}
           />
         )}
 
-        <div className={`wb-editor-body ${isMermaid ? "wb-editor-body--split" : ""}`}>
+        {/* Editor body */}
+        <div style={{ flex: 1, display: "flex", overflow: "hidden", padding: 16, gap: 16 }}>
           <textarea
             ref={textareaRef}
-            className="wb-editor-textarea"
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder={
-              isMermaid
-                ? "graph TD\n    A[Start] --> B[End]"
-                : "Start typing..."
-            }
+            placeholder={isMermaid ? "graph TD\n    A[Start] --> B[End]" : "Start typing..."}
+            style={{
+              flex: 1, background: "#252540", color: "#ddd", border: "1px solid #444",
+              borderRadius: 6, padding: 12, fontSize: 14, fontFamily: "monospace",
+              resize: "none", outline: "none", minHeight: 300,
+            }}
           />
           {isMermaid && (
-            <div className="wb-editor-preview">
+            <div style={{
+              flex: 1, background: "#252540", border: "1px solid #444",
+              borderRadius: 6, padding: 12, overflow: "auto",
+            }}>
               <MermaidPreview content={content} />
             </div>
           )}
         </div>
 
-        <div className="wb-editor-footer">
-          <button onClick={onCancel} className="wb-btn wb-btn--secondary">
-            Cancel
-          </button>
+        {/* Footer */}
+        <div style={{
+          padding: "12px 16px", borderTop: "1px solid #333",
+          display: "flex", justifyContent: "flex-end", gap: 8,
+        }}>
+          <button onClick={onClose} style={{ ...footerBtnStyle, background: "#333" }}>Cancel</button>
           <button
             onClick={handleSave}
-            className="wb-btn wb-btn--primary"
-            disabled={!filename.trim()}
+            disabled={isNew && !filename.trim()}
+            style={{ ...footerBtnStyle, background: "#4a4a8a", opacity: (isNew && !filename.trim()) ? 0.5 : 1 }}
           >
             Save
           </button>
@@ -155,3 +167,12 @@ export default function FileEditor({
     </div>
   );
 }
+
+const footerBtnStyle: React.CSSProperties = {
+  color: "#ccc",
+  border: "none",
+  borderRadius: 6,
+  padding: "8px 20px",
+  cursor: "pointer",
+  fontSize: 14,
+};

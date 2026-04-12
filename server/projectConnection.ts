@@ -370,7 +370,10 @@ export async function validateProjectCanvas(
   }
 }
 
-// ── Migration from legacy layers/ ──────────────────────────
+// ── Migration from legacy layers/ (deprecated) ──────────────
+
+const LEGACY_PROJECTS_FILE = join(os.homedir(), ".mica", "projects.json");
+const LEGACY_CANVASES_ROOT = join(os.homedir(), ".mica", "layers");
 
 interface LegacyProjectConfig {
   id: string;

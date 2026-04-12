@@ -1,309 +1,233 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
-import type { CanvasId, CardMeta } from "../api/canvasFiles";
-import { readCardInternalFile, writeCardInternalFile, readClassFile, writeClassFile } from "../api/canvasFiles";
-import CardRuntime from "./CardRuntime";
+// CardFrame — Draggable, resizable card that renders file content client-side.
+// Detects file type from extension and renders accordingly.
 
-interface CardDependencies {
-  scripts?: string[];
-  styles?: string[];
+import { useState, useRef, useCallback } from "react";
+import type { CanvasFile } from "../api/canvasFiles";
+
+interface CardLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 interface Props {
-  filename: string;
-  html: string;
-  exports: string[];
-  dependencies?: CardDependencies;
-  meta: CardMeta;
-  projectId: string;
-  canvasId: CanvasId;
-  canvasColor: string;
+  file: CanvasFile;
+  layout: CardLayout;
+  onLayoutChange: (layout: CardLayout) => void;
   onEdit: () => void;
   onDelete: () => void;
-  onExpand: () => void;
+  onSave: (content: string) => void;
+  projectId: string;
+  canvas: string;
 }
 
-const API_BASE = import.meta.env.VITE_MICA_API || "";
+function getFileType(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (ext === "mmd" || ext === "mermaid") return "mermaid";
+  if (ext === "json") return "json";
+  if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext)) return "image";
+  return "text";
+}
 
-export default function CardFrame({ filename, html, exports: exportFns, dependencies, meta, projectId, canvasId, canvasColor, onEdit, onDelete, onExpand }: Props) {
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
-  const [overflows, setOverflows] = useState(false);
-  const [flipped, setFlipped] = useState(false);
-  const [saving, setSaving] = useState(false);
+export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDelete }: Props) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const dragStartRef = useRef({ x: 0, y: 0, lx: 0, ly: 0 });
+  const resizeStartRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
 
-  // Setup approval state
-  const [setupRequired, setSetupRequired] = useState(false);
-  const [setupScript, setSetupScript] = useState("");
-  const [setupRunning, setSetupRunning] = useState(false);
-  const [setupOutput, setSetupOutput] = useState("");
+  const fileType = getFileType(file.name);
 
-  // Class-level state (spec + default brief)
-  const [specContent, setSpecContent] = useState("");
-  const [specOriginal, setSpecOriginal] = useState("");
-  const [defaultBrief, setDefaultBrief] = useState("");
-  const [defaultBriefOriginal, setDefaultBriefOriginal] = useState("");
+  // Drag handlers
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest(".card-actions")) return;
+    e.preventDefault();
+    setIsDragging(true);
+    dragStartRef.current = { x: e.clientX, y: e.clientY, lx: layout.x, ly: layout.y };
 
-  // Instance-level state (brief)
-  const [briefContent, setBriefContent] = useState("");
-  const [briefOriginal, setBriefOriginal] = useState("");
+    const handleMove = (e: MouseEvent) => {
+      const dx = e.clientX - dragStartRef.current.x;
+      const dy = e.clientY - dragStartRef.current.y;
+      onLayoutChange({ ...layout, x: dragStartRef.current.lx + dx, y: dragStartRef.current.ly + dy });
+    };
+    const handleUp = () => {
+      setIsDragging(false);
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleUp);
+    };
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleUp);
+  }, [layout, onLayoutChange]);
 
-  const cardClass = meta.cardClass === "mermaid" ? `wb-card--${meta.cardClass}` : "";
-  const isInteractive = exportFns.length > 0;
-  const isResized = cardRef.current?.style.height != null && cardRef.current?.style.height !== "";
+  // Resize handlers
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizing(true);
+    resizeStartRef.current = { x: e.clientX, y: e.clientY, w: layout.w, h: layout.h };
 
-  const isDirty = specContent !== specOriginal || defaultBrief !== defaultBriefOriginal || briefContent !== briefOriginal;
-
-  // Check if card class needs setup
-  useEffect(() => {
-    fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}/card-classes/${encodeURIComponent(meta.cardClass)}/setup`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.required && !data.approved) {
-          setSetupRequired(true);
-          setSetupScript(data.script);
-        } else {
-          setSetupRequired(false);
-        }
-      })
-      .catch(() => {});
-  }, [projectId, meta.cardClass]);
-
-  const handleApproveSetup = useCallback(async () => {
-    setSetupRunning(true);
-    setSetupOutput("");
-    try {
-      const res = await fetch(
-        `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/card-classes/${encodeURIComponent(meta.cardClass)}/setup/approve`,
-        { method: "POST", headers: { "Content-Type": "application/json" } }
-      );
-      const data = await res.json();
-      if (res.ok) {
-        setSetupOutput(data.output || "Setup complete.");
-        setSetupRequired(false);
-      } else {
-        setSetupOutput(`Error: ${data.error}`);
-      }
-    } catch (err) {
-      setSetupOutput(`Error: ${(err as Error).message}`);
-    } finally {
-      setSetupRunning(false);
-    }
-  }, [projectId, meta.cardClass]);
-
-  // Detect overflow after render.
-  // Uses double-rAF so the browser (including Safari) has completed flex
-  // layout before we read scrollHeight/clientHeight.
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    let cancelled = false;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (!cancelled) {
-          setOverflows(el.scrollHeight > el.clientHeight + 10);
-        }
+    const handleMove = (e: MouseEvent) => {
+      const dx = e.clientX - resizeStartRef.current.x;
+      const dy = e.clientY - resizeStartRef.current.y;
+      onLayoutChange({
+        ...layout,
+        w: Math.max(200, resizeStartRef.current.w + dx),
+        h: Math.max(100, resizeStartRef.current.h + dy),
       });
-    });
-    return () => { cancelled = true; };
-  }, [html]);
-
-  // Load all config files when flipped
-  useEffect(() => {
-    if (!flipped) return;
-    // Class-level: spec.md
-    readClassFile(meta.cardClass, "spec.md")
-      .then((c) => { setSpecContent(c); setSpecOriginal(c); })
-      .catch(() => { setSpecContent(""); setSpecOriginal(""); });
-    // Class-level: ~brief.md (default brief)
-    readClassFile(meta.cardClass, "~brief.md")
-      .then((c) => { setDefaultBrief(c); setDefaultBriefOriginal(c); })
-      .catch(() => { setDefaultBrief(""); setDefaultBriefOriginal(""); });
-    // Instance-level: brief.md
-    readCardInternalFile(projectId, canvasId, filename, "brief.md")
-      .then((c) => { setBriefContent(c); setBriefOriginal(c); })
-      .catch(() => { setBriefContent(""); setBriefOriginal(""); });
-  }, [flipped, meta.cardClass, projectId, canvasId, filename]);
-
-  const handleFlip = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (flipped && isDirty) {
-      setSpecContent(specOriginal);
-      setDefaultBrief(defaultBriefOriginal);
-      setBriefContent(briefOriginal);
-    }
-    setFlipped(!flipped);
-  }, [flipped, isDirty, specOriginal, defaultBriefOriginal, briefOriginal]);
-
-  const handleSave = useCallback(async () => {
-    setSaving(true);
-    try {
-      const promises: Promise<void>[] = [];
-      if (specContent !== specOriginal) {
-        promises.push(writeClassFile(meta.cardClass, "spec.md", specContent));
-      }
-      if (defaultBrief !== defaultBriefOriginal) {
-        promises.push(writeClassFile(meta.cardClass, "~brief.md", defaultBrief));
-      }
-      if (briefContent !== briefOriginal) {
-        promises.push(writeCardInternalFile(projectId, canvasId, filename, "brief.md", briefContent));
-      }
-      await Promise.all(promises);
-      setSpecOriginal(specContent);
-      setDefaultBriefOriginal(defaultBrief);
-      setBriefOriginal(briefContent);
-      setFlipped(false);
-    } catch (err) {
-      console.error("Failed to save:", err);
-    } finally {
-      setSaving(false);
-    }
-  }, [meta.cardClass, projectId, canvasId, filename, specContent, specOriginal, defaultBrief, defaultBriefOriginal, briefContent, briefOriginal]);
-
-  const handleCancel = useCallback(() => {
-    setSpecContent(specOriginal);
-    setDefaultBrief(defaultBriefOriginal);
-    setBriefContent(briefOriginal);
-    setFlipped(false);
-  }, [specOriginal, defaultBriefOriginal, briefOriginal]);
-
-  const handleExpandClick = useCallback((e: React.MouseEvent) => {
-    // Suppress if card was just dragged — the drag handler adds/removes wb-card--dragging
-    if (cardRef.current?.dataset.justDragged) return;
-    e.stopPropagation();
-    onExpand();
-  }, [onExpand]);
+    };
+    const handleUp = () => {
+      setIsResizing(false);
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleUp);
+    };
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleUp);
+  }, [layout, onLayoutChange]);
 
   return (
     <div
-      ref={cardRef}
-      data-filename={filename}
-      className={`wb-card ${cardClass} ${flipped ? "wb-card--flipped" : ""}`}
-      style={{ "--canvas-color": canvasColor } as React.CSSProperties}
+      style={{
+        position: "absolute",
+        left: layout.x,
+        top: layout.y + 50,
+        width: layout.w,
+        height: layout.h,
+        background: "#252540",
+        border: "1px solid #333",
+        borderRadius: 8,
+        overflow: "hidden",
+        boxShadow: isDragging ? "0 8px 32px rgba(0,0,0,0.4)" : "0 2px 8px rgba(0,0,0,0.2)",
+        cursor: isDragging ? "grabbing" : "default",
+        zIndex: isDragging || isResizing ? 1000 : 1,
+        display: "flex",
+        flexDirection: "column",
+      }}
     >
+      {/* Header */}
       <div
-        className="wb-card-header"
-        onClick={!isInteractive && !flipped ? handleExpandClick : undefined}
+        onMouseDown={handleDragStart}
+        style={{
+          padding: "6px 12px",
+          background: "#1e1e38",
+          borderBottom: "1px solid #333",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          cursor: "grab",
+          userSelect: "none",
+          flexShrink: 0,
+        }}
       >
-        <span className="wb-card-type">{meta.badge}</span>
-        <span className="wb-card-title">{flipped ? `${meta.title} — Config` : meta.title}</span>
-        <div className="wb-card-actions">
-          <button onClick={handleFlip} title={flipped ? "Show front" : "Configure"} className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}>
-            &#x2699;
+        <span style={{ color: "#aaa", fontSize: 13, fontWeight: 500 }}>
+          {file.name}
+          <span style={{ color: "#666", marginLeft: 8, fontSize: 11 }}>{fileType}</span>
+        </span>
+        <div className="card-actions" style={{ display: "flex", gap: 4 }}>
+          <button onClick={onEdit} style={actionBtnStyle} title="Edit">
+            &#9998;
           </button>
-          {!flipped && isInteractive && (
-            <button onClick={(e) => { e.stopPropagation(); onExpand(); }} title="Expand" className="wb-card-btn">
-              &#x26F6;
-            </button>
-          )}
-          {!flipped && (
-            <button onClick={(e) => { e.stopPropagation(); onEdit(); }} title="Edit" className="wb-card-btn">
-              &#9998;
-            </button>
-          )}
-          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Delete" className="wb-card-btn wb-card-btn--danger">
+          <button onClick={onDelete} style={actionBtnStyle} title="Delete">
             &times;
           </button>
         </div>
       </div>
 
-      {flipped ? (
-        <div className="wb-card-config">
-          <div className="wb-card-config-section">
-            <div className="wb-card-config-label">Spec <span className="wb-card-config-scope">all {meta.cardClass} cards</span></div>
-            <textarea
-              className="wb-card-config-editor"
-              value={specContent}
-              onChange={(e) => setSpecContent(e.target.value)}
-              placeholder="What this card type does..."
-              spellCheck={false}
-            />
-          </div>
-          <div className="wb-card-config-section">
-            <div className="wb-card-config-label">Default Brief <span className="wb-card-config-scope">new {meta.cardClass} cards</span></div>
-            <textarea
-              className="wb-card-config-editor wb-card-config-editor--small"
-              value={defaultBrief}
-              onChange={(e) => setDefaultBrief(e.target.value)}
-              placeholder="Default brief for new instances..."
-              spellCheck={false}
-            />
-          </div>
-          <div className="wb-card-config-section">
-            <div className="wb-card-config-label">Brief <span className="wb-card-config-scope">this card only</span></div>
-            <textarea
-              className="wb-card-config-editor"
-              value={briefContent}
-              onChange={(e) => setBriefContent(e.target.value)}
-              placeholder="What this specific card is for..."
-              spellCheck={false}
-            />
-          </div>
-          <div className="wb-card-config-actions">
-            <button className="wb-card-brief-cancel" onClick={handleCancel}>Cancel</button>
-            <button className="wb-card-brief-save" onClick={handleSave} disabled={saving || !isDirty}>
-              {saving ? "Saving..." : "Save"}
-            </button>
-          </div>
-        </div>
-      ) : setupRequired ? (
-        <div className="wb-card-body" style={{ padding: "16px", color: "#e6edf3", fontSize: "13px" }}>
-          <div style={{ marginBottom: "12px", fontWeight: 600 }}>
-            Setup required for <em>{meta.cardClass}</em>
-          </div>
-          <div style={{ marginBottom: "8px", fontSize: "12px", color: "#8b949e" }}>
-            This card class needs to install dependencies in the project container:
-          </div>
-          <pre style={{
-            background: "#161b22", border: "1px solid #30363d", borderRadius: "6px",
-            padding: "10px", fontSize: "11px", color: "#c9d1d9", overflow: "auto",
-            maxHeight: "120px", whiteSpace: "pre-wrap", marginBottom: "12px",
-          }}>{setupScript}</pre>
-          {setupOutput && (
-            <pre style={{
-              background: "#0d1117", border: "1px solid #21262d", borderRadius: "4px",
-              padding: "8px", fontSize: "10px", color: "#8b949e", maxHeight: "80px",
-              overflow: "auto", whiteSpace: "pre-wrap", marginBottom: "12px",
-            }}>{setupOutput}</pre>
-          )}
-          <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
-            <button
-              onClick={handleApproveSetup}
-              disabled={setupRunning}
-              style={{
-                background: "#238636", color: "#fff", border: "none", borderRadius: "6px",
-                padding: "6px 16px", fontSize: "12px", fontWeight: 600, cursor: "pointer",
-              }}
-            >{setupRunning ? "Installing..." : "Approve & Install"}</button>
-          </div>
-          <div style={{ marginTop: "8px", fontSize: "11px", color: "#6e7681" }}>
-            Runs inside the project container (isolated from host). One-time only.
-          </div>
-        </div>
-      ) : (
-        <div
-          ref={bodyRef}
-          className={`wb-card-body ${overflows && !isResized ? "wb-card-body--overflows" : ""}`}
-        >
-          <CardRuntime
-            html={html}
-            exports={exportFns}
-            dependencies={dependencies}
-            project={projectId}
-            canvas={canvasId}
-            filename={filename}
-          />
-        </div>
-      )}
-
-      <div className="wb-card-footer" onClick={!isInteractive && !flipped ? handleExpandClick : undefined}>
-        <span className="wb-card-filename">{filename}</span>
-        {!flipped && (overflows || meta.cardClass === "mermaid") && (
-          <span className="wb-card-expand-hint">
-            {meta.cardClass === "mermaid" ? "Click to expand" : "Click to read"}
-          </span>
-        )}
+      {/* Content */}
+      <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+        <FileContent content={file.content} type={fileType} />
       </div>
-      <div className="wb-card-resize-handle" />
+
+      {/* Resize handle */}
+      <div
+        onMouseDown={handleResizeStart}
+        style={{
+          position: "absolute",
+          bottom: 0,
+          right: 0,
+          width: 16,
+          height: 16,
+          cursor: "se-resize",
+          opacity: 0.3,
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16">
+          <path d="M14 14L14 8M14 14L8 14" stroke="#888" strokeWidth="2" fill="none" />
+        </svg>
+      </div>
     </div>
   );
 }
+
+// ── File Content Renderer ────────────────────────────────────
+
+function FileContent({ content, type }: { content: string; type: string }) {
+  switch (type) {
+    case "markdown":
+      return (
+        <div
+          style={{ color: "#ddd", fontSize: 14, lineHeight: 1.6 }}
+          dangerouslySetInnerHTML={{ __html: simpleMarkdown(content) }}
+        />
+      );
+    case "mermaid":
+      return <MermaidRenderer content={content} />;
+    case "json":
+      return <pre style={{ color: "#b8d4e3", fontSize: 12, margin: 0, whiteSpace: "pre-wrap" }}>{content}</pre>;
+    default:
+      return <pre style={{ color: "#ccc", fontSize: 13, margin: 0, whiteSpace: "pre-wrap" }}>{content}</pre>;
+  }
+}
+
+// ── Simple Markdown Renderer ─────────────────────────────────
+
+function simpleMarkdown(md: string): string {
+  return md
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
+    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`(.+?)`/g, "<code style='background:#1a1a2e;padding:1px 4px;border-radius:3px'>$1</code>")
+    .replace(/^- \[x\] (.+)$/gm, '<div style="opacity:0.6"><input type="checkbox" checked disabled /> <s>$1</s></div>')
+    .replace(/^- \[ \] (.+)$/gm, '<div><input type="checkbox" disabled /> $1</div>')
+    .replace(/^- (.+)$/gm, "<li>$1</li>")
+    .replace(/\n\n/g, "<br/><br/>")
+    .replace(/\n/g, "<br/>");
+}
+
+// ── Mermaid Renderer ─────────────────────────────────────────
+
+function MermaidRenderer({ content }: { content: string }) {
+  const [svg, setSvg] = useState<string>("");
+  const [error, setError] = useState<string>("");
+
+  useState(() => {
+    import("mermaid").then(async (m) => {
+      m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+      try {
+        const { svg } = await m.default.render(`mermaid-${Date.now()}`, content);
+        setSvg(svg);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    });
+  });
+
+  if (error) return <pre style={{ color: "#f66", fontSize: 12 }}>{error}</pre>;
+  if (!svg) return <div style={{ color: "#666" }}>Rendering diagram...</div>;
+  return <div dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+const actionBtnStyle: React.CSSProperties = {
+  background: "transparent",
+  color: "#888",
+  border: "none",
+  cursor: "pointer",
+  fontSize: 16,
+  padding: "0 4px",
+  lineHeight: 1,
+};

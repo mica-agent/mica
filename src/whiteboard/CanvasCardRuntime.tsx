@@ -1,294 +1,207 @@
-// CanvasCardRuntime — thin host for the canvas card class.
-//
-// Responsibilities (host only):
-//   1. Fetch & mount the canvas card via CardRuntime
-//   2. Fetch child cards and portal them into #canvas-freeform (owned by card class)
-//   3. Listen for file-created/file-deleted to add/remove children
-//   4. Provide modals (expand, edit) triggered by child card actions
-//
-// Layout, positioning, drag, resize, and toolbar are all owned by the
-// canvas card class (e.g. simple-project/render.js).
+// CanvasCardRuntime — Mica Lite canvas component.
+// Renders project files as cards on a spatial canvas.
+// Files are files — content is rendered client-side based on extension.
 
-import { useState, useEffect, useCallback, useRef, type MutableRefObject } from "react";
-import { createPortal } from "react-dom";
-import { fetchProjectCard, fetchProjectChildren, saveFile, deleteFile, fetchFile } from "../api/canvasFiles";
-import type { RenderedCard, ProjectCardResponse } from "../api/canvasFiles";
+import { useState, useEffect, useCallback } from "react";
+import { fetchFiles, fetchLayout, saveLayout, saveFile, deleteFile, fetchFile } from "../api/canvasFiles";
+import type { CanvasFile } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
-import CardRuntime from "./CardRuntime";
 import CardFrame from "./CardFrame";
 import FileEditor from "./FileEditor";
-import ExpandedCardView from "./ExpandedCardView";
-import "./whiteboard.css";
 
 interface Props {
   projectId: string;
-  onReloadRef?: MutableRefObject<(() => void) | null>;
 }
 
-export default function CanvasCardRuntime({ projectId, onReloadRef }: Props) {
-  const [parentCard, setParentCard] = useState<ProjectCardResponse | null>(null);
-  const [children, setChildren] = useState<RenderedCard[]>([]);
+interface CardLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export default function CanvasCardRuntime({ projectId }: Props) {
+  const [files, setFiles] = useState<CanvasFile[]>([]);
+  const [layouts, setLayouts] = useState<Record<string, CardLayout>>({});
   const [loading, setLoading] = useState(true);
+  const [editingFile, setEditingFile] = useState<CanvasFile | null>(null);
+  const [creatingFile, setCreatingFile] = useState(false);
 
-  // Modal state
-  const [editingFile, setEditingFile] = useState<{ name: string; content: string } | null>(null);
-  const [expandedCard, setExpandedCard] = useState<RenderedCard | null>(null);
+  const canvas = "_root";
 
-  // Portal target: the #canvas-freeform element rendered by the card class
-  const [freeformEl, setFreeformEl] = useState<HTMLElement | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Canvas card filename — discovered from server, not hardcoded
-  const canvasFilename = parentCard?.canvasFilename || "project.project";
-
-  // ── Data loading ────────────────────────────────────────
-
-  const retryChildren = useCallback(() => {
-    setTimeout(async () => {
-      try {
-        const retry = await fetchProjectChildren(projectId);
-        if (retry.length > 0) setChildren(retry);
-      } catch { /* ignore */ }
-    }, 2000);
-  }, [projectId]);
-
-  const loadProjectCard = useCallback(async (signal?: AbortSignal) => {
-    try {
-      // allSettled: children failure doesn't prevent parentCard from rendering
-      const [cardResult, childrenResult] = await Promise.allSettled([
-        fetchProjectCard(projectId, signal),
-        fetchProjectChildren(projectId, signal),
-      ]);
-      if (signal?.aborted) return;
-
-      if (cardResult.status === "fulfilled") {
-        const card = cardResult.value;
-        setParentCard((prev) => (prev?.html === card.html ? prev : card));
-      }
-
-      if (childrenResult.status === "fulfilled") {
-        const childCards = childrenResult.value;
-        setChildren((prev) =>
-          prev.length === childCards.length && prev.every((c, i) => c.html === childCards[i].html)
-            ? prev
-            : childCards
-        );
-        if (childCards.length === 0) retryChildren();
-      } else {
-        retryChildren();
-      }
-    } catch (err) {
-      if (signal?.aborted) return;
-      console.error("[CanvasCardRuntime] Failed to load project card:", err);
-      setTimeout(() => { loadProjectCard(); }, 2000);
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  }, [projectId, retryChildren]);
-
+  // Load files and layout
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    loadProjectCard(controller.signal);
-    return () => controller.abort();
-  }, [loadProjectCard]);
 
-  useEffect(() => {
-    if (onReloadRef) onReloadRef.current = loadProjectCard;
-    return () => { if (onReloadRef) onReloadRef.current = null; };
-  }, [onReloadRef, loadProjectCard]);
+    async function load() {
+      try {
+        const [fileList, layoutData] = await Promise.allSettled([
+          fetchFiles(projectId, canvas),
+          fetchLayout(projectId, canvas),
+        ]);
 
-  // ── Find freeform container after card class renders ────
+        if (controller.signal.aborted) return;
 
-  // Watch containerRef for #canvas-freeform using MutationObserver.
-  // Depends on parentCard so it runs after the container div is rendered.
-  // With the abort guard + functional updates above, parentCard identity is
-  // stable across StrictMode double-mounts — effect only fires once per real change.
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    // Reset freeformEl — clear any stale reference from a previous render.
-    setFreeformEl(null);
-
-    // CardRuntime (child) runs its effect before this (parent) effect.
-    // For simple-project (no declared deps), innerHTML is injected synchronously
-    // in CardRuntime's effect, so #canvas-freeform is already in the DOM here.
-    // For card classes with async dep loading, we poll until it appears.
-    // Always check isConnected to reject stale elements from previous renders.
-    const poll = setInterval(() => {
-      const el = container.querySelector("#canvas-freeform");
-      if (el && (el as HTMLElement).isConnected) {
-          setFreeformEl(el as HTMLElement);
-        clearInterval(poll);
-      }
-    }, 50);
-    return () => clearInterval(poll);
-  }, [parentCard]);
-
-  // ── Real-time updates via WebSocket ─────────────────────
-
-  useEffect(() => {
-    function handleFileEvent(msg: unknown) {
-      const m = msg as {
-        type: string;
-        project?: string;
-        canvas?: string;
-        filename?: string;
-        html?: string;
-        exports?: string[];
-        dependencies?: RenderedCard["dependencies"];
-        meta?: RenderedCard["meta"];
-      };
-      if (m.project !== projectId || m.canvas !== "_root") return;
-
-      // Skip infrastructure files (dot-prefixed) and the canvas card itself
-      if (!m.filename || m.filename.startsWith(".") || m.filename === canvasFilename) {
-        if (m.filename === canvasFilename) {
-          fetchProjectCard(projectId).then(setParentCard).catch(() => {});
+        if (fileList.status === "fulfilled") {
+          setFiles(fileList.value);
         }
-        return;
-      }
-
-      if (m.type === "file-created" && m.html && m.meta) {
-        setChildren((prev) => {
-          const card: RenderedCard = {
-            filename: m.filename!,
-            html: m.html!,
-            exports: m.exports || [],
-            dependencies: m.dependencies,
-            meta: m.meta!,
-          };
-          const idx = prev.findIndex((c) => c.filename === m.filename);
-          if (idx >= 0) {
-            const next = [...prev];
-            next[idx] = card;
-            return next;
-          }
-          return [...prev, card];
-        });
-      } else if (m.type === "file-deleted") {
-        setChildren((prev) => prev.filter((c) => c.filename !== m.filename));
-      // file-changed: card scripts handle via mica.on() — no action here
-      }
-
-      // class-changed: card class was updated — replace card with re-rendered version
-      if (m.type === "class-changed" && m.html && m.meta) {
-        setChildren((prev) => {
-          const idx = prev.findIndex((c) => c.filename === m.filename);
-          if (idx >= 0) {
-            const next = [...prev];
-            next[idx] = {
-              filename: m.filename!,
-              html: m.html!,
-              exports: m.exports || [],
-              dependencies: m.dependencies,
-              meta: m.meta!,
-            };
-            return next;
-          }
-          return prev;
-        });
+        if (layoutData.status === "fulfilled") {
+          setLayouts((layoutData.value as Record<string, CardLayout>) || {});
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
       }
     }
 
-    const unsub1 = on("file-changed", handleFileEvent);
-    const unsub2 = on("file-created", handleFileEvent);
-    const unsub3 = on("file-deleted", handleFileEvent);
-    const unsub4 = on("class-changed", handleFileEvent);
-    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
-  }, [projectId, canvasFilename]);
-
-  // ── File operations (for modals) ────────────────────────
-
-  const handleSave = useCallback(async (filename: string, content: string) => {
-    await saveFile(projectId, "_root", filename, content);
-    setEditingFile(null);
+    load();
+    return () => controller.abort();
   }, [projectId]);
 
-  const handleDelete = useCallback(async (filename: string) => {
-    await deleteFile(projectId, "_root", filename);
+  // Listen for file changes via WebSocket
+  useEffect(() => {
+    const unsubs = [
+      on("file-created", async (data: { project: string; canvas: string; filename: string }) => {
+        if (data.project !== projectId) return;
+        try {
+          const file = await fetchFile(projectId, canvas, data.filename);
+          setFiles((prev) => [...prev.filter((f) => f.name !== data.filename), file]);
+        } catch { /* ignore */ }
+      }),
+      on("file-changed", async (data: { project: string; canvas: string; filename: string }) => {
+        if (data.project !== projectId) return;
+        try {
+          const file = await fetchFile(projectId, canvas, data.filename);
+          setFiles((prev) => prev.map((f) => (f.name === data.filename ? file : f)));
+        } catch { /* ignore */ }
+      }),
+      on("file-deleted", (data: { project: string; canvas: string; filename: string }) => {
+        if (data.project !== projectId) return;
+        setFiles((prev) => prev.filter((f) => f.name !== data.filename));
+        setLayouts((prev) => {
+          const next = { ...prev };
+          delete next[data.filename];
+          return next;
+        });
+      }),
+      on("layout-changed", (data: { project: string; source?: string }) => {
+        if (data.project !== projectId) return;
+        fetchLayout(projectId, canvas).then((l) => setLayouts(l as Record<string, CardLayout>));
+      }),
+    ];
+
+    return () => unsubs.forEach((u) => u());
   }, [projectId]);
 
-  const handleEdit = useCallback(async (filename: string) => {
-    try {
-      const file = await fetchFile(projectId, "_root", filename);
-      setExpandedCard(null);
-      setEditingFile({ name: file.name, content: file.content });
-    } catch (err) {
-      console.error("Failed to fetch file for editing:", err);
-    }
-  }, [projectId]);
+  // Save layout when cards are moved/resized
+  const handleLayoutChange = useCallback(
+    (filename: string, layout: CardLayout) => {
+      setLayouts((prev) => {
+        const next = { ...prev, [filename]: layout };
+        saveLayout(projectId, canvas, { ...next, source: "self" });
+        return next;
+      });
+    },
+    [projectId]
+  );
 
-  // ── Render ──────────────────────────────────────────────
-if (loading && !parentCard) {
-    return <div className="wb-container"><div className="wb-empty">Loading project...</div></div>;
+  const handleDeleteFile = useCallback(
+    async (filename: string) => {
+      await deleteFile(projectId, canvas, filename);
+      setFiles((prev) => prev.filter((f) => f.name !== filename));
+    },
+    [projectId]
+  );
+
+  const handleSaveFile = useCallback(
+    async (filename: string, content: string) => {
+      await saveFile(projectId, canvas, filename, content);
+      setFiles((prev) => prev.map((f) => (f.name === filename ? { ...f, content } : f)));
+    },
+    [projectId]
+  );
+
+  const handleCreateFile = useCallback(
+    async (filename: string, content: string) => {
+      await saveFile(projectId, canvas, filename, content);
+      const file = await fetchFile(projectId, canvas, filename);
+      setFiles((prev) => [...prev, file]);
+      setCreatingFile(false);
+    },
+    [projectId]
+  );
+
+  if (loading) {
+    return <div style={{ padding: 40, color: "#888" }}>Loading project...</div>;
   }
 
-  const canvasColor = "#4a8aff";
-
   return (
-    <div className="wb-container">
-      {/* Canvas card class renders toolbar, header, and freeform container */}
-      {parentCard && (
-        <div ref={containerRef} className="canvas-card-host">
-          <CardRuntime
-            html={parentCard.html}
-            exports={parentCard.exports}
-            dependencies={parentCard.dependencies}
-            project={projectId}
-            canvas="_root"
-            filename={canvasFilename}
-          />
-        </div>
-      )}
+    <div style={{ position: "relative", width: "100%", height: "100%", overflow: "auto", background: "#1a1a2e" }}>
+      {/* Toolbar */}
+      <div style={{
+        position: "sticky", top: 0, left: 0, zIndex: 100,
+        padding: "8px 16px", background: "#1a1a2e", borderBottom: "1px solid #333",
+        display: "flex", gap: 8, alignItems: "center",
+      }}>
+        <button onClick={() => setCreatingFile(true)} style={btnStyle}>
+          + New File
+        </button>
+        <span style={{ color: "#666", fontSize: 12 }}>
+          {files.length} file{files.length !== 1 ? "s" : ""} on canvas
+        </span>
+      </div>
 
-      {/* Portal child cards into the card class's freeform container */}
-      {freeformEl && children.map((card) => createPortal(
-        <CardFrame
-          key={card.filename}
-          filename={card.filename}
-          html={card.html}
-          exports={card.exports}
-          dependencies={card.dependencies}
-          meta={card.meta}
-          projectId={projectId}
-          canvasId="_root"
-          canvasColor={canvasColor}
-          onEdit={() => handleEdit(card.filename)}
-          onDelete={() => handleDelete(card.filename)}
-          onExpand={() => setExpandedCard(card)}
-        />,
-        freeformEl,
-      ))}
+      {/* Canvas area */}
+      <div style={{ position: "relative", minHeight: "calc(100vh - 50px)", padding: 20 }}>
+        {files.length === 0 && (
+          <div style={{ color: "#666", textAlign: "center", marginTop: 100 }}>
+            No files yet. Click "+ New File" to get started.
+          </div>
+        )}
+        {files.map((file) => {
+          const layout = layouts[file.name] || {
+            x: 20 + (files.indexOf(file) % 3) * 420,
+            y: 20 + Math.floor(files.indexOf(file) / 3) * 320,
+            w: 400,
+            h: 300,
+          };
+          return (
+            <CardFrame
+              key={file.name}
+              file={file}
+              layout={layout}
+              onLayoutChange={(l) => handleLayoutChange(file.name, l)}
+              onEdit={() => setEditingFile(file)}
+              onDelete={() => handleDeleteFile(file.name)}
+              onSave={(content) => handleSaveFile(file.name, content)}
+              projectId={projectId}
+              canvas={canvas}
+            />
+          );
+        })}
+      </div>
 
-      {!loading && children.length === 0 && !parentCard && (
-        <div className="wb-empty">
-          <div className="wb-empty-icon">&#9744;</div>
-          <p>No files yet. Create a note, document, or diagram to get started.</p>
-        </div>
-      )}
-
-      {/* Expanded card reader */}
-      {expandedCard && (
-        <ExpandedCardView
-          filename={expandedCard.filename}
-          meta={expandedCard.meta}
-          canvasColor={canvasColor}
-          onClose={() => setExpandedCard(null)}
-          onEdit={() => { handleEdit(expandedCard.filename); setExpandedCard(null); }}
-        />
-      )}
-
-      {/* Editor modal */}
-      {editingFile && (
+      {/* File editor modal */}
+      {(editingFile || creatingFile) && (
         <FileEditor
-          file={{ name: editingFile.name, type: "markdown" as const, content: editingFile.content, modifiedAt: "" }}
-          canvasColor={canvasColor}
-          onSave={handleSave}
-          onCancel={() => setEditingFile(null)}
+          file={editingFile || undefined}
+          onSave={editingFile
+            ? (content) => { handleSaveFile(editingFile.name, content); setEditingFile(null); }
+            : (content, filename) => { if (filename) handleCreateFile(filename, content); }
+          }
+          onClose={() => { setEditingFile(null); setCreatingFile(false); }}
+          isNew={creatingFile}
         />
       )}
     </div>
   );
 }
+
+const btnStyle: React.CSSProperties = {
+  background: "#2a2a4a",
+  color: "#ccc",
+  border: "1px solid #444",
+  borderRadius: 4,
+  padding: "4px 12px",
+  cursor: "pointer",
+  fontSize: 13,
+};

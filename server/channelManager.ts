@@ -11,7 +11,7 @@
  * via open/sendData/detach/destroySession.
  */
 
-import { readCanvasFile, writeCanvasFile } from "./cardFiles.js";
+import { readCanvasFile, writeCanvasFile } from "./files.js";
 
 // ── Types ──────────────────────────────────────────────────
 

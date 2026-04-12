@@ -4,13 +4,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import type { ProjectConfig } from "./api/canvasFiles";
-import { createProject, deleteProjectApi } from "./api/canvasFiles";
-
-interface CardClassInfo {
-  extension?: string;
-  defaultTitle?: string;
-  badge?: string;
-}
+import { connectProjectApi, deleteProjectApi } from "./api/canvasFiles";
 
 interface Props {
   projects: ProjectConfig[];
@@ -23,8 +17,7 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
-  const [canvasClass, setCanvasClass] = useState("simple-project");
-  const [cardClasses, setCardClasses] = useState<Record<string, CardClassInfo>>({});
+  const [newPath, setNewPath] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -36,31 +29,24 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
     setConfirmDelete(null);
   }, []);
 
-  // Fetch card classes when create form opens
   useEffect(() => {
-    if (!creating) return;
-    inputRef.current?.focus();
-    fetch("/api/card-classes")
-      .then(r => r.json())
-      .then(setCardClasses)
-      .catch(() => {});
+    if (creating) inputRef.current?.focus();
   }, [creating]);
 
-  const handleCreate = useCallback(async () => {
+  const handleConnect = useCallback(async () => {
+    const path = newPath.trim();
     const name = newName.trim();
-    if (!name) return;
-    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    if (!id) return;
+    if (!path) return;
     try {
-      await createProject(id, name, canvasClass);
+      await connectProjectApi(path, name || undefined);
       setNewName("");
-      setCanvasClass("simple-project");
+      setNewPath("");
       setCreating(false);
       onProjectsChanged();
     } catch (err) {
-      console.error("Failed to create project:", err);
+      console.error("Failed to connect project:", err);
     }
-  }, [newName, canvasClass, onProjectsChanged]);
+  }, [newName, newPath, onProjectsChanged]);
 
   const handleDelete = useCallback(async (projectId: string) => {
     try {
@@ -76,8 +62,6 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
   const rect = triggerRef.current?.getBoundingClientRect();
   const dropdownTop = rect ? rect.bottom + 6 : 60;
   const dropdownLeft = rect ? rect.left : 10;
-
-  const classEntries = Object.entries(cardClasses);
 
   return (
     <div className="project-nav">
@@ -141,31 +125,30 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
                 ref={inputRef}
                 className="project-nav-create-input"
                 type="text"
-                placeholder="Project name..."
+                placeholder="/path/to/project"
+                value={newPath}
+                onChange={(e) => setNewPath(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleConnect();
+                  if (e.key === "Escape") { setCreating(false); setNewPath(""); setNewName(""); }
+                }}
+              />
+              <input
+                className="project-nav-create-input"
+                type="text"
+                placeholder="Name (optional)"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleCreate();
-                  if (e.key === "Escape") { setCreating(false); setNewName(""); }
+                  if (e.key === "Enter") handleConnect();
                 }}
               />
-              <select
-                className="project-nav-class-select"
-                value={canvasClass}
-                onChange={(e) => setCanvasClass(e.target.value)}
-              >
-                {classEntries.map(([name, info]) => (
-                  <option key={name} value={name}>
-                    {info.defaultTitle || name}
-                  </option>
-                ))}
-              </select>
               <button
                 className="project-nav-create-submit"
-                onClick={handleCreate}
-                disabled={!newName.trim()}
+                onClick={handleConnect}
+                disabled={!newPath.trim()}
               >
-                Create
+                Connect
               </button>
             </div>
           ) : (
@@ -173,7 +156,7 @@ export default function ProjectNav({ projects, activeProject, onSwitch, onProjec
               className="project-nav-new-btn"
               onClick={() => setCreating(true)}
             >
-              + New Project
+              + Connect Project
             </button>
           )}
         </div>
