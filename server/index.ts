@@ -223,6 +223,59 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
   }
 });
 
+// ── Canvas Back (project-level AI context) ───────────────────
+
+app.get("/api/projects/:project/canvas-back", async (req, res) => {
+  try {
+    const projectPath = await getProjectPath(req.params.project);
+    const content = await readFile(join(projectPath, ".mica", "canvas-back.md"), "utf-8");
+    res.json({ content });
+  } catch {
+    res.json({ content: "" });
+  }
+});
+
+app.put("/api/projects/:project/canvas-back", async (req, res) => {
+  try {
+    const projectPath = await getProjectPath(req.params.project);
+    const micaDir = join(projectPath, ".mica");
+    await mkdir(micaDir, { recursive: true });
+    await writeFile(join(micaDir, "canvas-back.md"), req.body.content || "", "utf-8");
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── Card Backs (per-card AI context) ─────────────────────────
+
+app.get("/api/projects/:project/card-back/:filename", async (req, res) => {
+  const { project, filename } = req.params;
+  try {
+    const projectPath = await getProjectPath(project);
+    // Map filename to card back path: docs/spec.md → docs--spec.md
+    const backFilename = filename.replace(/\//g, "--");
+    const content = await readFile(join(projectPath, ".mica", "cards", backFilename), "utf-8");
+    res.json({ content });
+  } catch {
+    res.json({ content: "" });
+  }
+});
+
+app.put("/api/projects/:project/card-back/:filename", async (req, res) => {
+  const { project, filename } = req.params;
+  try {
+    const projectPath = await getProjectPath(project);
+    const cardsDir = join(projectPath, ".mica", "cards");
+    await mkdir(cardsDir, { recursive: true });
+    const backFilename = filename.replace(/\//g, "--");
+    await writeFile(join(cardsDir, backFilename), req.body.content || "", "utf-8");
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // ── Server Setup ─────────────────────────────────────────────
 
 const fileWatcher = new FileWatcher();

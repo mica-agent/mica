@@ -1,8 +1,9 @@
 // CardFrame — Draggable, resizable card that renders file content client-side.
 // Detects file type from extension and renders accordingly.
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import type { CanvasFile } from "../api/canvasFiles";
+import { fetchCardBack, saveCardBack } from "../api/canvasFiles";
 
 interface CardLayout {
   x: number;
@@ -31,13 +32,30 @@ function getFileType(filename: string): string {
   return "text";
 }
 
-export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDelete }: Props) {
+export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDelete, projectId }: Props) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [flipped, setFlipped] = useState(false);
+  const [backContent, setBackContent] = useState("");
+  const [backLoaded, setBackLoaded] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0, lx: 0, ly: 0 });
   const resizeStartRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
 
   const fileType = getFileType(file.name);
+
+  // Load card back when flipped
+  useEffect(() => {
+    if (flipped && !backLoaded) {
+      fetchCardBack(projectId, file.name).then((c) => {
+        setBackContent(c);
+        setBackLoaded(true);
+      });
+    }
+  }, [flipped, backLoaded, projectId, file.name]);
+
+  const handleSaveBack = useCallback(() => {
+    saveCardBack(projectId, file.name, backContent);
+  }, [projectId, file.name, backContent]);
 
   // Drag handlers
   const handleDragStart = useCallback((e: React.MouseEvent) => {
@@ -124,6 +142,9 @@ export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDele
           <span style={{ color: "#666", marginLeft: 8, fontSize: 11 }}>{fileType}</span>
         </span>
         <div className="card-actions" style={{ display: "flex", gap: 4 }}>
+          <button onClick={() => { setFlipped(!flipped); setBackLoaded(false); }} style={actionBtnStyle} title={flipped ? "Show content" : "AI context"}>
+            &#8645;
+          </button>
           <button onClick={onEdit} style={actionBtnStyle} title="Edit">
             &#9998;
           </button>
@@ -133,9 +154,26 @@ export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDele
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content (front) or AI Context (back) */}
       <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
-        <FileContent content={file.content} type={fileType} />
+        {flipped ? (
+          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            <div style={{ color: "#888", fontSize: 11, marginBottom: 8 }}>AI Context — instructions for the AI when discussing this card</div>
+            <textarea
+              value={backContent}
+              onChange={(e) => setBackContent(e.target.value)}
+              onBlur={handleSaveBack}
+              placeholder="Add AI context for this card... e.g. 'When discussing this spec, focus on API contracts and error handling.'"
+              style={{
+                flex: 1, background: "#1a1a2e", color: "#ccc", border: "1px solid #444",
+                borderRadius: 4, padding: 8, fontSize: 13, fontFamily: "monospace",
+                resize: "none", outline: "none",
+              }}
+            />
+          </div>
+        ) : (
+          <FileContent content={file.content} type={fileType} />
+        )}
       </div>
 
       {/* Resize handle */}

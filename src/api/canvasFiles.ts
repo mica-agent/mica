@@ -102,3 +102,37 @@ export async function saveLayout(project: string, canvas: CanvasId, data: Record
     body: JSON.stringify(data),
   });
 }
+
+// ── Canvas Back (project-level AI context) ───────────────
+
+export async function fetchCanvasBack(project: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/canvas-back`);
+  if (!res.ok) return "";
+  const data = await res.json();
+  return data.content || "";
+}
+
+export async function saveCanvasBack(project: string, content: string): Promise<void> {
+  await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/canvas-back`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+}
+
+// ── Card Backs (per-card AI context) ─────────────────────
+
+export async function fetchCardBack(project: string, filename: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card-back/${encodeURIComponent(filename)}`);
+  if (!res.ok) return "";
+  const data = await res.json();
+  return data.content || "";
+}
+
+export async function saveCardBack(project: string, filename: string, content: string): Promise<void> {
+  await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card-back/${encodeURIComponent(filename)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+}

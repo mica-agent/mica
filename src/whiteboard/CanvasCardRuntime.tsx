@@ -3,7 +3,7 @@
 // Files are files — content is rendered client-side based on extension.
 
 import { useState, useEffect, useCallback } from "react";
-import { fetchFiles, fetchLayout, saveLayout, saveFile, deleteFile, fetchFile } from "../api/canvasFiles";
+import { fetchFiles, fetchLayout, saveLayout, saveFile, deleteFile, fetchFile, fetchCanvasBack, saveCanvasBack } from "../api/canvasFiles";
 import type { CanvasFile } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
 import CardFrame from "./CardFrame";
@@ -26,6 +26,8 @@ export default function CanvasCardRuntime({ projectId }: Props) {
   const [loading, setLoading] = useState(true);
   const [editingFile, setEditingFile] = useState<CanvasFile | null>(null);
   const [creatingFile, setCreatingFile] = useState(false);
+  const [showCanvasBack, setShowCanvasBack] = useState(false);
+  const [canvasBackContent, setCanvasBackContent] = useState("");
 
   const canvas = "_root";
 
@@ -145,10 +147,43 @@ export default function CanvasCardRuntime({ projectId }: Props) {
         <button onClick={() => setCreatingFile(true)} style={btnStyle}>
           + New File
         </button>
+        <button
+          onClick={() => {
+            if (!showCanvasBack) {
+              fetchCanvasBack(projectId).then(setCanvasBackContent);
+            }
+            setShowCanvasBack(!showCanvasBack);
+          }}
+          style={{ ...btnStyle, background: showCanvasBack ? "#4a4a8a" : "#2a2a4a" }}
+        >
+          {showCanvasBack ? "Hide AI Context" : "Project AI Context"}
+        </button>
         <span style={{ color: "#666", fontSize: 12 }}>
           {files.length} file{files.length !== 1 ? "s" : ""} on canvas
         </span>
       </div>
+
+      {/* Canvas back — project-level AI context */}
+      {showCanvasBack && (
+        <div style={{
+          padding: "12px 16px", background: "#1e1e38", borderBottom: "1px solid #333",
+        }}>
+          <div style={{ color: "#888", fontSize: 11, marginBottom: 6 }}>
+            Project AI Context — instructions that shape how the AI participates on this canvas
+          </div>
+          <textarea
+            value={canvasBackContent}
+            onChange={(e) => setCanvasBackContent(e.target.value)}
+            onBlur={() => saveCanvasBack(projectId, canvasBackContent)}
+            placeholder="e.g. 'This is a GCP automation project. Prefer Terraform. Always consider IAM implications.'"
+            style={{
+              width: "100%", minHeight: 80, background: "#252540", color: "#ccc",
+              border: "1px solid #444", borderRadius: 6, padding: 8, fontSize: 13,
+              fontFamily: "monospace", resize: "vertical", outline: "none", boxSizing: "border-box",
+            }}
+          />
+        </div>
+      )}
 
       {/* Canvas area */}
       <div style={{ position: "relative", minHeight: "calc(100vh - 50px)", padding: 20 }}>
