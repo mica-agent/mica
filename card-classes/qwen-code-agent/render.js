@@ -117,14 +117,14 @@ async function buildContext(mica) {
   try {
     const entries = await fs.promises.readdir(PROJECT_DIR);
     const cards = entries.filter(e => !e.startsWith(".") && e !== "workspace" && path.extname(e));
-    if (cards.length > 0) parts.push(`## Canvas Cards\n${cards.map(c => `- ${c}`).join("\n")}`);
+    if (cards.length > 0) parts.push(`## Canvas Cards (current)\nThese are the cards currently on the canvas. This is the source of truth — not the activity log.\n${cards.map(c => `- ${c}`).join("\n")}`);
   } catch {}
 
   // Recent activity log — gives the agent context about what was done in previous sessions
   const logContent = await readCardContent('log.md');
   if (logContent?.trim()) {
     const recentLines = logContent.split('\n').slice(-15).join('\n');
-    parts.push(`## Recent Activity\n${recentLines}`);
+    parts.push(`## Recent Activity (historical — may reference cards that no longer exist)\n${recentLines}`);
   }
 
   // Card errors — scan for .error files in card directories
