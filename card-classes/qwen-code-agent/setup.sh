@@ -9,6 +9,6 @@ ln -sf /usr/local/lib/node_modules/@qwen-code /opt/mica/node_modules/@qwen-code 
 # Install Qwen Code skills for card class creation
 mkdir -p /project/.qwen/skills
 cp -r /opt/mica/card-classes/qwen-code-agent/skills/create-card-class /project/.qwen/skills/ 2>/dev/null || true
-cp -r /opt/mica/card-classes/qwen-code-agent/skills/design-card /project/.qwen/skills/ 2>/dev/null || true
+rm -rf /project/.qwen/skills/design-card 2>/dev/null || true
 # Fix ownership so host process can delete project directory
 chown -R sandbox:sandbox /project/.qwen 2>/dev/null || true

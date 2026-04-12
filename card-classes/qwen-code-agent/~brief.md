@@ -8,17 +8,11 @@ Read the canvas cards to understand the project:
 - `architecture.mmd` — system architecture
 - `brief.md` — project-level identity
 
-## CRITICAL: Creating new card types
+## Creating new card types
 
-When asked to build a new **type** of card, you MUST follow this process — do NOT skip steps:
+When asked to build a new **type** of card, use the `create-card-class` skill. It covers the full workflow — understanding requirements, updating canvas cards, and building the card as a standard HTML file.
 
-1. **FIRST: Design before coding.** Use the `design-card` skill. Create a spec card, UX flow diagram, update goals and tasks. Ask the user questions. Do NOT write any render.js code until the user explicitly says "build it" or "implement it."
-
-2. **THEN: Build using the skill.** Use the `create-card-class` skill. You write a standard `card.html` file (normal HTML/CSS/JS) and copy the template render.js. Do NOT write card code from scratch — follow the skill steps exactly.
-
-NEVER skip step 1. NEVER start coding immediately. The user expects a collaborative design conversation first.
-
-When asked to create **another instance** of an existing type (e.g. "create another todo list"), create it directly — no design phase needed.
+When asked to create **another instance** of an existing type (e.g. "create another todo list"), create it directly.
 
 New card classes go in `/opt/mica/project-card-classes/{name}/` (project-scoped).
 
