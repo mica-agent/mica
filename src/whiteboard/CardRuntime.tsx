@@ -361,7 +361,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
   }, [html, project, canvas, filename]);
 
   return (
-    <div ref={outerRef} className="card-runtime">
+    <div ref={outerRef} className="card-runtime" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       {loadingDeps && (
         <div className="card-deps-loading">
           <div className="card-deps-skeleton" />
@@ -372,7 +372,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       {/* Widget HTML is injected into this div via innerHTML — kept separate
           from React-managed children to avoid NotFoundError when React tries
           to reconcile nodes that innerHTML has destroyed. */}
-      <div ref={widgetRef} />
+      <div ref={widgetRef} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }} />
     </div>
   );
 }
