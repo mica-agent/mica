@@ -17,32 +17,9 @@ export default function App() {
     if (val) setWasConnected(true);
   }), []);
 
-  // Auto-reload when disconnected: wait 5s (debounce brief disconnects),
-  // then poll HTTP and reload when server responds
-  useEffect(() => {
-    if (wsConnected || !wasConnected) return;
-    let cancelled = false;
-    let pollId: ReturnType<typeof setInterval> | null = null;
-
-    const delayId = setTimeout(() => {
-      if (cancelled) return;
-      pollId = setInterval(async () => {
-        try {
-          const r = await fetch('/api/project');
-          if (r.ok && !cancelled) {
-            if (pollId) clearInterval(pollId);
-            window.location.replace(window.location.pathname);
-          }
-        } catch { /* server still down */ }
-      }, 2000);
-    }, 5000);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(delayId);
-      if (pollId) clearInterval(pollId);
-    };
-  }, [wsConnected, wasConnected]);
+  // Reconnect is handled entirely by micaSocket.ts:
+  // WS onclose → poll /api/project → force reload when server responds.
+  // The overlay just shows visual feedback while that happens.
 
   useEffect(() => {
     fetchProject().then(setProject).catch(console.error);
