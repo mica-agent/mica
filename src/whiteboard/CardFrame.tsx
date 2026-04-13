@@ -193,7 +193,7 @@ function FileContent({ content, type }: { content: string; type: string }) {
       );
     case "mermaid":
       return (
-        <div style={{ padding: 16 }}>
+        <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
           <MermaidRenderer content={content} />
         </div>
       );
