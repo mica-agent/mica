@@ -281,20 +281,28 @@ export default function render(content, config) {
         mica.onDestroy(unsubDeleted);
 
         // -- Toolbar ------------------------------------------
+        // Default content stubs for each card class
+        var defaultStubs = {
+            'md': function(name) { return '# ' + name + '\\n'; },
+            'todo': function(name) { return '---\\nmica: todo\\n---\\n# ' + name + '\\n\\n## Active\\n- [ ] @human First task\\n\\n## Done\\n'; },
+            'mmd': function(name) { return 'graph TD\\n    A[Start] --> B[End]\\n'; },
+            'chat': function(name) { var id = 'chat-' + Date.now().toString(36); return '---\\nmica: chat\\nid: ' + id + '\\n---\\nMica AI chat session.\\n'; },
+        };
+
         function buildToolbar() {
             toolbar.innerHTML = '';
 
-            // + New File button
+            // + New File button (plain text file)
             var newFileBtn = document.createElement('button');
             newFileBtn.className = 'toolbar-btn';
-            newFileBtn.textContent = '+ New File';
+            newFileBtn.textContent = '+ File';
+            newFileBtn.title = 'Create a plain file';
             newFileBtn.addEventListener('click', function() {
-                var filename = prompt('Filename (e.g. notes.md):');
+                var filename = prompt('Filename (e.g. notes.txt):');
                 if (!filename) return;
                 filename = filename.trim();
                 if (!filename) return;
-                // Default to .md if no extension
-                if (filename.indexOf('.') === -1) filename += '.md';
+                if (filename.indexOf('.') === -1) filename += '.txt';
                 fetch('/api/files/' + encodeURIComponent(filename), {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
@@ -303,21 +311,36 @@ export default function render(content, config) {
             });
             toolbar.appendChild(newFileBtn);
 
-            // + AI Chat button
-            var chatBtn = document.createElement('button');
-            chatBtn.className = 'toolbar-btn';
-            chatBtn.textContent = '+ AI Chat';
-            chatBtn.addEventListener('click', function() {
-                var chatId = 'chat-' + Date.now().toString(36);
-                var cardName = chatId + '.chat';
-                var stub = '---\\nmica: chat\\nid: ' + chatId + '\\n---\\nMica AI chat session.\\n';
-                fetch('/api/files/' + encodeURIComponent(cardName), {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: stub }),
-                }).catch(function(err) { console.error('[canvas] Chat creation failed:', err); });
-            });
-            toolbar.appendChild(chatBtn);
+            // Dynamically load card classes and create buttons
+            fetch('/api/card-classes').then(function(r) { return r.json(); }).then(function(classes) {
+                // Skip canvas class (that is us)
+                var names = Object.keys(classes).filter(function(n) { return n !== 'canvas'; });
+                names.sort();
+
+                names.forEach(function(name) {
+                    var btn = document.createElement('button');
+                    btn.className = 'toolbar-btn';
+                    btn.textContent = '+ ' + name.charAt(0).toUpperCase() + name.slice(1);
+                    btn.title = classes[name].builtIn ? 'Built-in card class' : 'Project card class';
+                    if (!classes[name].builtIn) btn.style.borderColor = 'rgba(74,222,128,0.3)';
+
+                    btn.addEventListener('click', function() {
+                        var baseName = prompt('Name for the ' + name + ' card:', name + '-' + Date.now().toString(36));
+                        if (!baseName) return;
+                        baseName = baseName.trim();
+                        if (!baseName) return;
+                        var filename = baseName.indexOf('.') === -1 ? baseName + '.' + name : baseName;
+                        var stubFn = defaultStubs[name];
+                        var content = stubFn ? stubFn(baseName) : '';
+                        fetch('/api/files/' + encodeURIComponent(filename), {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ content: content }),
+                        }).catch(function(err) { console.error('[canvas] Card creation failed:', err); });
+                    });
+                    toolbar.appendChild(btn);
+                });
+            }).catch(function(err) { console.error('[canvas] Failed to load card classes:', err); });
 
             // Spacer
             var spacer = document.createElement('span');
