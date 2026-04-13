@@ -52,8 +52,15 @@ async function saveHistory(chatId: string, messages: ChatMessage[]): Promise<voi
 
 // -- Context builder --
 
-async function buildContext(): Promise<string> {
+async function buildContext(agentFilename: string): Promise<string> {
   const parts: string[] = [];
+
+  // Agent card back (per-agent behavior instructions)
+  try {
+    const backFilename = agentFilename.replace(/\//g, "--");
+    const agentBack = await readFile(join(micaDir(), "cards", backFilename), "utf-8");
+    if (agentBack.trim()) parts.push(`## Your Behavior Instructions\n${agentBack.trim()}`);
+  } catch { /* no agent card back */ }
 
   // Canvas-back (project AI context)
   try {
@@ -73,8 +80,16 @@ async function buildContext(): Promise<string> {
     }
   } catch { /* ignore */ }
 
-  // Skills hint
-  parts.push(`## Available Skills
+  // Default behavior (if no agent card back provides instructions)
+  parts.push(`## Default Behavior
+When reacting to file changes:
+- Evaluate what actions should be taken
+- Check for @agent tasks in todo files
+- Update dependent docs if needed
+- Log decisions and actions taken to decisions.md
+- If you have questions, add them to your chat response AND create a todo item assigned to @human
+
+## Available Skills
 - When asked to build a card, widget, visualization, or interactive component, use the \`create-card-class\` skill.
 - Card classes go in .mica/card-classes/{name}/render.js`);
 
@@ -169,7 +184,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       ctx.broadcast({ type: "thinking" });
 
       try {
-        const context = await buildContext();
+        const context = await buildContext(ctx.filename);
         const baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
 
         console.log(`[mica-agent] Query: ${message.slice(0, 100)}... (context: ${context.length} chars)`);
@@ -277,7 +292,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
 
         if (msg.type === "get_context") {
-          buildContext().then((context) => {
+          buildContext(ctx.filename).then((context) => {
             ctx.sendTo(clientId, { type: "context_info", context, contextLength: context.length });
           });
           return;
