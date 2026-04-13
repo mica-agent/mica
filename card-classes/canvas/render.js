@@ -64,6 +64,30 @@ export default function render(content, config) {
     }
     .canvas-freeform .wb-card-header { cursor: grab; }
     .canvas-freeform .wb-card-header:active { cursor: grabbing; }
+
+    /* Phone: stacked vertical layout */
+    @media (max-width: 767px) {
+        .canvas-freeform {
+            display: flex; flex-direction: column; gap: 8px;
+            padding: 8px; overflow-y: auto; overflow-x: hidden;
+        }
+        .canvas-freeform > .wb-card {
+            position: relative !important;
+            left: auto !important; top: auto !important;
+            width: 100% !important; height: auto !important;
+            min-height: 200px; max-height: 400px;
+            opacity: 1;
+        }
+        .canvas-freeform .wb-card-header { cursor: default; }
+        .canvas-freeform .wb-card-resize-handle { display: none; }
+        .project-toolbar { padding: 8px; flex-wrap: wrap; gap: 4px; }
+        .project-toolbar .toolbar-btn { font-size: 0.75rem; padding: 6px 10px; }
+    }
+
+    /* Display: larger text for viewing distance */
+    @media (min-width: 2560px) {
+        .project-toolbar .toolbar-btn { font-size: 1rem; padding: 8px 16px; }
+    }
     .project-empty {
         text-align: center; color: #666; padding: 40px 20px; font-size: 0.9rem;
     }
@@ -75,8 +99,17 @@ export default function render(content, config) {
         var freeform = container.querySelector('#canvas-freeform');
         var emptyEl = container.querySelector('.project-empty');
 
+        // -- Device detection ------------------------------------
+        var vw = window.innerWidth;
+        var deviceClass = vw < 768 ? 'phone' : vw < 1200 ? 'tablet' : vw < 2560 ? 'desktop' : 'display';
+        var isPhone = deviceClass === 'phone';
+        var isDisplay = deviceClass === 'display';
+
         // -- Constants ----------------------------------------
-        var CARD_W = 320, CARD_H = 280, GAP = 16, COLS = 3;
+        var CARD_W = isPhone ? vw - 32 : 320;
+        var CARD_H = isPhone ? 200 : 280;
+        var GAP = isPhone ? 8 : 16;
+        var COLS = isPhone ? 1 : 3;
         var MIN_W = 200, MIN_H = 120;
         var layout = {};  // { filename: { x, y, w, h } }
         var layoutLoaded = false;
@@ -106,6 +139,11 @@ export default function render(content, config) {
         function positionCard(card) {
             var name = card.getAttribute('data-filename');
             if (!name) return;
+            // Phone: CSS handles stacking, just reveal the card
+            if (isPhone) {
+                requestAnimationFrame(function() { card.classList.add('wb-card--positioned'); });
+                return;
+            }
             var pos = layout[name];
             if (pos) {
                 card.style.left = pos.x + 'px';
@@ -146,8 +184,9 @@ export default function render(content, config) {
             emptyEl.style.display = count === 0 ? 'block' : 'none';
         }
 
-        // -- Drag via event delegation ------------------------
+        // -- Drag via event delegation (disabled on phone) ------
         freeform.addEventListener('pointerdown', function(e) {
+            if (isPhone) return;
             var header = e.target.closest('.wb-card-header');
             if (!header) return;
             if (e.target.closest('.wb-card-btn') || e.target.closest('.wb-card-actions')) return;
@@ -189,8 +228,9 @@ export default function render(content, config) {
             document.addEventListener('pointerup', onUp);
         });
 
-        // -- Resize via event delegation ----------------------
+        // -- Resize via event delegation (disabled on phone) ----
         freeform.addEventListener('pointerdown', function(e) {
+            if (isPhone) return;
             var handle = e.target.closest('.wb-card-resize-handle');
             if (!handle) return;
 
