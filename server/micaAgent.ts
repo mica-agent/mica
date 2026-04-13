@@ -151,6 +151,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
 
+    // Track files the agent writes so we can ignore file-changed events for them
+    const agentWrittenFiles = new Set<string>();
+
     // -- Coalesced file events --
     const coalesceBuffer = new Map<string, number>(); // filename -> change count
     let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -161,6 +164,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       if (event.filename.startsWith(".")) return;
       // Ignore file changes while agent is busy — these are the agent's own writes
       if (busy) return;
+      // Ignore files the agent recently wrote
+      if (agentWrittenFiles.has(event.filename)) {
+        agentWrittenFiles.delete(event.filename);
+        return;
+      }
 
       coalesceBuffer.set(event.filename, (coalesceBuffer.get(event.filename) || 0) + 1);
 
@@ -193,7 +201,16 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     }
 
     // Subscribe to file watcher for reactive behavior
-    fileWatcher.on("file-change", onFileChanged);
+    // Use a static set to prevent duplicate listeners from StrictMode double-mount
+    const listenerKey = ctx.filename;
+    if (!(createAgentHandler as unknown as { _listeners: Set<string> })._listeners) {
+      (createAgentHandler as unknown as { _listeners: Set<string> })._listeners = new Set();
+    }
+    const listeners = (createAgentHandler as unknown as { _listeners: Set<string> })._listeners;
+    if (!listeners.has(listenerKey)) {
+      listeners.add(listenerKey);
+      fileWatcher.on("file-change", onFileChanged);
+    }
 
     async function processMessage(message: string) {
       busy = true;
@@ -252,6 +269,10 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                   });
                   if (["write_file", "write_to_file", "edit_file", "create_file"].includes(block.name)) {
                     filesChanged = true;
+                    // Track the file so we ignore the resulting file-changed event
+                    const writtenPath = String((block.input as Record<string, unknown>)?.file_path || (block.input as Record<string, unknown>)?.filePath || "");
+                    const writtenFile = writtenPath.split("/").pop();
+                    if (writtenFile) agentWrittenFiles.add(writtenFile);
                   }
                 }
               }
@@ -354,7 +375,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           try { activeAbort.abort(); } catch { /* ignore */ }
         }
         fileWatcher.removeListener("file-change", onFileChanged);
+        listeners.delete(listenerKey);
         if (coalesceTimer) clearTimeout(coalesceTimer);
+        agentWrittenFiles.clear();
       },
     };
   };
