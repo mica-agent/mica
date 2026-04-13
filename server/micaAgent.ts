@@ -141,6 +141,37 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 const COALESCE_QUIET_MS = 15000; // Wait 15s of quiet before delivering file events
 
 export function createAgentHandler(fileWatcher: FileWatcher) {
+  // Single file-watcher listener shared across all agent sessions.
+  // Maps filename -> session state. Prevents listener leaks from StrictMode.
+  const activeSessions = new Map<string, {
+    busy: boolean;
+    agentWrittenFiles: Set<string>;
+    coalesceBuffer: Map<string, number>;
+    coalesceTimer: ReturnType<typeof setTimeout> | null;
+    deliverFn: (() => void) | null;
+  }>();
+
+  fileWatcher.on("file-change", (event: { type: string; filename: string }) => {
+    if (event.filename.startsWith(".")) return;
+
+    for (const [sessionFile, state] of activeSessions) {
+      if (event.filename === sessionFile) continue; // ignore own chat file
+      if (state.busy) continue; // agent is working, skip
+      if (state.agentWrittenFiles.has(event.filename)) {
+        state.agentWrittenFiles.delete(event.filename);
+        continue; // agent wrote this file
+      }
+
+      state.coalesceBuffer.set(event.filename, (state.coalesceBuffer.get(event.filename) || 0) + 1);
+
+      if (state.coalesceTimer) clearTimeout(state.coalesceTimer);
+      state.coalesceTimer = setTimeout(() => {
+        state.coalesceTimer = null;
+        if (state.deliverFn) state.deliverFn();
+      }, COALESCE_QUIET_MS);
+    }
+  });
+
   return async function agentHandlerFactory(
     _content: string,
     _args: Record<string, unknown>,
@@ -151,69 +182,38 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
 
-    // Track files the agent writes so we can ignore file-changed events for them
-    const agentWrittenFiles = new Set<string>();
-
-    // -- Coalesced file events --
-    const coalesceBuffer = new Map<string, number>(); // filename -> change count
-    let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
-
-    function onFileChanged(event: { type: string; filename: string }) {
-      // Ignore our own chat file and dotfiles
-      if (event.filename === ctx.filename) return;
-      if (event.filename.startsWith(".")) return;
-      // Ignore file changes while agent is busy — these are the agent's own writes
-      if (busy) return;
-      // Ignore files the agent recently wrote
-      if (agentWrittenFiles.has(event.filename)) {
-        agentWrittenFiles.delete(event.filename);
-        return;
-      }
-
-      coalesceBuffer.set(event.filename, (coalesceBuffer.get(event.filename) || 0) + 1);
-
-      // Reset quiet timer
-      if (coalesceTimer) clearTimeout(coalesceTimer);
-      coalesceTimer = setTimeout(() => {
-        coalesceTimer = null;
-        deliverCoalescedEvents();
-      }, COALESCE_QUIET_MS);
-    }
+    // Register this session in the shared state (replaces any previous from StrictMode)
+    const sessionState = {
+      busy: false,
+      agentWrittenFiles: new Set<string>(),
+      coalesceBuffer: new Map<string, number>(),
+      coalesceTimer: null as ReturnType<typeof setTimeout> | null,
+      deliverFn: null as (() => void) | null,
+    };
+    activeSessions.set(ctx.filename, sessionState);
 
     function deliverCoalescedEvents() {
-      if (coalesceBuffer.size === 0) return;
+      if (sessionState.coalesceBuffer.size === 0) return;
 
-      // Build summary
       const changes: string[] = [];
-      for (const [filename, count] of coalesceBuffer) {
+      for (const [filename, count] of sessionState.coalesceBuffer) {
         changes.push(count > 1 ? `${filename} (${count}x)` : filename);
       }
-      coalesceBuffer.clear();
+      sessionState.coalesceBuffer.clear();
 
       const message = `[File changes detected] The following files were modified:\n${changes.map(c => "- " + c).join("\n")}\n\nReview the canvas back context and these files. If any changes require your attention (e.g., @agent tasks in a todo, spec changes to review), respond. Otherwise, acknowledge briefly.`;
 
       if (busy) {
-        // Agent is busy — queue it behind user messages
         queue.push(message);
       } else {
         processMessage(message);
       }
     }
 
-    // Subscribe to file watcher for reactive behavior
-    // Use a static set to prevent duplicate listeners from StrictMode double-mount
-    const listenerKey = ctx.filename;
-    if (!(createAgentHandler as unknown as { _listeners: Set<string> })._listeners) {
-      (createAgentHandler as unknown as { _listeners: Set<string> })._listeners = new Set();
-    }
-    const listeners = (createAgentHandler as unknown as { _listeners: Set<string> })._listeners;
-    if (!listeners.has(listenerKey)) {
-      listeners.add(listenerKey);
-      fileWatcher.on("file-change", onFileChanged);
-    }
+    sessionState.deliverFn = deliverCoalescedEvents;
 
     async function processMessage(message: string) {
-      busy = true;
+      busy = true; sessionState.busy = true;
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -272,7 +272,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     // Track the file so we ignore the resulting file-changed event
                     const writtenPath = String((block.input as Record<string, unknown>)?.file_path || (block.input as Record<string, unknown>)?.filePath || "");
                     const writtenFile = writtenPath.split("/").pop();
-                    if (writtenFile) agentWrittenFiles.add(writtenFile);
+                    if (writtenFile) sessionState.agentWrittenFiles.add(writtenFile);
                   }
                 }
               }
@@ -308,12 +308,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         console.error("[mica-agent] Error:", errMsg);
         ctx.broadcast({ type: "error", error: errMsg });
       } finally {
-        busy = false;
+        busy = false; sessionState.busy = false;
         // Priority: user messages first, then coalesced file events
         if (queue.length > 0) {
           const next = queue.shift()!;
           setImmediate(() => processMessage(next));
-        } else if (coalesceBuffer.size > 0) {
+        } else if (sessionState.coalesceBuffer.size > 0) {
           // Deliver accumulated file events now that agent is free
           setImmediate(() => deliverCoalescedEvents());
         }
@@ -374,10 +374,8 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         if (activeAbort) {
           try { activeAbort.abort(); } catch { /* ignore */ }
         }
-        fileWatcher.removeListener("file-change", onFileChanged);
-        listeners.delete(listenerKey);
-        if (coalesceTimer) clearTimeout(coalesceTimer);
-        agentWrittenFiles.clear();
+        if (sessionState.coalesceTimer) clearTimeout(sessionState.coalesceTimer);
+        activeSessions.delete(ctx.filename);
       },
     };
   };
