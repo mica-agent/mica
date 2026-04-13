@@ -57,6 +57,10 @@ export default function render(content, config) {
     }
     .canvas-freeform > .wb-card {
         position: absolute; width: 320px;
+        opacity: 0; transition: opacity 0.3s ease, box-shadow 0.2s;
+    }
+    .canvas-freeform > .wb-card.wb-card--positioned {
+        opacity: 1;
     }
     .canvas-freeform .wb-card-header { cursor: grab; }
     .canvas-freeform .wb-card-header:active { cursor: grabbing; }
@@ -126,6 +130,8 @@ export default function render(content, config) {
                 layout[name] = { x: x, y: y, w: CARD_W, h: CARD_H };
                 persistLayout();
             }
+            // Reveal card with fade-in after positioning
+            requestAnimationFrame(function() { card.classList.add('wb-card--positioned'); });
         }
 
         function positionAllCards() {
