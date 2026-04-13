@@ -275,7 +275,24 @@ function MermaidRenderer({ content }: { content: string }) {
       m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
       try {
         const { svg } = await m.default.render(`mermaid-${Date.now()}`, content);
-        if (!cancelled) { setSvg(svg); setTransform({ x: 0, y: 0, scale: 1 }); }
+        if (!cancelled) {
+          setSvg(svg);
+          // Auto-fit: scale to container width after render
+          requestAnimationFrame(() => {
+            const el = containerRef.current;
+            if (!el) return;
+            const svgEl = el.querySelector("svg");
+            if (!svgEl) return;
+            const svgW = svgEl.viewBox?.baseVal?.width || svgEl.getBoundingClientRect().width;
+            const containerW = el.clientWidth;
+            if (svgW > 0 && containerW > 0) {
+              const fitScale = Math.min(1, containerW / svgW);
+              setTransform({ x: 0, y: 0, scale: fitScale });
+            } else {
+              setTransform({ x: 0, y: 0, scale: 1 });
+            }
+          });
+        }
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
       }
