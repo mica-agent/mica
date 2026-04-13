@@ -283,14 +283,26 @@ function MermaidRenderer({ content }: { content: string }) {
     return () => { cancelled = true; };
   }, [content]);
 
-  // Wheel zoom
+  // Wheel zoom toward cursor position
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.stopPropagation();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    setTransform(prev => ({
-      ...prev,
-      scale: Math.max(0.1, Math.min(5, prev.scale * delta)),
-    }));
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // Mouse position relative to container
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+
+    setTransform(prev => {
+      const newScale = Math.max(0.1, Math.min(5, prev.scale * factor));
+      const ratio = newScale / prev.scale;
+      // Adjust translation so the point under cursor stays fixed
+      return {
+        x: mx - ratio * (mx - prev.x),
+        y: my - ratio * (my - prev.y),
+        scale: newScale,
+      };
+    });
   }, []);
 
   // Pan via drag
@@ -334,7 +346,7 @@ function MermaidRenderer({ content }: { content: string }) {
       <div
         style={{
           transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
-          transformOrigin: "center center",
+          transformOrigin: "0 0",
           transition: dragRef.current.dragging ? "none" : "transform 0.1s ease-out",
         }}
         dangerouslySetInnerHTML={{ __html: svg }}
