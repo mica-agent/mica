@@ -223,14 +223,18 @@ app.get("/api/files/:filename", async (req, res) => {
   }
 });
 
+// Track which source caused a file write -- included in file-changed broadcast
+const writeSourceTracker = new Map<string, string>();
+
 // Create or update a file
 app.put("/api/files/:filename", async (req, res) => {
-  const { content } = req.body;
+  const { content, source } = req.body;
   if (typeof content !== "string") {
     res.status(400).json({ error: "content (string) required" });
     return;
   }
   try {
+    if (source) writeSourceTracker.set(req.params.filename, source);
     await writeProjectFile(req.params.filename, content);
     res.json({ success: true });
   } catch (err) {
@@ -517,7 +521,9 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   }
 
   if (event.type === "changed") {
-    broadcast({ type: "file-changed", filename: event.filename });
+    const source = writeSourceTracker.get(event.filename) || "external";
+    writeSourceTracker.delete(event.filename);
+    broadcast({ type: "file-changed", filename: event.filename, source });
   }
 });
 
