@@ -294,7 +294,7 @@ function MermaidRenderer({ content }: { content: string }) {
     const factor = e.deltaY > 0 ? 0.9 : 1.1;
 
     setTransform(prev => {
-      const newScale = Math.max(0.1, Math.min(5, prev.scale * factor));
+      const newScale = Math.max(0.1, Math.min(20, prev.scale * factor));
       const ratio = newScale / prev.scale;
       // Adjust translation so the point under cursor stays fixed
       return {
@@ -358,7 +358,7 @@ function MermaidRenderer({ content }: { content: string }) {
         display: "flex", gap: 2, opacity: 0.6,
       }}>
         <button
-          onClick={(e) => { e.stopPropagation(); setTransform(prev => ({ ...prev, scale: Math.min(5, prev.scale * 1.3) })); }}
+          onClick={(e) => { e.stopPropagation(); setTransform(prev => ({ ...prev, scale: Math.min(20, prev.scale * 1.3) })); }}
           style={zoomBtnStyle}
           title="Zoom in"
         >+</button>
