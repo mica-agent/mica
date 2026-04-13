@@ -31,6 +31,7 @@ function getFileType(filename: string): string {
   if (ext === "md" || ext === "markdown") return "markdown";
   if (ext === "mmd" || ext === "mermaid") return "mermaid";
   if (ext === "json") return "json";
+  if (ext === "html" || ext === "htm") return "html";
   if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext)) return "image";
   return "text";
 }
@@ -40,6 +41,7 @@ function getFileBadge(type: string): string {
     case "markdown": return "MD";
     case "mermaid": return "MMD";
     case "json": return "JSON";
+    case "html": return "HTML";
     case "image": return "IMG";
     default: return "TXT";
   }
