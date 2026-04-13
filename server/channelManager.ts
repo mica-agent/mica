@@ -1,17 +1,14 @@
 /**
- * ChannelManager — unified, transport-agnostic session manager.
+ * ChannelManager — transport-agnostic session manager.
  *
- * Sessions are keyed by (project, canvas, filename). Multiple clients can
- * attach/detach from the same session. Handlers are created by registered
- * factory functions keyed by card class (derived from file extension).
+ * Sessions are keyed by filename. Multiple clients can attach/detach
+ * from the same session. Handlers are created by registered factory
+ * functions keyed by card class (derived from file extension).
  *
  * States: registered -> active -> idle -> destroyed
- *
- * No WebSocket or HTTP imports — the transport layer calls into this class
- * via open/sendData/detach/destroySession.
  */
 
-import { readCanvasFile, writeCanvasFile } from "./files.js";
+import { readProjectFile, writeProjectFile } from "./files.js";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -23,8 +20,6 @@ interface ClientHandle {
 }
 
 export interface SessionContext {
-  project: string;
-  canvas: string;
   filename: string;
   broadcast(data: unknown): void;
   sendTo(clientId: string, data: unknown): void;
@@ -32,8 +27,6 @@ export interface SessionContext {
   readContent(): Promise<string>;
   readFile(filename: string): Promise<string>;
   writeFile(filename: string, content: string): Promise<void>;
-  idle(): void;
-  resume(): void;
   destroy(): void;
 }
 
@@ -51,8 +44,6 @@ export type HandlerFactory = (
 ) => ChannelHandler | Promise<ChannelHandler>;
 
 interface Session {
-  project: string;
-  canvas: string;
   filename: string;
   state: SessionState;
   clients: Map<string, ClientHandle>;
@@ -63,40 +54,16 @@ interface Session {
 // ── ChannelManager ─────────────────────────────────────────
 
 export class ChannelManager {
-  /** Sessions keyed by "project/canvas/filename" */
   private sessions = new Map<string, Session>();
-
-  /** Reverse lookup: clientId -> sessionKey */
   private clientToSession = new Map<string, string>();
-
-  /** Handler factories keyed by card class (file extension without dot) */
   private factories = new Map<string, HandlerFactory>();
-
-  /** tabId → set of clientIds currently tracked under that tab */
   private tabClients = new Map<string, Set<string>>();
 
-  // ── Factory registration ───────────────────────────────
-
-  /**
-   * Register a handler factory for a card class.
-   * Card class is derived from filename extension (e.g. "claude-chat", "terminal").
-   */
   registerHandler(cardClass: string, factory: HandlerFactory): void {
     this.factories.set(cardClass, factory);
-    console.log(`[channel-mgr] Registered handler for card class: ${cardClass}`);
+    console.log(`[channel-mgr] Registered handler for: ${cardClass}`);
   }
 
-  // ── Session key helpers ────────────────────────────────
-
-  private sessionKey(project: string, canvas: string, filename: string): string {
-    return `${project}/${canvas}/${filename}`;
-  }
-
-  /**
-   * Derive card class from filename by extracting the extension and
-   * stripping the leading dot. E.g. "chat-foo.claude-chat" -> "claude-chat".
-   */
-  /** Check if a handler is registered for a card class. */
   hasHandler(cardClass: string): boolean {
     return this.factories.has(cardClass);
   }
@@ -107,15 +74,9 @@ export class ChannelManager {
     return filename.slice(dotIdx + 1);
   }
 
-  // ── Build SessionContext for a session ─────────────────
-
   private buildContext(session: Session): SessionContext {
     const self = this;
-    const key = this.sessionKey(session.project, session.canvas, session.filename);
-
     return {
-      project: session.project,
-      canvas: session.canvas,
       filename: session.filename,
 
       broadcast(data: unknown): void {
@@ -123,7 +84,7 @@ export class ChannelManager {
           try {
             handle.onData(data);
           } catch (err) {
-            console.warn(`[channel-mgr] Stale client ${clientId}, removing:`, (err as Error).message);
+            console.warn(`[channel-mgr] Stale client ${clientId}, removing`);
             session.clients.delete(clientId);
             self.clientToSession.delete(clientId);
           }
@@ -133,10 +94,7 @@ export class ChannelManager {
       sendTo(clientId: string, data: unknown): void {
         const handle = session.clients.get(clientId);
         if (handle) {
-          try {
-            handle.onData(data);
-          } catch (err) {
-            console.warn(`[channel-mgr] Stale client ${clientId}, removing:`, (err as Error).message);
+          try { handle.onData(data); } catch {
             session.clients.delete(clientId);
             self.clientToSession.delete(clientId);
           }
@@ -149,56 +107,30 @@ export class ChannelManager {
 
       async readContent(): Promise<string> {
         try {
-          const file = await readCanvasFile(session.project, session.canvas, session.filename);
+          const file = await readProjectFile(session.filename);
           return file.content;
-        } catch {
-          return "";
-        }
+        } catch { return ""; }
       },
 
       async readFile(filename: string): Promise<string> {
         try {
-          const file = await readCanvasFile(session.project, session.canvas, filename);
+          const file = await readProjectFile(filename);
           return file.content;
-        } catch {
-          return "";
-        }
+        } catch { return ""; }
       },
 
       async writeFile(filename: string, content: string): Promise<void> {
-        await writeCanvasFile(session.project, session.canvas, filename, content);
-      },
-
-      idle(): void {
-        if (session.state === "active") {
-          session.state = "idle";
-          console.log(`[channel-mgr] Session ${key} -> idle`);
-        }
-      },
-
-      resume(): void {
-        if (session.state === "idle") {
-          session.state = "active";
-          console.log(`[channel-mgr] Session ${key} -> active (resumed)`);
-        }
+        await writeProjectFile(filename, content);
       },
 
       destroy(): void {
-        self.destroySessionByKey(key);
+        self.destroySessionByKey(session.filename);
       },
     };
   }
 
-  // ── Public API ─────────────────────────────────────────
-
-  /**
-   * Open or attach a client to a session.
-   * If the session doesn't exist yet, a handler is created via the factory.
-   */
   async open(
     clientId: string,
-    project: string,
-    canvas: string,
     filename: string,
     fn: string | undefined,
     args: Record<string, unknown>,
@@ -206,169 +138,97 @@ export class ChannelManager {
     onData: (data: unknown) => void,
     onClose: () => void,
   ): Promise<void> {
-    const key = this.sessionKey(project, canvas, filename);
-    let session = this.sessions.get(key);
+    let session = this.sessions.get(filename);
 
     if (session && session.state === "destroyed") {
-      // Session was destroyed, remove stale entry
-      this.sessions.delete(key);
+      this.sessions.delete(filename);
       session = undefined;
     }
 
     if (!session) {
-      // Resolve card class from filename extension
       const cardClass = this.resolveCardClass(filename);
       const factory = this.factories.get(cardClass);
       if (!factory) {
-        throw new Error(`No handler registered for card class: ${cardClass}`);
+        throw new Error(`No handler registered for: ${cardClass}`);
       }
 
-      // Read initial content
       let content = "";
       try {
-        const file = await readCanvasFile(project, canvas, filename);
+        const file = await readProjectFile(filename);
         content = file.content;
-      } catch {
-        // File may not exist yet
-      }
+      } catch { /* File may not exist yet */ }
 
-      // Create session shell (needed for buildContext)
       session = {
-        project,
-        canvas,
         filename,
         state: "registered",
         clients: new Map(),
         handler: null,
-        ctx: null as unknown as SessionContext, // will be set below
+        ctx: null as unknown as SessionContext,
       };
       const ctx = this.buildContext(session);
       session.ctx = ctx;
 
-      // Register session BEFORE the factory await so concurrent open() calls
-      // find this session instead of creating a second one.
-      this.sessions.set(key, session);
+      this.sessions.set(filename, session);
 
-      // Attach client BEFORE creating handler so onConnect can broadcast to first client
       session.clients.set(clientId, { onData, onClose });
-      this.clientToSession.set(clientId, key);
+      this.clientToSession.set(clientId, filename);
 
-      // Create handler via factory
       const handler = await factory(content, args, ctx);
       session.handler = handler;
       session.state = "active";
 
-      console.log(`[channel-mgr] Created session ${key} (cardClass=${cardClass})`);
-      console.log(`[channel-mgr] Client ${clientId} attached to ${key} (${session.clients.size} clients)`);
-
-      // Notify handler of first attach
+      console.log(`[channel-mgr] Created session ${filename}`);
       session.handler?.onAttach?.(clientId, args);
       return;
-    } else if (session.state === "idle") {
-      // Resume from idle
-      session.state = "active";
-      console.log(`[channel-mgr] Session ${key} resumed from idle`);
     }
 
-    // Evict stale clients before attaching the new one.
-    // If tabId is provided: evict only clients from the same tab (same tabId, same session).
-    //   This allows multiple tabs to share a session while still cleaning up stale clients
-    //   from a previous page load in the same tab.
-    // If tabId is absent (non-browser callers, tests): evict all clients as a safe fallback.
+    // Evict stale clients from same tab
     if (tabId) {
       const peers = this.tabClients.get(tabId);
       if (peers) {
-        const staleIds = [...peers].filter((peerId) => this.clientToSession.get(peerId) === key);
-        for (const peerId of staleIds) {
-          const peerHandle = session.clients.get(peerId);
-          try { session.handler?.onDetach?.(peerId); } catch { /* ignore */ }
-          try { peerHandle?.onClose(); } catch { /* already gone */ }
-          session.clients.delete(peerId);
-          this.clientToSession.delete(peerId);
-          peers.delete(peerId);
+        const staleIds = [...peers].filter((id) => this.clientToSession.get(id) === filename);
+        for (const id of staleIds) {
+          try { session.handler?.onDetach?.(id); } catch { /* ignore */ }
+          try { session.clients.get(id)?.onClose(); } catch { /* gone */ }
+          session.clients.delete(id);
+          this.clientToSession.delete(id);
+          peers.delete(id);
         }
-        if (staleIds.length > 0) {
-          console.log(`[channel-mgr] Evicted ${staleIds.length} stale client(s) from ${key} (tab ${tabId})`);
-        }
-      }
-    } else {
-      // No tabId — evict all existing clients
-      if (session.clients.size > 0) {
-        const staleCount = session.clients.size;
-        for (const [staleId, client] of session.clients) {
-          try { session.handler?.onDetach?.(staleId); } catch { /* ignore */ }
-          try { client.onClose(); } catch { /* already gone */ }
-          this.clientToSession.delete(staleId);
-        }
-        session.clients.clear();
-        console.log(`[channel-mgr] Evicted ${staleCount} stale client(s) from ${key} (no tabId)`);
       }
     }
 
-    // Track this client under its tabId
     if (tabId) {
       if (!this.tabClients.has(tabId)) this.tabClients.set(tabId, new Set());
       this.tabClients.get(tabId)!.add(clientId);
     }
 
-    // Attach client (existing session)
     session.clients.set(clientId, { onData, onClose });
-    this.clientToSession.set(clientId, key);
-
-    console.log(`[channel-mgr] Client ${clientId} attached to ${key} (${session.clients.size} clients)`);
-
-    // Notify handler
+    this.clientToSession.set(clientId, filename);
     session.handler?.onAttach?.(clientId, args);
   }
 
-  /**
-   * Forward data from a client to the session handler.
-   */
   sendData(clientId: string, data: unknown): void {
     const key = this.clientToSession.get(clientId);
     if (!key) return;
     const session = this.sessions.get(key);
     if (!session || session.state === "destroyed") return;
-
     session.handler?.onData?.(clientId, data);
   }
 
-  /**
-   * Soft close — detach client, session stays alive.
-   */
   detach(clientId: string): void {
     const key = this.clientToSession.get(clientId);
     if (!key) return;
     this.clientToSession.delete(clientId);
-
     const session = this.sessions.get(key);
     if (!session) return;
-
     session.clients.delete(clientId);
-    console.log(`[channel-mgr] Client ${clientId} detached from ${key} (${session.clients.size} remaining)`);
-
-    // Clean up tabClients tracking
-    for (const [tid, clients] of this.tabClients) {
-      if (clients.delete(clientId) && clients.size === 0) {
-        this.tabClients.delete(tid);
-      }
-    }
-
-    // Notify handler
     session.handler?.onDetach?.(clientId);
   }
 
-  /**
-   * Hard close — destroy a specific session.
-   */
-  destroySession(project: string, canvas: string, filename: string): void {
-    const key = this.sessionKey(project, canvas, filename);
-    this.destroySessionByKey(key);
+  destroySession(filename: string): void {
+    this.destroySessionByKey(filename);
   }
 
-  /**
-   * Destroy all sessions (server shutdown).
-   */
   destroyAll(): void {
     for (const key of [...this.sessions.keys()]) {
       this.destroySessionByKey(key);
@@ -376,88 +236,20 @@ export class ChannelManager {
     console.log("[channel-mgr] All sessions destroyed");
   }
 
-  /**
-   * Check if a client ID is tracked by this manager.
-   */
   has(clientId: string): boolean {
     return this.clientToSession.has(clientId);
   }
 
-  /**
-   * Broadcast data to all clients of a session (for container bridge mica.send()).
-   */
-  broadcastToSession(project: string, canvas: string, filename: string, data: unknown): void {
-    const key = this.sessionKey(project, canvas, filename);
-    const session = this.sessions.get(key);
-    if (!session) return;
-    session.ctx.broadcast(data);
-  }
-
-  /**
-   * Send data to a specific client (for container bridge mica.reply()).
-   */
-  sendToClient(clientId: string, data: unknown): void {
-    const key = this.clientToSession.get(clientId);
-    if (!key) return;
-    const session = this.sessions.get(key);
-    if (!session) return;
-    session.ctx.sendTo(clientId, data);
-  }
-
-  /**
-   * Get the number of active sessions.
-   */
-  get sessionCount(): number {
-    return this.sessions.size;
-  }
-
-  /**
-   * Get all active session card filenames for a project/canvas.
-   * Used to deliver file-changed events to card sessions.
-   */
-  getProjectSessions(project: string, canvas: string): string[] {
-    const prefix = `${project}/${canvas}/`;
-    const result: string[] = [];
-    for (const [key, session] of this.sessions) {
-      if (key.startsWith(prefix) && session.state !== "destroyed") {
-        result.push(session.filename);
-      }
-    }
-    return result;
-  }
-
-  // ── Internal ───────────────────────────────────────────
-
   private destroySessionByKey(key: string): void {
     const session = this.sessions.get(key);
     if (!session || session.state === "destroyed") return;
-
     session.state = "destroyed";
-
-    // Notify handler
-    try {
-      session.handler?.onDestroy?.();
-    } catch (err) {
-      console.warn(`[channel-mgr] Error in onDestroy for ${key}:`, (err as Error).message);
-    }
-
-    // Close all clients
+    try { session.handler?.onDestroy?.(); } catch { /* ignore */ }
     for (const [clientId, handle] of session.clients) {
-      try {
-        handle.onClose();
-      } catch {
-        // Client may already be gone
-      }
+      try { handle.onClose(); } catch { /* gone */ }
       this.clientToSession.delete(clientId);
-      // Clean up tabClients tracking
-      for (const [tid, clients] of this.tabClients) {
-        if (clients.delete(clientId) && clients.size === 0) {
-          this.tabClients.delete(tid);
-        }
-      }
     }
     session.clients.clear();
-
     this.sessions.delete(key);
     console.log(`[channel-mgr] Session ${key} destroyed`);
   }

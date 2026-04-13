@@ -1,96 +1,49 @@
-/**
- * FileWatcher — Watches project directories for file changes.
- *
- * Simplified for Mica Lite: watches plain files, no card directory model,
- * no card class extension filtering.
- *
- * Emits "file-change" events when files are created, modified, or deleted.
- * Debounces rapid changes (300ms per file).
- */
+// FileWatcher — watches the project directory for file changes.
+// Single project model: watches PROJECT_DIR only.
 
 import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
-import { listProjects, getProjectPath, getCanvasDir } from "./projectConnection.js";
+import { PROJECT_DIR } from "./files.js";
 
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
-  project: string;
-  canvas: string;
   filename: string;
 }
 
 const DEBOUNCE_MS = 300;
 
 export class FileWatcher extends EventEmitter {
-  private watchers: fs.FSWatcher[] = [];
+  private watcher: fs.FSWatcher | null = null;
   private debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  private knownFiles: Map<string, Set<string>> = new Map();
+  private knownFiles: Set<string> = new Set();
 
   async start(): Promise<void> {
-    const projects = await listProjects();
+    await fs.promises.mkdir(PROJECT_DIR, { recursive: true });
 
-    for (const project of projects) {
-      await this.watchProjectCanvas(project.id, project.path, "_root");
-      for (const canvas of project.canvases) {
-        await this.watchProjectCanvas(project.id, project.path, canvas);
-      }
-    }
-
-    const totalCanvases = projects.reduce((sum, p) => sum + p.canvases.length, 0);
-    console.log(`[file-watcher] Watching ${totalCanvases} canvas(es) across ${projects.length} project(s).`);
-  }
-
-  async addProject(projectId: string, canvases: string[]): Promise<void> {
-    const projectPath = await getProjectPath(projectId);
-    await this.watchProjectCanvas(projectId, projectPath, "_root");
-    for (const canvas of canvases) {
-      await this.watchProjectCanvas(projectId, projectPath, canvas);
-    }
-  }
-
-  private async watchProjectCanvas(projectId: string, projectPath: string, canvas: string): Promise<void> {
-    const dir = await getCanvasDir(projectId, canvas);
-    const key = `${projectId}/${canvas}`;
-
+    // Scan existing files
     try {
-      await fs.promises.mkdir(dir, { recursive: true });
-
-      // Scan existing files
-      const files = new Set<string>();
-      try {
-        const entries = await fs.promises.readdir(dir);
-        for (const entry of entries) {
-          if (entry.startsWith(".")) continue;
-          if (entry === ".mica") continue;
-          // Only track regular files
-          const filePath = path.join(dir, entry);
-          const stat = await fs.promises.stat(filePath);
-          if (stat.isFile()) {
-            files.add(entry);
-          }
+      const entries = await fs.promises.readdir(PROJECT_DIR);
+      for (const entry of entries) {
+        if (entry.startsWith(".")) continue;
+        if (entry === ".mica") continue;
+        const filePath = path.join(PROJECT_DIR, entry);
+        const s = await fs.promises.stat(filePath);
+        if (s.isFile()) {
+          this.knownFiles.add(entry);
         }
-      } catch {
-        // Directory doesn't exist yet
       }
-      this.knownFiles.set(key, files);
-
-      this.watchDirectory(dir, projectId, canvas);
-    } catch (err) {
-      console.warn(`[file-watcher] Could not watch ${dir}: ${(err as Error).message}`);
+    } catch {
+      // Directory may not exist yet
     }
-  }
 
-  private watchDirectory(dir: string, project: string, canvas: string): void {
     try {
-      const watcher = fs.watch(dir, (eventType, filename) => {
+      this.watcher = fs.watch(PROJECT_DIR, (eventType, filename) => {
         if (!filename) return;
-        // Skip dotfiles and .mica directory
         if (filename.startsWith(".")) return;
         if (filename === ".mica") return;
 
-        // Debounce
-        const debounceKey = `${project}/${canvas}/${filename}`;
+        const debounceKey = filename;
         const existing = this.debounceTimers.get(debounceKey);
         if (existing) clearTimeout(existing);
 
@@ -98,54 +51,47 @@ export class FileWatcher extends EventEmitter {
           debounceKey,
           setTimeout(() => {
             this.debounceTimers.delete(debounceKey);
-            this.handleFileChange(project, canvas, filename, dir).catch((err) => {
-              console.error(`[file-watcher] Error handling ${debounceKey}:`, (err as Error).message);
+            this.handleFileChange(filename).catch((err) => {
+              console.error(`[file-watcher] Error handling ${filename}:`, (err as Error).message);
             });
           }, DEBOUNCE_MS)
         );
       });
 
-      watcher.on("error", (err: Error) => {
-        console.warn(`[file-watcher] Watch error for ${dir}:`, err.message);
+      this.watcher.on("error", (err: Error) => {
+        console.warn(`[file-watcher] Watch error:`, err.message);
       });
 
-      this.watchers.push(watcher);
+      console.log(`[file-watcher] Watching ${PROJECT_DIR} (${this.knownFiles.size} files)`);
     } catch (err) {
-      console.warn(`[file-watcher] fs.watch failed for ${dir}: ${(err as Error).message}`);
+      console.warn(`[file-watcher] Could not watch ${PROJECT_DIR}: ${(err as Error).message}`);
     }
   }
 
-  private async handleFileChange(project: string, canvas: string, filename: string, dir: string): Promise<void> {
-    const filePath = path.join(dir, filename);
-    const key = `${project}/${canvas}`;
-    const known = this.knownFiles.get(key) || new Set();
+  private async handleFileChange(filename: string): Promise<void> {
+    const filePath = path.join(PROJECT_DIR, filename);
 
     try {
-      const stat = await fs.promises.stat(filePath);
-      if (!stat.isFile()) return; // Skip directories
+      const s = await fs.promises.stat(filePath);
+      if (!s.isFile()) return;
 
-      if (known.has(filename)) {
-        this.emit("file-change", { type: "changed", project, canvas, filename } as FileChangeEvent);
+      if (this.knownFiles.has(filename)) {
+        this.emit("file-change", { type: "changed", filename } as FileChangeEvent);
       } else {
-        known.add(filename);
-        this.knownFiles.set(key, known);
-        this.emit("file-change", { type: "created", project, canvas, filename } as FileChangeEvent);
+        this.knownFiles.add(filename);
+        this.emit("file-change", { type: "created", filename } as FileChangeEvent);
       }
     } catch {
-      // File was deleted
-      if (known.has(filename)) {
-        known.delete(filename);
-        this.knownFiles.set(key, known);
-        this.emit("file-change", { type: "deleted", project, canvas, filename } as FileChangeEvent);
+      if (this.knownFiles.has(filename)) {
+        this.knownFiles.delete(filename);
+        this.emit("file-change", { type: "deleted", filename } as FileChangeEvent);
       }
     }
   }
 
   stop(): void {
-    for (const w of this.watchers) {
-      w.close();
-    }
-    this.watchers = [];
+    this.watcher?.close();
+    this.watcher = null;
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
     }

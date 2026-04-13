@@ -1,16 +1,11 @@
-// CardFrame — Draggable, resizable card that renders file content client-side.
-// Detects file type from extension and renders accordingly.
+// CardFrame — File card that renders content client-side.
+// Uses DraggableCard for drag/resize. Adds file-specific features (flip, edit, render).
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { CanvasFile } from "../api/canvasFiles";
 import { fetchCardBack, saveCardBack } from "../api/canvasFiles";
-
-interface CardLayout {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+import DraggableCard from "./DraggableCard";
+import type { CardLayout } from "./DraggableCard";
 
 interface Props {
   file: CanvasFile;
@@ -19,8 +14,6 @@ interface Props {
   onEdit: () => void;
   onDelete: () => void;
   onSave: (content: string) => void;
-  projectId: string;
-  canvas: string;
 }
 
 function getFileType(filename: string): string {
@@ -32,168 +25,69 @@ function getFileType(filename: string): string {
   return "text";
 }
 
-export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDelete, projectId }: Props) {
-  const [isDragging, setIsDragging] = useState(false);
-  const [isResizing, setIsResizing] = useState(false);
+export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDelete }: Props) {
   const [flipped, setFlipped] = useState(false);
   const [backContent, setBackContent] = useState("");
   const [backLoaded, setBackLoaded] = useState(false);
-  const dragStartRef = useRef({ x: 0, y: 0, lx: 0, ly: 0 });
-  const resizeStartRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
 
   const fileType = getFileType(file.name);
 
-  // Load card back when flipped
   useEffect(() => {
     if (flipped && !backLoaded) {
-      fetchCardBack(projectId, file.name).then((c) => {
+      fetchCardBack(file.name).then((c) => {
         setBackContent(c);
         setBackLoaded(true);
       });
     }
-  }, [flipped, backLoaded, projectId, file.name]);
+  }, [flipped, backLoaded, file.name]);
 
   const handleSaveBack = useCallback(() => {
-    saveCardBack(projectId, file.name, backContent);
-  }, [projectId, file.name, backContent]);
+    saveCardBack(file.name, backContent);
+  }, [file.name, backContent]);
 
-  // Drag handlers
-  const handleDragStart = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest(".card-actions")) return;
-    e.preventDefault();
-    setIsDragging(true);
-    dragStartRef.current = { x: e.clientX, y: e.clientY, lx: layout.x, ly: layout.y };
-
-    const handleMove = (e: MouseEvent) => {
-      const dx = e.clientX - dragStartRef.current.x;
-      const dy = e.clientY - dragStartRef.current.y;
-      onLayoutChange({ ...layout, x: dragStartRef.current.lx + dx, y: dragStartRef.current.ly + dy });
-    };
-    const handleUp = () => {
-      setIsDragging(false);
-      document.removeEventListener("mousemove", handleMove);
-      document.removeEventListener("mouseup", handleUp);
-    };
-    document.addEventListener("mousemove", handleMove);
-    document.addEventListener("mouseup", handleUp);
-  }, [layout, onLayoutChange]);
-
-  // Resize handlers
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizing(true);
-    resizeStartRef.current = { x: e.clientX, y: e.clientY, w: layout.w, h: layout.h };
-
-    const handleMove = (e: MouseEvent) => {
-      const dx = e.clientX - resizeStartRef.current.x;
-      const dy = e.clientY - resizeStartRef.current.y;
-      onLayoutChange({
-        ...layout,
-        w: Math.max(200, resizeStartRef.current.w + dx),
-        h: Math.max(100, resizeStartRef.current.h + dy),
-      });
-    };
-    const handleUp = () => {
-      setIsResizing(false);
-      document.removeEventListener("mousemove", handleMove);
-      document.removeEventListener("mouseup", handleUp);
-    };
-    document.addEventListener("mousemove", handleMove);
-    document.addEventListener("mouseup", handleUp);
-  }, [layout, onLayoutChange]);
+  const actions = (
+    <>
+      <button onClick={() => { setFlipped(!flipped); setBackLoaded(false); }} style={actionBtnStyle} title={flipped ? "Show content" : "Card info"}>
+        &#8645;
+      </button>
+      <button onClick={onEdit} style={actionBtnStyle} title="Edit">
+        &#9998;
+      </button>
+      <button onClick={onDelete} style={actionBtnStyle} title="Delete">
+        &times;
+      </button>
+    </>
+  );
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        left: layout.x,
-        top: layout.y + 50,
-        width: layout.w,
-        height: layout.h,
-        background: "#252540",
-        border: "1px solid #333",
-        borderRadius: 8,
-        overflow: "hidden",
-        boxShadow: isDragging ? "0 8px 32px rgba(0,0,0,0.4)" : "0 2px 8px rgba(0,0,0,0.2)",
-        cursor: isDragging ? "grabbing" : "default",
-        zIndex: isDragging || isResizing ? 1000 : 1,
-        display: "flex",
-        flexDirection: "column",
-      }}
+    <DraggableCard
+      layout={layout}
+      onLayoutChange={onLayoutChange}
+      title={file.name}
+      subtitle={fileType}
+      actions={actions}
     >
-      {/* Header */}
-      <div
-        onMouseDown={handleDragStart}
-        style={{
-          padding: "6px 12px",
-          background: "#1e1e38",
-          borderBottom: "1px solid #333",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          cursor: "grab",
-          userSelect: "none",
-          flexShrink: 0,
-        }}
-      >
-        <span style={{ color: "#aaa", fontSize: 13, fontWeight: 500 }}>
-          {file.name}
-          <span style={{ color: "#666", marginLeft: 8, fontSize: 11 }}>{fileType}</span>
-        </span>
-        <div className="card-actions" style={{ display: "flex", gap: 4 }}>
-          <button onClick={() => { setFlipped(!flipped); setBackLoaded(false); }} style={actionBtnStyle} title={flipped ? "Show content" : "AI context"}>
-            &#8645;
-          </button>
-          <button onClick={onEdit} style={actionBtnStyle} title="Edit">
-            &#9998;
-          </button>
-          <button onClick={onDelete} style={actionBtnStyle} title="Delete">
-            &times;
-          </button>
+      {flipped ? (
+        <div style={{ padding: 12, display: "flex", flexDirection: "column", height: "100%" }}>
+          <div style={{ color: "#888", fontSize: 11, marginBottom: 8 }}>Card info — how this card was generated, AI guidance</div>
+          <textarea
+            value={backContent}
+            onChange={(e) => setBackContent(e.target.value)}
+            onBlur={handleSaveBack}
+            placeholder="Add info about this card..."
+            style={{
+              flex: 1, background: "#1a1a2e", color: "#ccc", border: "1px solid #444",
+              borderRadius: 4, padding: 8, fontSize: 13, fontFamily: "monospace",
+              resize: "none", outline: "none",
+            }}
+          />
         </div>
-      </div>
-
-      {/* Content (front) or AI Context (back) */}
-      <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
-        {flipped ? (
-          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-            <div style={{ color: "#888", fontSize: 11, marginBottom: 8 }}>AI Context — instructions for the AI when discussing this card</div>
-            <textarea
-              value={backContent}
-              onChange={(e) => setBackContent(e.target.value)}
-              onBlur={handleSaveBack}
-              placeholder="Add AI context for this card... e.g. 'When discussing this spec, focus on API contracts and error handling.'"
-              style={{
-                flex: 1, background: "#1a1a2e", color: "#ccc", border: "1px solid #444",
-                borderRadius: 4, padding: 8, fontSize: 13, fontFamily: "monospace",
-                resize: "none", outline: "none",
-              }}
-            />
-          </div>
-        ) : (
+      ) : (
+        <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
           <FileContent content={file.content} type={fileType} />
-        )}
-      </div>
-
-      {/* Resize handle */}
-      <div
-        onMouseDown={handleResizeStart}
-        style={{
-          position: "absolute",
-          bottom: 0,
-          right: 0,
-          width: 16,
-          height: 16,
-          cursor: "se-resize",
-          opacity: 0.3,
-        }}
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16">
-          <path d="M14 14L14 8M14 14L8 14" stroke="#888" strokeWidth="2" fill="none" />
-        </svg>
-      </div>
-    </div>
+        </div>
+      )}
+    </DraggableCard>
   );
 }
 
@@ -217,8 +111,6 @@ function FileContent({ content, type }: { content: string; type: string }) {
   }
 }
 
-// ── Simple Markdown Renderer ─────────────────────────────────
-
 function simpleMarkdown(md: string): string {
   return md
     .replace(/&/g, "&amp;")
@@ -236,8 +128,6 @@ function simpleMarkdown(md: string): string {
     .replace(/\n\n/g, "<br/><br/>")
     .replace(/\n/g, "<br/>");
 }
-
-// ── Mermaid Renderer ─────────────────────────────────────────
 
 function MermaidRenderer({ content }: { content: string }) {
   const [svg, setSvg] = useState<string>("");

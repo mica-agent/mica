@@ -1,32 +1,26 @@
-// Mica Lite Server
-// Express + WebSocket server for the planning canvas.
-// Files are files. The server provides: file I/O, layout persistence,
-// file watching, terminal channels, and state sync.
+// Mica Lite Server — single project planning canvas.
+// Serves files from PROJECT_DIR, provides layout persistence,
+// file watching, terminal channels, and AI via llama-server.
 
 import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
+  PROJECT_DIR,
+  micaDir,
+  getProjectName,
   listFiles,
-  readCanvasFile,
-  writeCanvasFile,
-  deleteCanvasFile,
-  listProjects,
-  getProjectConfig,
-  validateProjectCanvas,
+  readProjectFile,
+  writeProjectFile,
+  deleteProjectFile,
 } from "./files.js";
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { join } from "path";
-import {
-  connectProject,
-  addCanvasToProject,
-  getProjectPath,
-  getCanvasDir,
-} from "./projectConnection.js";
 import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer } from "./llamaServer.js";
+import { chatHandler } from "./micaChat.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
@@ -43,7 +37,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 
-// ── Content Security Policy ──────────────────────────────────
+// ── CSP ──────────────────────────────────────────────────────
 app.use((_req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
@@ -59,119 +53,41 @@ app.use((_req, res, next) => {
   next();
 });
 
-// ── Helper: validate project+canvas from route params ────────
-async function validateParams(
-  res: express.Response,
-  project: string,
-  canvas: string
-): Promise<boolean> {
-  try {
-    await validateProjectCanvas(project, canvas);
-    return true;
-  } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
-    return false;
-  }
-}
-
 // ── REST Endpoints ───────────────────────────────────────────
 
-// Health check
-app.get("/api/health", async (_req, res) => {
-  const projects = await listProjects();
-  res.json({ status: "ok", projects: projects.map((p) => p.id) });
+// Project info
+app.get("/api/project", async (_req, res) => {
+  const name = await getProjectName();
+  res.json({ name, path: PROJECT_DIR });
 });
 
-// ── Project Management ───────────────────────────────────────
-
-app.get("/api/projects", async (_req, res) => {
+// List all files
+app.get("/api/files", async (_req, res) => {
   try {
-    res.json(await listProjects());
+    res.json(await listFiles());
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-app.get("/api/projects/:project", async (req, res) => {
+// Read a file
+app.get("/api/files/:filename", async (req, res) => {
   try {
-    const config = await getProjectConfig(req.params.project);
-    if (!config) {
-      res.status(404).json({ error: `Project not found: ${req.params.project}` });
-      return;
-    }
-    res.json(config);
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// Connect an existing directory to Mica
-app.post("/api/projects/connect", async (req, res) => {
-  const { path: projectPath, name } = req.body;
-  if (!projectPath) {
-    res.status(400).json({ error: "path required" });
-    return;
-  }
-  try {
-    const config = await connectProject(projectPath, name);
-    await fileWatcher.addProject(config.id, config.canvases);
-    res.json(config);
-  } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
-  }
-});
-
-// ── Canvas management ────────────────────────────────────────
-
-app.post("/api/projects/:project/canvases", async (req, res) => {
-  const { name } = req.body;
-  if (!name) {
-    res.status(400).json({ error: "name required" });
-    return;
-  }
-  try {
-    await addCanvasToProject(req.params.project, name);
-    res.json({ success: true, canvas: name });
-  } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
-  }
-});
-
-// ── File Endpoints ───────────────────────────────────────────
-
-// List all files in a canvas/project directory
-app.get("/api/projects/:project/canvases/:canvas/files", async (req, res) => {
-  const { project, canvas } = req.params;
-  if (!(await validateParams(res, project, canvas))) return;
-  try {
-    res.json(await listFiles(project, canvas));
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// Read a single file
-app.get("/api/projects/:project/canvases/:canvas/files/:filename", async (req, res) => {
-  const { project, canvas, filename } = req.params;
-  if (!(await validateParams(res, project, canvas))) return;
-  try {
-    res.json(await readCanvasFile(project, canvas, filename));
+    res.json(await readProjectFile(req.params.filename));
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
   }
 });
 
 // Create or update a file
-app.put("/api/projects/:project/canvases/:canvas/files/:filename", async (req, res) => {
-  const { project, canvas, filename } = req.params;
+app.put("/api/files/:filename", async (req, res) => {
   const { content } = req.body;
-  if (!(await validateParams(res, project, canvas))) return;
   if (typeof content !== "string") {
     res.status(400).json({ error: "content (string) required" });
     return;
   }
   try {
-    await writeCanvasFile(project, canvas, filename, content);
+    await writeProjectFile(req.params.filename, content);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -179,11 +95,9 @@ app.put("/api/projects/:project/canvases/:canvas/files/:filename", async (req, r
 });
 
 // Delete a file
-app.delete("/api/projects/:project/canvases/:canvas/files/:filename", async (req, res) => {
-  const { project, canvas, filename } = req.params;
-  if (!(await validateParams(res, project, canvas))) return;
+app.delete("/api/files/:filename", async (req, res) => {
   try {
-    await deleteCanvasFile(project, canvas, filename);
+    await deleteProjectFile(req.params.filename);
     res.json({ success: true });
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
@@ -192,31 +106,24 @@ app.delete("/api/projects/:project/canvases/:canvas/files/:filename", async (req
 
 // ── Layout persistence (.mica/layout.json) ───────────────────
 
-app.get("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
-  const { project, canvas } = req.params;
-  if (!(await validateParams(res, project, canvas))) return;
+app.get("/api/layout", async (_req, res) => {
   try {
-    const projectPath = await getProjectPath(project);
-    const layoutPath = join(projectPath, ".mica", "layout.json");
-    const data = await readFile(layoutPath, "utf-8");
+    const data = await readFile(join(micaDir(), "layout.json"), "utf-8");
     res.json(JSON.parse(data));
   } catch {
     res.json({});
   }
 });
 
-app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
-  const { project, canvas } = req.params;
-  if (!(await validateParams(res, project, canvas))) return;
+app.put("/api/layout", async (req, res) => {
   try {
+    const dir = micaDir();
+    await mkdir(dir, { recursive: true });
     const source = req.body.source;
     const dataToStore = { ...req.body };
     delete dataToStore.source;
-    const projectPath = await getProjectPath(project);
-    const layoutDir = join(projectPath, ".mica");
-    await mkdir(layoutDir, { recursive: true });
-    await writeFile(join(layoutDir, "layout.json"), JSON.stringify(dataToStore, null, 2), "utf-8");
-    broadcast({ type: "layout-changed", project, canvas, source });
+    await writeFile(join(dir, "layout.json"), JSON.stringify(dataToStore, null, 2), "utf-8");
+    broadcast({ type: "layout-changed", source });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -225,22 +132,20 @@ app.put("/api/projects/:project/canvases/:canvas/layout", async (req, res) => {
 
 // ── Canvas Back (project-level AI context) ───────────────────
 
-app.get("/api/projects/:project/canvas-back", async (req, res) => {
+app.get("/api/canvas-back", async (_req, res) => {
   try {
-    const projectPath = await getProjectPath(req.params.project);
-    const content = await readFile(join(projectPath, ".mica", "canvas-back.md"), "utf-8");
+    const content = await readFile(join(micaDir(), "canvas-back.md"), "utf-8");
     res.json({ content });
   } catch {
     res.json({ content: "" });
   }
 });
 
-app.put("/api/projects/:project/canvas-back", async (req, res) => {
+app.put("/api/canvas-back", async (req, res) => {
   try {
-    const projectPath = await getProjectPath(req.params.project);
-    const micaDir = join(projectPath, ".mica");
-    await mkdir(micaDir, { recursive: true });
-    await writeFile(join(micaDir, "canvas-back.md"), req.body.content || "", "utf-8");
+    const dir = micaDir();
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "canvas-back.md"), req.body.content || "", "utf-8");
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -249,28 +154,50 @@ app.put("/api/projects/:project/canvas-back", async (req, res) => {
 
 // ── Card Backs (per-card AI context) ─────────────────────────
 
-app.get("/api/projects/:project/card-back/:filename", async (req, res) => {
-  const { project, filename } = req.params;
+app.get("/api/card-back/:filename", async (req, res) => {
   try {
-    const projectPath = await getProjectPath(project);
-    // Map filename to card back path: docs/spec.md → docs--spec.md
-    const backFilename = filename.replace(/\//g, "--");
-    const content = await readFile(join(projectPath, ".mica", "cards", backFilename), "utf-8");
+    const backFilename = req.params.filename.replace(/\//g, "--");
+    const content = await readFile(join(micaDir(), "cards", backFilename), "utf-8");
     res.json({ content });
   } catch {
     res.json({ content: "" });
   }
 });
 
-app.put("/api/projects/:project/card-back/:filename", async (req, res) => {
-  const { project, filename } = req.params;
+app.put("/api/card-back/:filename", async (req, res) => {
   try {
-    const projectPath = await getProjectPath(project);
-    const cardsDir = join(projectPath, ".mica", "cards");
+    const cardsDir = join(micaDir(), "cards");
     await mkdir(cardsDir, { recursive: true });
-    const backFilename = filename.replace(/\//g, "--");
+    const backFilename = req.params.filename.replace(/\//g, "--");
     await writeFile(join(cardsDir, backFilename), req.body.content || "", "utf-8");
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── mica.* API (server-side bridge for client library) ───────
+
+// Generic RPC endpoint — mica.* client calls go through here.
+// Modular: handlers registered by namespace (chat, file, source, etc.)
+const micaHandlers = new Map<string, (method: string, params: unknown) => Promise<unknown>>();
+
+/** Register a mica.* namespace handler. e.g. registerMicaHandler("chat", handler) */
+export function registerMicaHandler(namespace: string, handler: (method: string, params: unknown) => Promise<unknown>) {
+  micaHandlers.set(namespace, handler);
+  console.log(`[mica] Registered handler: mica.${namespace}.*`);
+}
+
+app.post("/api/mica/:namespace/:method", async (req, res) => {
+  const { namespace, method } = req.params;
+  const handler = micaHandlers.get(namespace);
+  if (!handler) {
+    res.status(404).json({ error: `No handler for mica.${namespace}` });
+    return;
+  }
+  try {
+    const result = await handler(method, req.body);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -335,35 +262,26 @@ wss.on("connection", (ws) => {
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(raw.toString());
-    } catch {
-      return;
-    }
+    } catch { return; }
 
-    const { type, id, project, canvas, filename, fn, args } = msg as {
-      type: string; id?: string; project?: string; canvas?: string;
-      filename?: string; fn?: string; args?: Record<string, unknown>;
-      event?: string; data?: unknown;
+    const { type, id, filename, fn, args } = msg as {
+      type: string; id?: string; filename?: string;
+      fn?: string; args?: Record<string, unknown>;
     };
 
     switch (type) {
-      // Widget-to-widget broadcast
       case "broadcast": {
         const event = (msg as { event?: string }).event;
         const data = (msg as { data?: Record<string, unknown> }).data || {};
-        if (event) {
-          broadcast({ type: event, ...data });
-        }
+        if (event) broadcast({ type: event, ...data });
         break;
       }
 
-      // Bidirectional channel — open (terminal, future chat)
       case "channel_open": {
         const cid = id as string;
         try {
           const fname = filename as string;
           const channelArgs = (args || {}) as Record<string, unknown>;
-          const proj = project as string;
-          const canv = canvas as string;
           const msgTabId = (msg.tabId as string | undefined) ?? null;
 
           const onData = (data: unknown) => {
@@ -381,8 +299,7 @@ wss.on("connection", (ws) => {
           const cardClass = channelManager.resolveCardClass(fname);
 
           if (channelManager.hasHandler(cardClass)) {
-            // Dedup: if this WebSocket already has a channel for this card, detach old one
-            const cardKey = `${proj}/${canv}/${fname}#${fn}`;
+            const cardKey = `${fname}#${fn}`;
             if (!wsCardChannels.has(ws)) wsCardChannels.set(ws, new Map());
             const cardMap = wsCardChannels.get(ws)!;
             const oldCid = cardMap.get(cardKey);
@@ -391,12 +308,12 @@ wss.on("connection", (ws) => {
               wsChannels.get(ws)?.delete(oldCid);
             }
 
-            await channelManager.open(cid, proj, canv, fname, fn as string, channelArgs, msgTabId, onData, onClose);
+            await channelManager.open(cid, fname, fn as string, channelArgs, msgTabId, onData, onClose);
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(cid);
             cardMap.set(cardKey, cid);
           } else {
-            throw new Error(`No channel handler for "${cardClass}" (file: ${fname})`);
+            throw new Error(`No channel handler for "${cardClass}"`);
           }
         } catch (err) {
           console.error(`[ws] channel_open error:`, (err as Error).message);
@@ -405,7 +322,6 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Bidirectional channel — data
       case "channel_data": {
         const cid = id as string;
         if (channelManager.has(cid)) {
@@ -414,12 +330,9 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Bidirectional channel — close
       case "channel_close": {
         const cid = id as string;
-        if (channelManager.has(cid)) {
-          channelManager.detach(cid);
-        }
+        if (channelManager.has(cid)) channelManager.detach(cid);
         wsChannels.get(ws)?.delete(cid);
         const cardMap = wsCardChannels.get(ws);
         if (cardMap) {
@@ -444,73 +357,60 @@ function broadcast(msg: Record<string, unknown>) {
 
 // ── File Watcher Events ──────────────────────────────────────
 
-fileWatcher.on("file-change", async (event: { type: string; project: string; canvas: string; filename: string }) => {
-  if (event.filename.startsWith(".")) return;
-
-  console.log(`[file-watcher] ${event.type}: ${event.project}/${event.canvas}/${event.filename}`);
+fileWatcher.on("file-change", async (event: { type: string; filename: string }) => {
+  console.log(`[file-watcher] ${event.type}: ${event.filename}`);
 
   if (event.type === "deleted") {
-    broadcast({ type: "file-deleted", project: event.project, canvas: event.canvas, filename: event.filename });
+    broadcast({ type: "file-deleted", filename: event.filename });
     return;
   }
 
   if (event.type === "created") {
     try {
-      const file = await readCanvasFile(event.project, event.canvas, event.filename);
-      broadcast({
-        type: "file-created",
-        project: event.project,
-        canvas: event.canvas,
-        filename: event.filename,
-        content: file.content,
-      });
-    } catch (err) {
-      console.error(`[file-watcher] Read failed for new file ${event.filename}:`, (err as Error).message);
-    }
+      const file = await readProjectFile(event.filename);
+      broadcast({ type: "file-created", filename: event.filename, content: file.content });
+    } catch { /* ignore */ }
   }
 
   if (event.type === "changed") {
-    broadcast({
-      type: "file-changed",
-      project: event.project,
-      canvas: event.canvas,
-      filename: event.filename,
-    });
+    broadcast({ type: "file-changed", filename: event.filename });
   }
 });
 
 // ── Startup ──────────────────────────────────────────────────
 
 (async () => {
+  // Ensure .mica/ exists
+  await mkdir(micaDir(), { recursive: true });
+
   try {
     await fileWatcher.start();
   } catch (err) {
     console.error("[startup] File watcher failed:", (err as Error).message);
   }
 
-  // Start llama-server for local AI (Qwen3)
+  // Register mica.* handlers
+  registerMicaHandler("chat", chatHandler);
+
+  // Start llama-server for local AI
   ensureLlamaServer().catch((err) => {
     console.warn("[startup] llama-server failed to start:", (err as Error).message);
   });
 
-  // TODO: Register terminal channel handler
-  // TODO: Register chat channel handler
+  const projectName = await getProjectName();
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║                   Mica Lite Server                       ║
+║                   Mica Lite                              ║
 ╠══════════════════════════════════════════════════════════╣
-║  REST API:  http://localhost:${PORT}/api                     ║
-║  WebSocket: ws://localhost:${PORT}/ws/cards                  ║
-╠══════════════════════════════════════════════════════════╣
-║  Planning canvas for files-as-files.                     ║
-║  File watcher: active                                    ║
+║  Project:   ${projectName.padEnd(42)}║
+║  Path:      ${PROJECT_DIR.padEnd(42)}║
+║  Canvas:    http://localhost:${PORT}${" ".repeat(28)}║
 ╚══════════════════════════════════════════════════════════╝
 `);
   });
 
-  // Graceful shutdown
   const shutdown = async () => {
     console.log("\n[shutdown] Stopping...");
     channelManager.destroyAll();

@@ -1,6 +1,6 @@
 // CanvasCardRuntime — Mica Lite canvas component.
 // Renders project files as cards on a spatial canvas.
-// Files are files — content is rendered client-side based on extension.
+// Single project model — no project ID needed.
 
 import { useState, useEffect, useCallback } from "react";
 import { fetchFiles, fetchLayout, saveLayout, saveFile, deleteFile, fetchFile, fetchCanvasBack, saveCanvasBack } from "../api/canvasFiles";
@@ -8,10 +8,8 @@ import type { CanvasFile } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
 import CardFrame from "./CardFrame";
 import FileEditor from "./FileEditor";
-
-interface Props {
-  projectId: string;
-}
+import ChatCard from "./ChatCard";
+import DraggableCard from "./DraggableCard";
 
 interface CardLayout {
   x: number;
@@ -20,7 +18,7 @@ interface CardLayout {
   h: number;
 }
 
-export default function CanvasCardRuntime({ projectId }: Props) {
+export default function CanvasCardRuntime() {
   const [files, setFiles] = useState<CanvasFile[]>([]);
   const [layouts, setLayouts] = useState<Record<string, CardLayout>>({});
   const [loading, setLoading] = useState(true);
@@ -28,8 +26,7 @@ export default function CanvasCardRuntime({ projectId }: Props) {
   const [creatingFile, setCreatingFile] = useState(false);
   const [showCanvasBack, setShowCanvasBack] = useState(false);
   const [canvasBackContent, setCanvasBackContent] = useState("");
-
-  const canvas = "_root";
+  const [chatCards, setChatCards] = useState<string[]>([]);
 
   // Load files and layout
   useEffect(() => {
@@ -38,18 +35,14 @@ export default function CanvasCardRuntime({ projectId }: Props) {
     async function load() {
       try {
         const [fileList, layoutData] = await Promise.allSettled([
-          fetchFiles(projectId, canvas),
-          fetchLayout(projectId, canvas),
+          fetchFiles(),
+          fetchLayout(),
         ]);
 
         if (controller.signal.aborted) return;
 
-        if (fileList.status === "fulfilled") {
-          setFiles(fileList.value);
-        }
-        if (layoutData.status === "fulfilled") {
-          setLayouts((layoutData.value as Record<string, CardLayout>) || {});
-        }
+        if (fileList.status === "fulfilled") setFiles(fileList.value);
+        if (layoutData.status === "fulfilled") setLayouts((layoutData.value as Record<string, CardLayout>) || {});
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -57,27 +50,24 @@ export default function CanvasCardRuntime({ projectId }: Props) {
 
     load();
     return () => controller.abort();
-  }, [projectId]);
+  }, []);
 
   // Listen for file changes via WebSocket
   useEffect(() => {
     const unsubs = [
-      on("file-created", async (data: { project: string; canvas: string; filename: string }) => {
-        if (data.project !== projectId) return;
+      on("file-created", async (data: { filename: string }) => {
         try {
-          const file = await fetchFile(projectId, canvas, data.filename);
+          const file = await fetchFile(data.filename);
           setFiles((prev) => [...prev.filter((f) => f.name !== data.filename), file]);
         } catch { /* ignore */ }
       }),
-      on("file-changed", async (data: { project: string; canvas: string; filename: string }) => {
-        if (data.project !== projectId) return;
+      on("file-changed", async (data: { filename: string }) => {
         try {
-          const file = await fetchFile(projectId, canvas, data.filename);
+          const file = await fetchFile(data.filename);
           setFiles((prev) => prev.map((f) => (f.name === data.filename ? file : f)));
         } catch { /* ignore */ }
       }),
-      on("file-deleted", (data: { project: string; canvas: string; filename: string }) => {
-        if (data.project !== projectId) return;
+      on("file-deleted", (data: { filename: string }) => {
         setFiles((prev) => prev.filter((f) => f.name !== data.filename));
         setLayouts((prev) => {
           const next = { ...prev };
@@ -85,52 +75,42 @@ export default function CanvasCardRuntime({ projectId }: Props) {
           return next;
         });
       }),
-      on("layout-changed", (data: { project: string; source?: string }) => {
-        if (data.project !== projectId) return;
-        fetchLayout(projectId, canvas).then((l) => setLayouts(l as Record<string, CardLayout>));
+      on("layout-changed", (data: { source?: string }) => {
+        if (data.source === "self") return;
+        fetchLayout().then((l) => setLayouts(l as Record<string, CardLayout>));
       }),
     ];
 
     return () => unsubs.forEach((u) => u());
-  }, [projectId]);
+  }, []);
 
-  // Save layout when cards are moved/resized
   const handleLayoutChange = useCallback(
     (filename: string, layout: CardLayout) => {
       setLayouts((prev) => {
         const next = { ...prev, [filename]: layout };
-        saveLayout(projectId, canvas, { ...next, source: "self" });
+        saveLayout({ ...next, source: "self" });
         return next;
       });
     },
-    [projectId]
+    []
   );
 
-  const handleDeleteFile = useCallback(
-    async (filename: string) => {
-      await deleteFile(projectId, canvas, filename);
-      setFiles((prev) => prev.filter((f) => f.name !== filename));
-    },
-    [projectId]
-  );
+  const handleDeleteFile = useCallback(async (filename: string) => {
+    await deleteFile(filename);
+    setFiles((prev) => prev.filter((f) => f.name !== filename));
+  }, []);
 
-  const handleSaveFile = useCallback(
-    async (filename: string, content: string) => {
-      await saveFile(projectId, canvas, filename, content);
-      setFiles((prev) => prev.map((f) => (f.name === filename ? { ...f, content } : f)));
-    },
-    [projectId]
-  );
+  const handleSaveFile = useCallback(async (filename: string, content: string) => {
+    await saveFile(filename, content);
+    setFiles((prev) => prev.map((f) => (f.name === filename ? { ...f, content } : f)));
+  }, []);
 
-  const handleCreateFile = useCallback(
-    async (filename: string, content: string) => {
-      await saveFile(projectId, canvas, filename, content);
-      const file = await fetchFile(projectId, canvas, filename);
-      setFiles((prev) => [...prev, file]);
-      setCreatingFile(false);
-    },
-    [projectId]
-  );
+  const handleCreateFile = useCallback(async (filename: string, content: string) => {
+    await saveFile(filename, content);
+    const file = await fetchFile(filename);
+    setFiles((prev) => [...prev, file]);
+    setCreatingFile(false);
+  }, []);
 
   if (loading) {
     return <div style={{ padding: 40, color: "#888" }}>Loading project...</div>;
@@ -140,7 +120,6 @@ export default function CanvasCardRuntime({ projectId }: Props) {
     <div style={{ position: "relative", width: "100%", height: "100%", overflow: "auto", background: "#1a1a2e" }}>
       {/* Toolbar */}
       <div style={{
-        position: "sticky", top: 0, left: 0, zIndex: 100,
         padding: "8px 16px", background: "#1a1a2e", borderBottom: "1px solid #333",
         display: "flex", gap: 8, alignItems: "center",
       }}>
@@ -148,10 +127,14 @@ export default function CanvasCardRuntime({ projectId }: Props) {
           + New File
         </button>
         <button
+          onClick={() => setChatCards((prev) => [...prev, `chat-${Date.now()}`])}
+          style={btnStyle}
+        >
+          + AI Chat
+        </button>
+        <button
           onClick={() => {
-            if (!showCanvasBack) {
-              fetchCanvasBack(projectId).then(setCanvasBackContent);
-            }
+            if (!showCanvasBack) fetchCanvasBack().then(setCanvasBackContent);
             setShowCanvasBack(!showCanvasBack);
           }}
           style={{ ...btnStyle, background: showCanvasBack ? "#4a4a8a" : "#2a2a4a" }}
@@ -174,7 +157,7 @@ export default function CanvasCardRuntime({ projectId }: Props) {
           <textarea
             value={canvasBackContent}
             onChange={(e) => setCanvasBackContent(e.target.value)}
-            onBlur={() => saveCanvasBack(projectId, canvasBackContent)}
+            onBlur={() => saveCanvasBack(canvasBackContent)}
             placeholder="e.g. 'This is a GCP automation project. Prefer Terraform. Always consider IAM implications.'"
             style={{
               width: "100%", minHeight: 80, background: "#252540", color: "#ccc",
@@ -208,12 +191,41 @@ export default function CanvasCardRuntime({ projectId }: Props) {
               onEdit={() => setEditingFile(file)}
               onDelete={() => handleDeleteFile(file.name)}
               onSave={(content) => handleSaveFile(file.name, content)}
-              projectId={projectId}
-              canvas={canvas}
             />
           );
         })}
       </div>
+
+      {/* Chat cards */}
+      {chatCards.map((chatId) => {
+        const layoutKey = `__chat__${chatId}`;
+        const chatLayout = layouts[layoutKey] || {
+          x: 20 + chatCards.indexOf(chatId) * 30,
+          y: 20 + chatCards.indexOf(chatId) * 30,
+          w: 420,
+          h: 500,
+        };
+        return (
+          <DraggableCard
+            key={chatId}
+            layout={chatLayout}
+            onLayoutChange={(l) => handleLayoutChange(layoutKey, l)}
+            title="AI Chat"
+            subtitle="Qwen3"
+            actions={
+              <button
+                onClick={() => setChatCards((prev) => prev.filter((id) => id !== chatId))}
+                style={{ background: "transparent", color: "#888", border: "none", cursor: "pointer", fontSize: 16, padding: "0 4px" }}
+                title="Close"
+              >
+                &times;
+              </button>
+            }
+          >
+            <ChatCard chatId={chatId} onClose={() => setChatCards((prev) => prev.filter((id) => id !== chatId))} />
+          </DraggableCard>
+        );
+      })}
 
       {/* File editor modal */}
       {(editingFile || creatingFile) && (

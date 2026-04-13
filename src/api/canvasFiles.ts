@@ -1,13 +1,10 @@
-// Frontend API client for Mica Lite — file operations and project management
+// Frontend API client for Mica Lite — single project, simple file operations.
 
-export type CanvasId = string;
+const API_BASE = import.meta.env.VITE_MICA_API || "";
 
-export interface ProjectConfig {
-  id: string;
+export interface ProjectInfo {
   name: string;
   path: string;
-  canvases: string[];
-  connectedAt: string;
 }
 
 export interface CanvasFile {
@@ -16,87 +13,54 @@ export interface CanvasFile {
   modifiedAt?: string;
 }
 
-const API_BASE = import.meta.env.VITE_MICA_API || "";
+// ── Project ──────────────────────────────────────────────
 
-// ── Project API ──────────────────────────────────────────
-
-export async function fetchProjects(): Promise<ProjectConfig[]> {
-  const res = await fetch(`${API_BASE}/api/projects`);
-  if (!res.ok) throw new Error(`Failed to fetch projects: ${res.statusText}`);
-  return res.json();
-}
-
-export async function fetchProject(projectId: string): Promise<ProjectConfig> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}`);
+export async function fetchProject(): Promise<ProjectInfo> {
+  const res = await fetch(`${API_BASE}/api/project`);
   if (!res.ok) throw new Error(`Failed to fetch project: ${res.statusText}`);
   return res.json();
 }
 
-export async function connectProjectApi(path: string, name?: string): Promise<ProjectConfig> {
-  const res = await fetch(`${API_BASE}/api/projects/connect`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, name }),
-  });
-  if (!res.ok) throw new Error(`Failed to connect project: ${res.statusText}`);
-  return res.json();
-}
+// ── Files ────────────────────────────────────────────────
 
-export async function deleteProjectApi(projectId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(projectId)}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) throw new Error(`Failed to delete project: ${res.statusText}`);
-}
-
-// ── File API ─────────────────────────────────────────────
-
-function projectCanvasUrl(project: string, canvas: string): string {
-  return `${API_BASE}/api/projects/${encodeURIComponent(project)}/canvases/${encodeURIComponent(canvas)}`;
-}
-
-export async function fetchFiles(project: string, canvas: CanvasId): Promise<CanvasFile[]> {
-  const res = await fetch(`${projectCanvasUrl(project, canvas)}/files`);
+export async function fetchFiles(): Promise<CanvasFile[]> {
+  const res = await fetch(`${API_BASE}/api/files`);
   if (!res.ok) throw new Error(`Failed to fetch files: ${res.statusText}`);
   return res.json();
 }
 
-export async function fetchFile(project: string, canvas: CanvasId, filename: string): Promise<CanvasFile> {
-  const res = await fetch(`${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`);
+export async function fetchFile(filename: string): Promise<CanvasFile> {
+  const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`);
   if (!res.ok) throw new Error(`Failed to fetch file: ${res.statusText}`);
   return res.json();
 }
 
-export async function saveFile(project: string, canvas: CanvasId, filename: string, content: string): Promise<void> {
-  const res = await fetch(
-    `${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    }
-  );
+export async function saveFile(filename: string, content: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
   if (!res.ok) throw new Error(`Failed to save file: ${res.statusText}`);
 }
 
-export async function deleteFile(project: string, canvas: CanvasId, filename: string): Promise<void> {
-  const res = await fetch(
-    `${projectCanvasUrl(project, canvas)}/files/${encodeURIComponent(filename)}`,
-    { method: "DELETE" }
-  );
+export async function deleteFile(filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
+    method: "DELETE",
+  });
   if (!res.ok) throw new Error(`Failed to delete file: ${res.statusText}`);
 }
 
-// ── Layout persistence ───────────────────────────────────
+// ── Layout ───────────────────────────────────────────────
 
-export async function fetchLayout(project: string, canvas: CanvasId): Promise<Record<string, unknown>> {
-  const res = await fetch(`${projectCanvasUrl(project, canvas)}/layout`);
+export async function fetchLayout(): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/api/layout`);
   if (!res.ok) return {};
   return res.json();
 }
 
-export async function saveLayout(project: string, canvas: CanvasId, data: Record<string, unknown>): Promise<void> {
-  await fetch(`${projectCanvasUrl(project, canvas)}/layout`, {
+export async function saveLayout(data: Record<string, unknown>): Promise<void> {
+  await fetch(`${API_BASE}/api/layout`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -105,15 +69,15 @@ export async function saveLayout(project: string, canvas: CanvasId, data: Record
 
 // ── Canvas Back (project-level AI context) ───────────────
 
-export async function fetchCanvasBack(project: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/canvas-back`);
+export async function fetchCanvasBack(): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/canvas-back`);
   if (!res.ok) return "";
   const data = await res.json();
   return data.content || "";
 }
 
-export async function saveCanvasBack(project: string, content: string): Promise<void> {
-  await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/canvas-back`, {
+export async function saveCanvasBack(content: string): Promise<void> {
+  await fetch(`${API_BASE}/api/canvas-back`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
@@ -122,15 +86,15 @@ export async function saveCanvasBack(project: string, content: string): Promise<
 
 // ── Card Backs (per-card AI context) ─────────────────────
 
-export async function fetchCardBack(project: string, filename: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card-back/${encodeURIComponent(filename)}`);
+export async function fetchCardBack(filename: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/card-back/${encodeURIComponent(filename)}`);
   if (!res.ok) return "";
   const data = await res.json();
   return data.content || "";
 }
 
-export async function saveCardBack(project: string, filename: string, content: string): Promise<void> {
-  await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/card-back/${encodeURIComponent(filename)}`, {
+export async function saveCardBack(filename: string, content: string): Promise<void> {
+  await fetch(`${API_BASE}/api/card-back/${encodeURIComponent(filename)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
