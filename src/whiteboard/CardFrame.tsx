@@ -265,6 +265,9 @@ function simpleMarkdown(md: string): string {
 function MermaidRenderer({ content }: { content: string }) {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef({ dragging: false, startX: 0, startY: 0, origX: 0, origY: 0 });
 
   useEffect(() => {
     let cancelled = false;
@@ -272,7 +275,7 @@ function MermaidRenderer({ content }: { content: string }) {
       m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
       try {
         const { svg } = await m.default.render(`mermaid-${Date.now()}`, content);
-        if (!cancelled) setSvg(svg);
+        if (!cancelled) { setSvg(svg); setTransform({ x: 0, y: 0, scale: 1 }); }
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
       }
@@ -280,7 +283,98 @@ function MermaidRenderer({ content }: { content: string }) {
     return () => { cancelled = true; };
   }, [content]);
 
+  // Wheel zoom
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.stopPropagation();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    setTransform(prev => ({
+      ...prev,
+      scale: Math.max(0.1, Math.min(5, prev.scale * delta)),
+    }));
+  }, []);
+
+  // Pan via drag
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    dragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, origX: transform.x, origY: transform.y };
+    const el = containerRef.current;
+    if (el) el.setPointerCapture(e.pointerId);
+  }, [transform.x, transform.y]);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!dragRef.current.dragging) return;
+    e.stopPropagation();
+    setTransform(prev => ({
+      ...prev,
+      x: dragRef.current.origX + (e.clientX - dragRef.current.startX),
+      y: dragRef.current.origY + (e.clientY - dragRef.current.startY),
+    }));
+  }, []);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (!dragRef.current.dragging) return;
+    e.stopPropagation();
+    dragRef.current.dragging = false;
+  }, []);
+
   if (error) return <pre style={{ color: "#f66", fontSize: 12 }}>{error}</pre>;
   if (!svg) return <div style={{ color: "#666" }}>Rendering diagram...</div>;
-  return <div dangerouslySetInnerHTML={{ __html: svg }} />;
+
+  return (
+    <div
+      ref={containerRef}
+      style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden", cursor: "grab" }}
+      onWheel={handleWheel}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+    >
+      <div
+        style={{
+          transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
+          transformOrigin: "center center",
+          transition: dragRef.current.dragging ? "none" : "transform 0.1s ease-out",
+        }}
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+      {/* Zoom controls */}
+      <div style={{
+        position: "absolute", bottom: 6, right: 6,
+        display: "flex", gap: 2, opacity: 0.6,
+      }}>
+        <button
+          onClick={(e) => { e.stopPropagation(); setTransform(prev => ({ ...prev, scale: Math.min(5, prev.scale * 1.3) })); }}
+          style={zoomBtnStyle}
+          title="Zoom in"
+        >+</button>
+        <button
+          onClick={(e) => { e.stopPropagation(); setTransform(prev => ({ ...prev, scale: Math.max(0.1, prev.scale * 0.7) })); }}
+          style={zoomBtnStyle}
+          title="Zoom out"
+        >-</button>
+        <button
+          onClick={(e) => { e.stopPropagation(); setTransform({ x: 0, y: 0, scale: 1 }); }}
+          style={zoomBtnStyle}
+          title="Reset"
+        >R</button>
+      </div>
+    </div>
+  );
 }
+
+const zoomBtnStyle: React.CSSProperties = {
+  background: "rgba(255,255,255,0.1)",
+  border: "1px solid rgba(255,255,255,0.15)",
+  color: "#ccc",
+  borderRadius: 4,
+  width: 24,
+  height: 24,
+  cursor: "pointer",
+  fontSize: 13,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+};
