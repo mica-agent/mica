@@ -10,8 +10,12 @@ connectMicaSocket();
 export default function App() {
   const [project, setProject] = useState<ProjectInfo | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
+  const [wasConnected, setWasConnected] = useState(false);
 
-  useEffect(() => onConnectionChange(setWsConnected), []);
+  useEffect(() => onConnectionChange((val) => {
+    setWsConnected(val);
+    if (val) setWasConnected(true);
+  }), []);
 
   useEffect(() => {
     fetchProject().then(setProject).catch(console.error);
@@ -49,6 +53,16 @@ export default function App() {
       <div style={{ flex: 1, overflow: 'auto' }}>
         <CanvasCardRuntime />
       </div>
+
+      {/* Reconnection overlay */}
+      {wasConnected && !wsConnected && (
+        <div className="ws-overlay">
+          <div className="ws-overlay-content">
+            <div className="ws-overlay-spinner" />
+            <div className="ws-overlay-text">Reconnecting...</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
