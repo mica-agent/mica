@@ -11,7 +11,7 @@ export default function render(content, config) {
   var color = '#7c3aed';
 
   return '<div id="chat-root" style="' +
-    'display:flex;flex-direction:column;height:100%;min-height:260px;' +
+    'display:flex;flex-direction:column;flex:1;min-height:0;' +
     'background:#0d1117;border-radius:6px;overflow:hidden;font-family:inherit;' +
     '-webkit-font-smoothing:antialiased;">' +
 
