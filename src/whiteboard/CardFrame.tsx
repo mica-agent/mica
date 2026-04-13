@@ -106,6 +106,19 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
           >
             &#8645;
           </button>
+          {fileType === "html" && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                const w = window.open("", "_blank");
+                if (w) { w.document.write(file.content); w.document.close(); }
+              }}
+              title="Preview in new tab"
+              className="wb-card-btn"
+            >
+              &#8599;
+            </button>
+          )}
           <button onClick={(e) => { e.stopPropagation(); onEdit(); }} title="Edit" className="wb-card-btn">
             &#9998;
           </button>
