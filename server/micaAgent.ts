@@ -100,16 +100,40 @@ When reacting to file changes:
 
 function describeToolUse(name: string, input: Record<string, unknown>): string {
   if (!input) return name;
-  switch (name) {
-    case "bash": case "execute_command": {
-      const cmd = String(input.command || input.cmd || "").split("\n")[0].slice(0, 80);
-      return cmd ? `$ ${cmd}` : "Running command";
-    }
-    case "read_file": case "read": return `Read ${String(input.file_path || input.filePath || "").split("/").pop() || "file"}`;
-    case "write_file": case "write": case "write_to_file": return `Write ${String(input.file_path || input.filePath || "").split("/").pop() || "file"}`;
-    case "edit_file": case "edit": return `Edit ${String(input.file_path || input.filePath || "").split("/").pop() || "file"}`;
-    default: return name;
+  const n = name.toLowerCase().replace(/[_-]/g, "");
+  const filePath = String(input.file_path || input.filePath || input.path || input.file || "");
+  const fileName = filePath.split("/").pop() || "";
+  const cmd = String(input.command || input.cmd || input.script || "");
+
+  // Shell/bash
+  if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
+    const firstLine = cmd.split("\n")[0].slice(0, 120);
+    return firstLine ? `$ ${firstLine}` : `Running command`;
   }
+  // File read
+  if (n.includes("read") || n === "cat" || n === "viewfile") {
+    return `Read ${fileName || "file"}`;
+  }
+  // File write
+  if (n.includes("write") || n.includes("create") || n === "savefile") {
+    return `Write ${fileName || "file"}`;
+  }
+  // File edit
+  if (n.includes("edit") || n.includes("patch") || n.includes("replace")) {
+    return `Edit ${fileName || "file"}`;
+  }
+  // Search/grep
+  if (n.includes("grep") || n.includes("search") || n.includes("glob") || n.includes("find")) {
+    const pattern = String(input.pattern || input.query || input.regex || "");
+    return pattern ? `Search: ${pattern.slice(0, 60)}` : `Searching files`;
+  }
+  // List files
+  if (n.includes("list") || n === "ls") {
+    return `List ${filePath || "files"}`;
+  }
+  // Fallback — show tool name + any useful input
+  const hint = cmd ? `: ${cmd.split("\n")[0].slice(0, 60)}` : fileName ? `: ${fileName}` : "";
+  return `${name}${hint}`;
 }
 
 // -- Channel handler factory --
