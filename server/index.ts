@@ -255,26 +255,52 @@ app.delete("/api/files/:filename", async (req, res) => {
   }
 });
 
-// ── Layout persistence (.mica/layout.json) ───────────────────
+// ── Layout persistence (.mica/layout.json, keyed by device class) ────
 
-app.get("/api/layout", async (_req, res) => {
+// GET /api/layout?device=desktop (default: desktop)
+app.get("/api/layout", async (req, res) => {
+  const device = (req.query.device as string) || "desktop";
   try {
     const data = await readFile(join(micaDir(), "layout.json"), "utf-8");
-    res.json(JSON.parse(data));
+    const all = JSON.parse(data);
+    // Support both old format (flat) and new format (keyed by device)
+    if (all[device] && typeof all[device] === "object" && all[device].cards) {
+      res.json(all[device]);
+    } else if (all.cards) {
+      // Old flat format — treat as desktop
+      res.json(all);
+    } else {
+      res.json({});
+    }
   } catch {
     res.json({});
   }
 });
 
+// PUT /api/layout?device=desktop
 app.put("/api/layout", async (req, res) => {
+  const device = (req.query.device as string) || "desktop";
   try {
     const dir = micaDir();
     await mkdir(dir, { recursive: true });
     const source = req.body.source;
     const dataToStore = { ...req.body };
     delete dataToStore.source;
-    await writeFile(join(dir, "layout.json"), JSON.stringify(dataToStore, null, 2), "utf-8");
-    broadcast({ type: "layout-changed", source });
+
+    // Read existing layouts, merge this device's layout
+    let all: Record<string, unknown> = {};
+    try {
+      const existing = await readFile(join(dir, "layout.json"), "utf-8");
+      all = JSON.parse(existing);
+      // Migrate old flat format
+      if (all.cards && !all.desktop) {
+        all = { desktop: all };
+      }
+    } catch { /* fresh file */ }
+
+    all[device] = dataToStore;
+    await writeFile(join(dir, "layout.json"), JSON.stringify(all, null, 2), "utf-8");
+    broadcast({ type: "layout-changed", source, device });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });

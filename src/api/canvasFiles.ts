@@ -85,19 +85,40 @@ export async function fetchRenderedCard(project: string, canvas: string, filenam
   return res.json();
 }
 
-// ── Layout ───────────────────────────────────────────────
+// ── Device class ─────────────────────────────────────────
+
+export function getDeviceClass(): string {
+  const w = window.innerWidth;
+  if (w < 768) return "phone";
+  if (w < 1200) return "tablet";
+  if (w < 2560) return "desktop";
+  return "display";
+}
+
+// ── Layout (per device class) ────────────────────────────
 
 export async function fetchLayout(): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/api/layout`);
+  const device = getDeviceClass();
+  const res = await fetch(`${API_BASE}/api/layout?device=${device}`);
   if (!res.ok) return {};
   return res.json();
 }
 
 export async function saveLayout(data: Record<string, unknown>): Promise<void> {
-  await fetch(`${API_BASE}/api/layout`, {
+  const device = getDeviceClass();
+  await fetch(`${API_BASE}/api/layout?device=${device}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
+  });
+}
+
+// ── Focus sync ───────────────────────────────────────────
+
+export function broadcastFocus(filename: string): void {
+  // Use the WebSocket broadcast mechanism
+  import("./micaSocket").then(({ broadcast }) => {
+    broadcast("card-focus", { filename });
   });
 }
 
