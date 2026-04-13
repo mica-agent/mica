@@ -305,9 +305,10 @@ function MermaidRenderer({ content }: { content: string }) {
     });
   }, []);
 
-  // Pan via drag
+  // Pan via drag (skip if clicking a button)
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button")) return;
     e.stopPropagation();
     e.preventDefault();
     dragRef.current = { dragging: true, startX: e.clientX, startY: e.clientY, origX: transform.x, origY: transform.y };
