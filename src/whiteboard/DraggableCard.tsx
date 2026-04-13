@@ -22,19 +22,24 @@ interface Props {
 export default function DraggableCard({ layout, onLayoutChange, title, subtitle, actions, children }: Props) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
-  const dragStartRef = useRef({ x: 0, y: 0, lx: 0, ly: 0 });
-  const resizeStartRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const dragRef = useRef({ startX: 0, startY: 0, origX: 0, origY: 0, w: 0, h: 0 });
+  const resizeRef = useRef({ startX: 0, startY: 0, origW: 0, origH: 0, x: 0, y: 0 });
 
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest(".card-actions")) return;
     e.preventDefault();
     setIsDragging(true);
-    dragStartRef.current = { x: e.clientX, y: e.clientY, lx: layout.x, ly: layout.y };
+    // Capture everything at drag start — no stale closure issues
+    dragRef.current = { startX: e.clientX, startY: e.clientY, origX: layout.x, origY: layout.y, w: layout.w, h: layout.h };
 
     const handleMove = (e: MouseEvent) => {
-      const dx = e.clientX - dragStartRef.current.x;
-      const dy = e.clientY - dragStartRef.current.y;
-      onLayoutChange({ ...layout, x: dragStartRef.current.lx + dx, y: dragStartRef.current.ly + dy });
+      const d = dragRef.current;
+      onLayoutChange({
+        x: d.origX + (e.clientX - d.startX),
+        y: d.origY + (e.clientY - d.startY),
+        w: d.w,
+        h: d.h,
+      });
     };
     const handleUp = () => {
       setIsDragging(false);
@@ -49,15 +54,15 @@ export default function DraggableCard({ layout, onLayoutChange, title, subtitle,
     e.preventDefault();
     e.stopPropagation();
     setIsResizing(true);
-    resizeStartRef.current = { x: e.clientX, y: e.clientY, w: layout.w, h: layout.h };
+    resizeRef.current = { startX: e.clientX, startY: e.clientY, origW: layout.w, origH: layout.h, x: layout.x, y: layout.y };
 
     const handleMove = (e: MouseEvent) => {
-      const dx = e.clientX - resizeStartRef.current.x;
-      const dy = e.clientY - resizeStartRef.current.y;
+      const d = resizeRef.current;
       onLayoutChange({
-        ...layout,
-        w: Math.max(200, resizeStartRef.current.w + dx),
-        h: Math.max(150, resizeStartRef.current.h + dy),
+        x: d.x,
+        y: d.y,
+        w: Math.max(200, d.origW + (e.clientX - d.startX)),
+        h: Math.max(150, d.origH + (e.clientY - d.startY)),
       });
     };
     const handleUp = () => {

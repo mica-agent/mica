@@ -122,7 +122,7 @@ export function connect(url?: string): void {
     // Uses relative URL so it works through Vite's proxy in dev containers.
     const poll = setInterval(async () => {
       try {
-        const r = await fetch("/api/card-classes");
+        const r = await fetch("/api/project");
         if (r.ok) {
           clearInterval(poll);
           console.log("[mica-socket] Server is back — reloading page");

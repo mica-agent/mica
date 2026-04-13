@@ -3,6 +3,7 @@ import { fetchProject } from './api/canvasFiles';
 import type { ProjectInfo } from './api/canvasFiles';
 import { connect as connectMicaSocket, onConnectionChange } from './api/micaSocket';
 import CanvasCardRuntime from './whiteboard/CanvasCardRuntime';
+import './App.css';
 
 connectMicaSocket();
 
@@ -25,7 +26,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0a0a0f', color: '#ccc' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0a0a0f', color: '#ccc', fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif" }}>
       {/* Top bar */}
       <div style={{
         height: 40, flexShrink: 0,

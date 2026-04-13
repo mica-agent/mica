@@ -1,19 +1,29 @@
-// CardFrame — File card that renders content client-side.
-// Uses DraggableCard for drag/resize. Adds file-specific features (flip, edit, render).
+// CardFrame — wraps a file as a .wb-card element on the canvas.
+//
+// Renders the wb-card chrome (header, body, footer, resize handle).
+// The canvas card class owns positioning, drag, and resize via event
+// delegation on #canvas-freeform.
+//
+// Content rendering: for now, renders file content client-side
+// (markdown, mermaid, text, json). Future: delegate to card class render.js.
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { CanvasFile } from "../api/canvasFiles";
 import { fetchCardBack, saveCardBack } from "../api/canvasFiles";
-import DraggableCard from "./DraggableCard";
-import type { CardLayout } from "./DraggableCard";
+import CardRuntime from "./CardRuntime";
+
+interface RenderedCardData {
+  html: string | null;
+  cardClass: string | null;
+  exports?: string[];
+  dependencies?: { scripts?: string[]; styles?: string[] };
+  meta?: Record<string, string>;
+}
 
 interface Props {
   file: CanvasFile;
-  layout: CardLayout;
-  onLayoutChange: (layout: CardLayout) => void;
   onEdit: () => void;
   onDelete: () => void;
-  onSave: (content: string) => void;
 }
 
 function getFileType(filename: string): string {
@@ -25,13 +35,50 @@ function getFileType(filename: string): string {
   return "text";
 }
 
-export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDelete }: Props) {
+function getFileBadge(type: string): string {
+  switch (type) {
+    case "markdown": return "MD";
+    case "mermaid": return "MMD";
+    case "json": return "JSON";
+    case "image": return "IMG";
+    default: return "TXT";
+  }
+}
+
+export default function CardFrame({ file, onEdit, onDelete }: Props) {
   const [flipped, setFlipped] = useState(false);
   const [backContent, setBackContent] = useState("");
   const [backLoaded, setBackLoaded] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [overflows, setOverflows] = useState(false);
+
+  const [renderedCard, setRenderedCard] = useState<RenderedCardData | null>(null);
+  const [renderChecked, setRenderChecked] = useState(false);
 
   const fileType = getFileType(file.name);
+  const badge = renderedCard?.meta?.badge || getFileBadge(fileType);
 
+  // Check if this file has a card class with render.js
+  useEffect(() => {
+    const API_BASE = import.meta.env.VITE_MICA_API || "";
+    fetch(`${API_BASE}/api/rendered-card/${encodeURIComponent(file.name)}`)
+      .then(r => r.json())
+      .then((data: RenderedCardData) => {
+        console.log(`[CardFrame] ${file.name}: cardClass=${data.cardClass}, html=${data.html ? data.html.length + ' chars' : 'null'}`);
+        setRenderedCard(data.html ? data : null);
+        setRenderChecked(true);
+      })
+      .catch((err) => { console.error(`[CardFrame] ${file.name}: fetch error`, err); setRenderChecked(true); });
+  }, [file.name]);
+
+  // Check overflow
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el || flipped) return;
+    setOverflows(el.scrollHeight > el.clientHeight + 4);
+  }, [file.content, flipped]);
+
+  // Load card back on flip
   useEffect(() => {
     if (flipped && !backLoaded) {
       fetchCardBack(file.name).then((c) => {
@@ -45,49 +92,76 @@ export default function CardFrame({ file, layout, onLayoutChange, onEdit, onDele
     saveCardBack(file.name, backContent);
   }, [file.name, backContent]);
 
-  const actions = (
-    <>
-      <button onClick={() => { setFlipped(!flipped); setBackLoaded(false); }} style={actionBtnStyle} title={flipped ? "Show content" : "Card info"}>
-        &#8645;
-      </button>
-      <button onClick={onEdit} style={actionBtnStyle} title="Edit">
-        &#9998;
-      </button>
-      <button onClick={onDelete} style={actionBtnStyle} title="Delete">
-        &times;
-      </button>
-    </>
-  );
-
   return (
-    <DraggableCard
-      layout={layout}
-      onLayoutChange={onLayoutChange}
-      title={file.name}
-      subtitle={fileType}
-      actions={actions}
-    >
+    <div className={`wb-card ${flipped ? "wb-card--flipped" : ""}`} data-filename={file.name}>
+      {/* Header — drag handle (canvas card class makes this draggable) */}
+      <div className="wb-card-header">
+        <span className="wb-card-type">{badge}</span>
+        <span className="wb-card-title">{file.name}</span>
+        <div className="wb-card-actions">
+          <button
+            onClick={(e) => { e.stopPropagation(); setFlipped(!flipped); setBackLoaded(false); }}
+            title={flipped ? "Show content" : "Card info"}
+            className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}
+          >
+            &#8645;
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); onEdit(); }} title="Edit" className="wb-card-btn">
+            &#9998;
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Delete" className="wb-card-btn wb-card-btn--danger">
+            &times;
+          </button>
+        </div>
+      </div>
+
+      {/* Body */}
       {flipped ? (
-        <div style={{ padding: 12, display: "flex", flexDirection: "column", height: "100%" }}>
-          <div style={{ color: "#888", fontSize: 11, marginBottom: 8 }}>Card info — how this card was generated, AI guidance</div>
+        <div className="wb-card-body" style={{ padding: 12, display: "flex", flexDirection: "column" }}>
+          <div style={{ color: "#888", fontSize: 11, marginBottom: 8 }}>
+            Card info — how this card was generated, AI guidance
+          </div>
           <textarea
             value={backContent}
             onChange={(e) => setBackContent(e.target.value)}
             onBlur={handleSaveBack}
             placeholder="Add info about this card..."
             style={{
-              flex: 1, background: "#1a1a2e", color: "#ccc", border: "1px solid #444",
-              borderRadius: 4, padding: 8, fontSize: 13, fontFamily: "monospace",
-              resize: "none", outline: "none",
+              flex: 1, background: "rgba(255,255,255,0.03)", color: "#ccc",
+              border: "1px solid rgba(255,255,255,0.1)", borderRadius: 4,
+              padding: 8, fontSize: 13, fontFamily: "monospace",
+              resize: "none", outline: "none", minHeight: 100,
             }}
           />
         </div>
+      ) : renderedCard?.html ? (
+        <div className="wb-card-body" style={{ overflow: "hidden", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+          <CardRuntime
+            html={renderedCard.html}
+            exports={renderedCard.exports}
+            dependencies={renderedCard.dependencies}
+            project="_"
+            canvas="_"
+            filename={file.name}
+          />
+        </div>
       ) : (
-        <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+        <div
+          ref={bodyRef}
+          className={`wb-card-body ${overflows ? "wb-card-body--overflows" : ""}`}
+        >
           <FileContent content={file.content} type={fileType} />
         </div>
       )}
-    </DraggableCard>
+
+      {/* Footer */}
+      <div className="wb-card-footer">
+        <span className="wb-card-filename">{file.name}</span>
+      </div>
+
+      {/* Resize handle (canvas card class handles resize via event delegation) */}
+      <div className="wb-card-resize-handle" />
+    </div>
   );
 }
 
@@ -98,21 +172,35 @@ function FileContent({ content, type }: { content: string; type: string }) {
     case "markdown":
       return (
         <div
-          style={{ color: "#ddd", fontSize: 14, lineHeight: 1.6 }}
+          style={{ color: "#ddd", fontSize: 14, lineHeight: 1.6, padding: 16 }}
           dangerouslySetInnerHTML={{ __html: simpleMarkdown(content) }}
         />
       );
     case "mermaid":
-      return <MermaidRenderer content={content} />;
+      return (
+        <div style={{ padding: 16 }}>
+          <MermaidRenderer content={content} />
+        </div>
+      );
     case "json":
-      return <pre style={{ color: "#b8d4e3", fontSize: 12, margin: 0, whiteSpace: "pre-wrap" }}>{content}</pre>;
+      return <pre style={{ color: "#b8d4e3", fontSize: 12, margin: 0, whiteSpace: "pre-wrap", padding: 16 }}>{content}</pre>;
     default:
-      return <pre style={{ color: "#ccc", fontSize: 13, margin: 0, whiteSpace: "pre-wrap" }}>{content}</pre>;
+      return <pre style={{ color: "#ccc", fontSize: 13, margin: 0, whiteSpace: "pre-wrap", padding: 16 }}>{content}</pre>;
   }
 }
 
 function simpleMarkdown(md: string): string {
-  return md
+  // Strip ```markdown fences — just render the content as markdown
+  md = md.replace(/^```markdown\n([\s\S]*?)```$/gm, (_m, inner) => inner);
+
+  // Extract fenced code blocks before other processing
+  const fenced: string[] = [];
+  md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
+    fenced.push(`<pre style="background:rgba(0,0,0,0.3);padding:8px 10px;border-radius:6px;overflow-x:auto;margin:6px 0"><code style="font-size:12px;font-family:monospace">${code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>`);
+    return `__FENCED__${fenced.length - 1}__`;
+  });
+
+  let result = md
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -121,41 +209,39 @@ function simpleMarkdown(md: string): string {
     .replace(/^# (.+)$/gm, "<h1>$1</h1>")
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/`(.+?)`/g, "<code style='background:#1a1a2e;padding:1px 4px;border-radius:3px'>$1</code>")
+    .replace(/`(.+?)`/g, "<code style='background:rgba(255,255,255,0.06);padding:1px 4px;border-radius:3px'>$1</code>")
     .replace(/^- \[x\] (.+)$/gm, '<div style="opacity:0.6"><input type="checkbox" checked disabled /> <s>$1</s></div>')
     .replace(/^- \[ \] (.+)$/gm, '<div><input type="checkbox" disabled /> $1</div>')
     .replace(/^- (.+)$/gm, "<li>$1</li>")
     .replace(/\n\n/g, "<br/><br/>")
     .replace(/\n/g, "<br/>");
+
+  // Restore fenced code blocks
+  for (let i = 0; i < fenced.length; i++) {
+    result = result.replace(`__FENCED__${i}__`, fenced[i]);
+  }
+  return result;
 }
 
 function MermaidRenderer({ content }: { content: string }) {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string>("");
 
-  useState(() => {
+  useEffect(() => {
+    let cancelled = false;
     import("mermaid").then(async (m) => {
       m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
       try {
         const { svg } = await m.default.render(`mermaid-${Date.now()}`, content);
-        setSvg(svg);
+        if (!cancelled) setSvg(svg);
       } catch (err) {
-        setError((err as Error).message);
+        if (!cancelled) setError((err as Error).message);
       }
     });
-  });
+    return () => { cancelled = true; };
+  }, [content]);
 
   if (error) return <pre style={{ color: "#f66", fontSize: 12 }}>{error}</pre>;
   if (!svg) return <div style={{ color: "#666" }}>Rendering diagram...</div>;
   return <div dangerouslySetInnerHTML={{ __html: svg }} />;
 }
-
-const actionBtnStyle: React.CSSProperties = {
-  background: "transparent",
-  color: "#888",
-  border: "none",
-  cursor: "pointer",
-  fontSize: 16,
-  padding: "0 4px",
-  lineHeight: 1,
-};

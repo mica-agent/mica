@@ -17,6 +17,7 @@ import {
 } from "./files.js";
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { join } from "path";
+import { existsSync } from "fs";
 import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer } from "./llamaServer.js";
@@ -59,6 +60,149 @@ app.use((_req, res, next) => {
 app.get("/api/project", async (_req, res) => {
   const name = await getProjectName();
   res.json({ name, path: PROJECT_DIR });
+});
+
+// ── Card Classes ─────────────────────────────────────────────
+
+const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
+
+// Resolve card class directory: .mica/card-classes/:name first, then built-in
+function resolveCardClassDir(className: string): string | null {
+  const projectScoped = join(micaDir(), "card-classes", className);
+  if (existsSync(join(projectScoped, "render.js"))) return projectScoped;
+  const builtIn = join(CARD_CLASSES_DIR, className);
+  if (existsSync(join(builtIn, "render.js"))) return builtIn;
+  return null;
+}
+
+// Get render.js content for a card class
+app.get("/api/card-classes/:className/render.js", async (req, res) => {
+  const dir = resolveCardClassDir(req.params.className);
+  if (!dir) {
+    res.status(404).json({ error: `Card class not found: ${req.params.className}` });
+    return;
+  }
+  try {
+    const content = await readFile(join(dir, "render.js"), "utf-8");
+    res.type("application/javascript").send(content);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// List available card classes
+app.get("/api/card-classes", async (_req, res) => {
+  const { readdir: rd } = await import("fs/promises");
+  const classes: Record<string, unknown> = {};
+
+  // Built-in
+  try {
+    const entries = await rd(CARD_CLASSES_DIR);
+    for (const name of entries) {
+      if (existsSync(join(CARD_CLASSES_DIR, name, "render.js"))) {
+        classes[name] = { builtIn: true };
+      }
+    }
+  } catch { /* no card-classes dir */ }
+
+  // Project-scoped (overrides built-in)
+  try {
+    const projectDir = join(micaDir(), "card-classes");
+    const entries = await rd(projectDir);
+    for (const name of entries) {
+      if (existsSync(join(projectDir, name, "render.js"))) {
+        classes[name] = { builtIn: false };
+      }
+    }
+  } catch { /* no project card-classes */ }
+
+  res.json(classes);
+});
+
+// Render the canvas card (server-side, returns HTML)
+app.get("/api/canvas-card", async (_req, res) => {
+  try {
+    const classDir = resolveCardClassDir("canvas");
+    if (!classDir) throw new Error("Canvas card class not found");
+
+    const renderPath = join(classDir, "render.js");
+    // Dynamic import with cache-busting for hot reload
+    const mod = await import(renderPath + "?t=" + Date.now());
+    const files = await listFiles();
+    const html = mod.default("", {
+      children: files.map((f: { name: string }) => ({ filename: f.name })),
+    });
+
+    res.json({
+      html,
+      exports: Object.keys(mod).filter(
+        (k) => k !== "default" && k !== "metadata" && k !== "dependencies"
+      ),
+      dependencies: mod.dependencies || {},
+      meta: mod.metadata || {},
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── Render a child card via its card class ───────────────────
+
+// Map file extension to card class name
+function cardClassForFile(filename: string): string | null {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  if (!ext) return null;
+  // Check if there's a card class with this extension
+  const dir = resolveCardClassDir(ext);
+  return dir ? ext : null;
+}
+
+app.get("/api/rendered-card/:filename", async (req, res) => {
+  const { filename } = req.params;
+  try {
+    const cardClass = cardClassForFile(filename);
+    if (!cardClass) {
+      // No card class — return null so frontend does client-side rendering
+      res.json({ html: null, cardClass: null });
+      return;
+    }
+
+    const classDir = resolveCardClassDir(cardClass)!;
+    const renderPath = join(classDir, "render.js");
+    const mod = await import(renderPath + "?t=" + Date.now());
+
+    // Read file content
+    let content = "";
+    try {
+      const file = await readProjectFile(filename);
+      content = file.content;
+    } catch { /* new file, empty content */ }
+
+    const html = mod.default(content, { filename });
+
+    res.json({
+      html,
+      cardClass,
+      exports: Object.keys(mod).filter(k => k !== "default" && k !== "metadata" && k !== "dependencies"),
+      dependencies: mod.dependencies || {},
+      meta: mod.metadata || {},
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── Card error/ok reporting (from CARD_SHIM) ────────────────
+
+app.post("/api/cards/:filename/error", (req, res) => {
+  const { filename } = req.params;
+  const { error } = req.body as { error?: string };
+  if (error) console.log(`[card-error] ${filename}: ${error.slice(0, 200)}`);
+  res.json({ ok: true });
+});
+
+app.post("/api/cards/:filename/ok", (_req, res) => {
+  res.json({ ok: true });
 });
 
 // List all files

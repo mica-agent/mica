@@ -1,5 +1,7 @@
 // Frontend API client for Mica Lite — single project, simple file operations.
 
+export type CanvasId = string;
+
 const API_BASE = import.meta.env.VITE_MICA_API || "";
 
 export interface ProjectInfo {
@@ -18,6 +20,21 @@ export interface CanvasFile {
 export async function fetchProject(): Promise<ProjectInfo> {
   const res = await fetch(`${API_BASE}/api/project`);
   if (!res.ok) throw new Error(`Failed to fetch project: ${res.statusText}`);
+  return res.json();
+}
+
+// ── Canvas Card (server-rendered) ────────────────────────
+
+export interface RenderedCanvasCard {
+  html: string;
+  exports: string[];
+  dependencies: { scripts?: string[]; styles?: string[] };
+  meta: Record<string, string>;
+}
+
+export async function fetchCanvasCard(signal?: AbortSignal): Promise<RenderedCanvasCard> {
+  const res = await fetch(`${API_BASE}/api/canvas-card`, { signal });
+  if (!res.ok) throw new Error(`Failed to fetch canvas card: ${res.statusText}`);
   return res.json();
 }
 
@@ -49,6 +66,23 @@ export async function deleteFile(filename: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error(`Failed to delete file: ${res.statusText}`);
+}
+
+// ── Rendered Card (for card classes with render.js) ──────
+
+export interface RenderedCard {
+  filename: string;
+  html: string;
+  exports: string[];
+  dependencies?: { scripts?: string[]; styles?: string[] };
+  meta: Record<string, string>;
+}
+
+export async function fetchRenderedCard(project: string, canvas: string, filename: string): Promise<RenderedCard> {
+  // In single-project mode, project/canvas are ignored — use the rendered-card endpoint
+  const res = await fetch(`${API_BASE}/api/rendered-card/${encodeURIComponent(filename)}`);
+  if (!res.ok) throw new Error(`Failed to fetch rendered card: ${res.statusText}`);
+  return res.json();
 }
 
 // ── Layout ───────────────────────────────────────────────
