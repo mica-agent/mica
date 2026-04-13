@@ -95,7 +95,18 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
   }, [file.name, backContent]);
 
   return (
-    <div className={`wb-card wb-card--positioned wb-card--resized ${flipped ? "wb-card--flipped" : ""}`} data-filename={file.name}>
+    <div
+      ref={(el) => {
+        if (!el) return;
+        // After React re-render (e.g. flip), restore classes the canvas script added.
+        // wb-card--positioned controls opacity — without it the card disappears.
+        // We add it here only if the card already has a position (style.left is set).
+        if (el.style.left) el.classList.add("wb-card--positioned");
+        el.classList.add("wb-card--resized");
+      }}
+      className={`wb-card wb-card--resized ${flipped ? "wb-card--flipped" : ""}`}
+      data-filename={file.name}
+    >
       {/* Header — drag handle (canvas card class makes this draggable) */}
       <div className="wb-card-header">
         <span className="wb-card-type">{badge}</span>
