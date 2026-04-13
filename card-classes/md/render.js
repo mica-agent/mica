@@ -142,7 +142,7 @@ export default function render(content, config) {
         'fetch("/api/files/" + encodeURIComponent(mica.filename), {' +
           'method: "PUT",' +
           'headers: { "Content-Type": "application/json" },' +
-          'body: JSON.stringify({ content: md })' +
+          'body: JSON.stringify({ content: md, source: mica.windowId })' +
         '}).catch(function(err) { console.error("[markdown] save failed:", err); });' +
         'setTimeout(function() { justSaved = false; }, 1000);' +
       '}, 800);' +

@@ -24,11 +24,16 @@ export default function render(content, config) {
     '</div>' +
 
     '<div id="chat-statusbar" style="display:none;flex-shrink:0;">' +
-      '<div style="display:flex;align-items:center;gap:8px;padding:6px 12px;' +
-        'border-top:1px solid #30363d;font-size:12px;color:#8b949e;">' +
+      '<div id="chat-status-main" style="display:flex;align-items:center;gap:8px;padding:6px 12px;' +
+        'border-top:1px solid #30363d;font-size:12px;color:#8b949e;cursor:pointer;user-select:none;">' +
         '<span id="chat-dot" style="width:8px;height:8px;border-radius:50%;flex-shrink:0;"></span>' +
         '<span id="chat-status-label" style="flex:1;"></span>' +
         '<span id="chat-status-meta" style="flex-shrink:0;font-size:11px;"></span>' +
+        '<span id="chat-status-toggle" style="font-size:10px;color:#6e7681;margin-left:4px;">&#9660;</span>' +
+      '</div>' +
+      '<div id="chat-status-detail" style="display:none;max-height:150px;overflow-y:auto;' +
+        'padding:4px 12px 8px 28px;font-size:11px;font-family:monospace;color:#6e7681;' +
+        'border-top:1px solid rgba(48,54,61,0.5);">' +
       '</div>' +
     '</div>' +
 
@@ -65,14 +70,35 @@ export default function render(content, config) {
     'var sendBtn = container.querySelector("#chat-send");' +
     'var stopBtn = container.querySelector("#chat-stop");' +
     'var statusBar = container.querySelector("#chat-statusbar");' +
+    'var statusMain = container.querySelector("#chat-status-main");' +
     'var statusDot = container.querySelector("#chat-dot");' +
     'var statusLabel = container.querySelector("#chat-status-label");' +
     'var statusMeta = container.querySelector("#chat-status-meta");' +
+    'var statusToggle = container.querySelector("#chat-status-toggle");' +
+    'var statusDetail = container.querySelector("#chat-status-detail");' +
+    'var detailExpanded = false;' +
     'var ACCENT = "' + color + '";' +
     'var busy = false;' +
     'var elapsedSec = 0;' +
     'var elapsedTimer = null;' +
     'var stepCount = 0;' +
+
+    // Toggle detail panel
+    'statusMain.addEventListener("click", function(e) {' +
+      'e.stopPropagation();' +
+      'detailExpanded = !detailExpanded;' +
+      'statusDetail.style.display = detailExpanded ? "block" : "none";' +
+      'statusToggle.innerHTML = detailExpanded ? "&#9650;" : "&#9660;";' +
+      'if (detailExpanded) statusDetail.scrollTop = statusDetail.scrollHeight;' +
+    '});' +
+
+    'function addDetailLine(text) {' +
+      'var line = window.document.createElement("div");' +
+      'line.style.cssText = "padding:1px 0;border-bottom:1px solid rgba(48,54,61,0.3);";' +
+      'line.textContent = text;' +
+      'statusDetail.appendChild(line);' +
+      'if (detailExpanded) statusDetail.scrollTop = statusDetail.scrollHeight;' +
+    '}' +
 
     // Open channel to server agent
     'var ch = mica.openChannel("agent_session");' +
@@ -153,22 +179,32 @@ export default function render(content, config) {
         'case "thinking":' +
           'busy = true; sendBtn.disabled = true; sendBtn.style.display = "none"; stopBtn.style.display = "";' +
           'stepCount = 0; elapsedSec = 0;' +
+          'statusDetail.innerHTML = "";' +
+          'addDetailLine("Starting...");' +
           'setStatus("Thinking...", ACCENT, true);' +
           'elapsedTimer = setInterval(function() { elapsedSec++; updateMeta(); }, 1000);' +
           'break;' +
         'case "progress":' +
-          'if (data.description) { stepCount++; setStatus(data.description, ACCENT, true); updateMeta(); }' +
+          'if (data.description) {' +
+            'stepCount++;' +
+            'setStatus(data.description, ACCENT, true);' +
+            'updateMeta();' +
+            'addDetailLine("[" + stepCount + "] " + data.description);' +
+          '}' +
           'break;' +
         'case "assistant":' +
           'busy = false; sendBtn.disabled = false; sendBtn.style.display = ""; stopBtn.style.display = "none";' +
           'if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }' +
-          'setStatus(data.filesChanged ? "Canvas updated" : "Done", "#3fb950", false);' +
+          'var doneMsg = data.filesChanged ? "Canvas updated" : "Done";' +
+          'setStatus(doneMsg + " (" + elapsedSec + "s, " + stepCount + " steps)", "#3fb950", false);' +
+          'addDetailLine("Completed in " + elapsedSec + "s with " + stepCount + " steps");' +
           'addMessage("assistant", data.content, data.agent || "Qwen");' +
           'break;' +
         'case "error":' +
           'busy = false; sendBtn.disabled = false; sendBtn.style.display = ""; stopBtn.style.display = "none";' +
           'if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }' +
           'setStatus("Error", "#f87171", false);' +
+          'addDetailLine("ERROR: " + (data.error || "Unknown"));' +
           'addMessage("assistant", "Error: " + (data.error || "Unknown"), "System");' +
           'break;' +
       '}' +

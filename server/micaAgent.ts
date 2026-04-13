@@ -151,7 +151,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       }
     }
 
-    // Subscribe to file watcher
+    // Subscribe to file watcher for reactive behavior
     fileWatcher.on("file-change", onFileChanged);
 
     async function processMessage(message: string) {
