@@ -287,6 +287,7 @@ export default function render(content, config) {
             'todo': function(name) { return '---\\nmica: todo\\n---\\n# ' + name + '\\n\\n## Active\\n- [ ] @human First task\\n\\n## Done\\n'; },
             'mmd': function(name) { return 'graph TD\\n    A[Start] --> B[End]\\n'; },
             'chat': function(name) { var id = 'chat-' + Date.now().toString(36); return '---\\nmica: chat\\nid: ' + id + '\\n---\\nMica AI chat session.\\n'; },
+            'terminal': function() { return ''; },
         };
 
         function buildToolbar() {

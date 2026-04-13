@@ -23,7 +23,8 @@ import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer } from "./llamaServer.js";
 import { chatHandler } from "./micaChat.js";
 import { createAgentHandler } from "./micaAgent.js";
-import { createTerminalHandler } from "./micaTerminal.js";
+import { execHandler } from "./plugins/exec.js";
+import { createPtyHandler } from "./plugins/pty.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
@@ -594,14 +595,13 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
     console.error("[startup] File watcher failed:", (err as Error).message);
   }
 
-  // Register mica.* handlers
-  registerMicaHandler("chat", chatHandler);
+  // Register mica.* RPC plugins
+  registerMicaHandler("chat", chatHandler);  // mica.chat.*
+  registerMicaHandler("exec", execHandler);  // mica.exec.*
 
-  // Register channel handler for .chat files (Qwen Code agent)
-  channelManager.registerHandler("chat", createAgentHandler(fileWatcher));
-
-  // Register channel handler for .terminal files (PTY terminal)
-  channelManager.registerHandler("terminal", createTerminalHandler());
+  // Register channel-based plugins
+  channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files → Qwen agent
+  channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files → PTY
 
   // Start llama-server for local AI
   ensureLlamaServer().catch((err) => {
