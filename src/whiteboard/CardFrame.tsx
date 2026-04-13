@@ -95,7 +95,7 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
   }, [file.name, backContent]);
 
   return (
-    <div className={`wb-card ${flipped ? "wb-card--flipped" : ""}`} data-filename={file.name}>
+    <div className={`wb-card wb-card--positioned wb-card--resized ${flipped ? "wb-card--flipped" : ""}`} data-filename={file.name}>
       {/* Header — drag handle (canvas card class makes this draggable) */}
       <div className="wb-card-header">
         <span className="wb-card-type">{badge}</span>
