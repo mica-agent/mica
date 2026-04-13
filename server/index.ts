@@ -23,6 +23,7 @@ import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer } from "./llamaServer.js";
 import { chatHandler } from "./micaChat.js";
 import { createAgentHandler } from "./micaAgent.js";
+import { createTerminalHandler } from "./micaTerminal.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
@@ -598,6 +599,9 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
 
   // Register channel handler for .chat files (Qwen Code agent)
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));
+
+  // Register channel handler for .terminal files (PTY terminal)
+  channelManager.registerHandler("terminal", createTerminalHandler());
 
   // Start llama-server for local AI
   ensureLlamaServer().catch((err) => {
