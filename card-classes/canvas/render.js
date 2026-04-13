@@ -322,7 +322,8 @@ export default function render(content, config) {
             var tidyBtn = document.createElement('button');
             tidyBtn.className = 'toolbar-btn';
             tidyBtn.textContent = 'Tidy';
-            tidyBtn.addEventListener('click', function() {
+            tidyBtn.title = 'Tidy layout (hold Option/Alt to fit all on screen)';
+            tidyBtn.addEventListener('click', function(e) {
                 var cards = Array.from(freeform.querySelectorAll('.wb-card'));
                 if (cards.length === 0) return;
 
@@ -332,27 +333,55 @@ export default function render(content, config) {
                     return aName.localeCompare(bName);
                 });
 
-                // Place cards left-to-right, wrapping to next row when
-                // the card would exceed the container width
-                layout = {};
                 var maxWidth = freeform.offsetWidth || 1200;
-                var x = 0, y = 0, rowMaxH = 0;
-                cards.forEach(function(card) {
-                    var w = card.offsetWidth || CARD_W;
-                    var h = card.offsetHeight || CARD_H;
-                    // Wrap to next row if this card won't fit (unless it's the first in the row)
-                    if (x > 0 && x + w > maxWidth) {
-                        y += rowMaxH + GAP;
-                        x = 0;
-                        rowMaxH = 0;
-                    }
-                    card.style.left = x + 'px';
-                    card.style.top = y + 'px';
-                    if (h > rowMaxH) rowMaxH = h;
-                    var name = card.getAttribute('data-filename');
-                    if (name) layout[name] = { x: x, y: y, w: w, h: h };
-                    x += w + GAP;
-                });
+                var maxHeight = freeform.offsetHeight || 800;
+
+                if (e.altKey) {
+                    // Option/Alt + Tidy: resize cards to fit all on screen
+                    var count = cards.length;
+                    // Calculate optimal grid: try to make it roughly square
+                    var cols = Math.ceil(Math.sqrt(count));
+                    var rows = Math.ceil(count / cols);
+                    var cardW = Math.floor((maxWidth - (cols - 1) * GAP) / cols);
+                    var cardH = Math.floor((maxHeight - (rows - 1) * GAP) / rows);
+                    // Clamp to reasonable minimums
+                    cardW = Math.max(MIN_W, cardW);
+                    cardH = Math.max(MIN_H, cardH);
+
+                    layout = {};
+                    cards.forEach(function(card, i) {
+                        var col = i % cols;
+                        var row = Math.floor(i / cols);
+                        var x = col * (cardW + GAP);
+                        var y = row * (cardH + GAP);
+                        card.style.left = x + 'px';
+                        card.style.top = y + 'px';
+                        card.style.width = cardW + 'px';
+                        card.style.height = cardH + 'px';
+                        card.classList.add('wb-card--resized');
+                        var name = card.getAttribute('data-filename');
+                        if (name) layout[name] = { x: x, y: y, w: cardW, h: cardH };
+                    });
+                } else {
+                    // Normal tidy: arrange in grid with current card sizes
+                    layout = {};
+                    var x = 0, y = 0, rowMaxH = 0;
+                    cards.forEach(function(card) {
+                        var w = card.offsetWidth || CARD_W;
+                        var h = card.offsetHeight || CARD_H;
+                        if (x > 0 && x + w > maxWidth) {
+                            y += rowMaxH + GAP;
+                            x = 0;
+                            rowMaxH = 0;
+                        }
+                        card.style.left = x + 'px';
+                        card.style.top = y + 'px';
+                        if (h > rowMaxH) rowMaxH = h;
+                        var name = card.getAttribute('data-filename');
+                        if (name) layout[name] = { x: x, y: y, w: w, h: h };
+                        x += w + GAP;
+                    });
+                }
                 persistLayout();
             });
             toolbar.appendChild(tidyBtn);
