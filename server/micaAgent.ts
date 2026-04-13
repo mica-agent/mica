@@ -273,11 +273,25 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       }
     }
 
+    // Track if initial scan has been triggered
+    let initialScanDone = false;
+
     return {
       onAttach(clientId, _args) {
         // Send history to newly attached client
         loadHistory(chatId).then((messages) => {
           ctx.sendTo(clientId, { type: "history", messages });
+
+          // On first attach with no history, trigger initial project scan
+          if (!initialScanDone && messages.length === 0) {
+            initialScanDone = true;
+            const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+            // Delay slightly to let the UI settle
+            setTimeout(() => {
+              if (!busy) processMessage(scanMessage);
+              else queue.push(scanMessage);
+            }, 2000);
+          }
         });
       },
 

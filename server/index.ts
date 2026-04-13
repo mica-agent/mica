@@ -548,6 +548,45 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
     console.warn("[startup] Failed to copy skills:", (err as Error).message);
   }
 
+  // Auto-create agent card if no .chat file exists in the project
+  try {
+    const files = await listFiles();
+    const hasChatCard = files.some((f: { name: string }) => f.name.endsWith(".chat"));
+    if (!hasChatCard) {
+      const agentId = "agent-" + Date.now().toString(36);
+      const chatFilename = agentId + ".chat";
+      const stub = "---\nmica: chat\nid: " + agentId + "\n---\nMica project agent.\n";
+      await writeProjectFile(chatFilename, stub);
+
+      // Write default behavior instructions on the agent card's back
+      const cardsDir = join(micaDir(), "cards");
+      await mkdir(cardsDir, { recursive: true });
+      await writeFile(join(cardsDir, chatFilename), [
+        "## On Project Open",
+        "- Scan project files and identify the project type",
+        "- Write canvas-back.md with project context and purpose",
+        "- Create decisions.md if none exists",
+        "- Create a TODO file with initial tasks if none exists",
+        "- Suggest how to organize files on the canvas",
+        "",
+        "## On File Changes",
+        "- Check todo files for @agent tasks and work on them",
+        "- Update dependent docs when specs change",
+        "- Log decisions and actions to decisions.md",
+        "- If you have questions, add a todo item assigned to @human",
+        "",
+        "## On User Message",
+        "- Answer questions about the project",
+        "- Create card classes when asked to build interactive components",
+        "- Use the create-card-class skill for new visualizations",
+      ].join("\n"), "utf-8");
+
+      console.log("[startup] Created agent card: " + chatFilename);
+    }
+  } catch (err) {
+    console.warn("[startup] Failed to create agent card:", (err as Error).message);
+  }
+
   try {
     await fileWatcher.start();
   } catch (err) {
