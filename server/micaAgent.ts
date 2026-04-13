@@ -135,6 +135,8 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // Ignore our own chat file and dotfiles
       if (event.filename === ctx.filename) return;
       if (event.filename.startsWith(".")) return;
+      // Ignore file changes while agent is busy — these are the agent's own writes
+      if (busy) return;
 
       coalesceBuffer.set(event.filename, (coalesceBuffer.get(event.filename) || 0) + 1);
 

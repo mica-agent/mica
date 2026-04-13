@@ -109,11 +109,36 @@ export default function render(content, config) {
 
     'function renderMarkdown(text) {' +
       'text = text.replace(/^```markdown\\n([\\s\\S]*?)```$/gm, function(m, inner) { return inner; });' +
+
+      // Extract fenced code blocks
       'var fenced = [];' +
       'text = text.replace(/```(\\w*)\\n([\\s\\S]*?)```/g, function(m, lang, code) {' +
         'fenced.push("<pre style=\\"background:rgba(0,0,0,0.3);padding:8px 10px;border-radius:6px;overflow-x:auto;margin:6px 0\\"><code style=\\"font-size:12px;font-family:monospace\\">" + code.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;") + "</code></pre>");' +
         'return "__FENCED__" + (fenced.length - 1) + "__";' +
       '});' +
+
+      // Extract tables (consecutive lines starting with |)
+      'var tables = [];' +
+      'text = text.replace(/(^\\|.+\\|\\n?)+/gm, function(block) {' +
+        'var rows = block.trim().split("\\n");' +
+        'var html = "<table style=\\"border-collapse:collapse;margin:6px 0;font-size:12px;width:100%\\">";' +
+        'for (var ri = 0; ri < rows.length; ri++) {' +
+          'var row = rows[ri].trim();' +
+          'if (/^\\|[\\s-:|]+\\|$/.test(row)) continue;' +  // skip separator row
+          'var cells = row.split("|").filter(function(c,i,a) { return i > 0 && i < a.length - 1; });' +
+          'var tag = ri === 0 ? "th" : "td";' +
+          'html += "<tr>";' +
+          'for (var ci = 0; ci < cells.length; ci++) {' +
+            'var style = tag === "th" ? "background:rgba(255,255,255,0.05);font-weight:600;" : "";' +
+            'html += "<" + tag + " style=\\"border:1px solid #333;padding:4px 8px;" + style + "\\">" + cells[ci].trim() + "</" + tag + ">";' +
+          '}' +
+          'html += "</tr>";' +
+        '}' +
+        'html += "</table>";' +
+        'tables.push(html);' +
+        'return "__TABLE__" + (tables.length - 1) + "__";' +
+      '});' +
+
       'text = text' +
         '.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")' +
         '.replace(/^### (.+)$/gm, "<h3>$1</h3>")' +
@@ -126,8 +151,13 @@ export default function render(content, config) {
         '.replace(/^\\d+\\. (.+)$/gm, "<li>$1</li>")' +
         '.replace(/\\n\\n/g, "<br/><br/>")' +
         '.replace(/\\n/g, "<br/>");' +
+
+      // Restore fenced blocks and tables
       'for (var fi = 0; fi < fenced.length; fi++) {' +
         'text = text.replace("__FENCED__" + fi + "__", fenced[fi]);' +
+      '}' +
+      'for (var ti = 0; ti < tables.length; ti++) {' +
+        'text = text.replace("__TABLE__" + ti + "__", tables[ti]);' +
       '}' +
       'return text;' +
     '}' +

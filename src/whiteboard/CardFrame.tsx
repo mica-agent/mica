@@ -200,6 +200,27 @@ function simpleMarkdown(md: string): string {
     return `__FENCED__${fenced.length - 1}__`;
   });
 
+  // Extract tables (consecutive lines starting with |)
+  const tables: string[] = [];
+  md = md.replace(/(^\|.+\|\n?)+/gm, (block) => {
+    const rows = block.trim().split("\n");
+    let html = '<table style="border-collapse:collapse;margin:6px 0;font-size:12px;width:100%">';
+    rows.forEach((row, ri) => {
+      if (/^\|[\s-:|]+\|$/.test(row.trim())) return; // skip separator row
+      const cells = row.split("|").filter((_c, i, a) => i > 0 && i < a.length - 1);
+      const tag = ri === 0 ? "th" : "td";
+      html += "<tr>";
+      cells.forEach((cell) => {
+        const style = tag === "th" ? "background:rgba(255,255,255,0.05);font-weight:600;" : "";
+        html += `<${tag} style="border:1px solid #333;padding:4px 8px;${style}">${cell.trim()}</${tag}>`;
+      });
+      html += "</tr>";
+    });
+    html += "</table>";
+    tables.push(html);
+    return `__TABLE__${tables.length - 1}__`;
+  });
+
   let result = md
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -216,9 +237,12 @@ function simpleMarkdown(md: string): string {
     .replace(/\n\n/g, "<br/><br/>")
     .replace(/\n/g, "<br/>");
 
-  // Restore fenced code blocks
+  // Restore fenced code blocks and tables
   for (let i = 0; i < fenced.length; i++) {
     result = result.replace(`__FENCED__${i}__`, fenced[i]);
+  }
+  for (let i = 0; i < tables.length; i++) {
+    result = result.replace(`__TABLE__${i}__`, tables[i]);
   }
   return result;
 }
