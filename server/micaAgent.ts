@@ -305,8 +305,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       } catch (err) {
         activeAbort = null;
         const errMsg = (err as Error).message || String(err);
-        console.error("[mica-agent] Error:", errMsg);
-        ctx.broadcast({ type: "error", error: errMsg });
+        // Empty response = model had nothing to say (common for reactive events)
+        if (errMsg.includes("empty response")) {
+          console.log("[mica-agent] Empty response (no action needed)");
+          ctx.broadcast({ type: "assistant", content: "No action needed.", agent: "Qwen", filesChanged: false });
+        } else {
+          console.error("[mica-agent] Error:", errMsg);
+          ctx.broadcast({ type: "error", error: errMsg });
+        }
       } finally {
         busy = false; sessionState.busy = false;
         // Priority: user messages first, then coalesced file events
