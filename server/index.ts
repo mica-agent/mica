@@ -22,6 +22,7 @@ import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer } from "./llamaServer.js";
 import { chatHandler } from "./micaChat.js";
+import { createAgentHandler } from "./micaAgent.js";
 
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
@@ -533,6 +534,20 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   // Ensure .mica/ exists
   await mkdir(micaDir(), { recursive: true });
 
+  // Copy Mica's skills to project's .qwen/skills/ so the SDK discovers them
+  try {
+    const { cpSync, existsSync: ex } = await import("fs");
+    const srcSkills = join(process.cwd(), ".qwen", "skills");
+    const dstSkills = join(PROJECT_DIR, ".qwen", "skills");
+    if (ex(srcSkills)) {
+      await mkdir(dstSkills, { recursive: true });
+      cpSync(srcSkills, dstSkills, { recursive: true, force: true });
+      console.log("[startup] Copied skills to project .qwen/skills/");
+    }
+  } catch (err) {
+    console.warn("[startup] Failed to copy skills:", (err as Error).message);
+  }
+
   try {
     await fileWatcher.start();
   } catch (err) {
@@ -541,6 +556,9 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
 
   // Register mica.* handlers
   registerMicaHandler("chat", chatHandler);
+
+  // Register channel handler for .chat files (Qwen Code agent)
+  channelManager.registerHandler("chat", createAgentHandler(fileWatcher));
 
   // Start llama-server for local AI
   ensureLlamaServer().catch((err) => {
