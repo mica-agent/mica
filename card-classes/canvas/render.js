@@ -107,10 +107,8 @@ export default function render(content, config) {
                 card.style.left = pos.x + 'px';
                 card.style.top = pos.y + 'px';
                 card.style.width = (pos.w || CARD_W) + 'px';
-                if (pos.h && pos.h !== CARD_H) {
-                    card.style.height = pos.h + 'px';
-                    card.classList.add('wb-card--resized');
-                }
+                card.style.height = (pos.h || CARD_H) + 'px';
+                card.classList.add('wb-card--resized');
             } else {
                 // Auto-position: next open grid slot
                 var cards = Array.from(freeform.querySelectorAll('.wb-card'));
@@ -123,6 +121,8 @@ export default function render(content, config) {
                 card.style.left = x + 'px';
                 card.style.top = y + 'px';
                 card.style.width = CARD_W + 'px';
+                card.style.height = CARD_H + 'px';
+                card.classList.add('wb-card--resized');
                 layout[name] = { x: x, y: y, w: CARD_W, h: CARD_H };
                 persistLayout();
             }
