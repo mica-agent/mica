@@ -271,8 +271,12 @@ function MermaidRenderer({ content }: { content: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    import("mermaid").then(async (m) => {
-      m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+    Promise.all([
+      import("mermaid"),
+      import("@mermaid-js/layout-elk"),
+    ]).then(async ([m, elk]) => {
+      m.default.registerLayoutLoaders(elk.default);
+      m.default.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict", layout: "elk" });
       try {
         const { svg } = await m.default.render(`mermaid-${Date.now()}`, content);
         if (!cancelled) {
