@@ -17,19 +17,31 @@ export default function App() {
     if (val) setWasConnected(true);
   }), []);
 
-  // Auto-reload when disconnected: poll HTTP, reload when server is back
+  // Auto-reload when disconnected: wait 5s (debounce brief disconnects),
+  // then poll HTTP and reload when server responds
   useEffect(() => {
     if (wsConnected || !wasConnected) return;
-    const poll = setInterval(async () => {
-      try {
-        const r = await fetch('/api/project');
-        if (r.ok) {
-          clearInterval(poll);
-          window.location.replace(window.location.pathname + '?t=' + Date.now());
-        }
-      } catch { /* server still down */ }
-    }, 2000);
-    return () => clearInterval(poll);
+    let cancelled = false;
+    let pollId: ReturnType<typeof setInterval> | null = null;
+
+    const delayId = setTimeout(() => {
+      if (cancelled) return;
+      pollId = setInterval(async () => {
+        try {
+          const r = await fetch('/api/project');
+          if (r.ok && !cancelled) {
+            if (pollId) clearInterval(pollId);
+            window.location.replace(window.location.pathname);
+          }
+        } catch { /* server still down */ }
+      }, 2000);
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(delayId);
+      if (pollId) clearInterval(pollId);
+    };
   }, [wsConnected, wasConnected]);
 
   useEffect(() => {
