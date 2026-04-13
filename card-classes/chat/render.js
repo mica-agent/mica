@@ -37,7 +37,18 @@ export default function render(content, config) {
       '</div>' +
     '</div>' +
 
+    '<div id="chat-context-tooltip" style="display:none;position:absolute;bottom:80px;left:8px;right:8px;' +
+      'background:#1c2028;border:1px solid #30363d;border-radius:6px;padding:8px 10px;z-index:10;' +
+      'font-size:11px;font-family:monospace;color:#8b949e;max-height:200px;overflow-y:auto;' +
+      'box-shadow:0 4px 16px rgba(0,0,0,0.4);">' +
+      '<div style="color:#ccc;margin-bottom:4px;font-weight:600;">Context for LLM</div>' +
+      '<div id="chat-context-files">Loading...</div>' +
+    '</div>' +
+
     '<div style="display:flex;gap:6px;padding:8px 12px;border-top:1px solid #30363d;flex-shrink:0;">' +
+      '<span id="chat-ctx-btn" title="Show context files" style="' +
+        'display:flex;align-items:center;cursor:pointer;color:#6e7681;font-size:12px;' +
+        'padding:0 4px;flex-shrink:0;">ctx</span>' +
       '<input id="chat-input" type="text" placeholder="Ask Qwen Agent..." style="' +
         'flex:1;background:#161b22;border:1px solid #30363d;border-radius:6px;' +
         'padding:6px 10px;color:#e6edf3;font-size:13px;outline:none;font-family:inherit;" />' +
@@ -258,6 +269,60 @@ export default function render(content, config) {
     '});' +
     'inputEl.addEventListener("keydown", function(e) {' +
       'if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }' +
+    '});' +
+
+    // Context tooltip
+    'var ctxBtn = container.querySelector("#chat-ctx-btn");' +
+    'var ctxTooltip = container.querySelector("#chat-context-tooltip");' +
+    'var ctxFiles = container.querySelector("#chat-context-files");' +
+    'var ctxVisible = false;' +
+    'var ctxLoaded = false;' +
+
+    'function formatSize(chars) {' +
+      'if (chars < 1024) return chars + " chars";' +
+      'return (chars / 1024).toFixed(1) + "K chars";' +
+    '}' +
+
+    'function loadContextInfo() {' +
+      'fetch("/api/files").then(function(r) { return r.json(); }).then(function(files) {' +
+        'var lines = [];' +
+        'var totalChars = 0;' +
+        'for (var i = 0; i < files.length; i++) {' +
+          'var size = (files[i].content || "").length;' +
+          'totalChars += size;' +
+          'lines.push(files[i].name + "  " + formatSize(size));' +
+        '}' +
+        'var canvasBackLine = "";' +
+        'fetch("/api/canvas-back").then(function(r) { return r.json(); }).then(function(data) {' +
+          'var cbSize = (data.content || "").length;' +
+          'if (cbSize > 0) { totalChars += cbSize; canvasBackLine = "canvas-back.md  " + formatSize(cbSize) + "\\n"; }' +
+          'ctxFiles.innerHTML = "<div style=\\"color:#4ade80;margin-bottom:4px\\">" + files.length + " files, ~" + formatSize(totalChars) + " total (~" + Math.round(totalChars/4) + " tokens)</div>" +' +
+            '(canvasBackLine ? "<div>" + canvasBackLine + "</div>" : "") +' +
+            'lines.map(function(l) { return "<div>" + l + "</div>"; }).join("");' +
+          'ctxLoaded = true;' +
+        '}).catch(function() {' +
+          'ctxFiles.innerHTML = lines.map(function(l) { return "<div>" + l + "</div>"; }).join("");' +
+          'ctxLoaded = true;' +
+        '});' +
+      '}).catch(function() { ctxFiles.textContent = "Failed to load"; });' +
+    '}' +
+
+    'ctxBtn.addEventListener("click", function(e) {' +
+      'e.stopPropagation();' +
+      'ctxVisible = !ctxVisible;' +
+      'ctxTooltip.style.display = ctxVisible ? "block" : "none";' +
+      'if (ctxVisible && !ctxLoaded) loadContextInfo();' +
+    '});' +
+
+    'ctxBtn.addEventListener("mouseenter", function() {' +
+      'if (!ctxVisible) {' +
+        'ctxTooltip.style.display = "block";' +
+        'if (!ctxLoaded) loadContextInfo();' +
+      '}' +
+    '});' +
+
+    'ctxBtn.addEventListener("mouseleave", function() {' +
+      'if (!ctxVisible) ctxTooltip.style.display = "none";' +
     '});' +
 
     'mica.onDestroy(function() { ch.close(); if (elapsedTimer) clearInterval(elapsedTimer); });' +
