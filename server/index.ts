@@ -70,26 +70,40 @@ app.get("/api/project", async (_req, res) => {
 const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
 
 // Resolve card class directory: .mica/card-classes/:name first, then built-in
+// Supports both card.html format (new) and render.js format (legacy)
 function resolveCardClassDir(className: string): string | null {
   const projectScoped = join(micaDir(), "card-classes", className);
-  if (existsSync(join(projectScoped, "render.js"))) return projectScoped;
+  if (existsSync(join(projectScoped, "card.html")) || existsSync(join(projectScoped, "render.js"))) return projectScoped;
   const builtIn = join(CARD_CLASSES_DIR, className);
-  if (existsSync(join(builtIn, "render.js"))) return builtIn;
+  if (existsSync(join(builtIn, "card.html")) || existsSync(join(builtIn, "render.js"))) return builtIn;
   return null;
 }
 
 // Get render.js content for a card class
-app.get("/api/card-classes/:className/render.js", async (req, res) => {
+// Serve any file from a card class directory
+app.get("/api/card-classes/:className/:file", async (req, res) => {
   const dir = resolveCardClassDir(req.params.className);
   if (!dir) {
     res.status(404).json({ error: `Card class not found: ${req.params.className}` });
     return;
   }
+  const fileName = req.params.file;
+  // Only allow specific files for security
+  const allowed = ["render.js", "card.html", "card.js", "card.css", "metadata.json", "spec.md"];
+  if (!allowed.includes(fileName)) {
+    res.status(403).json({ error: `Not allowed: ${fileName}` });
+    return;
+  }
   try {
-    const content = await readFile(join(dir, "render.js"), "utf-8");
-    res.type("application/javascript").send(content);
+    const content = await readFile(join(dir, fileName), "utf-8");
+    const types: Record<string, string> = {
+      ".js": "application/javascript", ".html": "text/html", ".css": "text/css",
+      ".json": "application/json", ".md": "text/markdown",
+    };
+    const ext = fileName.substring(fileName.lastIndexOf("."));
+    res.type(types[ext] || "text/plain").send(content);
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
+    res.status(404).json({ error: (err as Error).message });
   }
 });
 

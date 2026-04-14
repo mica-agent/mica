@@ -60,39 +60,89 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
   const fileType = getFileType(file.name);
   const badge = renderedCard?.meta?.badge || getFileBadge(fileType);
 
-  // Check if this file has a card class, render CLIENT-SIDE
+  // Load card class (card.html format or legacy render.js), render CLIENT-SIDE
   useEffect(() => {
     const API_BASE = import.meta.env.VITE_MICA_API || "";
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
 
-    // First check if a card class exists for this extension
-    fetch(`${API_BASE}/api/card-classes`)
-      .then(r => r.json())
-      .then((classes: Record<string, unknown>) => {
-        if (!classes[ext]) throw new Error("No card class");
-        return fetch(`${API_BASE}/api/card-classes/${ext}/render.js`);
-      })
-      .then(r => {
-        if (!r.ok) throw new Error("No card class");
-        return r.text();
-      })
-      .then(async (jsSource) => {
-        // Import the render.js as an ES module via blob URL
-        const blob = new Blob([jsSource], { type: "application/javascript" });
-        const url = URL.createObjectURL(blob);
+    async function loadCardClass() {
+      // Check if a card class exists for this extension
+      const classesRes = await fetch(`${API_BASE}/api/card-classes`);
+      const classes = await classesRes.json() as Record<string, unknown>;
+      if (!classes[ext]) return null;
+
+      // Try card.html format first (new)
+      const htmlRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.html`);
+      if (htmlRes.ok) {
+        const cardHtml = await htmlRes.text();
+
+        // Load optional card.css
+        let cardCss = "";
         try {
-          const mod = await import(/* @vite-ignore */ url);
-          const html = mod.default(file.content, { filename: file.name });
-          setRenderedCard({
-            html,
-            cardClass: ext,
-            exports: Object.keys(mod).filter(k => k !== "default" && k !== "metadata" && k !== "dependencies"),
-            dependencies: mod.dependencies || {},
-            meta: mod.metadata || {},
-          });
-        } finally {
-          URL.revokeObjectURL(url);
-        }
+          const cssRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.css`);
+          if (cssRes.ok) cardCss = await cssRes.text();
+        } catch { /* no card.css */ }
+
+        // Load optional card.js
+        let cardJs = "";
+        try {
+          const jsRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.js`);
+          if (jsRes.ok) cardJs = await jsRes.text();
+        } catch { /* no card.js */ }
+
+        // Load metadata.json
+        let meta: Record<string, unknown> = {};
+        let deps: { scripts?: string[]; styles?: string[] } = {};
+        try {
+          const metaRes = await fetch(`${API_BASE}/api/card-classes/${ext}/metadata.json`);
+          if (metaRes.ok) {
+            meta = await metaRes.json();
+            deps = (meta.dependencies as { scripts?: string[]; styles?: string[] }) || {};
+          }
+        } catch { /* no metadata */ }
+
+        // Assemble: HTML + <style> + <script> with content data attribute
+        const assembled =
+          `<div data-mica-content="${file.content.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}" data-mica-filename="${file.name}">` +
+          cardHtml +
+          `</div>` +
+          (cardCss ? `<style>${cardCss}</style>` : "") +
+          (cardJs ? `<script>${cardJs}</script>` : "");
+
+        return {
+          html: assembled,
+          cardClass: ext,
+          exports: [],
+          dependencies: deps,
+          meta,
+        };
+      }
+
+      // Fall back to legacy render.js
+      const jsRes = await fetch(`${API_BASE}/api/card-classes/${ext}/render.js`);
+      if (!jsRes.ok) return null;
+
+      const jsSource = await jsRes.text();
+      const blob = new Blob([jsSource], { type: "application/javascript" });
+      const url = URL.createObjectURL(blob);
+      try {
+        const mod = await import(/* @vite-ignore */ url);
+        const html = mod.default(file.content, { filename: file.name });
+        return {
+          html,
+          cardClass: ext,
+          exports: Object.keys(mod).filter(k => k !== "default" && k !== "metadata" && k !== "dependencies"),
+          dependencies: mod.dependencies || {},
+          meta: mod.metadata || {},
+        };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    loadCardClass()
+      .then((result) => {
+        setRenderedCard(result);
         setRenderChecked(true);
       })
       .catch(() => {

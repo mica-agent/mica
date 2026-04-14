@@ -32,18 +32,59 @@ export default function render(content, config) {
 ## Critical Rules
 
 1. **Use string concatenation, NOT template literals** in `<script>` blocks.
-   The render function's return value is inside a template literal, so inline
-   scripts cannot use backticks or `${...}`. Use `'string' + var` throughout.
+   Use `'string' + var + 'string'` throughout. No backticks, no `${...}`.
 
 2. **For HTML attributes in script strings, use escaped double quotes `\\"`.**
-   Do NOT use `\\'` (escaped single quotes) — this causes transform errors.
-   Example: `'html += "<div style=\\"color:red\\">"'`
+   Do NOT use `\\'` — this causes esbuild transform errors.
+   Correct: `'html += "<div style=\\"color:red\\">"'`
+   WRONG:   `'html += "<div style=\\'color:red\\'>"'`
 
-3. **No non-ASCII characters in `<script>` blocks.** Use ASCII only.
-   Box-drawing chars, em-dashes, Unicode symbols cause parse errors.
+3. **No non-ASCII characters** in `<script>` blocks. ASCII only.
 
-3. **Double-escape `\n` in strings inside scripts.** Write `\\n` so the
-   template literal produces `\n`.
+4. **Double-escape `\n`** in strings inside scripts. Write `\\n`.
+
+5. **Always use IDs to reference DOM elements.** The CARD_SHIM scopes
+   `document.querySelector` to the card container. Positional selectors
+   like `:nth-child`, `:first-child` will NOT work reliably because the
+   shim wraps the DOM. Always give elements an ID.
+   Correct: `container.querySelector("#my-grid")`
+   WRONG:   `container.querySelector(":nth-child(2)")`
+
+6. **Use `var`, not `const`/`let`** in script blocks.
+
+## Common Mistakes
+
+**DON'T** use positional CSS selectors in scripts:
+```javascript
+// WRONG — breaks when CARD_SHIM wraps the DOM
+'var grid = container.querySelector(":nth-child(2)");'
+
+// CORRECT — always use IDs
+'var grid = container.querySelector("#cal-grid");'
+```
+
+**DON'T** use single-quote escaping in HTML attributes:
+```javascript
+// WRONG — causes esbuild transform error
+'html += "<div style=\\'color:red\\'>"'
+
+// CORRECT — use double-quote escaping
+'html += "<div style=\\"color:red\\">"'
+```
+
+**DON'T** forget IDs on elements you'll update dynamically:
+```javascript
+// Initial render — ALWAYS add an ID to elements the script will modify
+html += '<div id="content-area" style="...">';
+
+// In script — reference by ID
+'var area = container.querySelector("#content-area");'
+'area.innerHTML = newHtml;'
+```
+
+**DON'T** rely on `new Date()` server-side for local time.
+render.js runs in the browser — `new Date()` uses the user's timezone.
+This is correct. Do not add timezone offsets.
 
 4. **Use `var`, not `const`/`let`** in script blocks.
 

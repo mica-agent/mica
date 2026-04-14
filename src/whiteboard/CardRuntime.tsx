@@ -267,6 +267,18 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
         },
         refresh: baseBridge.refresh,
         exports: exportFns || [],
+        /** Get the instance file content for this card (from data attribute or API) */
+        getContent: () => {
+          // card.html format: content stored in data-mica-content attribute
+          const dataEl = el.querySelector("[data-mica-content]");
+          if (dataEl) {
+            return (dataEl as HTMLElement).dataset.micaContent
+              ?.replace(/&amp;/g, "&").replace(/&quot;/g, '"')
+              .replace(/&lt;/g, "<").replace(/&gt;/g, ">") || "";
+          }
+          // Fallback: fetch from API
+          return "";
+        },
       };
 
       // Separate external (src) and inline scripts from HTML
