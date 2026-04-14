@@ -1,0 +1,7 @@
+{
+  "extension": ".todo",
+  "badge": "TODO",
+  "primaryFile": "tasks.md",
+  "defaultTitle": "To Do",
+  "dependencies": {}
+}

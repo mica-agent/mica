@@ -1,0 +1,56 @@
+.canvas-root {
+    display: flex; flex-direction: column; gap: 12px; padding: 0;
+    min-height: 100%; flex: 1;
+}
+.project-toolbar {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.project-toolbar .toolbar-btn {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px; padding: 4px 12px; color: #ccc; font-size: 0.8rem;
+    cursor: pointer; font-family: inherit;
+}
+.project-toolbar .toolbar-btn:hover {
+    background: rgba(255,255,255,0.1); color: #fff;
+}
+.project-toolbar .toolbar-spacer { flex: 1; }
+.canvas-freeform {
+    position: relative; flex: 1; min-height: 200px; overflow: auto;
+}
+.canvas-freeform > .wb-card {
+    position: absolute; width: 320px;
+    opacity: 0; transition: opacity 0.3s ease, box-shadow 0.2s;
+}
+.canvas-freeform > .wb-card.wb-card--positioned {
+    opacity: 1;
+}
+.canvas-freeform .wb-card-header { cursor: grab; }
+.canvas-freeform .wb-card-header:active { cursor: grabbing; }
+
+/* Phone: stacked vertical layout */
+@media (max-width: 767px) {
+    .canvas-freeform {
+        display: flex; flex-direction: column; gap: 8px;
+        padding: 8px; overflow-y: auto; overflow-x: hidden;
+    }
+    .canvas-freeform > .wb-card {
+        position: relative !important;
+        left: auto !important; top: auto !important;
+        width: 100% !important; height: auto !important;
+        min-height: 200px; max-height: 400px;
+        opacity: 1;
+    }
+    .canvas-freeform .wb-card-header { cursor: default; }
+    .canvas-freeform .wb-card-resize-handle { display: none; }
+    .project-toolbar { padding: 8px; flex-wrap: wrap; gap: 4px; }
+    .project-toolbar .toolbar-btn { font-size: 0.75rem; padding: 6px 10px; }
+}
+
+/* Display: larger text for viewing distance */
+@media (min-width: 2560px) {
+    .project-toolbar .toolbar-btn { font-size: 1rem; padding: 8px 16px; }
+}
+.project-empty {
+    text-align: center; color: #666; padding: 40px 20px; font-size: 0.9rem;
+}

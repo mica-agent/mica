@@ -1,0 +1,7 @@
+{
+  "extension": ".chat",
+  "badge": "QWEN",
+  "primaryFile": "chat.json",
+  "defaultTitle": "Qwen Agent",
+  "dependencies": {}
+}

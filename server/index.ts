@@ -143,72 +143,39 @@ app.get("/api/card-classes", async (_req, res) => {
 });
 
 // Render the canvas card (server-side, returns HTML)
+// Assembles card.html + card.css + card.js from the canvas card class directory.
 app.get("/api/canvas-card", async (_req, res) => {
   try {
     const classDir = resolveCardClassDir("canvas");
     if (!classDir) throw new Error("Canvas card class not found");
 
-    const renderPath = join(classDir, "render.js");
-    // Dynamic import with cache-busting for hot reload
-    const mod = await import(renderPath + "?t=" + Date.now());
-    const files = await listFiles();
-    const html = mod.default("", {
-      children: files.map((f: { name: string }) => ({ filename: f.name })),
-    });
+    const cardHtml = await readFile(join(classDir, "card.html"), "utf-8");
 
-    res.json({
-      html,
-      exports: Object.keys(mod).filter(
-        (k) => k !== "default" && k !== "metadata" && k !== "dependencies"
-      ),
-      dependencies: mod.dependencies || {},
-      meta: mod.metadata || {},
-    });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
+    let cardCss = "";
+    try { cardCss = await readFile(join(classDir, "card.css"), "utf-8"); } catch { /* no card.css */ }
 
-// ── Render a child card via its card class ───────────────────
+    let cardJs = "";
+    try { cardJs = await readFile(join(classDir, "card.js"), "utf-8"); } catch { /* no card.js */ }
 
-// Map file extension to card class name
-function cardClassForFile(filename: string): string | null {
-  const ext = filename.split(".").pop()?.toLowerCase();
-  if (!ext) return null;
-  // Check if there's a card class with this extension
-  const dir = resolveCardClassDir(ext);
-  return dir ? ext : null;
-}
-
-app.get("/api/rendered-card/:filename", async (req, res) => {
-  const { filename } = req.params;
-  try {
-    const cardClass = cardClassForFile(filename);
-    if (!cardClass) {
-      // No card class — return null so frontend does client-side rendering
-      res.json({ html: null, cardClass: null });
-      return;
-    }
-
-    const classDir = resolveCardClassDir(cardClass)!;
-    const renderPath = join(classDir, "render.js");
-    const mod = await import(renderPath + "?t=" + Date.now());
-
-    // Read file content
-    let content = "";
+    let meta: Record<string, unknown> = {};
+    let deps: { scripts?: string[]; styles?: string[] } = {};
     try {
-      const file = await readProjectFile(filename);
-      content = file.content;
-    } catch { /* new file, empty content */ }
+      const raw = await readFile(join(classDir, "metadata.json"), "utf-8");
+      meta = JSON.parse(raw);
+      deps = (meta.dependencies as { scripts?: string[]; styles?: string[] }) || {};
+    } catch { /* no metadata.json */ }
 
-    const html = mod.default(content, { filename });
+    // Assemble HTML + <style> + <script> (no data-mica-content wrapper — canvas is not a file)
+    const html =
+      cardHtml +
+      (cardCss ? `<style>${cardCss}</style>` : "") +
+      (cardJs ? `<script>${cardJs}</script>` : "");
 
     res.json({
       html,
-      cardClass,
-      exports: Object.keys(mod).filter(k => k !== "default" && k !== "metadata" && k !== "dependencies"),
-      dependencies: mod.dependencies || {},
-      meta: mod.metadata || {},
+      exports: [],
+      dependencies: deps,
+      meta,
     });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });

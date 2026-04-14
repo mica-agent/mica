@@ -7,7 +7,7 @@
 //   4. Provide modals (edit, create) triggered by child card actions
 //
 // Layout, positioning, drag, resize, and toolbar are all owned by the
-// canvas card class (card-classes/canvas/render.js). React does NOT
+// canvas card class (card-classes/canvas/card.js). React does NOT
 // manage layout state — the canvas card class handles everything via
 // event delegation on #canvas-freeform.
 

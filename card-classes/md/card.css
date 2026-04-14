@@ -1,0 +1,28 @@
+.card-markdown-editor {
+  min-height: 200px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.card-markdown-editor #editor {
+  flex: 1;
+  min-height: 150px;
+  overflow: hidden;
+}
+
+.card-markdown-editor .toastui-editor-defaultUI {
+  border: none;
+  background: transparent;
+}
+
+.card-markdown-editor .toastui-editor-defaultUI .toastui-editor-md-tab-container,
+.card-markdown-editor .toastui-editor-mode-switch {
+  display: none;
+}
+
+.card-markdown-editor .ProseMirror {
+  font-size: 0.9rem;
+  line-height: 1.6;
+}

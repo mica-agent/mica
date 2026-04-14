@@ -119,26 +119,7 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
         };
       }
 
-      // Fall back to legacy render.js
-      const jsRes = await fetch(`${API_BASE}/api/card-classes/${ext}/render.js`);
-      if (!jsRes.ok) return null;
-
-      const jsSource = await jsRes.text();
-      const blob = new Blob([jsSource], { type: "application/javascript" });
-      const url = URL.createObjectURL(blob);
-      try {
-        const mod = await import(/* @vite-ignore */ url);
-        const html = mod.default(file.content, { filename: file.name });
-        return {
-          html,
-          cardClass: ext,
-          exports: Object.keys(mod).filter(k => k !== "default" && k !== "metadata" && k !== "dependencies"),
-          dependencies: mod.dependencies || {},
-          meta: mod.metadata || {},
-        };
-      } finally {
-        URL.revokeObjectURL(url);
-      }
+      return null; // No card class for this extension
     }
 
     loadCardClass()
