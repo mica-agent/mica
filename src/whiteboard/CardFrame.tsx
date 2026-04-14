@@ -207,8 +207,8 @@ function FileContent({ content, type }: { content: string; type: string }) {
         <div
           ref={(el) => {
             if (!el) return;
-            // Prevent page scroll when cursor is over mermaid card
-            el.onwheel = (e) => { e.preventDefault(); };
+            // Only prevent page scroll when Alt/Option is held (zoom/pan mode)
+            el.onwheel = (e) => { if (e.altKey) e.preventDefault(); };
           }}
           style={{ flex: 1, minHeight: 0, overflow: "hidden" }}
         >
