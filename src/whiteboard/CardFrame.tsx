@@ -104,7 +104,7 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
 
         // Assemble: HTML + <style> + <script> with content data attribute
         const assembled =
-          `<div data-mica-content="${file.content.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}" data-mica-filename="${file.name}">` +
+          `<div data-mica-content="${file.content.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}" data-mica-filename="${file.name}" style="display:flex;flex-direction:column;flex:1;min-height:0;height:100%;">` +
           cardHtml +
           `</div>` +
           (cardCss ? `<style>${cardCss}</style>` : "") +
