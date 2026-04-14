@@ -315,11 +315,11 @@ function MermaidRenderer({ content }: { content: string }) {
     return () => { cancelled = true; };
   }, [content]);
 
-  // Wheel zoom toward cursor position (only with Alt/Option key)
+  // Wheel: always stop propagation to prevent canvas scroll.
+  // Zoom only with Alt/Option key.
   const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (!e.altKey) return; // require Option/Alt key for zoom
     e.stopPropagation();
-    e.preventDefault();
+    if (!e.altKey) return;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     // Mouse position relative to container
