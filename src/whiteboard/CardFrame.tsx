@@ -204,7 +204,14 @@ function FileContent({ content, type }: { content: string; type: string }) {
       );
     case "mermaid":
       return (
-        <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+        <div
+          ref={(el) => {
+            if (!el) return;
+            // Prevent page scroll when cursor is over mermaid card
+            el.onwheel = (e) => { e.preventDefault(); };
+          }}
+          style={{ flex: 1, minHeight: 0, overflow: "hidden" }}
+        >
           <MermaidRenderer content={content} />
         </div>
       );
@@ -315,17 +322,6 @@ function MermaidRenderer({ content }: { content: string }) {
     return () => { cancelled = true; };
   }, [content]);
 
-  // Native wheel listener to preventDefault (React onWheel is passive)
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const nativeWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    el.addEventListener("wheel", nativeWheel, { passive: false });
-    return () => el.removeEventListener("wheel", nativeWheel);
-  }, [svg]);
 
   // Wheel zoom (only with Alt/Option key)
   const handleWheel = useCallback((e: React.WheelEvent) => {
