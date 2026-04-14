@@ -373,13 +373,23 @@ function MermaidRenderer({ content }: { content: string }) {
     dragRef.current.dragging = false;
   }, []);
 
+  const [altHeld, setAltHeld] = useState(false);
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.altKey) setAltHeld(true); };
+    const up = (e: KeyboardEvent) => { if (!e.altKey) setAltHeld(false); };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
+  }, []);
+
   if (error) return <pre style={{ color: "#f66", fontSize: 12 }}>{error}</pre>;
   if (!svg) return <div style={{ color: "#666" }}>Rendering diagram...</div>;
 
   return (
     <div
       ref={containerRef}
-      style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden", cursor: "grab" }}
+      style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden", cursor: altHeld ? "grab" : "default" }}
       onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -389,7 +399,7 @@ function MermaidRenderer({ content }: { content: string }) {
         style={{
           transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
           transformOrigin: "0 0",
-          transition: dragRef.current.dragging ? "none" : "transform 0.1s ease-out",
+          transition: "none",
         }}
         dangerouslySetInnerHTML={{ __html: svg }}
       />
