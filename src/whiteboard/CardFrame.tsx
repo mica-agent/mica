@@ -60,18 +60,41 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
   const fileType = getFileType(file.name);
   const badge = renderedCard?.meta?.badge || getFileBadge(fileType);
 
-  // Check if this file has a card class with render.js
+  // Check if this file has a card class, render CLIENT-SIDE
   useEffect(() => {
     const API_BASE = import.meta.env.VITE_MICA_API || "";
-    fetch(`${API_BASE}/api/rendered-card/${encodeURIComponent(file.name)}`)
-      .then(r => r.json())
-      .then((data: RenderedCardData) => {
-        console.log(`[CardFrame] ${file.name}: cardClass=${data.cardClass}, html=${data.html ? data.html.length + ' chars' : 'null'}`);
-        setRenderedCard(data.html ? data : null);
+    const ext = file.name.split(".").pop()?.toLowerCase() || "";
+
+    // First check if a card class exists for this extension
+    fetch(`${API_BASE}/api/card-classes/${ext}/render.js`)
+      .then(r => {
+        if (!r.ok) throw new Error("No card class");
+        return r.text();
+      })
+      .then(async (jsSource) => {
+        // Import the render.js as an ES module via blob URL
+        const blob = new Blob([jsSource], { type: "application/javascript" });
+        const url = URL.createObjectURL(blob);
+        try {
+          const mod = await import(/* @vite-ignore */ url);
+          const html = mod.default(file.content, { filename: file.name });
+          setRenderedCard({
+            html,
+            cardClass: ext,
+            exports: Object.keys(mod).filter(k => k !== "default" && k !== "metadata" && k !== "dependencies"),
+            dependencies: mod.dependencies || {},
+            meta: mod.metadata || {},
+          });
+        } finally {
+          URL.revokeObjectURL(url);
+        }
         setRenderChecked(true);
       })
-      .catch((err) => { console.error(`[CardFrame] ${file.name}: fetch error`, err); setRenderChecked(true); });
-  }, [file.name]);
+      .catch(() => {
+        setRenderedCard(null);
+        setRenderChecked(true);
+      });
+  }, [file.name, file.content]);
 
   // Check overflow
   useEffect(() => {
