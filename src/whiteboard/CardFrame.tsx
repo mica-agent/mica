@@ -315,10 +315,20 @@ function MermaidRenderer({ content }: { content: string }) {
     return () => { cancelled = true; };
   }, [content]);
 
-  // Wheel: always stop propagation to prevent canvas scroll.
-  // Zoom only with Alt/Option key.
+  // Native wheel listener to preventDefault (React onWheel is passive)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const nativeWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    el.addEventListener("wheel", nativeWheel, { passive: false });
+    return () => el.removeEventListener("wheel", nativeWheel);
+  }, [svg]);
+
+  // Wheel zoom (only with Alt/Option key)
   const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.stopPropagation();
     if (!e.altKey) return;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
