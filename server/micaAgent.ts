@@ -55,14 +55,29 @@ async function saveHistory(chatId: string, messages: ChatMessage[]): Promise<voi
 async function buildContext(agentFilename: string): Promise<string> {
   const parts: string[] = [];
 
-  // Agent card back (per-agent behavior instructions)
+  // 1. Instance-level AI context (per-card behavior instructions)
   try {
-    const backFilename = agentFilename.replace(/\//g, "--");
-    const agentBack = await readFile(join(micaDir(), "cards", backFilename), "utf-8");
-    if (agentBack.trim()) parts.push(`## Your Behavior Instructions\n${agentBack.trim()}`);
-  } catch { /* no agent card back */ }
+    const instanceContext = await readFile(join(micaDir(), "cards", agentFilename + ".context.md"), "utf-8");
+    if (instanceContext.trim()) parts.push(`## Your Behavior Instructions\n${instanceContext.trim()}`);
+  } catch { /* no instance context */ }
 
-  // Canvas-back (project AI context)
+  // 2. Class-level AI context (shared across all cards of this type)
+  try {
+    const ext = agentFilename.split(".").pop() || "";
+    const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
+    // Check project-scoped first, then built-in
+    let classContext = "";
+    try {
+      classContext = await readFile(join(micaDir(), "card-classes", ext, "context.md"), "utf-8");
+    } catch {
+      try {
+        classContext = await readFile(join(CARD_CLASSES_DIR, ext, "context.md"), "utf-8");
+      } catch { /* no class context */ }
+    }
+    if (classContext.trim()) parts.push(`## Card Class Context\n${classContext.trim()}`);
+  } catch { /* ignore */ }
+
+  // 3. Project-level AI context (canvas back)
   try {
     const canvasBack = await readFile(join(micaDir(), "canvas-back.md"), "utf-8");
     if (canvasBack.trim()) parts.push(`## Project Context\n${canvasBack.trim()}`);

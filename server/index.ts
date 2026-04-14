@@ -146,8 +146,14 @@ app.get("/api/card-classes", async (_req, res) => {
 // Assembles card.html + card.css + card.js from the canvas card class directory.
 app.get("/api/canvas-card", async (_req, res) => {
   try {
-    const classDir = resolveCardClassDir("canvas");
-    if (!classDir) throw new Error("Canvas card class not found");
+    // Read canvas class from config (default: "canvas")
+    let canvasClass = "canvas";
+    try {
+      const cfg = JSON.parse(await readFile(join(micaDir(), "config.json"), "utf-8"));
+      if (cfg.canvasClass) canvasClass = cfg.canvasClass;
+    } catch { /* use default */ }
+    const classDir = resolveCardClassDir(canvasClass);
+    if (!classDir) throw new Error(`Canvas card class not found: ${canvasClass}`);
 
     const cardHtml = await readFile(join(classDir, "card.html"), "utf-8");
 
@@ -320,7 +326,7 @@ app.put("/api/canvas-back", async (req, res) => {
 
 app.get("/api/card-back/:filename", async (req, res) => {
   try {
-    const backFilename = req.params.filename.replace(/\//g, "--");
+    const backFilename = req.params.filename + ".context.md";
     const content = await readFile(join(micaDir(), "cards", backFilename), "utf-8");
     res.json({ content });
   } catch {
@@ -332,7 +338,7 @@ app.put("/api/card-back/:filename", async (req, res) => {
   try {
     const cardsDir = join(micaDir(), "cards");
     await mkdir(cardsDir, { recursive: true });
-    const backFilename = req.params.filename.replace(/\//g, "--");
+    const backFilename = req.params.filename + ".context.md";
     await writeFile(join(cardsDir, backFilename), req.body.content || "", "utf-8");
     res.json({ success: true });
   } catch (err) {
@@ -576,7 +582,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
       // Write default behavior instructions on the agent card's back
       const cardsDir = join(micaDir(), "cards");
       await mkdir(cardsDir, { recursive: true });
-      await writeFile(join(cardsDir, chatFilename), [
+      await writeFile(join(cardsDir, chatFilename + ".context.md"), [
         "## On Project Open",
         "- Scan project files and identify the project type",
         "- Write canvas-back.md with project context and purpose",
