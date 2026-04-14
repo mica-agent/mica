@@ -1,0 +1,6 @@
+#mmd-viewport {
+  background: rgba(0,0,0,0.1);
+}
+#mmd-svg svg {
+  display: block;
+}

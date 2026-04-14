@@ -1,0 +1,10 @@
+{
+  "extension": ".mmd",
+  "badge": "MMD",
+  "defaultTitle": "Diagram",
+  "dependencies": {
+    "scripts": [
+      "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+    ]
+  }
+}
