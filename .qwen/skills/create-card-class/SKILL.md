@@ -105,8 +105,11 @@ mica.onDestroy(function() { unsub(); });
 1. Choose a name and extension (e.g., `kanban` -> `.kanban`)
 2. Create `.mica/card-classes/{name}/render.js`
 3. Write metadata, dependencies, and render function
-4. Create an instance file with initial content (e.g., write `board.kanban`)
-5. The card appears on the canvas automatically
+4. Create an instance file **in the project root directory** with initial content
+   - Example: write `/project/board.kanban` (NOT in .mica/)
+   - Use: `fetch('/api/files/board.kanban', { method: 'PUT', body: JSON.stringify({ content: '...' }) })`
+   - IMPORTANT: The file MUST be in the project root, not in .mica/cards/ or .mica/card-classes/
+5. The card appears on the canvas automatically (file watcher detects it)
 
 ## Complete Example: Counter Card
 
