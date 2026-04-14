@@ -315,9 +315,11 @@ function MermaidRenderer({ content }: { content: string }) {
     return () => { cancelled = true; };
   }, [content]);
 
-  // Wheel zoom toward cursor position
+  // Wheel zoom toward cursor position (only with Alt/Option key)
   const handleWheel = useCallback((e: React.WheelEvent) => {
+    if (!e.altKey) return; // require Option/Alt key for zoom
     e.stopPropagation();
+    e.preventDefault();
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     // Mouse position relative to container
@@ -337,9 +339,10 @@ function MermaidRenderer({ content }: { content: string }) {
     });
   }, []);
 
-  // Pan via drag (skip if clicking a button)
+  // Pan via drag (only with Alt/Option key, skip buttons)
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    if (!e.altKey) return; // require Option/Alt key for pan
     if ((e.target as HTMLElement).closest("button")) return;
     e.stopPropagation();
     e.preventDefault();
