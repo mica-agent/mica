@@ -66,7 +66,12 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
 
     // First check if a card class exists for this extension
-    fetch(`${API_BASE}/api/card-classes/${ext}/render.js`)
+    fetch(`${API_BASE}/api/card-classes`)
+      .then(r => r.json())
+      .then((classes: Record<string, unknown>) => {
+        if (!classes[ext]) throw new Error("No card class");
+        return fetch(`${API_BASE}/api/card-classes/${ext}/render.js`);
+      })
       .then(r => {
         if (!r.ok) throw new Error("No card class");
         return r.text();
