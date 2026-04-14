@@ -35,7 +35,11 @@ export default function render(content, config) {
    The render function's return value is inside a template literal, so inline
    scripts cannot use backticks or `${...}`. Use `'string' + var` throughout.
 
-2. **No non-ASCII characters in `<script>` blocks.** Use ASCII only.
+2. **For HTML attributes in script strings, use escaped double quotes `\\"`.**
+   Do NOT use `\\'` (escaped single quotes) — this causes transform errors.
+   Example: `'html += "<div style=\\"color:red\\">"'`
+
+3. **No non-ASCII characters in `<script>` blocks.** Use ASCII only.
    Box-drawing chars, em-dashes, Unicode symbols cause parse errors.
 
 3. **Double-escape `\n` in strings inside scripts.** Write `\\n` so the
