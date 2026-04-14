@@ -325,7 +325,7 @@ function MermaidRenderer({ content }: { content: string }) {
     // Mouse position relative to container
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    const factor = e.deltaY > 0 ? 1.1 : 0.9;
+    const factor = e.deltaY > 0 ? 1.04 : 0.96;
 
     setTransform(prev => {
       const newScale = Math.max(0.1, Math.min(20, prev.scale * factor));
