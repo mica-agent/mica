@@ -68,12 +68,13 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
     async function loadCardClass() {
       // Check if a card class exists for this extension
       const classesRes = await fetch(`${API_BASE}/api/card-classes`);
-      const classes = await classesRes.json() as Record<string, unknown>;
+      const classes = await classesRes.json() as Record<string, { format?: string }>;
       if (!classes[ext]) return null;
 
-      // Try card.html format first (new)
-      const htmlRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.html`);
-      if (htmlRes.ok) {
+      // Use card.html format if the class has it
+      if (classes[ext].format === "html") {
+        const htmlRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.html`);
+        if (!htmlRes.ok) return null;
         const cardHtml = await htmlRes.text();
 
         // Load optional card.css

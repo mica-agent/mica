@@ -116,8 +116,11 @@ app.get("/api/card-classes", async (_req, res) => {
   try {
     const entries = await rd(CARD_CLASSES_DIR);
     for (const name of entries) {
-      if (existsSync(join(CARD_CLASSES_DIR, name, "render.js"))) {
-        classes[name] = { builtIn: true };
+      const dir = join(CARD_CLASSES_DIR, name);
+      const hasHtml = existsSync(join(dir, "card.html"));
+      const hasRenderJs = existsSync(join(dir, "render.js"));
+      if (hasHtml || hasRenderJs) {
+        classes[name] = { builtIn: true, format: hasHtml ? "html" : "renderjs" };
       }
     }
   } catch { /* no card-classes dir */ }
@@ -127,8 +130,11 @@ app.get("/api/card-classes", async (_req, res) => {
     const projectDir = join(micaDir(), "card-classes");
     const entries = await rd(projectDir);
     for (const name of entries) {
-      if (existsSync(join(projectDir, name, "render.js"))) {
-        classes[name] = { builtIn: false };
+      const dir = join(projectDir, name);
+      const hasHtml = existsSync(join(dir, "card.html"));
+      const hasRenderJs = existsSync(join(dir, "render.js"));
+      if (hasHtml || hasRenderJs) {
+        classes[name] = { builtIn: false, format: hasHtml ? "html" : "renderjs" };
       }
     }
   } catch { /* no project card-classes */ }
