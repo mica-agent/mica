@@ -25,6 +25,7 @@ interface Props {
   file: CanvasFile;
   onEdit: () => void;
   onDelete: () => void;
+  onUnpin?: () => void;
 }
 
 function getFileType(filename: string): string {
@@ -50,12 +51,13 @@ function getFileBadge(type: string): string {
   }
 }
 
-export default function CardFrame({ file, onEdit, onDelete }: Props) {
+export default function CardFrame({ file, onEdit, onDelete, onUnpin }: Props) {
   const [flipped, setFlipped] = useState(false);
   const [backContent, setBackContent] = useState("");
   const [backLoaded, setBackLoaded] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const [renderedCard, setRenderedCard] = useState<RenderedCardData | null>(null);
   const [renderChecked, setRenderChecked] = useState(false);
@@ -203,11 +205,57 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
           <button onClick={(e) => { e.stopPropagation(); onEdit(); }} title="Edit" className="wb-card-btn">
             &#9998;
           </button>
-          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Delete" className="wb-card-btn wb-card-btn--danger">
+          <button onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }} title="Remove" className="wb-card-btn wb-card-btn--danger">
             &times;
           </button>
         </div>
       </div>
+
+      {/* Delete/remove confirmation dialog */}
+      {confirmDelete && (
+        <div
+          style={{
+            position: "absolute", inset: 0, zIndex: 100,
+            background: "rgba(0,0,0,0.85)", borderRadius: 8,
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            gap: 8, padding: 16,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ color: "#aaa", fontSize: 12, marginBottom: 4, textAlign: "center" }}>
+            {file.name}
+          </div>
+          {file.pinned && onUnpin && (
+            <button
+              onClick={() => { setConfirmDelete(false); onUnpin(); }}
+              style={{
+                background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.15)",
+                color: "#ccc", padding: "6px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12, width: "100%",
+              }}
+            >
+              Remove from canvas
+            </button>
+          )}
+          <button
+            onClick={() => { setConfirmDelete(false); onDelete(); }}
+            style={{
+              background: "rgba(239,68,68,0.2)", border: "1px solid rgba(239,68,68,0.4)",
+              color: "#f87171", padding: "6px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12, width: "100%",
+            }}
+          >
+            Delete file
+          </button>
+          <button
+            onClick={() => setConfirmDelete(false)}
+            style={{
+              background: "none", border: "1px solid rgba(255,255,255,0.1)",
+              color: "#888", padding: "6px 16px", borderRadius: 4, cursor: "pointer", fontSize: 12, width: "100%",
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Body */}
       {flipped ? (

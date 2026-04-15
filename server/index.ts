@@ -18,6 +18,9 @@ import {
   deleteProject,
   initProject,
   listFiles,
+  listCanvasFiles,
+  readCanvasConfig,
+  updateCanvasConfig,
   readProjectFile,
   resolveFilePath,
   writeProjectFile,
@@ -422,9 +425,65 @@ app.post("/api/cards/:filename/ok", (_req, res) => {
 // ── Project-scoped File Endpoints ───────────────────────────
 
 // List files for active project (metadata only — no content)
-app.get("/api/files", async (_req, res) => {
+// ?canvas=true returns only canvas-visible files (direct children of canvasRoot + pinned)
+app.get("/api/files", async (req, res) => {
   try {
-    res.json(await listFiles(activeProject || undefined));
+    const proj = activeProject || undefined;
+    if (req.query.canvas === "true") {
+      res.json(await listCanvasFiles(proj));
+    } else {
+      res.json(await listFiles(proj));
+    }
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Pin/unpin files to canvas
+app.post("/api/canvas/pin", async (req, res) => {
+  try {
+    const { filename } = req.body as { filename?: string };
+    if (!filename) { res.status(400).json({ error: "filename required" }); return; }
+    const proj = activeProject || undefined;
+    const cfg = await readCanvasConfig(proj);
+    if (!cfg.pinned.includes(filename)) {
+      cfg.pinned.push(filename);
+      await updateCanvasConfig(proj, { pinned: cfg.pinned });
+    }
+    res.json({ ok: true, pinned: cfg.pinned });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/canvas/pin", async (req, res) => {
+  try {
+    const { filename } = req.body as { filename?: string };
+    if (!filename) { res.status(400).json({ error: "filename required" }); return; }
+    const proj = activeProject || undefined;
+    const cfg = await readCanvasConfig(proj);
+    cfg.pinned = cfg.pinned.filter((f: string) => f !== filename);
+    await updateCanvasConfig(proj, { pinned: cfg.pinned });
+    res.json({ ok: true, pinned: cfg.pinned });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Get/update canvas config
+app.get("/api/canvas/config", async (_req, res) => {
+  try {
+    res.json(await readCanvasConfig(activeProject || undefined));
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.put("/api/canvas/config", async (req, res) => {
+  try {
+    const updates = req.body as { canvasRoot?: string; pinned?: string[] };
+    await updateCanvasConfig(activeProject || undefined, updates);
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

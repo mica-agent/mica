@@ -42,7 +42,7 @@ export default function CanvasCardRuntime() {
     try {
       const [cardResult, childrenResult] = await Promise.allSettled([
         fetchCanvasCard(signal),
-        fetchFiles(),
+        fetchFiles(true),
       ]);
       if (signal?.aborted) return;
 
@@ -105,13 +105,9 @@ export default function CanvasCardRuntime() {
   // ── Real-time updates via WebSocket ─────────────────────
 
   useEffect(() => {
-    const unsub1 = on("file-created", (msg: unknown) => {
-      const m = msg as { filename?: string };
-      if (!m.filename || m.filename.startsWith(".")) return;
-      setChildren((prev) => [
-        ...prev.filter((f) => f.name !== m.filename),
-        { name: m.filename, size: 0, modifiedAt: new Date().toISOString() },
-      ]);
+    const unsub1 = on("file-created", (_msg: unknown) => {
+      // Re-fetch canvas files — server determines membership
+      fetchFiles(true).then((files) => setChildren(files)).catch(() => {});
     });
 
     const unsub2 = on("file-changed", (msg: unknown) => {
@@ -158,6 +154,20 @@ export default function CanvasCardRuntime() {
     }
   }, []);
 
+  const handleUnpin = useCallback(async (filename: string) => {
+    try {
+      const API_BASE = import.meta.env.VITE_MICA_API || "";
+      await fetch(`${API_BASE}/api/canvas/pin`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename }),
+      });
+      setChildren((prev) => prev.filter((f) => f.name !== filename));
+    } catch (err) {
+      console.error("Failed to unpin:", err);
+    }
+  }, []);
+
   // ── Render ──────────────────────────────────────────────
 
   if (loading && !canvasCard) {
@@ -193,6 +203,7 @@ export default function CanvasCardRuntime() {
               file={file}
               onEdit={() => handleEdit(file.name)}
               onDelete={() => handleDelete(file.name)}
+              onUnpin={file.pinned ? () => handleUnpin(file.name) : undefined}
             />,
             freeformEl,
           )

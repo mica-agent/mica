@@ -23,10 +23,29 @@ export default function App() {
     fetchWorkspace().then(setWorkspace).catch(console.error);
   }, []);
 
+  // Restore last active project on mount
+  useEffect(() => {
+    const saved = sessionStorage.getItem("mica-active-project");
+    if (saved) {
+      try {
+        const project = JSON.parse(saved) as ProjectInfo;
+        openProjectApi(project.name).then((result) => {
+          setActiveProject({ ...project, ...result });
+        }).catch(() => {
+          sessionStorage.removeItem("mica-active-project");
+        });
+      } catch {
+        sessionStorage.removeItem("mica-active-project");
+      }
+    }
+  }, []);
+
   const handleOpenProject = useCallback(async (project: ProjectInfo) => {
     try {
       const result = await openProjectApi(project.name);
-      setActiveProject({ ...project, ...result });
+      const p = { ...project, ...result };
+      setActiveProject(p);
+      sessionStorage.setItem("mica-active-project", JSON.stringify(p));
     } catch (err) {
       console.error('Failed to open project:', err);
     }
@@ -34,6 +53,7 @@ export default function App() {
 
   const handleBackToProjects = useCallback(() => {
     setActiveProject(null);
+    sessionStorage.removeItem("mica-active-project");
   }, []);
 
   if (!workspace) {

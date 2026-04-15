@@ -23,6 +23,7 @@ export interface CanvasFile {
   size: number;
   modifiedAt?: string;
   content?: string;  // Loaded lazily by CardFrame when needed
+  pinned?: boolean;  // true if pinned to canvas (not a canvasRoot child)
 }
 
 // ── Workspace ───────────────────────────────────────────
@@ -126,8 +127,9 @@ export async function fetchCanvasCard(signal?: AbortSignal): Promise<RenderedCan
 // ── Files ────────────────────────────────────────────────
 
 /** Fetch file list (metadata only — name, size, modifiedAt). */
-export async function fetchFiles(): Promise<CanvasFile[]> {
-  const res = await fetch(`${API_BASE}/api/files`);
+export async function fetchFiles(canvas?: boolean): Promise<CanvasFile[]> {
+  const q = canvas ? "?canvas=true" : "";
+  const res = await fetch(`${API_BASE}/api/files${q}`);
   if (!res.ok) throw new Error(`Failed to fetch files: ${res.statusText}`);
   return res.json();
 }

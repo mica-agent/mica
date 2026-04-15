@@ -188,6 +188,7 @@ export interface FileMeta {
   type: "file" | "directory";
   size: number;
   modifiedAt: string;
+  pinned?: boolean;   // true if file is pinned to canvas (not a canvasRoot child)
 }
 
 /** Backwards-compatible interface for server-side consumers that need content. */
@@ -195,6 +196,65 @@ export interface FileInfo {
   name: string;
   content: string;
   modifiedAt?: string;
+}
+
+/** Read canvas config (canvasRoot, pinned) from .mica/config.json. */
+export async function readCanvasConfig(project?: string): Promise<{ canvasRoot: string; pinned: string[] }> {
+  const defaults = { canvasRoot: ".", pinned: [] as string[] };
+  try {
+    const configPath = project
+      ? join(WORKSPACE_DIR, project, ".mica", "config.json")
+      : join(WORKSPACE_DIR, ".mica", "config.json");
+    const raw = await readFile(configPath, "utf-8");
+    const cfg = JSON.parse(raw);
+    return {
+      canvasRoot: cfg.canvasRoot || defaults.canvasRoot,
+      pinned: Array.isArray(cfg.pinned) ? cfg.pinned : defaults.pinned,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+/** Update canvas config fields in .mica/config.json (merges with existing). */
+export async function updateCanvasConfig(
+  project: string | undefined,
+  updates: { canvasRoot?: string; pinned?: string[] },
+): Promise<void> {
+  const configPath = project
+    ? join(WORKSPACE_DIR, project, ".mica", "config.json")
+    : join(WORKSPACE_DIR, ".mica", "config.json");
+  let cfg: Record<string, unknown> = {};
+  try {
+    cfg = JSON.parse(await readFile(configPath, "utf-8"));
+  } catch { /* start fresh */ }
+  if (updates.canvasRoot !== undefined) cfg.canvasRoot = updates.canvasRoot;
+  if (updates.pinned !== undefined) cfg.pinned = updates.pinned;
+  await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf-8");
+}
+
+/**
+ * List canvas-visible files: direct children of canvasRoot + pinned files.
+ * Excludes directories.
+ */
+export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
+  const allFiles = await listFiles(project);
+  const { canvasRoot, pinned } = await readCanvasConfig(project);
+  const root = canvasRoot === "." ? "" : canvasRoot.replace(/\/$/, "") + "/";
+  const pinnedSet = new Set(pinned);
+
+  return allFiles
+    .filter((f) => {
+      if (f.type === "directory") return false;
+      if (root === "") {
+        if (!f.name.includes("/")) return true;
+      } else if (f.name.startsWith(root) && !f.name.slice(root.length).includes("/")) {
+        return true;
+      }
+      if (pinnedSet.has(f.name)) return true;
+      return false;
+    })
+    .map((f) => pinnedSet.has(f.name) ? { ...f, pinned: true } : f);
 }
 
 /**
