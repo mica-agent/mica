@@ -1,31 +1,44 @@
-// Mica Lite Server — single project planning canvas.
-// Serves files from PROJECT_DIR, provides layout persistence,
-// file watching, terminal channels, and AI via llama-server.
+// Mica Server — multi-project planning canvas.
+// Serves a workspace with project subdirectories.
+// Each project has its own files, layout, canvas, and AI context.
 
 import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
-  PROJECT_DIR,
+  WORKSPACE_DIR,
   micaDir,
+  projectDir,
+  getWorkspaceName,
   getProjectName,
+  listProjects,
+  createProject,
+  renameProject,
+  deleteProject,
+  initProject,
   listFiles,
   readProjectFile,
+  resolveFilePath,
   writeProjectFile,
   deleteProjectFile,
 } from "./files.js";
-import { readFile, writeFile, mkdir } from "fs/promises";
+import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
+import { createReadStream } from "fs";
+import mimeTypes from "mime-types";
 import { join } from "path";
 import { existsSync } from "fs";
+import { exec as execCb } from "child_process";
+import { promisify } from "util";
 import { FileWatcher } from "./fileWatcher.js";
-import { ChannelManager } from "./channelManager.js";
+import { ChannelManager, setActiveProject as setChannelProject } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer } from "./llamaServer.js";
-import { chatHandler } from "./micaChat.js";
-import { createAgentHandler } from "./micaAgent.js";
-import { execHandler } from "./plugins/exec.js";
-import { createPtyHandler } from "./plugins/pty.js";
+import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
+import { createAgentHandler, setActiveProject as setAgentProject } from "./micaAgent.js";
+import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
+import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
 
+const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
 // ── Global error handlers ────────────────────────────────────
@@ -57,29 +70,239 @@ app.use((_req, res, next) => {
   next();
 });
 
+// ── Active project tracking ─────────────────────────────────
+
+let activeProject: string | null = null;
+const fileWatcher = new FileWatcher();
+
+function switchProject(projectName: string) {
+  if (activeProject === projectName) return;
+  fileWatcher.stop();
+  activeProject = projectName;
+  setChatProject(projectName);
+  setAgentProject(projectName);
+  setExecProject(projectName);
+  setPtyProject(projectName);
+  setChannelProject(projectName);
+  fileWatcher.setWatchDir(projectDir(projectName));
+  fileWatcher.start().catch((err) => {
+    console.error(`[startup] File watcher failed for ${projectName}:`, (err as Error).message);
+  });
+  console.log(`[mica] Active project: ${projectName}`);
+}
+
 // ── REST Endpoints ───────────────────────────────────────────
 
-// Project info
+// Workspace info
+app.get("/api/workspace", async (_req, res) => {
+  const name = getWorkspaceName();
+  res.json({ name, path: WORKSPACE_DIR });
+});
+
+// Backwards-compatible: /api/project returns active project info
 app.get("/api/project", async (_req, res) => {
-  const name = await getProjectName();
-  res.json({ name, path: PROJECT_DIR });
+  if (!activeProject) {
+    res.json({ name: getWorkspaceName(), path: WORKSPACE_DIR });
+    return;
+  }
+  const name = await getProjectName(activeProject);
+  res.json({ name, path: projectDir(activeProject), project: activeProject });
+});
+
+// ── Projects ────────────────────────────────────────────────
+
+// List all projects
+app.get("/api/projects", async (_req, res) => {
+  try {
+    const projects = await listProjects();
+    res.json(projects);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Create a new project
+app.post("/api/projects", async (req, res) => {
+  const { name, docsDir } = req.body as { name?: string; docsDir?: string };
+  if (!name) {
+    res.status(400).json({ error: "name required" });
+    return;
+  }
+  try {
+    await createProject(name, docsDir || "docs");
+    res.json({ success: true, name });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// Clone a git repo as a new project
+app.post("/api/projects/clone", async (req, res) => {
+  const { url, name, docsDir } = req.body as { url?: string; name?: string; docsDir?: string };
+  if (!url) {
+    res.status(400).json({ error: "url required" });
+    return;
+  }
+  try {
+    // Derive project name from URL if not provided
+    const projectName = name || url.split("/").pop()?.replace(/\.git$/, "") || "project";
+    const destDir = join(WORKSPACE_DIR, projectName);
+    if (existsSync(destDir)) {
+      res.status(400).json({ error: `Project already exists: ${projectName}` });
+      return;
+    }
+
+    console.log(`[mica] Cloning ${url} -> ${destDir}`);
+    await execAsync(`git clone ${JSON.stringify(url)} ${JSON.stringify(destDir)}`, {
+      timeout: 120000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    // Initialize .mica directory
+    await initProject(projectName, docsDir || "docs");
+
+    res.json({ success: true, name: projectName });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Rename a project
+app.put("/api/projects/:project/rename", async (req, res) => {
+  const { newName } = req.body as { newName?: string };
+  if (!newName) {
+    res.status(400).json({ error: "newName required" });
+    return;
+  }
+  try {
+    const oldName = req.params.project;
+    // If this is the active project, stop watching first
+    if (activeProject === oldName) {
+      fileWatcher.stop();
+      activeProject = null;
+    }
+    await renameProject(oldName, newName);
+    res.json({ success: true, name: newName });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// Delete a project
+app.delete("/api/projects/:project", async (req, res) => {
+  try {
+    const name = req.params.project;
+    if (activeProject === name) {
+      fileWatcher.stop();
+      activeProject = null;
+    }
+    await deleteProject(name);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// Open/activate a project (switches file watcher, initializes .mica if needed)
+app.post("/api/projects/:project/open", async (req, res) => {
+  const name = req.params.project;
+  try {
+    const dir = projectDir(name);
+    if (!existsSync(dir)) {
+      res.status(404).json({ error: `Project not found: ${name}` });
+      return;
+    }
+    // Initialize .mica if not present
+    if (!existsSync(join(dir, ".mica"))) {
+      const { docsDir } = req.body as { docsDir?: string };
+      await initProject(name, docsDir || "docs");
+    }
+    switchProject(name);
+
+    // Auto-create agent card if no .chat file exists in the project
+    try {
+      const files = await listFiles(name);
+      const hasChatCard = files.some((f: { name: string }) => f.name.endsWith(".chat"));
+      if (!hasChatCard) {
+        const agentId = "agent-" + Date.now().toString(36);
+        const chatFilename = agentId + ".chat";
+        const stub = "---\nmica: chat\nid: " + agentId + "\n---\nMica project agent.\n";
+        await writeProjectFile(chatFilename, stub, name);
+
+        // Write default behavior instructions on the agent card's back
+        const cardsDir = join(micaDir(name), "cards");
+        await mkdir(cardsDir, { recursive: true });
+        // Read docsDir from config
+        let docsDir = "docs";
+        try {
+          const cfg = JSON.parse(await readFile(join(micaDir(name), "config.json"), "utf-8"));
+          if (cfg.docsDir) docsDir = cfg.docsDir;
+        } catch { /* use default */ }
+
+        await writeFile(join(cardsDir, chatFilename + ".context.md"), [
+          "## Your Role",
+          "You are a team member on this project, not a tool.",
+          "- Ask clarifying questions before acting on ambiguous requests",
+          "- Propose your plan and wait for confirmation before creating files",
+          "- Explain trade-offs when there are multiple approaches",
+          "- Flag when you're uncertain rather than guessing",
+          "",
+          "## On Project Open",
+          "- Scan project files and identify the project type",
+          "- Briefly describe what you found and suggest next steps",
+          `- Propose creating ${docsDir}/decisions.md and a TODO if they don't exist`,
+          "",
+          "## On File Changes",
+          "- Check todo files for @agent tasks and work on them",
+          "- Update dependent docs when specs change",
+          `- Log decisions and actions to ${docsDir}/decisions.md`,
+          "- If you have questions, add a todo item assigned to @human",
+          "",
+          "## On User Message",
+          "- Answer questions about the project",
+          `- Write any new files to the project root or ${docsDir}/`,
+          "- NEVER write files to .mica/ (managed by Mica internally)",
+          "- When asked to build something interactive, confirm what they want before using the create-card-class skill",
+        ].join("\n"), "utf-8");
+        console.log(`[project-open] Created agent card: ${chatFilename}`);
+      }
+    } catch (err) {
+      console.warn("[project-open] Failed to create agent card:", (err as Error).message);
+    }
+
+    // Copy Mica's skills to project's .qwen/skills/
+    try {
+      const { cpSync, existsSync: ex } = await import("fs");
+      const srcSkills = join(process.cwd(), ".qwen", "skills");
+      const dstSkills = join(dir, ".qwen", "skills");
+      if (ex(srcSkills)) {
+        await mkdir(dstSkills, { recursive: true });
+        cpSync(srcSkills, dstSkills, { recursive: true, force: true });
+      }
+    } catch { /* ignore */ }
+
+    const displayName = await getProjectName(name);
+    res.json({ success: true, name: displayName, project: name });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // ── Card Classes ─────────────────────────────────────────────
 
 const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
 
-// Resolve card class directory: .mica/card-classes/:name first, then built-in
-// Supports both card.html format (new) and render.js format (legacy)
+// Resolve card class directory: project .mica/card-classes/:name first, then built-in
 function resolveCardClassDir(className: string): string | null {
-  const projectScoped = join(micaDir(), "card-classes", className);
-  if (existsSync(join(projectScoped, "card.html")) || existsSync(join(projectScoped, "render.js"))) return projectScoped;
+  if (activeProject) {
+    const projectScoped = join(micaDir(activeProject), "card-classes", className);
+    if (existsSync(join(projectScoped, "card.html")) || existsSync(join(projectScoped, "render.js"))) return projectScoped;
+  }
   const builtIn = join(CARD_CLASSES_DIR, className);
   if (existsSync(join(builtIn, "card.html")) || existsSync(join(builtIn, "render.js"))) return builtIn;
   return null;
 }
 
-// Get render.js content for a card class
 // Serve any file from a card class directory
 app.get("/api/card-classes/:className/:file", async (req, res) => {
   const dir = resolveCardClassDir(req.params.className);
@@ -88,7 +311,6 @@ app.get("/api/card-classes/:className/:file", async (req, res) => {
     return;
   }
   const fileName = req.params.file;
-  // Only allow specific files for security
   const allowed = ["render.js", "card.html", "card.js", "card.css", "metadata.json", "spec.md"];
   if (!allowed.includes(fileName)) {
     res.status(403).json({ error: `Not allowed: ${fileName}` });
@@ -126,32 +348,34 @@ app.get("/api/card-classes", async (_req, res) => {
   } catch { /* no card-classes dir */ }
 
   // Project-scoped (overrides built-in)
-  try {
-    const projectDir = join(micaDir(), "card-classes");
-    const entries = await rd(projectDir);
-    for (const name of entries) {
-      const dir = join(projectDir, name);
-      const hasHtml = existsSync(join(dir, "card.html"));
-      const hasRenderJs = existsSync(join(dir, "render.js"));
-      if (hasHtml || hasRenderJs) {
-        classes[name] = { builtIn: false, format: hasHtml ? "html" : "renderjs" };
+  if (activeProject) {
+    try {
+      const projDir = join(micaDir(activeProject), "card-classes");
+      const entries = await rd(projDir);
+      for (const name of entries) {
+        const dir = join(projDir, name);
+        const hasHtml = existsSync(join(dir, "card.html"));
+        const hasRenderJs = existsSync(join(dir, "render.js"));
+        if (hasHtml || hasRenderJs) {
+          classes[name] = { builtIn: false, format: hasHtml ? "html" : "renderjs" };
+        }
       }
-    }
-  } catch { /* no project card-classes */ }
+    } catch { /* no project card-classes */ }
+  }
 
   res.json(classes);
 });
 
-// Render the canvas card (server-side, returns HTML)
-// Assembles card.html + card.css + card.js from the canvas card class directory.
+// Render the canvas card (assembles card.html + card.css + card.js)
 app.get("/api/canvas-card", async (_req, res) => {
   try {
-    // Read canvas class from config (default: "canvas")
     let canvasClass = "canvas";
-    try {
-      const cfg = JSON.parse(await readFile(join(micaDir(), "config.json"), "utf-8"));
-      if (cfg.canvasClass) canvasClass = cfg.canvasClass;
-    } catch { /* use default */ }
+    if (activeProject) {
+      try {
+        const cfg = JSON.parse(await readFile(join(micaDir(activeProject), "config.json"), "utf-8"));
+        if (cfg.canvasClass) canvasClass = cfg.canvasClass;
+      } catch { /* use default */ }
+    }
     const classDir = resolveCardClassDir(canvasClass);
     if (!classDir) throw new Error(`Canvas card class not found: ${canvasClass}`);
 
@@ -171,24 +395,18 @@ app.get("/api/canvas-card", async (_req, res) => {
       deps = (meta.dependencies as { scripts?: string[]; styles?: string[] }) || {};
     } catch { /* no metadata.json */ }
 
-    // Assemble HTML + <style> + <script> (no data-mica-content wrapper — canvas is not a file)
     const html =
       cardHtml +
       (cardCss ? `<style>${cardCss}</style>` : "") +
       (cardJs ? `<script>${cardJs}</script>` : "");
 
-    res.json({
-      html,
-      exports: [],
-      dependencies: deps,
-      meta,
-    });
+    res.json({ html, exports: [], dependencies: deps, meta });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-// ── Card error/ok reporting (from CARD_SHIM) ────────────────
+// ── Card error/ok reporting ─────────────────────────────────
 
 app.post("/api/cards/:filename/error", (req, res) => {
   const { filename } = req.params;
@@ -201,37 +419,52 @@ app.post("/api/cards/:filename/ok", (_req, res) => {
   res.json({ ok: true });
 });
 
-// List all files
+// ── Project-scoped File Endpoints ───────────────────────────
+
+// List files for active project (metadata only — no content)
 app.get("/api/files", async (_req, res) => {
   try {
-    res.json(await listFiles());
+    res.json(await listFiles(activeProject || undefined));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-// Read a file
+// Read a file — returns raw bytes with content-type header
 app.get("/api/files/:filename", async (req, res) => {
+  const filename = req.params.filename;
   try {
-    res.json(await readProjectFile(req.params.filename));
+    const filePath = resolveFilePath(filename, activeProject || undefined);
+    const fileStat = await fsStat(filePath);
+    if (!fileStat.isFile()) {
+      res.status(404).json({ error: "Not a file" });
+      return;
+    }
+    const contentType = mimeTypes.lookup(filename) || "application/octet-stream";
+    res.setHeader("Content-Type", contentType as string);
+    res.setHeader("Content-Length", fileStat.size);
+    res.setHeader("Last-Modified", fileStat.mtime.toUTCString());
+    createReadStream(filePath).pipe(res);
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
   }
 });
 
-// Track which source caused a file write -- included in file-changed broadcast
+// Track which source caused a file write
 const writeSourceTracker = new Map<string, string>();
 
 // Create or update a file
+// Accepts JSON body: { content: string, source?: string }
 app.put("/api/files/:filename", async (req, res) => {
+  const filename = req.params.filename;
   const { content, source } = req.body;
   if (typeof content !== "string") {
     res.status(400).json({ error: "content (string) required" });
     return;
   }
   try {
-    if (source) writeSourceTracker.set(req.params.filename, source);
-    await writeProjectFile(req.params.filename, content);
+    if (source) writeSourceTracker.set(filename, source);
+    await writeProjectFile(filename, content, activeProject || undefined);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -240,8 +473,9 @@ app.put("/api/files/:filename", async (req, res) => {
 
 // Delete a file
 app.delete("/api/files/:filename", async (req, res) => {
+  const filename = req.params.filename;
   try {
-    await deleteProjectFile(req.params.filename);
+    await deleteProjectFile(filename, activeProject || undefined);
     res.json({ success: true });
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
@@ -250,17 +484,15 @@ app.delete("/api/files/:filename", async (req, res) => {
 
 // ── Layout persistence (.mica/layout.json, keyed by device class) ────
 
-// GET /api/layout?device=desktop (default: desktop)
 app.get("/api/layout", async (req, res) => {
+  if (!activeProject) { res.json({}); return; }
   const device = (req.query.device as string) || "desktop";
   try {
-    const data = await readFile(join(micaDir(), "layout.json"), "utf-8");
+    const data = await readFile(join(micaDir(activeProject), "layout.json"), "utf-8");
     const all = JSON.parse(data);
-    // Support both old format (flat) and new format (keyed by device)
     if (all[device] && typeof all[device] === "object" && all[device].cards) {
       res.json(all[device]);
     } else if (all.cards) {
-      // Old flat format — treat as desktop
       res.json(all);
     } else {
       res.json({});
@@ -270,22 +502,20 @@ app.get("/api/layout", async (req, res) => {
   }
 });
 
-// PUT /api/layout?device=desktop
 app.put("/api/layout", async (req, res) => {
+  if (!activeProject) { res.status(400).json({ error: "No active project" }); return; }
   const device = (req.query.device as string) || "desktop";
   try {
-    const dir = micaDir();
+    const dir = micaDir(activeProject);
     await mkdir(dir, { recursive: true });
     const source = req.body.source;
     const dataToStore = { ...req.body };
     delete dataToStore.source;
 
-    // Read existing layouts, merge this device's layout
     let all: Record<string, unknown> = {};
     try {
       const existing = await readFile(join(dir, "layout.json"), "utf-8");
       all = JSON.parse(existing);
-      // Migrate old flat format
       if (all.cards && !all.desktop) {
         all = { desktop: all };
       }
@@ -303,8 +533,9 @@ app.put("/api/layout", async (req, res) => {
 // ── Canvas Back (project-level AI context) ───────────────────
 
 app.get("/api/canvas-back", async (_req, res) => {
+  if (!activeProject) { res.json({ content: "" }); return; }
   try {
-    const content = await readFile(join(micaDir(), "canvas-back.md"), "utf-8");
+    const content = await readFile(join(micaDir(activeProject), "canvas-back.md"), "utf-8");
     res.json({ content });
   } catch {
     res.json({ content: "" });
@@ -312,8 +543,9 @@ app.get("/api/canvas-back", async (_req, res) => {
 });
 
 app.put("/api/canvas-back", async (req, res) => {
+  if (!activeProject) { res.status(400).json({ error: "No active project" }); return; }
   try {
-    const dir = micaDir();
+    const dir = micaDir(activeProject);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "canvas-back.md"), req.body.content || "", "utf-8");
     res.json({ success: true });
@@ -325,9 +557,12 @@ app.put("/api/canvas-back", async (req, res) => {
 // ── Card Backs (per-card AI context) ─────────────────────────
 
 app.get("/api/card-back/:filename", async (req, res) => {
+  if (!activeProject) { res.json({ content: "" }); return; }
+  const filename = req.params.filename;
   try {
-    const backFilename = req.params.filename + ".context.md";
-    const content = await readFile(join(micaDir(), "cards", backFilename), "utf-8");
+    // Replace path separators with -- for flat storage
+    const safeFilename = filename.replace(/\//g, "--") + ".context.md";
+    const content = await readFile(join(micaDir(activeProject), "cards", safeFilename), "utf-8");
     res.json({ content });
   } catch {
     res.json({ content: "" });
@@ -335,11 +570,13 @@ app.get("/api/card-back/:filename", async (req, res) => {
 });
 
 app.put("/api/card-back/:filename", async (req, res) => {
+  if (!activeProject) { res.status(400).json({ error: "No active project" }); return; }
+  const filename = req.params.filename;
   try {
-    const cardsDir = join(micaDir(), "cards");
+    const cardsDir = join(micaDir(activeProject), "cards");
     await mkdir(cardsDir, { recursive: true });
-    const backFilename = req.params.filename + ".context.md";
-    await writeFile(join(cardsDir, backFilename), req.body.content || "", "utf-8");
+    const safeFilename = filename.replace(/\//g, "--") + ".context.md";
+    await writeFile(join(cardsDir, safeFilename), req.body.content || "", "utf-8");
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -348,11 +585,8 @@ app.put("/api/card-back/:filename", async (req, res) => {
 
 // ── mica.* API (server-side bridge for client library) ───────
 
-// Generic RPC endpoint — mica.* client calls go through here.
-// Modular: handlers registered by namespace (chat, file, source, etc.)
 const micaHandlers = new Map<string, (method: string, params: unknown) => Promise<unknown>>();
 
-/** Register a mica.* namespace handler. e.g. registerMicaHandler("chat", handler) */
 export function registerMicaHandler(namespace: string, handler: (method: string, params: unknown) => Promise<unknown>) {
   micaHandlers.set(namespace, handler);
   console.log(`[mica] Registered handler: mica.${namespace}.*`);
@@ -374,8 +608,6 @@ app.post("/api/mica/:namespace/:method", async (req, res) => {
 });
 
 // ── Server Setup ─────────────────────────────────────────────
-
-const fileWatcher = new FileWatcher();
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("[express] Unhandled error:", err.message);
@@ -536,10 +768,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   }
 
   if (event.type === "created") {
-    try {
-      const file = await readProjectFile(event.filename);
-      broadcast({ type: "file-created", filename: event.filename, content: file.content });
-    } catch { /* ignore */ }
+    broadcast({ type: "file-created", filename: event.filename });
   }
 
   if (event.type === "changed") {
@@ -552,66 +781,21 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
 // ── Startup ──────────────────────────────────────────────────
 
 (async () => {
-  // Ensure .mica/ exists
-  await mkdir(micaDir(), { recursive: true });
+  // Ensure workspace directory exists
+  await mkdir(WORKSPACE_DIR, { recursive: true });
 
-  // Copy Mica's skills to project's .qwen/skills/ so the SDK discovers them
+  // Copy Mica's skills to workspace's .qwen/skills/ so the SDK discovers them
   try {
     const { cpSync, existsSync: ex } = await import("fs");
     const srcSkills = join(process.cwd(), ".qwen", "skills");
-    const dstSkills = join(PROJECT_DIR, ".qwen", "skills");
+    const dstSkills = join(WORKSPACE_DIR, ".qwen", "skills");
     if (ex(srcSkills)) {
       await mkdir(dstSkills, { recursive: true });
       cpSync(srcSkills, dstSkills, { recursive: true, force: true });
-      console.log("[startup] Copied skills to project .qwen/skills/");
+      console.log("[startup] Copied skills to workspace .qwen/skills/");
     }
   } catch (err) {
     console.warn("[startup] Failed to copy skills:", (err as Error).message);
-  }
-
-  // Auto-create agent card if no .chat file exists in the project
-  try {
-    const files = await listFiles();
-    const hasChatCard = files.some((f: { name: string }) => f.name.endsWith(".chat"));
-    if (!hasChatCard) {
-      const agentId = "agent-" + Date.now().toString(36);
-      const chatFilename = agentId + ".chat";
-      const stub = "---\nmica: chat\nid: " + agentId + "\n---\nMica project agent.\n";
-      await writeProjectFile(chatFilename, stub);
-
-      // Write default behavior instructions on the agent card's back
-      const cardsDir = join(micaDir(), "cards");
-      await mkdir(cardsDir, { recursive: true });
-      await writeFile(join(cardsDir, chatFilename + ".context.md"), [
-        "## On Project Open",
-        "- Scan project files and identify the project type",
-        "- Write canvas-back.md with project context and purpose",
-        "- Create decisions.md if none exists",
-        "- Create a TODO file with initial tasks if none exists",
-        "- Suggest how to organize files on the canvas",
-        "",
-        "## On File Changes",
-        "- Check todo files for @agent tasks and work on them",
-        "- Update dependent docs when specs change",
-        "- Log decisions and actions to decisions.md",
-        "- If you have questions, add a todo item assigned to @human",
-        "",
-        "## On User Message",
-        "- Answer questions about the project",
-        "- Create card classes when asked to build interactive components",
-        "- Use the create-card-class skill for new visualizations",
-      ].join("\n"), "utf-8");
-
-      console.log("[startup] Created agent card: " + chatFilename);
-    }
-  } catch (err) {
-    console.warn("[startup] Failed to create agent card:", (err as Error).message);
-  }
-
-  try {
-    await fileWatcher.start();
-  } catch (err) {
-    console.error("[startup] File watcher failed:", (err as Error).message);
   }
 
   // Register mica.* RPC plugins
@@ -619,31 +803,32 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   registerMicaHandler("exec", execHandler);  // mica.exec.*
 
   // Register channel-based plugins
-  channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files → Qwen agent
-  channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files → PTY
+  channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
+  channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
 
   // Start llama-server for local AI
   ensureLlamaServer().catch((err) => {
     console.warn("[startup] llama-server failed to start:", (err as Error).message);
   });
 
-  const projectName = await getProjectName();
+  const workspaceName = getWorkspaceName();
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`
-╔══════════════════════════════════════════════════════════╗
-║                   Mica Lite                              ║
-╠══════════════════════════════════════════════════════════╣
-║  Project:   ${projectName.padEnd(42)}║
-║  Path:      ${PROJECT_DIR.padEnd(42)}║
-║  Canvas:    http://localhost:${PORT}${" ".repeat(28)}║
-╚══════════════════════════════════════════════════════════╝
+======================================================
+                     Mica
+======================================================
+  Workspace:  ${workspaceName}
+  Path:       ${WORKSPACE_DIR}
+  Canvas:     http://localhost:${PORT}
+======================================================
 `);
   });
 
   const shutdown = async () => {
     console.log("\n[shutdown] Stopping...");
     channelManager.destroyAll();
+    fileWatcher.stop();
     await stopLlamaServer();
     process.exit(0);
   };

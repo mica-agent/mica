@@ -81,7 +81,7 @@ function escHtml(s) {
 
 // --- Initialize from content ---
 
-const content = mica.getContent();
+const content = await mica.getContent();
 const parsed = parseItems(content);
 const items = parsed.items;
 const otherLines = parsed.otherLines;

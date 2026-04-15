@@ -8,7 +8,12 @@
  * States: registered -> active -> idle -> destroyed
  */
 
-import { readProjectFile, writeProjectFile } from "./files.js";
+import { readProjectFile, writeProjectFile, WORKSPACE_DIR } from "./files.js";
+import { join } from "path";
+
+// Active project tracking for file operations
+let _activeProject: string | null = null;
+export function setActiveProject(project: string | null) { _activeProject = project; }
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -107,20 +112,20 @@ export class ChannelManager {
 
       async readContent(): Promise<string> {
         try {
-          const file = await readProjectFile(session.filename);
+          const file = await readProjectFile(session.filename, _activeProject || undefined);
           return file.content;
         } catch { return ""; }
       },
 
       async readFile(filename: string): Promise<string> {
         try {
-          const file = await readProjectFile(filename);
+          const file = await readProjectFile(filename, _activeProject || undefined);
           return file.content;
         } catch { return ""; }
       },
 
       async writeFile(filename: string, content: string): Promise<void> {
-        await writeProjectFile(filename, content);
+        await writeProjectFile(filename, content, _activeProject || undefined);
       },
 
       destroy(): void {
@@ -154,7 +159,7 @@ export class ChannelManager {
 
       let content = "";
       try {
-        const file = await readProjectFile(filename);
+        const file = await readProjectFile(filename, _activeProject || undefined);
         content = file.content;
       } catch { /* File may not exist yet */ }
 

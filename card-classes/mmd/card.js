@@ -5,7 +5,7 @@
 const viewport = container.querySelector('#mmd-viewport');
 const svgContainer = container.querySelector('#mmd-svg');
 const zoomLabel = container.querySelector('#mmd-zoom-label');
-const content = mica.getContent();
+const content = await mica.getContent();
 
 let transform = { x: 0, y: 0, scale: 1 };
 let altHeld = false;

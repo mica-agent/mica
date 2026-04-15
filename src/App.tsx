@@ -1,14 +1,16 @@
-import { useState, useEffect } from 'react';
-import { fetchProject } from './api/canvasFiles';
-import type { ProjectInfo } from './api/canvasFiles';
+import { useState, useEffect, useCallback } from 'react';
+import { fetchWorkspace, fetchProjects, openProjectApi } from './api/canvasFiles';
+import type { WorkspaceInfo, ProjectInfo } from './api/canvasFiles';
 import { connect as connectMicaSocket, onConnectionChange } from './api/micaSocket';
 import CanvasCardRuntime from './whiteboard/CanvasCardRuntime';
+import ProjectList from './ProjectList';
 import './App.css';
 
 connectMicaSocket();
 
 export default function App() {
-  const [project, setProject] = useState<ProjectInfo | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
+  const [activeProject, setActiveProject] = useState<ProjectInfo | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [wasConnected, setWasConnected] = useState(false);
 
@@ -17,18 +19,27 @@ export default function App() {
     if (val) setWasConnected(true);
   }), []);
 
-  // Reconnect is handled entirely by micaSocket.ts:
-  // WS onclose → poll /api/project → force reload when server responds.
-  // The overlay just shows visual feedback while that happens.
-
   useEffect(() => {
-    fetchProject().then(setProject).catch(console.error);
+    fetchWorkspace().then(setWorkspace).catch(console.error);
   }, []);
 
-  if (!project) {
+  const handleOpenProject = useCallback(async (project: ProjectInfo) => {
+    try {
+      const result = await openProjectApi(project.name);
+      setActiveProject({ ...project, ...result });
+    } catch (err) {
+      console.error('Failed to open project:', err);
+    }
+  }, []);
+
+  const handleBackToProjects = useCallback(() => {
+    setActiveProject(null);
+  }, []);
+
+  if (!workspace) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#999', background: '#0a0a0f' }}>
-        Connecting to project...
+        Connecting...
       </div>
     );
   }
@@ -42,7 +53,25 @@ export default function App() {
         background: 'rgba(10, 10, 15, 0.9)', borderBottom: '1px solid #222',
         gap: 12,
       }}>
-        <span style={{ fontWeight: 600, fontSize: 14 }}>{project.name}</span>
+        {activeProject ? (
+          <>
+            <button
+              onClick={handleBackToProjects}
+              style={{
+                background: 'none', border: 'none', color: '#888', cursor: 'pointer',
+                fontSize: 14, padding: '2px 8px', borderRadius: 4,
+              }}
+              title="Back to projects"
+            >
+              &larr;
+            </button>
+            <span style={{ color: '#666', fontSize: 12 }}>{workspace.name}</span>
+            <span style={{ color: '#555' }}>/</span>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>{activeProject.name}</span>
+          </>
+        ) : (
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{workspace.name}</span>
+        )}
         <span style={{ flex: 1 }} />
         <span
           style={{
@@ -53,9 +82,16 @@ export default function App() {
         />
       </div>
 
-      {/* Canvas */}
+      {/* Content */}
       <div style={{ flex: 1, overflow: 'auto' }}>
-        <CanvasCardRuntime />
+        {activeProject ? (
+          <CanvasCardRuntime key={activeProject.name} />
+        ) : (
+          <ProjectList
+            workspaceName={workspace.name}
+            onOpenProject={handleOpenProject}
+          />
+        )}
       </div>
 
       {/* Reconnection overlay */}

@@ -64,6 +64,9 @@ done
 
 cd "$PROJECT_DIR"
 
+# Set workspace directory for the server (default: /workspaces/testproj for dev)
+export PROJECT_DIR="${PROJECT_DIR_OVERRIDE:-/workspaces/testproj}"
+
 # Start backend
 echo "Starting backend on port $BACKEND_PORT..."
 npm run server > "$PID_DIR/backend.log" 2>&1 &

@@ -4,9 +4,17 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { PROJECT_DIR, micaDir, listFiles } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile } from "./files.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
+
+// Active project tracking
+let _activeProject: string | null = null;
+export function setActiveProject(project: string | null) { _activeProject = project; }
+function getProjectDir() {
+  return _activeProject ? join(WORKSPACE_DIR, _activeProject) : WORKSPACE_DIR;
+}
+function getMicaDir() { return micaDir(_activeProject || undefined); }
 
 const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
 const MAX_HISTORY = 50;
@@ -36,7 +44,7 @@ async function getQuery() {
 
 async function loadHistory(chatId: string): Promise<ChatMessage[]> {
   try {
-    const raw = await readFile(join(micaDir(), "chats", `${chatId}.json`), "utf-8");
+    const raw = await readFile(join(getMicaDir(), "chats", `${chatId}.json`), "utf-8");
     return JSON.parse(raw);
   } catch {
     return [];
@@ -44,7 +52,7 @@ async function loadHistory(chatId: string): Promise<ChatMessage[]> {
 }
 
 async function saveHistory(chatId: string, messages: ChatMessage[]): Promise<void> {
-  const dir = join(micaDir(), "chats");
+  const dir = join(getMicaDir(), "chats");
   await mkdir(dir, { recursive: true });
   const trimmed = messages.length > MAX_HISTORY ? messages.slice(-MAX_HISTORY) : messages;
   await writeFile(join(dir, `${chatId}.json`), JSON.stringify(trimmed, null, 2), "utf-8");
@@ -57,7 +65,7 @@ async function buildContext(agentFilename: string): Promise<string> {
 
   // 1. Instance-level AI context (per-card behavior instructions)
   try {
-    const instanceContext = await readFile(join(micaDir(), "cards", agentFilename + ".context.md"), "utf-8");
+    const instanceContext = await readFile(join(getMicaDir(), "cards", agentFilename + ".context.md"), "utf-8");
     if (instanceContext.trim()) parts.push(`## Your Behavior Instructions\n${instanceContext.trim()}`);
   } catch { /* no instance context */ }
 
@@ -68,7 +76,7 @@ async function buildContext(agentFilename: string): Promise<string> {
     // Check project-scoped first, then built-in
     let classContext = "";
     try {
-      classContext = await readFile(join(micaDir(), "card-classes", ext, "context.md"), "utf-8");
+      classContext = await readFile(join(getMicaDir(), "card-classes", ext, "context.md"), "utf-8");
     } catch {
       try {
         classContext = await readFile(join(CARD_CLASSES_DIR, ext, "context.md"), "utf-8");
@@ -79,34 +87,79 @@ async function buildContext(agentFilename: string): Promise<string> {
 
   // 3. Project-level AI context (canvas back)
   try {
-    const canvasBack = await readFile(join(micaDir(), "canvas-back.md"), "utf-8");
+    const canvasBack = await readFile(join(getMicaDir(), "canvas-back.md"), "utf-8");
     if (canvasBack.trim()) parts.push(`## Project Context\n${canvasBack.trim()}`);
   } catch { /* no canvas-back */ }
 
-  // Project files
+  // Project files — list all, read text content for context
   try {
-    const files = await listFiles();
+    const files = await listFiles(_activeProject || undefined);
     if (files.length > 0) {
       parts.push(`## Project Files`);
+      const TEXT_EXTS = new Set([".md", ".txt", ".json", ".todo", ".chat", ".mmd", ".yaml", ".yml", ".toml", ".csv", ".html", ".css", ".js", ".ts", ".py", ".sh", ".rb", ".go", ".rs", ".java"]);
+      const MAX_PREVIEW = 1500;
+      const MAX_FILES_WITH_CONTENT = 20;
+      let filesWithContent = 0;
       for (const f of files) {
-        const preview = f.content.slice(0, 1500);
-        parts.push(`### ${f.name}\n${preview}`);
+        const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
+        if (TEXT_EXTS.has(ext) && f.size < 50000 && filesWithContent < MAX_FILES_WITH_CONTENT) {
+          try {
+            const file = await readProjectFile(f.name, _activeProject || undefined);
+            const preview = file.content.slice(0, MAX_PREVIEW);
+            parts.push(`### ${f.name}\n${preview}`);
+            filesWithContent++;
+          } catch { parts.push(`### ${f.name} (${f.size} bytes)`); }
+        } else {
+          parts.push(`### ${f.name} (${f.size} bytes)`);
+        }
       }
     }
   } catch { /* ignore */ }
 
+  // Project structure guidance
+  let docsDir = "docs";
+  try {
+    const cfg = JSON.parse(await readFile(join(getMicaDir(), "config.json"), "utf-8"));
+    if (cfg.docsDir) docsDir = cfg.docsDir;
+  } catch { /* use default */ }
+
+  parts.push(`## File Locations
+- Write planning files (specs, docs, decisions, TODOs) to the \`${docsDir}/\` directory
+- Write card instance files (.chat, .todo, .terminal, .mmd, etc.) to the project root
+- NEVER write files to .mica/ — that directory is managed by Mica internally
+- The .mica/ directory contains metadata only (layout, config, AI context). Do not read or write it directly.`);
+
   // Default behavior (if no agent card back provides instructions)
-  parts.push(`## Default Behavior
+  parts.push(`## Your Role
+You are a team member on this project, not a tool. You collaborate with the human — you don't just execute orders.
+
+IMPORTANT: You MUST follow these rules. Never skip them.
+
+1. **NEVER create files without confirming first.** Before writing ANY code or creating ANY file, describe what you plan to build, what it will and won't support, and ask "Should I go ahead?" Wait for a "yes" before writing.
+
+2. **Flag limitations upfront.** If what the user asks for can't be fully implemented with the available APIs, say so BEFORE building. Example: "Our file API only handles text — a file uploader won't support images or binaries. Want me to build a text-only version, or should we discuss alternatives?"
+
+3. **No incomplete implementations.** Don't build something you know is broken or incomplete. If you can't do it right, say why and ask what the user prefers instead.
+
+4. **Explain trade-offs.** If there are multiple approaches, briefly present options and recommend one with reasoning.
+
+5. **Flag uncertainty.** If you're unsure about something, say so. Don't guess.
+
+6. **Use established libraries.** When building card classes, prefer well-known CDN libraries over hand-coding. Examples: Chart.js for charts, FullCalendar for calendars, Sortable.js for drag-and-drop lists, CodeMirror for code editing, Leaflet for maps. Add them via metadata.json dependencies. Don't reinvent what a library already does well.
+
+## Default Behavior
 When reacting to file changes:
 - Evaluate what actions should be taken
 - Check for @agent tasks in todo files
 - Update dependent docs if needed
-- Log decisions and actions taken to decisions.md
+- Log decisions and actions taken to ${docsDir}/decisions.md
 - If you have questions, add them to your chat response AND create a todo item assigned to @human
 
 ## Available Skills
-- When asked to build a card, widget, visualization, or interactive component, use the \`create-card-class\` skill.
-- Card classes go in .mica/card-classes/{name}/render.js`);
+- When asked to build, create, or make ANY interactive UI (card, widget, visualization, browser, dashboard, chart, game, calculator, tool, viewer, editor, etc.), ALWAYS use the \`create-card-class\` skill.
+- This includes requests like "make a kanban board", "build a dashboard", "create a viewer" — even if the user doesn't say "card", treat it as a card class request.
+- Card classes go in .mica/card-classes/{name}/ (this is the ONE exception to the .mica rule)
+- Before building, confirm with the user what features they want.`);
 
   return parts.join("\n\n");
 }
@@ -253,7 +306,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         const q = queryFn({
           prompt: message,
           options: {
-            cwd: PROJECT_DIR,
+            cwd: getProjectDir(),
             model: "openai:local",
             authType: "openai" as const,
             permissionMode: "yolo" as const,

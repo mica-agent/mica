@@ -241,7 +241,7 @@ function loadContextInfo() {
     const lines = [];
     let totalChars = 0;
     for (let i = 0; i < files.length; i++) {
-      const size = (files[i].content || "").length;
+      const size = files[i].size || 0;
       totalChars += size;
       lines.push(files[i].name + "  " + formatSize(size));
     }

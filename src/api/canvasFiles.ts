@@ -1,21 +1,106 @@
-// Frontend API client for Mica Lite — single project, simple file operations.
-
-export type CanvasId = string;
+// Frontend API client for Mica — multi-project workspace.
 
 const API_BASE = import.meta.env.VITE_MICA_API || "";
 
-export interface ProjectInfo {
+export interface WorkspaceInfo {
   name: string;
   path: string;
 }
 
-export interface CanvasFile {
+export interface ProjectInfo {
   name: string;
-  content: string;
-  modifiedAt?: string;
+  path: string;
+  project?: string;
+  hasGit?: boolean;
+  hasMica?: boolean;
+  docsDir?: string;
 }
 
-// ── Project ──────────────────────────────────────────────
+/** File metadata from GET /api/files (no content). */
+export interface CanvasFile {
+  name: string;      // Relative path from project root (e.g., "docs/spec.md")
+  type?: "file" | "directory";
+  size: number;
+  modifiedAt?: string;
+  content?: string;  // Loaded lazily by CardFrame when needed
+}
+
+// ── Workspace ───────────────────────────────────────────
+
+export async function fetchWorkspace(): Promise<WorkspaceInfo> {
+  const res = await fetch(`${API_BASE}/api/workspace`);
+  if (!res.ok) throw new Error(`Failed to fetch workspace: ${res.statusText}`);
+  return res.json();
+}
+
+// ── Projects ────────────────────────────────────────────
+
+export async function fetchProjects(): Promise<ProjectInfo[]> {
+  const res = await fetch(`${API_BASE}/api/projects`);
+  if (!res.ok) throw new Error(`Failed to fetch projects: ${res.statusText}`);
+  return res.json();
+}
+
+export async function createProjectApi(name: string, docsDir?: string): Promise<{ success: boolean; name: string }> {
+  const res = await fetch(`${API_BASE}/api/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, docsDir: docsDir || "docs" }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || "Failed to create project");
+  }
+  return res.json();
+}
+
+export async function cloneProjectApi(url: string, name?: string, docsDir?: string): Promise<{ success: boolean; name: string }> {
+  const res = await fetch(`${API_BASE}/api/projects/clone`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, name, docsDir: docsDir || "docs" }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || "Failed to clone project");
+  }
+  return res.json();
+}
+
+export async function openProjectApi(project: string, docsDir?: string): Promise<ProjectInfo> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/open`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ docsDir }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || "Failed to open project");
+  }
+  return res.json();
+}
+
+export async function renameProjectApi(project: string, newName: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}/rename`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ newName }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || "Failed to rename project");
+  }
+}
+
+export async function deleteProjectApi(project: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/projects/${encodeURIComponent(project)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error || "Failed to delete project");
+  }
+}
 
 export async function fetchProject(): Promise<ProjectInfo> {
   const res = await fetch(`${API_BASE}/api/project`);
@@ -40,16 +125,29 @@ export async function fetchCanvasCard(signal?: AbortSignal): Promise<RenderedCan
 
 // ── Files ────────────────────────────────────────────────
 
+/** Fetch file list (metadata only — name, size, modifiedAt). */
 export async function fetchFiles(): Promise<CanvasFile[]> {
   const res = await fetch(`${API_BASE}/api/files`);
   if (!res.ok) throw new Error(`Failed to fetch files: ${res.statusText}`);
   return res.json();
 }
 
-export async function fetchFile(filename: string): Promise<CanvasFile> {
+/** Fetch raw file content as text. */
+export async function fetchFileContent(filename: string): Promise<string> {
   const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`);
   if (!res.ok) throw new Error(`Failed to fetch file: ${res.statusText}`);
-  return res.json();
+  return res.text();
+}
+
+/** Fetch file metadata + content (convenience wrapper). */
+export async function fetchFile(filename: string): Promise<CanvasFile> {
+  const content = await fetchFileContent(filename);
+  return { name: filename, size: content.length, content };
+}
+
+/** Get the raw file URL (for binary files — images, PDFs, etc.). */
+export function getFileUrl(filename: string): string {
+  return `${API_BASE}/api/files/${encodeURIComponent(filename)}`;
 }
 
 export async function saveFile(filename: string, content: string): Promise<void> {
@@ -68,7 +166,7 @@ export async function deleteFile(filename: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to delete file: ${res.statusText}`);
 }
 
-// ── Rendered Card (for card classes with render.js) ──────
+// ── Rendered Card ───────────────────────────────────────
 
 export interface RenderedCard {
   filename: string;
@@ -79,7 +177,6 @@ export interface RenderedCard {
 }
 
 export async function fetchRenderedCard(project: string, canvas: string, filename: string): Promise<RenderedCard> {
-  // In single-project mode, project/canvas are ignored — use the rendered-card endpoint
   const res = await fetch(`${API_BASE}/api/rendered-card/${encodeURIComponent(filename)}`);
   if (!res.ok) throw new Error(`Failed to fetch rendered card: ${res.statusText}`);
   return res.json();
@@ -116,7 +213,6 @@ export async function saveLayout(data: Record<string, unknown>): Promise<void> {
 // ── Focus sync ───────────────────────────────────────────
 
 export function broadcastFocus(filename: string): void {
-  // Use the WebSocket broadcast mechanism
   import("./micaSocket").then(({ broadcast }) => {
     broadcast("card-focus", { filename });
   });

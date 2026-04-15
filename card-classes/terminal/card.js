@@ -19,12 +19,17 @@ const term = new Terminal({
 const fitAddon = new FitAddon.FitAddon();
 term.loadAddon(fitAddon);
 
-const termEl = container.querySelector('#term');
+var termEl = container.querySelector('#term');
 term.open(termEl);
 fitAddon.fit();
 
-// Open PTY channel
-const ch = mica.openChannel('pty_session', { cols: term.cols, rows: term.rows });
+// Ensure terminal gets focus on click
+termEl.addEventListener('click', function() { term.focus(); });
+termEl.addEventListener('pointerdown', function(e) { e.stopPropagation(); });
+
+// Open PTY channel immediately — server defaults to 80x24 if cols/rows are 0.
+// ResizeObserver below will fit + send correct dimensions once the card is laid out.
+var ch = mica.openChannel('pty_session', { cols: term.cols, rows: term.rows });
 
 ch.onData(function(data) {
   if (data.type === 'output' && data.data) {
@@ -49,7 +54,7 @@ term.onResize(function(size) {
 });
 
 // Auto-fit on container resize
-const ro = new ResizeObserver(function() { fitAddon.fit(); });
+var ro = new ResizeObserver(function() { fitAddon.fit(); });
 ro.observe(termEl);
 
 mica.onDestroy(function() {

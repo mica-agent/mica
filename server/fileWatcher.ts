@@ -1,15 +1,23 @@
-// FileWatcher — watches the project directory for file changes.
-// Single project model: watches PROJECT_DIR only.
+// FileWatcher — watches a project directory for file changes (recursive).
+// Supports watching a specific project subdirectory within the workspace.
 
 import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
-import { PROJECT_DIR } from "./files.js";
+import { WORKSPACE_DIR } from "./files.js";
 
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
-  filename: string;
+  filename: string;  // Relative path from project root (e.g., "docs/spec.md")
 }
+
+/** Directories to skip while watching. */
+const IGNORE_DIRS = new Set([
+  ".mica", ".git", ".svn", ".hg",
+  "node_modules", "__pycache__", ".venv", "venv",
+  ".next", ".nuxt", "dist", "build", ".cache",
+  ".qwen",
+]);
 
 const DEBOUNCE_MS = 300;
 
@@ -17,33 +25,32 @@ export class FileWatcher extends EventEmitter {
   private watcher: fs.FSWatcher | null = null;
   private debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private knownFiles: Set<string> = new Set();
+  private watchDir: string = WORKSPACE_DIR;
+
+  /** Set the directory to watch (a specific project directory). */
+  setWatchDir(dir: string): void {
+    this.watchDir = dir;
+  }
 
   async start(): Promise<void> {
-    await fs.promises.mkdir(PROJECT_DIR, { recursive: true });
+    await fs.promises.mkdir(this.watchDir, { recursive: true });
 
-    // Scan existing files
-    try {
-      const entries = await fs.promises.readdir(PROJECT_DIR);
-      for (const entry of entries) {
-        if (entry.startsWith(".")) continue;
-        if (entry === ".mica") continue;
-        const filePath = path.join(PROJECT_DIR, entry);
-        const s = await fs.promises.stat(filePath);
-        if (s.isFile()) {
-          this.knownFiles.add(entry);
-        }
-      }
-    } catch {
-      // Directory may not exist yet
-    }
+    // Scan existing files recursively
+    await this.scanDir(this.watchDir);
 
     try {
-      this.watcher = fs.watch(PROJECT_DIR, (eventType, filename) => {
+      // Use recursive option (supported on macOS and Linux 5.9+)
+      this.watcher = fs.watch(this.watchDir, { recursive: true }, (eventType, filename) => {
         if (!filename) return;
-        if (filename.startsWith(".")) return;
-        if (filename === ".mica") return;
 
-        const debounceKey = filename;
+        // Normalize path separators
+        const normalized = filename.split(path.sep).join("/");
+
+        // Skip dotfiles and ignored directories
+        const parts = normalized.split("/");
+        if (parts.some(p => p.startsWith(".") || IGNORE_DIRS.has(p))) return;
+
+        const debounceKey = normalized;
         const existing = this.debounceTimers.get(debounceKey);
         if (existing) clearTimeout(existing);
 
@@ -51,8 +58,8 @@ export class FileWatcher extends EventEmitter {
           debounceKey,
           setTimeout(() => {
             this.debounceTimers.delete(debounceKey);
-            this.handleFileChange(filename).catch((err) => {
-              console.error(`[file-watcher] Error handling ${filename}:`, (err as Error).message);
+            this.handleFileChange(normalized).catch((err) => {
+              console.error(`[file-watcher] Error handling ${normalized}:`, (err as Error).message);
             });
           }, DEBOUNCE_MS)
         );
@@ -62,18 +69,39 @@ export class FileWatcher extends EventEmitter {
         console.warn(`[file-watcher] Watch error:`, err.message);
       });
 
-      console.log(`[file-watcher] Watching ${PROJECT_DIR} (${this.knownFiles.size} files)`);
+      console.log(`[file-watcher] Watching ${this.watchDir} (${this.knownFiles.size} files, recursive)`);
     } catch (err) {
-      console.warn(`[file-watcher] Could not watch ${PROJECT_DIR}: ${(err as Error).message}`);
+      console.warn(`[file-watcher] Could not watch ${this.watchDir}: ${(err as Error).message}`);
+    }
+  }
+
+  private async scanDir(dir: string): Promise<void> {
+    try {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith(".")) continue;
+        if (IGNORE_DIRS.has(entry.name)) continue;
+
+        const fullPath = path.join(dir, entry.name);
+
+        if (entry.isDirectory()) {
+          await this.scanDir(fullPath);
+        } else if (entry.isFile()) {
+          const relPath = path.relative(this.watchDir, fullPath).split(path.sep).join("/");
+          this.knownFiles.add(relPath);
+        }
+      }
+    } catch {
+      // Directory may not exist yet
     }
   }
 
   private async handleFileChange(filename: string): Promise<void> {
-    const filePath = path.join(PROJECT_DIR, filename);
+    const filePath = path.join(this.watchDir, filename);
 
     try {
       const s = await fs.promises.stat(filePath);
-      if (!s.isFile()) return;
+      if (s.isDirectory()) return;
 
       if (this.knownFiles.has(filename)) {
         this.emit("file-change", { type: "changed", filename } as FileChangeEvent);
@@ -96,5 +124,6 @@ export class FileWatcher extends EventEmitter {
       clearTimeout(timer);
     }
     this.debounceTimers.clear();
+    this.knownFiles.clear();
   }
 }

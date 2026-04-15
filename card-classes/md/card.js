@@ -1,7 +1,7 @@
 // Markdown card — WYSIWYG editor using Toast UI Editor
 // container and mica are provided by CARD_SHIM
 
-const content = mica.getContent();
+const content = await mica.getContent();
 
 // Strip YAML frontmatter (--- ... ---) before editing, preserve for save
 let frontmatter = '';

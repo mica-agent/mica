@@ -228,28 +228,45 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       // Use the stable bridge from the ref (created once per component instance)
       const baseBridge = bridgeRef.current!;
 
-      // Provide the refresh implementation — re-fetches HTML from server and re-injects
+      // Provide the refresh implementation — re-fetches content and re-executes scripts
       baseBridge._setRefreshFn(async () => {
-        const { fetchRenderedCard } = await import("../api/canvasFiles");
-        const rendered = await fetchRenderedCard(project, canvas, filename);
-        if (el && rendered.html) {
-          el.innerHTML = rendered.html;
-          // Re-execute scripts with the same bridge
+        // Re-fetch file content
+        if (filename && filename !== "__canvas__") {
+          try {
+            const res = await fetch(`/api/files/${encodeURIComponent(filename)}`);
+            _cachedContent = res.ok ? await res.text() : "";
+          } catch { _cachedContent = ""; }
+        }
+
+        // Re-inject original HTML and re-execute scripts with updated content
+        if (el) {
+          el.innerHTML = html;
           const scripts = Array.from(el.querySelectorAll("script"));
           scripts.forEach((oldScript) => {
             if (oldScript.getAttribute("src")) { oldScript.remove(); return; }
             const newScript = document.createElement("script");
             newScript.textContent =
-              `try{(function(mica, _c) {${CARD_SHIM}${oldScript.textContent}})(` +
-              `document.currentScript.__mica, document.currentScript.parentElement);` +
-              `fetch('/api/cards/'+encodeURIComponent(document.currentScript.__mica.filename)+'/ok',{method:'POST'}).catch(function(){});}` +
-              `catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}`;
+              `(function(){` +
+              `const _m=document.currentScript.__mica;` +
+              `try{(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
+              `_m,document.currentScript.parentElement);` +
+              `}catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}` +
+              `})()`;
             oldScript.remove();
             (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
             el.appendChild(newScript);
           });
         }
       });
+
+      // Content fetch — starts immediately, cards access via mica.getContent()
+      let _cachedContent: string | null = null;
+      const _contentPromise: Promise<string> = (filename && filename !== "__canvas__")
+        ? fetch(`/api/files/${encodeURIComponent(filename)}`)
+            .then(r => r.ok ? r.text() : "")
+            .then(c => { _cachedContent = c; return c; })
+            .catch(() => { _cachedContent = ""; return ""; })
+        : Promise.resolve("");
 
       const micaBridge = {
         ...baseBridge,
@@ -267,18 +284,8 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
         },
         refresh: baseBridge.refresh,
         exports: exportFns || [],
-        /** Get the instance file content for this card (from data attribute or API) */
-        getContent: () => {
-          // card.html format: content stored in data-mica-content attribute
-          const dataEl = el.querySelector("[data-mica-content]");
-          if (dataEl) {
-            return (dataEl as HTMLElement).dataset.micaContent
-              ?.replace(/&amp;/g, "&").replace(/&quot;/g, '"')
-              .replace(/&lt;/g, "<").replace(/&gt;/g, ">") || "";
-          }
-          // Fallback: fetch from API
-          return "";
-        },
+        /** Get the instance file content. Returns cached string or Promise. Use with await. */
+        getContent: () => _cachedContent !== null ? _cachedContent : _contentPromise,
       };
 
       // Separate external (src) and inline scripts from HTML
@@ -319,7 +326,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
           newScript.textContent =
             `(function(){` +
             `const _m=document.currentScript.__mica;` +
-            `try{(function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
+            `try{(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
             `_m,document.currentScript.parentElement);` +
             `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/ok',{method:'POST'}).catch(function(){});` +
             `}catch(e){` +

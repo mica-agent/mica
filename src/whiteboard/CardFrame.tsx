@@ -4,12 +4,13 @@
 // The canvas card class owns positioning, drag, and resize via event
 // delegation on #canvas-freeform.
 //
-// Content rendering: for now, renders file content client-side
-// (markdown, mermaid, text, json). Future: delegate to card class render.js.
+// Content is loaded lazily from the API — the file list only provides metadata.
+// Card classes get content via mica.getContent() (async, fetches from API).
+// Fallback renderer loads content for text files on mount.
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import type { CanvasFile } from "../api/canvasFiles";
-import { fetchCardBack, saveCardBack } from "../api/canvasFiles";
+import { fetchCardBack, saveCardBack, fetchFileContent, getFileUrl } from "../api/canvasFiles";
 import CardRuntime from "./CardRuntime";
 
 interface RenderedCardData {
@@ -33,6 +34,7 @@ function getFileType(filename: string): string {
   if (ext === "json") return "json";
   if (ext === "html" || ext === "htm") return "html";
   if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext)) return "image";
+  if (["pdf"].includes(ext)) return "binary";
   return "text";
 }
 
@@ -43,6 +45,7 @@ function getFileBadge(type: string): string {
     case "json": return "JSON";
     case "html": return "HTML";
     case "image": return "IMG";
+    case "binary": return "BIN";
     default: return "TXT";
   }
 }
@@ -57,41 +60,39 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
   const [renderedCard, setRenderedCard] = useState<RenderedCardData | null>(null);
   const [renderChecked, setRenderChecked] = useState(false);
 
+  // Lazily loaded text content for fallback rendering
+  const [textContent, setTextContent] = useState<string | null>(null);
+
   const fileType = getFileType(file.name);
   const badge = renderedCard?.meta?.badge || getFileBadge(fileType);
 
-  // Load card class (card.html format or legacy render.js), render CLIENT-SIDE
+  // Load card class (card.html format)
   useEffect(() => {
     const API_BASE = import.meta.env.VITE_MICA_API || "";
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
 
     async function loadCardClass() {
-      // Check if a card class exists for this extension
       const classesRes = await fetch(`${API_BASE}/api/card-classes`);
       const classes = await classesRes.json() as Record<string, { format?: string }>;
       if (!classes[ext]) return null;
 
-      // Use card.html format if the class has it
       if (classes[ext].format === "html") {
         const htmlRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.html`);
         if (!htmlRes.ok) return null;
         const cardHtml = await htmlRes.text();
 
-        // Load optional card.css
         let cardCss = "";
         try {
           const cssRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.css`);
           if (cssRes.ok) cardCss = await cssRes.text();
         } catch { /* no card.css */ }
 
-        // Load optional card.js
         let cardJs = "";
         try {
           const jsRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.js`);
           if (jsRes.ok) cardJs = await jsRes.text();
         } catch { /* no card.js */ }
 
-        // Load metadata.json
         let meta: Record<string, unknown> = {};
         let deps: { scripts?: string[]; styles?: string[] } = {};
         try {
@@ -102,9 +103,10 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
           }
         } catch { /* no metadata */ }
 
-        // Assemble: HTML + <style> + <script> with content data attribute
+        // Assemble HTML — no data-mica-content attribute needed.
+        // Card scripts use mica.getContent() which fetches from API.
         const assembled =
-          `<div data-mica-content="${file.content.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}" data-mica-filename="${file.name}" style="display:flex;flex-direction:column;flex:1;min-height:0;height:100%;">` +
+          `<div data-mica-filename="${file.name}" style="display:flex;flex-direction:column;flex:1;min-height:0;height:100%;">` +
           cardHtml +
           `</div>` +
           (cardCss ? `<style>${cardCss}</style>` : "") +
@@ -119,7 +121,7 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
         };
       }
 
-      return null; // No card class for this extension
+      return null;
     }
 
     loadCardClass()
@@ -131,14 +133,24 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
         setRenderedCard(null);
         setRenderChecked(true);
       });
-  }, [file.name, file.content]);
+  }, [file.name, file.modifiedAt]);
+
+  // Load text content for fallback renderer (no card class)
+  useEffect(() => {
+    if (renderedCard?.html || !renderChecked) return;
+    if (fileType === "image" || fileType === "binary") return;
+
+    fetchFileContent(file.name)
+      .then(setTextContent)
+      .catch(() => setTextContent("(failed to load)"));
+  }, [file.name, file.modifiedAt, renderChecked, renderedCard, fileType]);
 
   // Check overflow
   useEffect(() => {
     const el = bodyRef.current;
     if (!el || flipped) return;
     setOverflows(el.scrollHeight > el.clientHeight + 4);
-  }, [file.content, flipped]);
+  }, [textContent, flipped]);
 
   // Load card back on flip
   useEffect(() => {
@@ -158,16 +170,13 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
     <div
       ref={(el) => {
         if (!el) return;
-        // After React re-render (e.g. flip), restore classes the canvas script added.
-        // wb-card--positioned controls opacity — without it the card disappears.
-        // We add it here only if the card already has a position (style.left is set).
         if (el.style.left) el.classList.add("wb-card--positioned");
         el.classList.add("wb-card--resized");
       }}
       className={`wb-card wb-card--resized ${flipped ? "wb-card--flipped" : ""}`}
       data-filename={file.name}
     >
-      {/* Header — drag handle (canvas card class makes this draggable) */}
+      {/* Header */}
       <div className="wb-card-header">
         <span className="wb-card-type">{badge}</span>
         <span className="wb-card-title">{file.name}</span>
@@ -183,8 +192,7 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                const w = window.open("", "_blank");
-                if (w) { w.document.write(file.content); w.document.close(); }
+                window.open(getFileUrl(file.name), "_blank");
               }}
               title="Preview in new tab"
               className="wb-card-btn"
@@ -231,13 +239,19 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
             filename={file.name}
           />
         </div>
-      ) : (
+      ) : fileType === "image" ? (
+        <div className="wb-card-body" style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 8 }}>
+          <img src={getFileUrl(file.name)} alt={file.name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+        </div>
+      ) : textContent !== null ? (
         <div
           ref={bodyRef}
           className={`wb-card-body ${overflows ? "wb-card-body--overflows" : ""}`}
         >
-          <FileContent content={file.content} type={fileType} />
+          <FileContent content={textContent} type={fileType} />
         </div>
+      ) : (
+        <div className="wb-card-body" style={{ padding: 16, color: "#666" }}>Loading...</div>
       )}
 
       {/* Footer */}
@@ -245,7 +259,7 @@ export default function CardFrame({ file, onEdit, onDelete }: Props) {
         <span className="wb-card-filename">{file.name}</span>
       </div>
 
-      {/* Resize handle (canvas card class handles resize via event delegation) */}
+      {/* Resize handle */}
       <div className="wb-card-resize-handle" />
     </div>
   );
@@ -270,23 +284,20 @@ function FileContent({ content, type }: { content: string; type: string }) {
 }
 
 function simpleMarkdown(md: string): string {
-  // Strip ```markdown fences — just render the content as markdown
   md = md.replace(/^```markdown\n([\s\S]*?)```$/gm, (_m, inner) => inner);
 
-  // Extract fenced code blocks before other processing
   const fenced: string[] = [];
   md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
     fenced.push(`<pre style="background:rgba(0,0,0,0.3);padding:8px 10px;border-radius:6px;overflow-x:auto;margin:6px 0"><code style="font-size:12px;font-family:monospace">${code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>`);
     return `__FENCED__${fenced.length - 1}__`;
   });
 
-  // Extract tables (consecutive lines starting with |)
   const tables: string[] = [];
   md = md.replace(/(^\|.+\|\n?)+/gm, (block) => {
     const rows = block.trim().split("\n");
     let html = '<table style="border-collapse:collapse;margin:6px 0;font-size:12px;width:100%">';
     rows.forEach((row, ri) => {
-      if (/^\|[\s-:|]+\|$/.test(row.trim())) return; // skip separator row
+      if (/^\|[\s-:|]+\|$/.test(row.trim())) return;
       const cells = row.split("|").filter((_c, i, a) => i > 0 && i < a.length - 1);
       const tag = ri === 0 ? "th" : "td";
       html += "<tr>";
@@ -317,7 +328,6 @@ function simpleMarkdown(md: string): string {
     .replace(/\n\n/g, "<br/><br/>")
     .replace(/\n/g, "<br/>");
 
-  // Restore fenced code blocks and tables
   for (let i = 0; i < fenced.length; i++) {
     result = result.replace(`__FENCED__${i}__`, fenced[i]);
   }
@@ -326,5 +336,3 @@ function simpleMarkdown(md: string): string {
   }
   return result;
 }
-
-// MermaidRenderer removed — now handled by card-classes/mmd/ card class

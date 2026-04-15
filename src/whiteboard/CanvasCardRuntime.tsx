@@ -13,7 +13,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
-import { fetchCanvasCard, fetchFiles, fetchFile, saveFile, deleteFile } from "../api/canvasFiles";
+import { fetchCanvasCard, fetchFiles, fetchFileContent, saveFile, deleteFile } from "../api/canvasFiles";
 import type { RenderedCanvasCard, CanvasFile } from "../api/canvasFiles";
 import { on } from "../api/micaSocket";
 import CardRuntime from "./CardRuntime";
@@ -57,7 +57,7 @@ export default function CanvasCardRuntime() {
           const next = childrenResult.value;
           if (
             prev.length === next.length &&
-            prev.every((c, i) => c.name === next[i].name && c.content === next[i].content)
+            prev.every((c, i) => c.name === next[i].name && c.modifiedAt === next[i].modifiedAt)
           ) {
             return prev;
           }
@@ -105,27 +105,25 @@ export default function CanvasCardRuntime() {
   // ── Real-time updates via WebSocket ─────────────────────
 
   useEffect(() => {
-    const unsub1 = on("file-created", async (msg: unknown) => {
+    const unsub1 = on("file-created", (msg: unknown) => {
       const m = msg as { filename?: string };
       if (!m.filename || m.filename.startsWith(".")) return;
-      try {
-        const file = await fetchFile(m.filename);
-        setChildren((prev) => [
-          ...prev.filter((f) => f.name !== m.filename),
-          file,
-        ]);
-      } catch { /* ignore */ }
+      setChildren((prev) => [
+        ...prev.filter((f) => f.name !== m.filename),
+        { name: m.filename, size: 0, modifiedAt: new Date().toISOString() },
+      ]);
     });
 
-    const unsub2 = on("file-changed", async (msg: unknown) => {
+    const unsub2 = on("file-changed", (msg: unknown) => {
       const m = msg as { filename?: string };
       if (!m.filename || m.filename.startsWith(".")) return;
-      try {
-        const file = await fetchFile(m.filename);
-        setChildren((prev) =>
-          prev.map((f) => (f.name === m.filename ? file : f))
-        );
-      } catch { /* ignore */ }
+      // Update modifiedAt to trigger CardFrame re-render
+      setChildren((prev) =>
+        prev.map((f) => f.name === m.filename
+          ? { ...f, modifiedAt: new Date().toISOString() }
+          : f
+        )
+      );
     });
 
     const unsub3 = on("file-deleted", (msg: unknown) => {
@@ -153,8 +151,8 @@ export default function CanvasCardRuntime() {
 
   const handleEdit = useCallback(async (filename: string) => {
     try {
-      const file = await fetchFile(filename);
-      setEditingFile(file);
+      const content = await fetchFileContent(filename);
+      setEditingFile({ name: filename, size: content.length, content });
     } catch (err) {
       console.error("Failed to fetch file for editing:", err);
     }

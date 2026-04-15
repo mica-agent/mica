@@ -3,10 +3,18 @@
 // Any card class can open a PTY with mica.openChannel("pty", { shell, cols, rows }).
 
 import * as pty from "node-pty";
-import { PROJECT_DIR } from "../files.js";
+import { WORKSPACE_DIR } from "../files.js";
+import { join } from "path";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 
 const SCROLLBACK_SIZE = 4000;
+
+// Active project tracking
+let _activeProject: string | null = null;
+export function setActiveProject(project: string | null) { _activeProject = project; }
+function getProjectDir() {
+  return _activeProject ? join(WORKSPACE_DIR, _activeProject) : WORKSPACE_DIR;
+}
 
 export function createPtyHandler() {
   return async function ptyHandlerFactory(
@@ -27,7 +35,7 @@ export function createPtyHandler() {
       name: "xterm-256color",
       cols,
       rows,
-      cwd: PROJECT_DIR,
+      cwd: getProjectDir(),
       env: {
         ...process.env,
         TERM: "xterm-256color",

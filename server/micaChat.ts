@@ -4,7 +4,12 @@
 
 import { readFile, writeFile, mkdir } from "fs/promises";
 import { join } from "path";
-import { micaDir, listFiles } from "./files.js";
+import { micaDir, listFiles, readProjectFile, WORKSPACE_DIR } from "./files.js";
+
+// Active project is tracked in index.ts and passed via module-level setter
+let _activeProject: string | null = null;
+export function setActiveProject(project: string | null) { _activeProject = project; }
+function getMicaDir() { return micaDir(_activeProject || undefined); }
 
 interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -17,7 +22,7 @@ const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
 
 async function loadHistory(chatId: string): Promise<ChatMessage[]> {
   try {
-    const raw = await readFile(join(micaDir(), "chats", `${chatId}.json`), "utf-8");
+    const raw = await readFile(join(getMicaDir(), "chats", `${chatId}.json`), "utf-8");
     return JSON.parse(raw);
   } catch {
     return [];
@@ -25,7 +30,7 @@ async function loadHistory(chatId: string): Promise<ChatMessage[]> {
 }
 
 async function saveHistory(chatId: string, messages: ChatMessage[]): Promise<void> {
-  const dir = join(micaDir(), "chats");
+  const dir = join(getMicaDir(), "chats");
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, `${chatId}.json`), JSON.stringify(messages, null, 2), "utf-8");
 }
@@ -37,19 +42,28 @@ async function buildSystemPrompt(): Promise<string> {
 
   // Include canvas-back (project AI context)
   try {
-    const canvasBack = await readFile(join(micaDir(), "canvas-back.md"), "utf-8");
+    const canvasBack = await readFile(join(getMicaDir(), "canvas-back.md"), "utf-8");
     if (canvasBack.trim()) {
       system += `## Project Context\n${canvasBack}\n\n`;
     }
   } catch { /* no canvas-back yet */ }
 
-  // Include project files for awareness
+  // Include project files for awareness (text files only, with content preview)
   try {
-    const files = await listFiles();
+    const files = await listFiles(_activeProject || undefined);
     if (files.length > 0) {
       system += `## Project Files\n`;
+      const TEXT_EXTS = new Set([".md", ".txt", ".json", ".todo", ".chat", ".mmd", ".yaml", ".yml"]);
       for (const f of files) {
-        system += `### ${f.name}\n${f.content.slice(0, 2000)}\n\n`;
+        const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
+        if (TEXT_EXTS.has(ext) && f.size < 50000) {
+          try {
+            const file = await readProjectFile(f.name, _activeProject || undefined);
+            system += `### ${f.name}\n${file.content.slice(0, 2000)}\n\n`;
+          } catch { system += `### ${f.name} (${f.size} bytes)\n\n`; }
+        } else {
+          system += `### ${f.name} (${f.size} bytes)\n\n`;
+        }
       }
     }
   } catch { /* ignore */ }

@@ -41,8 +41,7 @@ export const file = {
   async read(filename: string): Promise<string> {
     const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`);
     if (!res.ok) throw new Error(`File not found: ${filename}`);
-    const data = await res.json();
-    return data.content;
+    return res.text();
   },
 
   async write(filename: string, content: string): Promise<void> {
