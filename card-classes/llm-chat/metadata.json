@@ -1,0 +1,6 @@
+{
+  "extension": ".llm-chat",
+  "badge": "LLM",
+  "defaultTitle": "LLM Chat",
+  "dependencies": {}
+}

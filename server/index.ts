@@ -40,6 +40,7 @@ import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject } from "./micaAgent.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
+import { createLlmChatHandler } from "./plugins/llmChat.js";
 
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
@@ -896,6 +897,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
+  channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat
 
   // Start llama-server for local AI
   ensureLlamaServer().catch((err) => {
