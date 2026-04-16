@@ -24,7 +24,7 @@ const isDisplay = deviceClass === 'display';
 
 // -- Constants ----------------------------------------
 const CARD_W = isPhone ? vw - 32 : 320;
-const CARD_H = isPhone ? 200 : 280;
+const CARD_H = isPhone ? 320 : 280;
 const GAP = isPhone ? 8 : 16;
 const COLS = isPhone ? 1 : 3;
 const MIN_W = 200;
@@ -188,6 +188,43 @@ freeform.addEventListener('pointerdown', (e) => {
     window.document.addEventListener('pointermove', onMove);
     window.document.addEventListener('pointerup', onUp);
 });
+
+// -- Pinch-to-resize height (phone only) ---------------
+if (isPhone) {
+    let pinchCard = null;
+    let pinchStartDist = 0;
+    let pinchStartH = 0;
+
+    freeform.addEventListener('touchstart', function(e) {
+        if (e.touches.length !== 2) return;
+        var card = e.target.closest('.wb-card');
+        if (!card) return;
+        pinchCard = card;
+        pinchStartDist = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+        pinchStartH = card.offsetHeight;
+        card.style.outline = '2px solid #4ade80';
+        card.style.outlineOffset = '-2px';
+    }, { passive: true });
+
+    freeform.addEventListener('touchmove', function(e) {
+        if (!pinchCard || e.touches.length !== 2) return;
+        e.preventDefault();
+        var dist = Math.abs(e.touches[0].clientY - e.touches[1].clientY);
+        var scale = dist / pinchStartDist;
+        var newH = Math.max(MIN_H, Math.round(pinchStartH * scale));
+        pinchCard.style.minHeight = newH + 'px';
+        pinchCard.style.height = newH + 'px';
+    }, { passive: false });
+
+    freeform.addEventListener('touchend', function(e) {
+        if (!pinchCard) return;
+        if (e.touches.length === 0) {
+            pinchCard.style.outline = '';
+            pinchCard.style.outlineOffset = '';
+            pinchCard = null;
+        }
+    }, { passive: true });
+}
 
 // -- Watch for React-portaled child cards -------------
 let pendingCards = [];

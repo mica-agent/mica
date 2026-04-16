@@ -5,7 +5,8 @@
   "defaultTitle": "Document",
   "dependencies": {
     "scripts": [
-      "https://uicdn.toast.com/editor/3.2.2/toastui-editor-all.min.js"
+      "https://uicdn.toast.com/editor/3.2.2/toastui-editor-all.min.js",
+      "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"
     ],
     "styles": [
       "https://uicdn.toast.com/editor/3.2.2/toastui-editor.min.css",

@@ -68,8 +68,9 @@ export default function App() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0a0a0f', color: '#ccc', fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', system-ui, sans-serif" }}>
       {/* Top bar */}
       <div style={{
-        height: 40, flexShrink: 0,
-        display: 'flex', alignItems: 'center', padding: '0 16px',
+        minHeight: 40, flexShrink: 0,
+        display: 'flex', alignItems: 'center',
+        padding: 'env(safe-area-inset-top, 0) 16px 0 16px',
         background: 'rgba(10, 10, 15, 0.9)', borderBottom: '1px solid #222',
         gap: 12,
       }}>
@@ -103,7 +104,7 @@ export default function App() {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: 'auto' }}>
+      <div style={{ flex: 1, overflow: 'auto', overflowX: 'hidden' }}>
         {activeProject ? (
           <CanvasCardRuntime key={activeProject.name} />
         ) : (

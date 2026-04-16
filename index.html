@@ -16,10 +16,12 @@
         height: 100%;
         overflow: hidden;
         background: #0a0a0f;
-        touch-action: none;
+        touch-action: pan-y;
         -webkit-user-select: none;
         user-select: none;
       }
+      /* Prevent iOS auto-zoom on input focus */
+      input, textarea, select { font-size: 16px !important; }
     </style>
   </head>
   <body>

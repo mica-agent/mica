@@ -27,7 +27,7 @@ import {
   deleteProjectFile,
 } from "./files.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
-import { createReadStream } from "fs";
+import { createReadStream, createWriteStream } from "fs";
 import mimeTypes from "mime-types";
 import { join } from "path";
 import { existsSync } from "fs";
@@ -55,7 +55,12 @@ process.on("uncaughtException", (err) => {
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "5mb" }));
+// JSON body parser — skip binary upload routes
+const jsonParser = express.json({ limit: "5mb" });
+app.use((req, res, next) => {
+  if (req.path.endsWith("/upload") && req.method === "POST") return next();
+  jsonParser(req, res, next);
+});
 
 // ── CSP ──────────────────────────────────────────────────────
 app.use((_req, res, next) => {
@@ -528,6 +533,33 @@ app.put("/api/files/:filename", async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
+});
+
+// Upload a binary file (streamed to disk — no size limit, constant memory)
+app.post("/api/files/:filename/upload", async (req, res) => {
+  const filename = req.params.filename;
+  const root = activeProject ? join(WORKSPACE_DIR, activeProject) : WORKSPACE_DIR;
+  const filePath = join(root, filename);
+  if (!filePath.startsWith(root + "/")) {
+    res.status(400).json({ error: "Invalid filename" });
+    return;
+  }
+  try {
+    await mkdir(join(filePath, ".."), { recursive: true });
+  } catch { /* dir exists */ }
+
+  const ws = createWriteStream(filePath);
+  let bytes = 0;
+  req.on("data", (chunk: Buffer) => { bytes += chunk.length; });
+  req.pipe(ws);
+  ws.on("finish", () => { res.json({ success: true, size: bytes }); });
+  ws.on("error", (err) => {
+    res.status(500).json({ error: err.message });
+  });
+  req.on("error", (err) => {
+    ws.destroy();
+    res.status(500).json({ error: err.message });
+  });
 });
 
 // Delete a file
