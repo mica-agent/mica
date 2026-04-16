@@ -1,7 +1,7 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/python
 {
-	"name": "NVIDIA TensorRT-LLM + llama.cpp",
+	"name": "SGLang Spark + Mica",
 	// Build from custom Dockerfile with llama.cpp pre-built
 	"build": {
 		"dockerfile": "Dockerfile"
@@ -14,11 +14,6 @@
 			"type": "bind",
 			"source": "${localEnv:HOME}/.cache/huggingface",
 			"target": "/home/vscode/.cache/huggingface"
-		},
-		{
-			"type": "bind",
-			"source": "${localEnv:HOME}/.cache/llama.cpp",
-			"target": "/home/vscode/.cache/llama.cpp"
 		},
 		{
 			"type": "bind",
@@ -47,7 +42,7 @@
 	},
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	"forwardPorts": [3002, 5173, 9000, 9090],
+	"forwardPorts": [3002, 5173, 8013, 9000, 9090],
 	"portsAttributes": {
 		"3002": {
 			"label": "Mica API",
@@ -55,6 +50,10 @@
 		},
 		"5173": {
 			"label": "Mica Dev",
+			"onAutoForward": "silent"
+		},
+		"8013": {
+			"label": "VLM Server",
 			"onAutoForward": "silent"
 		},
 		"9000": {

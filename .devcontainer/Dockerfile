@@ -1,5 +1,6 @@
 #FROM nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6
-FROM nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc10
+#FROM nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc10
+FROM lmsysorg/sglang:spark
 
 # Install sudo and create vscode user with sudo access
 RUN apt-get update && apt-get install -y sudo lsof net-tools procps && rm -rf /var/lib/apt/lists/* && \
@@ -28,12 +29,12 @@ ENV PATH=/workspace/.venv/bin:$PATH
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# Build llama.cpp with CUDA support (latest — gemma4, qwen3next support)
-RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp && \
-    cd /opt/llama.cpp && \
-    cmake -B build -DGGML_CUDA=ON && \
-    cmake --build build --config Release -j$(nproc) && \
-    ln -sf /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli && \
-    ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+# Build llama.cpp with CUDA support (uncomment to restore)
+# RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp && \
+#     cd /opt/llama.cpp && \
+#     cmake -B build -DGGML_CUDA=ON && \
+#     cmake --build build --config Release -j$(nproc) && \
+#     ln -sf /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli && \
+#     ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
 
 
