@@ -19,6 +19,40 @@ function getMicaDir() { return micaDir(_activeProject || undefined); }
 const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
 const MAX_HISTORY = 50;
 
+// Patterns that would disrupt Mica itself. Block these before the shell runs them.
+const DANGEROUS_BASH_PATTERNS: Array<{ re: RegExp; reason: string }> = [
+  { re: /\bpkill\b.*\bvite\b/i, reason: "pkill vite would kill Mica's own frontend dev server" },
+  { re: /\bpkill\b.*\btsx\b/i, reason: "pkill tsx would kill Mica's own backend server" },
+  { re: /\bpkill\b.*\bvllm\b/i, reason: "pkill vllm would kill Mica's LLM inference server" },
+  { re: /\bpkill\b.*\bnode\b/i, reason: "pkill node would kill Mica's own processes" },
+  { re: /\bkillall\b.*\b(vite|tsx|vllm|node)\b/i, reason: "killall would kill Mica's processes" },
+  { re: /\bkill\s+(-\w+\s+)?-?(5173|3002|8012|8013)\b/, reason: "Never kill Mica's ports (5173/3002/8012/8013)" },
+  { re: /\bfuser\s.*\b(5173|3002|8012|8013)/, reason: "fuser would kill Mica's ports" },
+  { re: /\brm\s+-rf\s+\/workspaces\/mica\b/, reason: "Refusing to delete the Mica install" },
+  { re: /\brm\s+-rf\s+\/\s*(?:$|[^\w])/, reason: "Refusing rm -rf / (destructive)" },
+];
+
+/**
+ * Guards the agent's tool use. Blocks Bash commands that would kill Mica itself.
+ * Everything else is auto-approved (yolo behavior preserved).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function guardTool(toolName: string, input: Record<string, unknown>): Promise<any> {
+  if (toolName === "Bash" || toolName === "bash" || toolName === "run_shell_command") {
+    const cmd = String(input.command || input.cmd || "");
+    for (const { re, reason } of DANGEROUS_BASH_PATTERNS) {
+      if (re.test(cmd)) {
+        console.warn(`[mica-agent] BLOCKED shell command: "${cmd.slice(0, 120)}" — ${reason}`);
+        return {
+          behavior: "deny" as const,
+          message: `Refused: ${reason}. Command: ${cmd.slice(0, 120)}`,
+        };
+      }
+    }
+  }
+  return { behavior: "allow" as const, updatedInput: input };
+}
+
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -65,7 +99,9 @@ async function buildContext(agentFilename: string): Promise<string> {
 
   // 1. Instance-level AI context (per-card behavior instructions)
   try {
-    const instanceContext = await readFile(join(getMicaDir(), "cards", agentFilename + ".context.md"), "utf-8");
+    // Sanitize filename: replace / with _ so files in subdirectories work
+    const contextKey = agentFilename.replace(/\//g, "_");
+    const instanceContext = await readFile(join(getMicaDir(), "cards", contextKey + ".context.md"), "utf-8");
     if (instanceContext.trim()) parts.push(`## Your Behavior Instructions\n${instanceContext.trim()}`);
   } catch { /* no instance context */ }
 
@@ -129,7 +165,16 @@ async function buildContext(agentFilename: string): Promise<string> {
 - ALL planning files (specs, decisions, notes) MUST go in \`${canvasRoot}/\`
 - Files OUTSIDE \`${canvasRoot}/\` are not on the canvas by default — the user can pin them via the filebrowser if they want them visible
 - NEVER write files to .mica/ — that directory is managed by Mica internally
-- The .mica/ directory contains metadata only (layout, config, AI context). Do not read or write it directly.`);
+- The .mica/ directory contains metadata only (layout, config, AI context). Do not read or write it directly.
+
+## DANGER: You Run Inside The Mica Container
+You execute shell commands inside the same container that runs Mica itself. These processes belong to Mica and must NOT be touched:
+- **Port 5173** — Mica's frontend (vite dev server). NEVER \`pkill vite\` or kill this port.
+- **Port 3002** — Mica's backend API. NEVER kill this.
+- **Port 8012, 8013** — vLLM inference servers. NEVER kill these.
+- Any process matching \`vite\`, \`tsx server/index.ts\`, \`vllm\`, \`npm run dev\`, or under \`/workspaces/mica/\` is Mica. Leave it alone.
+
+If you need to test a web app the user is building, launch it on a DIFFERENT port (e.g. 9000, 9090) — don't use 5173 or 3002. If a port conflict happens, use a different port rather than killing anything.`);
 
   // Default behavior (if no agent card back provides instructions)
   parts.push(`## Your Role
@@ -154,7 +199,7 @@ When reacting to file changes:
 - Evaluate what actions should be taken
 - Check for @agent tasks in todo files
 - Update dependent docs if needed
-- Log decisions and actions taken to ${docsDir}/decisions.md
+- Log decisions and actions taken to ${canvasRoot}/decisions.md
 - If you have questions, add them to your chat response AND create a todo item assigned to @human
 
 ## Available Skills
@@ -247,7 +292,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     _args: Record<string, unknown>,
     ctx: SessionContext
   ): Promise<ChannelHandler> {
-    const chatId = ctx.filename.replace(".chat", "");
+    // Sanitize: replace / with _ so files in subdirectories (e.g. docs/agent.chat)
+    // don't break the chats/ directory layout
+    const chatId = ctx.filename.replace(".chat", "").replace(/\//g, "_");
     let busy = false;
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
@@ -311,7 +358,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             cwd: getProjectDir(),
             model: "openai:local",
             authType: "openai" as const,
-            permissionMode: "yolo" as const,
+            // "default" + canUseTool gives us auto-approve with guards
+            permissionMode: "default" as const,
+            canUseTool: guardTool,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
             env: {
