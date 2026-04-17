@@ -11,6 +11,9 @@ var clearBtn = container.querySelector('#llm-clear');
 var busy = false;
 var currentBubble = null;
 var currentText = '';
+var streamStart = 0;
+var firstTokenTime = 0;
+var tokenCount = 0;
 
 var ch = mica.openChannel('llm_session');
 
@@ -107,8 +110,13 @@ ch.onData(function(data) {
       setBusy(true);
       currentText = '';
       currentBubble = null;
+      streamStart = Date.now();
+      firstTokenTime = 0;
+      tokenCount = 0;
       break;
     case 'delta':
+      if (firstTokenTime === 0) firstTokenTime = Date.now();
+      tokenCount++;
       currentText += data.content;
       if (!currentBubble) {
         currentBubble = addBubble('assistant', currentText, getModelLabel());
@@ -119,6 +127,16 @@ ch.onData(function(data) {
       break;
     case 'done':
       setBusy(false);
+      // Append tokens/sec stat to the bubble
+      if (currentBubble && tokenCount > 0) {
+        var elapsed = (Date.now() - firstTokenTime) / 1000;
+        var ttft = (firstTokenTime - streamStart) / 1000;
+        var tps = elapsed > 0 ? (tokenCount / elapsed).toFixed(1) : '?';
+        var stat = window.document.createElement('div');
+        stat.style.cssText = 'color:#6e7681;font-size:10px;margin-top:6px;font-family:monospace;';
+        stat.textContent = tokenCount + ' tok . ' + tps + ' tok/s . ttft ' + ttft.toFixed(2) + 's';
+        currentBubble.appendChild(stat);
+      }
       currentBubble = null;
       currentText = '';
       break;
