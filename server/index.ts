@@ -21,6 +21,12 @@ import {
   listCanvasFiles,
   readCanvasConfig,
   updateCanvasConfig,
+  listSkills,
+  readSkill,
+  writeSkill,
+  deleteSkill,
+  syncSkillsToQwen,
+  promoteProjectSkill,
   readProjectFile,
   resolveFilePath,
   writeProjectFile,
@@ -281,15 +287,9 @@ app.post("/api/projects/:project/open", async (req, res) => {
       console.warn("[project-open] Failed to create agent card:", (err as Error).message);
     }
 
-    // Copy Mica's skills to project's .qwen/skills/
+    // Sync global skills to project's .qwen/skills/ (flatten categorized layout)
     try {
-      const { cpSync, existsSync: ex } = await import("fs");
-      const srcSkills = join(process.cwd(), ".qwen", "skills");
-      const dstSkills = join(dir, ".qwen", "skills");
-      if (ex(srcSkills)) {
-        await mkdir(dstSkills, { recursive: true });
-        cpSync(srcSkills, dstSkills, { recursive: true, force: true });
-      }
+      await syncSkillsToQwen(join(dir, ".qwen", "skills"));
     } catch { /* ignore */ }
 
     const displayName = await getProjectName(name);
@@ -500,6 +500,70 @@ app.put("/api/canvas/config", async (req, res) => {
 // LLM server status — for chat cards to show loading state
 app.get("/api/llm/status", (_req, res) => {
   res.json(getLlamaServerStatus());
+});
+
+// ── Skills (global) ──────────────────────────────────────────
+
+app.get("/api/skills", async (_req, res) => {
+  try {
+    res.json(await listSkills(activeProject || undefined));
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/skills/:category/:name", async (req, res) => {
+  try {
+    const content = await readSkill(req.params.category, req.params.name, activeProject || undefined);
+    res.type("text/markdown").send(content);
+  } catch (err) {
+    res.status(404).json({ error: (err as Error).message });
+  }
+});
+
+app.put("/api/skills/:category/:name", async (req, res) => {
+  try {
+    const { content } = req.body as { content?: string };
+    if (typeof content !== "string") {
+      res.status(400).json({ error: "content (string) required" });
+      return;
+    }
+    await writeSkill(req.params.category, req.params.name, content, activeProject || undefined);
+    try { await syncSkillsToQwen(join(WORKSPACE_DIR, ".qwen", "skills")); } catch { /* best-effort */ }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/skills/:category/:name", async (req, res) => {
+  try {
+    await deleteSkill(req.params.category, req.params.name, activeProject || undefined);
+    try { await syncSkillsToQwen(join(WORKSPACE_DIR, ".qwen", "skills")); } catch { /* best-effort */ }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(404).json({ error: (err as Error).message });
+  }
+});
+
+// Promote a project-scoped agent-generated skill into a global category
+app.post("/api/skills/promote", async (req, res) => {
+  try {
+    const { name, category } = req.body as { name?: string; category?: string };
+    if (!name || !category) {
+      res.status(400).json({ error: "name and category required" });
+      return;
+    }
+    if (!activeProject) {
+      res.status(400).json({ error: "No active project" });
+      return;
+    }
+    await promoteProjectSkill(name, category, activeProject);
+    try { await syncSkillsToQwen(join(WORKSPACE_DIR, ".qwen", "skills")); } catch { /* best-effort */ }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
 });
 
 // Read a file — returns raw bytes with content-type header
@@ -883,18 +947,14 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   // Ensure workspace directory exists
   await mkdir(WORKSPACE_DIR, { recursive: true });
 
-  // Copy Mica's skills to workspace's .qwen/skills/ so the SDK discovers them
+  // Sync global skills (mica/skills/<category>/<name>/) to workspace .qwen/skills/
+  // so the Qwen SDK can discover them (it expects a flat directory structure).
   try {
-    const { cpSync, existsSync: ex } = await import("fs");
-    const srcSkills = join(process.cwd(), ".qwen", "skills");
     const dstSkills = join(WORKSPACE_DIR, ".qwen", "skills");
-    if (ex(srcSkills)) {
-      await mkdir(dstSkills, { recursive: true });
-      cpSync(srcSkills, dstSkills, { recursive: true, force: true });
-      console.log("[startup] Copied skills to workspace .qwen/skills/");
-    }
+    const count = await syncSkillsToQwen(dstSkills);
+    if (count > 0) console.log(`[startup] Synced ${count} skills to workspace .qwen/skills/`);
   } catch (err) {
-    console.warn("[startup] Failed to copy skills:", (err as Error).message);
+    console.warn("[startup] Failed to sync skills:", (err as Error).message);
   }
 
   // Register mica.* RPC plugins
