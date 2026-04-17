@@ -35,7 +35,7 @@ import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager, setActiveProject as setChannelProject } from "./channelManager.js";
-import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./sglangServer.js";
+import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./vllmServer.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject } from "./micaAgent.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";

@@ -1,7 +1,7 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/python
 {
-	"name": "SGLang Spark + Mica",
+	"name": "vLLM Spark + Mica",
 	// Build from custom Dockerfile with llama.cpp pre-built
 	"build": {
 		"dockerfile": "Dockerfile"

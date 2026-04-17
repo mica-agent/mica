@@ -1,6 +1,7 @@
 #FROM nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6
 #FROM nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc10
-FROM lmsysorg/sglang:spark
+#FROM lmsysorg/sglang:spark
+FROM nvcr.io/nvidia/vllm:26.02-py3
 
 # Install sudo and create vscode user with sudo access
 RUN apt-get update && apt-get install -y sudo lsof net-tools procps && rm -rf /var/lib/apt/lists/* && \
