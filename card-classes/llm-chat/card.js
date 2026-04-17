@@ -14,6 +14,24 @@ var currentText = '';
 
 var ch = mica.openChannel('llm_session');
 
+// Poll LLM server status until ready
+var llmReady = false;
+function checkLlmStatus() {
+  fetch('/api/llm/status').then(function(r) { return r.json(); }).then(function(s) {
+    if (s.ready) {
+      llmReady = true;
+      sendBtn.disabled = false;
+      inputEl.placeholder = 'Message...';
+    } else {
+      llmReady = false;
+      sendBtn.disabled = true;
+      inputEl.placeholder = s.progress || 'Model loading...';
+      setTimeout(checkLlmStatus, 3000);
+    }
+  }).catch(function() { setTimeout(checkLlmStatus, 5000); });
+}
+checkLlmStatus();
+
 function escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

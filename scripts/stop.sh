@@ -33,14 +33,22 @@ for name in backend frontend; do
   rm -f "$pidfile"
 done
 
-# Kill anything still holding the ports (orphans)
+# Kill orphaned mica processes still holding the ports
+# IMPORTANT: filter to node/tsx processes only — never kill VSCode's port forwarder
+# (which would tear down the remote SSH session)
 for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
-  local_pid=$(lsof -ti :"$port" 2>/dev/null || true)
-  if [ -n "$local_pid" ]; then
-    echo "Killing orphaned process on port $port (pid $local_pid)"
-    kill $local_pid 2>/dev/null || true
-    stopped=$((stopped + 1))
-  fi
+  for pid in $(lsof -ti :"$port" 2>/dev/null || true); do
+    cmd=$(ps -p "$pid" -o comm= 2>/dev/null || true)
+    cmdline=$(ps -p "$pid" -o args= 2>/dev/null || true)
+    # Only kill if it's a node/tsx process running mica
+    if [[ "$cmd" == "node" || "$cmd" == "tsx" ]] && [[ "$cmdline" == *"mica"* || "$cmdline" == *"vite"* || "$cmdline" == *"tsx"* ]]; then
+      echo "Killing orphaned mica process on port $port (pid $pid, $cmd)"
+      kill "$pid" 2>/dev/null || true
+      stopped=$((stopped + 1))
+    elif [ -n "$cmd" ]; then
+      echo "Skipping non-mica process on port $port (pid $pid, $cmd) — likely VSCode port forwarder"
+    fi
+  done
 done
 
 if [ "$stopped" -eq 0 ]; then

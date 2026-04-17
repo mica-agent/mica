@@ -8,7 +8,7 @@ PORT=8013
 echo "Starting VLM server (Gemma 4 26B) on port $PORT..."
 echo "  Model: $MODEL"
 
-exec python3 -m sglang.launch_server \
+exec /usr/bin/python3 -m sglang.launch_server \
   --model "$MODEL" \
   --host 0.0.0.0 \
   --port $PORT \

@@ -117,15 +117,17 @@ async function buildContext(agentFilename: string): Promise<string> {
   } catch { /* ignore */ }
 
   // Project structure guidance
-  let docsDir = "docs";
+  let canvasRoot = "docs";
   try {
     const cfg = JSON.parse(await readFile(join(getMicaDir(), "config.json"), "utf-8"));
-    if (cfg.docsDir) docsDir = cfg.docsDir;
+    canvasRoot = cfg.canvasRoot || cfg.docsDir || "docs";
   } catch { /* use default */ }
 
   parts.push(`## File Locations
-- Write planning files (specs, docs, decisions, TODOs) to the \`${docsDir}/\` directory
-- Write card instance files (.chat, .todo, .terminal, .mmd, etc.) to the project root
+- The canvas directory is \`${canvasRoot}/\` — this is where everything visible on the canvas lives
+- ALL cards you create (.chat, .todo, .terminal, .mmd, .md, etc.) MUST go in \`${canvasRoot}/\`
+- ALL planning files (specs, decisions, notes) MUST go in \`${canvasRoot}/\`
+- Files OUTSIDE \`${canvasRoot}/\` are not on the canvas by default — the user can pin them via the filebrowser if they want them visible
 - NEVER write files to .mica/ — that directory is managed by Mica internally
 - The .mica/ directory contains metadata only (layout, config, AI context). Do not read or write it directly.`);
 

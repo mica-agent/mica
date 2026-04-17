@@ -113,11 +113,13 @@ export async function listProjects(): Promise<ProjectInfo[]> {
 }
 
 /** Initialize a project's .mica directory with default config. */
-export async function initProject(projectName: string, docsDir?: string): Promise<void> {
+export async function initProject(projectName: string, canvasRoot?: string): Promise<void> {
   const dir = micaDir(projectName);
   await mkdir(dir, { recursive: true });
   await mkdir(join(dir, "cards"), { recursive: true });
   await mkdir(join(dir, "chats"), { recursive: true });
+
+  const root = canvasRoot || "docs";
 
   // Create config.json if it doesn't exist
   const configPath = join(dir, "config.json");
@@ -125,8 +127,9 @@ export async function initProject(projectName: string, docsDir?: string): Promis
     const config: Record<string, unknown> = {
       name: projectName,
       canvasClass: "canvas",
+      canvasRoot: root,
+      pinned: [],
     };
-    if (docsDir) config.docsDir = docsDir;
     await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
   }
 
@@ -136,9 +139,9 @@ export async function initProject(projectName: string, docsDir?: string): Promis
     await writeFile(canvasBackPath, "", "utf-8");
   }
 
-  // Create docs directory if configured
-  if (docsDir) {
-    await mkdir(join(WORKSPACE_DIR, projectName, docsDir), { recursive: true });
+  // Create canvas root directory (everything on canvas lives here)
+  if (root !== ".") {
+    await mkdir(join(WORKSPACE_DIR, projectName, root), { recursive: true });
   }
 }
 
@@ -200,7 +203,7 @@ export interface FileInfo {
 
 /** Read canvas config (canvasRoot, pinned) from .mica/config.json. */
 export async function readCanvasConfig(project?: string): Promise<{ canvasRoot: string; pinned: string[] }> {
-  const defaults = { canvasRoot: ".", pinned: [] as string[] };
+  const defaults = { canvasRoot: "docs", pinned: [] as string[] };
   try {
     const configPath = project
       ? join(WORKSPACE_DIR, project, ".mica", "config.json")
@@ -208,7 +211,7 @@ export async function readCanvasConfig(project?: string): Promise<{ canvasRoot: 
     const raw = await readFile(configPath, "utf-8");
     const cfg = JSON.parse(raw);
     return {
-      canvasRoot: cfg.canvasRoot || defaults.canvasRoot,
+      canvasRoot: cfg.canvasRoot || cfg.docsDir || defaults.canvasRoot,
       pinned: Array.isArray(cfg.pinned) ? cfg.pinned : defaults.pinned,
     };
   } catch {

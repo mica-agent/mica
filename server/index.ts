@@ -35,7 +35,7 @@ import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager, setActiveProject as setChannelProject } from "./channelManager.js";
-import { ensureLlamaServer, stopLlamaServer } from "./sglangServer.js";
+import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./sglangServer.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject } from "./micaAgent.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
@@ -233,22 +233,24 @@ app.post("/api/projects/:project/open", async (req, res) => {
       const files = await listFiles(name);
       const hasChatCard = files.some((f: { name: string }) => f.name.endsWith(".chat"));
       if (!hasChatCard) {
+        // Read canvasRoot — seed cards go in the canvas directory
+        const cfg = await readCanvasConfig(name);
+        const canvasRoot = cfg.canvasRoot;
+        const prefix = canvasRoot === "." ? "" : canvasRoot.replace(/\/$/, "") + "/";
+
         const agentId = "agent-" + Date.now().toString(36);
-        const chatFilename = agentId + ".chat";
+        const chatFilename = prefix + agentId + ".chat";
         const stub = "---\nmica: chat\nid: " + agentId + "\n---\nMica project agent.\n";
         await writeProjectFile(chatFilename, stub, name);
 
         // Write default behavior instructions on the agent card's back
         const cardsDir = join(micaDir(name), "cards");
         await mkdir(cardsDir, { recursive: true });
-        // Read docsDir from config
-        let docsDir = "docs";
-        try {
-          const cfg = JSON.parse(await readFile(join(micaDir(name), "config.json"), "utf-8"));
-          if (cfg.docsDir) docsDir = cfg.docsDir;
-        } catch { /* use default */ }
 
-        await writeFile(join(cardsDir, chatFilename + ".context.md"), [
+        // Sanitize filename for context filename (replace / with _)
+        const contextKey = chatFilename.replace(/\//g, "_");
+
+        await writeFile(join(cardsDir, contextKey + ".context.md"), [
           "## Your Role",
           "You are a team member on this project, not a tool.",
           "- Ask clarifying questions before acting on ambiguous requests",
@@ -259,17 +261,17 @@ app.post("/api/projects/:project/open", async (req, res) => {
           "## On Project Open",
           "- Scan project files and identify the project type",
           "- Briefly describe what you found and suggest next steps",
-          `- Propose creating ${docsDir}/decisions.md and a TODO if they don't exist`,
+          `- Propose creating ${canvasRoot}/decisions.md and a TODO if they don't exist`,
           "",
           "## On File Changes",
           "- Check todo files for @agent tasks and work on them",
           "- Update dependent docs when specs change",
-          `- Log decisions and actions to ${docsDir}/decisions.md`,
+          `- Log decisions and actions to ${canvasRoot}/decisions.md`,
           "- If you have questions, add a todo item assigned to @human",
           "",
           "## On User Message",
           "- Answer questions about the project",
-          `- Write any new files to the project root or ${docsDir}/`,
+          `- Write all new cards and planning files in ${canvasRoot}/`,
           "- NEVER write files to .mica/ (managed by Mica internally)",
           "- When asked to build something interactive, confirm what they want before using the create-card-class skill",
         ].join("\n"), "utf-8");
@@ -493,6 +495,11 @@ app.put("/api/canvas/config", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+// LLM server status — for chat cards to show loading state
+app.get("/api/llm/status", (_req, res) => {
+  res.json(getLlamaServerStatus());
 });
 
 // Read a file — returns raw bytes with content-type header

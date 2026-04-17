@@ -40,6 +40,21 @@ function addDetailLine(text) {
 // Open channel to server agent
 const ch = mica.openChannel("agent_session");
 
+// Poll LLM server status until ready, show progress in input placeholder
+function checkLlmStatus() {
+  fetch('/api/llm/status').then(function(r) { return r.json(); }).then(function(s) {
+    if (s.ready) {
+      sendBtn.disabled = false;
+      inputEl.placeholder = 'Ask Qwen Agent...';
+    } else {
+      sendBtn.disabled = true;
+      inputEl.placeholder = s.progress || 'Model loading...';
+      setTimeout(checkLlmStatus, 3000);
+    }
+  }).catch(function() { setTimeout(checkLlmStatus, 5000); });
+}
+checkLlmStatus();
+
 function scrollBottom() {
   requestAnimationFrame(function() {
     messagesEl.scrollTop = messagesEl.scrollHeight;

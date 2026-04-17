@@ -12,22 +12,21 @@ mkdir -p "$PID_DIR"
 
 kill_port() {
   local port=$1
-  local pid
-  pid=$(lsof -ti :"$port" 2>/dev/null || true)
-
-  if [ -n "$pid" ]; then
-    local cmd
-    cmd=$(ps -p "$pid" -o args= 2>/dev/null | head -c 80) || cmd="unknown"
-    echo "Port $port held by PID $pid ($cmd)"
-    echo "  Killing..."
-    kill $pid 2>/dev/null || true
-    sleep 1
-    # Force kill survivors
-    for p in $pid; do
-      kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true
-    done
-    sleep 1
-  fi
+  for pid in $(lsof -ti :"$port" 2>/dev/null || true); do
+    local args
+    args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+    # Only kill mica-related processes — never VSCode's port forwarder
+    # (killing that tears down the SSH session)
+    if [[ "$args" == *"/workspaces/mica/"* ]] || [[ "$args" == *"vite"* ]] || [[ "$args" == *"tsx"* && "$args" == *"server/index.ts"* ]]; then
+      echo "Port $port held by PID $pid ($(echo "$args" | head -c 80))"
+      echo "  Killing..."
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    elif [ -n "$args" ]; then
+      echo "Port $port also held by non-mica PID $pid ($(echo "$args" | head -c 60)) — skipping"
+    fi
+  done
 }
 
 kill_stale_pids() {
@@ -53,13 +52,16 @@ kill_stale_pids
 kill_port "$BACKEND_PORT"
 kill_port "$FRONTEND_PORT"
 
-# Verify ports are free
+# Verify ports are free (excluding VSCode port forwarder, which is harmless)
 for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
-  if lsof -ti :"$port" >/dev/null 2>&1; then
-    echo "ERROR: Port $port still in use after cleanup. Aborting."
-    lsof -i :"$port" 2>/dev/null
-    exit 1
-  fi
+  for pid in $(lsof -ti :"$port" 2>/dev/null || true); do
+    args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+    if [[ "$args" == *"/workspaces/mica/"* ]] || [[ "$args" == *"vite"* ]] || [[ "$args" == *"tsx"* && "$args" == *"server/index.ts"* ]]; then
+      echo "ERROR: Port $port still held by mica PID $pid after cleanup. Aborting."
+      lsof -i :"$port" 2>/dev/null
+      exit 1
+    fi
+  done
 done
 
 cd "$PROJECT_DIR"

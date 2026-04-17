@@ -16,6 +16,13 @@ const toolbar = container.querySelector('#project-toolbar');
 const freeform = container.querySelector('#canvas-freeform');
 const emptyEl = container.querySelector('.project-empty');
 
+// Canvas root — directory where new cards are created (e.g. "docs")
+let canvasRoot = '';
+fetch('/api/canvas/config').then(r => r.json()).then(cfg => {
+    const root = cfg.canvasRoot || 'docs';
+    canvasRoot = root === '.' ? '' : root.replace(/\/$/, '') + '/';
+}).catch(() => {});
+
 // -- Device detection ------------------------------------
 const vw = window.innerWidth;
 const deviceClass = vw < 768 ? 'phone' : vw < 1200 ? 'tablet' : vw < 2560 ? 'desktop' : 'display';
@@ -303,7 +310,8 @@ function buildToolbar() {
         filename = filename.trim();
         if (!filename) return;
         if (filename.indexOf('.') === -1) filename += '.txt';
-        fetch(`/api/files/${encodeURIComponent(filename)}`, {
+        const path = filename.indexOf('/') === -1 ? canvasRoot + filename : filename;
+        fetch(`/api/files/${encodeURIComponent(path)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: '' }),
@@ -330,9 +338,10 @@ function buildToolbar() {
                 const trimmed = baseName.trim();
                 if (!trimmed) return;
                 const filename = trimmed.indexOf('.') === -1 ? `${trimmed}.${name}` : trimmed;
+                const path = filename.indexOf('/') === -1 ? canvasRoot + filename : filename;
                 const stubFn = defaultStubs[name];
                 const content = stubFn ? stubFn(trimmed) : '';
-                fetch(`/api/files/${encodeURIComponent(filename)}`, {
+                fetch(`/api/files/${encodeURIComponent(path)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ content }),
