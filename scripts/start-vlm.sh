@@ -6,7 +6,11 @@
 # FP8 chosen over NVFP4 for stability — vLLM 0.15.1 has SM120 cutlass
 # kernel JIT issues with NVFP4 MoE quantization. Switch back when fixed.
 
-MODEL="${VLM_MODEL:-RedHatAI/gemma-4-26B-A4B-it-FP8-Dynamic}"
+# NVIDIA Nemotron-Nano-12B-v2-VL — purpose-built for DGX Spark by NVIDIA.
+# Native video input (MP4/MKV/FLV/3GP), Efficient Video Sampling (EVS) reduces
+# redundant tokens. Hybrid Transformer-Mamba design. NVIDIA's recommended
+# vLLM container is 25.12.post1-py3 — we're trying it first on 26.02 (newer).
+MODEL="${VLM_MODEL:-nvidia/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16}"
 PORT=8013
 
 # vLLM is in container's system Python (not the venv)
@@ -24,8 +28,9 @@ exec vllm serve "$MODEL" \
   --host 0.0.0.0 \
   --port $PORT \
   --trust-remote-code \
-  --gpu-memory-utilization 0.18 \
+  --gpu-memory-utilization 0.5 \
+  --max-model-len 32768 \
   --limit-mm-per-prompt '{"image":4,"video":1}' \
-  --kv-cache-dtype fp8 \
   --enable-prefix-caching \
+  -O0 \
   --served-model-name vlm gemma "$MODEL"
