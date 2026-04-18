@@ -1,0 +1,7 @@
+{
+  "extension": ".claude",
+  "badge": "Claude",
+  "primaryFile": "chat.json",
+  "defaultTitle": "Claude Code",
+  "dependencies": {}
+}

@@ -299,14 +299,28 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
           if (!r.ok) throw new Error(`mica.files.readBinary(${path}): HTTP ${r.status}`);
           return r.arrayBuffer();
         },
-        /** Write a file. `source: mica.windowId` is auto-injected. Parents are auto-created. */
-        async write(path: string, content: string): Promise<void> {
-          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content, source: windowId }),
-          });
-          if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
+        /** Write a file. Accepts text (string) or binary (ArrayBuffer / TypedArray / Blob / File).
+         *  `source: mica.windowId` is auto-injected so file-changed events don't echo back to this card.
+         *  Parents are auto-created. Binary writes stream to disk (no size limit, constant memory). */
+        async write(
+          path: string,
+          content: string | ArrayBuffer | ArrayBufferView | Blob,
+        ): Promise<void> {
+          if (typeof content === "string") {
+            const r = await fetch(`/api/files/${encodeURIComponent(path)}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ content, source: windowId }),
+            });
+            if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
+          } else {
+            const url = `/api/files/${encodeURIComponent(path)}/upload?source=${encodeURIComponent(windowId)}`;
+            const body = content instanceof Blob
+              ? content
+              : (content instanceof ArrayBuffer ? content : content.buffer);
+            const r = await fetch(url, { method: "POST", body: body as BodyInit });
+            if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
+          }
         },
         /** Delete a file. */
         async delete(path: string): Promise<void> {

@@ -44,6 +44,7 @@ import { ChannelManager, setActiveProject as setChannelProject } from "./channel
 import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llamaServer.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject } from "./micaAgent.js";
+import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject } from "./claudeAgent.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
 import { createLlmChatHandler } from "./plugins/llmChat.js";
@@ -97,6 +98,7 @@ function switchProject(projectName: string) {
   activeProject = projectName;
   setChatProject(projectName);
   setAgentProject(projectName);
+  setClaudeAgentProject(projectName);
   setExecProject(projectName);
   setPtyProject(projectName);
   setChannelProject(projectName);
@@ -238,64 +240,6 @@ app.post("/api/projects/:project/open", async (req, res) => {
       await initProject(name, docsDir || "docs");
     }
     switchProject(name);
-
-    // Auto-create agent card if no .chat file exists in the project
-    try {
-      const files = await listFiles(name);
-      const hasChatCard = files.some((f: { name: string }) => f.name.endsWith(".chat"));
-      if (!hasChatCard) {
-        // Read canvasRoot — seed cards go in the canvas directory
-        const cfg = await readCanvasConfig(name);
-        const canvasRoot = cfg.canvasRoot;
-        const prefix = canvasRoot === "." ? "" : canvasRoot.replace(/\/$/, "") + "/";
-
-        const agentId = "agent-" + Date.now().toString(36);
-        const chatFilename = prefix + agentId + ".chat";
-        const stub = "---\nmica: chat\nid: " + agentId + "\n---\nMica project agent.\n";
-        await writeProjectFile(chatFilename, stub, name);
-
-        // Write default behavior instructions on the agent card's back
-        const cardsDir = join(micaDir(name), "cards");
-        await mkdir(cardsDir, { recursive: true });
-
-        // Sanitize filename for context filename (replace / with _)
-        const contextKey = chatFilename.replace(/\//g, "_");
-
-        await writeFile(join(cardsDir, contextKey + ".context.md"), [
-          "## Your Role",
-          "You are a team member on this project, not a tool.",
-          "- Ask clarifying questions before acting on ambiguous requests",
-          "- Propose your plan and wait for confirmation before creating files",
-          "- Explain trade-offs when there are multiple approaches",
-          "- Flag when you're uncertain rather than guessing",
-          "",
-          "## On Project Open",
-          "- Scan project files and identify the project type",
-          "- Briefly describe what you found and suggest next steps",
-          `- Propose creating ${canvasRoot}/decisions.md and a TODO if they don't exist`,
-          "",
-          "## On File Changes",
-          "- Check todo files for @agent tasks and work on them",
-          "- Update dependent docs when specs change",
-          `- Log decisions and actions to ${canvasRoot}/decisions.md`,
-          "- If you have questions, add a todo item assigned to @human",
-          "",
-          "## On User Message",
-          "- Answer questions about the project",
-          `- Write all new cards and planning files in ${canvasRoot}/`,
-          "- NEVER write files to .mica/ (managed by Mica internally)",
-          "- When asked to build something interactive, confirm what they want before using the create-card-class skill",
-        ].join("\n"), "utf-8");
-        console.log(`[project-open] Created agent card: ${chatFilename}`);
-      }
-    } catch (err) {
-      console.warn("[project-open] Failed to create agent card:", (err as Error).message);
-    }
-
-    // Sync global skills to project's .qwen/skills/ (flatten categorized layout)
-    try {
-      await syncSkillsToQwen(join(dir, ".qwen", "skills"));
-    } catch { /* ignore */ }
 
     const displayName = await getProjectName(name);
     res.json({ success: true, name: displayName, project: name });
@@ -612,9 +556,12 @@ app.put("/api/files/:filename", async (req, res) => {
   }
 });
 
-// Upload a binary file (streamed to disk — no size limit, constant memory)
+// Upload a binary file (streamed to disk — no size limit, constant memory).
+// Pass ?source=<windowId> to suppress the self-echo on the resulting file-changed event,
+// matching the PUT /api/files/:filename behavior.
 app.post("/api/files/:filename/upload", async (req, res) => {
   const filename = req.params.filename;
+  const source = typeof req.query.source === "string" ? req.query.source : undefined;
   const root = activeProject ? join(WORKSPACE_DIR, activeProject) : WORKSPACE_DIR;
   const filePath = join(root, filename);
   if (!filePath.startsWith(root + "/")) {
@@ -624,6 +571,8 @@ app.post("/api/files/:filename/upload", async (req, res) => {
   try {
     await mkdir(join(filePath, ".."), { recursive: true });
   } catch { /* dir exists */ }
+
+  if (source) writeSourceTracker.set(filename, source);
 
   const ws = createWriteStream(filePath);
   let bytes = 0;
@@ -932,6 +881,10 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
 
   if (event.type === "deleted") {
     broadcast({ type: "file-deleted", filename: event.filename });
+    // Tear down any channel session keyed to this file (chat/claude/terminal/etc.).
+    // Otherwise the handler stays alive forever — including its SDK subprocess —
+    // and keeps consuming resources as file-watcher events flow in.
+    channelManager.destroySession(event.filename);
     return;
   }
 
@@ -958,6 +911,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
 
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
+  channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
   channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat
   channelManager.registerHandler("skills", createSkillComposeHandler());  // .skills files -> collaborative SKILL.md authoring

@@ -3,7 +3,7 @@
 // Each project has its own .mica/ metadata directory.
 // File operations are scoped to a specific project within the workspace.
 
-import { readFile, writeFile, unlink, readdir, stat, mkdir, rename, rm, cp } from "fs/promises";
+import { readFile, writeFile, unlink, readdir, stat, mkdir, rename, rm, cp, symlink } from "fs/promises";
 import { join, relative, dirname, basename, sep } from "path";
 import { existsSync } from "fs";
 
@@ -526,4 +526,17 @@ export async function createProjectFromTemplate(projectName: string, templateNam
   } catch { /* template didn't include config; initProject will create it */ }
   // Fill any missing defaults (config.json, canvas-back.md, canvas root dir)
   await initProject(projectName);
+  // Make skills visible to the Claude Code SDK too — it reads from .claude/skills/
+  // while Qwen reads from .qwen/skills/. Symlink `.claude/skills → ../.qwen/skills`
+  // so both SDKs see the same SKILL.md files. Skip silently if the template has no
+  // .qwen/skills/ dir.
+  try {
+    const qwenSkillsDir = join(dst, ".qwen", "skills");
+    const claudeDir = join(dst, ".claude");
+    const claudeSkillsLink = join(claudeDir, "skills");
+    if (existsSync(qwenSkillsDir) && !existsSync(claudeSkillsLink)) {
+      await mkdir(claudeDir, { recursive: true });
+      await symlink("../.qwen/skills", claudeSkillsLink);
+    }
+  } catch { /* best-effort */ }
 }

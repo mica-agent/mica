@@ -1,0 +1,16 @@
+/* Scoped to this card class. Dark-theme colors only.
+   Backgrounds: transparent or rgba(255,255,255,0.03-0.06)
+   Text: #ccc / #ddd / #e6edf3
+   Borders: rgba(255,255,255,0.06-0.1) */
+
+.card-root {
+  background: #0d1117;
+  color: #e6edf3;
+}
+
+#body {
+  flex: 1;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}

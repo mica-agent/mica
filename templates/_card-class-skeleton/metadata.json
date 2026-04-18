@@ -1,0 +1,9 @@
+{
+  "extension": ".REPLACE_ME",
+  "badge": "XYZ",
+  "defaultTitle": "REPLACE_ME",
+  "dependencies": {
+    "scripts": [],
+    "styles": []
+  }
+}

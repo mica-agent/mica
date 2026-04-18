@@ -49,7 +49,7 @@ Available without import:
 | `mica.files.list()` | `async () => [{ path, isFile, isFolder, size, modifiedAt }]` — list project files AND directories. `isFile` and `isFolder` are opposites; use whichever reads natural. |
 | `mica.files.read(path)` | `async (path) => string` — read a text file |
 | `mica.files.readBinary(path)` | `async (path) => ArrayBuffer` — read a binary file |
-| `mica.files.write(path, content)` | `async (path, content) => void` — write; `source` auto-injected, parents auto-created |
+| `mica.files.write(path, content)` | `async (path, content: string \| ArrayBuffer \| Uint8Array \| Blob \| File) => void` — pass a string for text files, an ArrayBuffer/Blob for binary. Helper auto-routes; `source` auto-injected, parents auto-created, binary streams to disk with no size limit. |
 | `mica.files.delete(path)` | `async (path) => void` |
 | `mica.files.url(path)` | `(path) => string` — URL for `<img src>` / `<embed>` / download links |
 | `mica.cardClasses.list()` | `async () => [{ name, builtIn, format }]` |
@@ -172,14 +172,32 @@ Three files under `.mica/card-classes/counter/`:
 
 **Instance**: create `docs/my.counter` with content `0`. Card appears on canvas.
 
+## ✳️ STEP 0 — Start by copying the skeleton, do NOT write from scratch
+
+A correct `card.js` / `card.html` / `metadata.json` / `card.css` skeleton lives at `/workspaces/mica/templates/_card-class-skeleton/`. The very first thing you do in any card-class build is:
+
+```bash
+cp -r /workspaces/mica/templates/_card-class-skeleton .mica/card-classes/<your-name>
+```
+
+Then `edit` the files in place to replace the `REPLACE_ME` placeholders and add your card's behavior. Do NOT use `write_file` to author `card.js` from an empty page — that's where class-wrappers, `export` keywords, and invented base classes leak in. The skeleton already has the correct shape; stay inside its structure.
+
+After the copy:
+1. `edit metadata.json`: set `extension`, `badge`, `defaultTitle`
+2. `edit card.html`: replace the placeholder `<div id="body">` with your markup
+3. `edit card.js`: remove the placeholder line and add behavior. Uncomment the `mica.files.*` / `mica.on(...)` patterns you need.
+4. `edit card.css` if you need custom styling beyond the default.
+
+Verify by creating an instance file (e.g. `docs/my.<extension>`) and hard-refreshing the browser.
+
 ## Decompose before coding
 
-Multi-file build. Use the `decompose-task` skill. Typical ladder:
+Multi-file build. Use the `decompose-task` skill. Typical ladder AFTER the skeleton copy:
 
-1. `metadata.json` with extension + badge + defaultTitle
-2. minimal `card.html` rendering layout only
-3. one wired event in `card.js` (e.g. button click → DOM update)
-4. read/write via `mica.getContent()` + `fetch(PUT)`
+1. `edit metadata.json` — set extension + badge + defaultTitle
+2. `edit card.html` — minimal layout with IDs for dynamic elements
+3. `edit card.js` — one wired event (e.g. button click → DOM update)
+4. read/write via `mica.getContent()` + `mica.files.*`
 5. events via `mica.on('file-changed', ...)` if the card needs to react
 6. CSS + polish
 
