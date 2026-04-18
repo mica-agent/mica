@@ -41,11 +41,25 @@ function addDetailLine(text) {
 const ch = mica.openChannel("agent_session");
 
 // Poll LLM server status until ready, show progress in input placeholder
+var startupSummaryShown = false;
+function showStartupSummaryQwen(text) {
+  if (startupSummaryShown || !text) return;
+  startupSummaryShown = true;
+  if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === 'center') {
+    messagesEl.innerHTML = '';
+  }
+  var el = window.document.createElement('div');
+  el.style.cssText = 'align-self:center;color:#6e7681;font-size:11px;font-family:monospace;padding:6px 10px;background:rgba(124,58,237,0.06);border:1px solid rgba(124,58,237,0.2);border-radius:6px;margin:4px 0;';
+  el.textContent = '✓ ' + text;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
 function checkLlmStatus() {
   fetch('/api/llm/status').then(function(r) { return r.json(); }).then(function(s) {
     if (s.ready) {
       sendBtn.disabled = false;
       inputEl.placeholder = 'Ask Qwen Agent...';
+      if (s.startupSummary) showStartupSummaryQwen(s.startupSummary);
     } else {
       sendBtn.disabled = true;
       inputEl.placeholder = s.progress || 'Model loading...';
