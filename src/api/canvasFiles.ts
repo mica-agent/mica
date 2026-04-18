@@ -42,16 +42,30 @@ export async function fetchProjects(): Promise<ProjectInfo[]> {
   return res.json();
 }
 
-export async function createProjectApi(name: string, docsDir?: string): Promise<{ success: boolean; name: string }> {
+export async function createProjectApi(name: string, docsDir?: string, template?: string): Promise<{ success: boolean; name: string; template: string | null }> {
+  const body: Record<string, string> = { name };
+  if (template) body.template = template;
+  else body.docsDir = docsDir || "docs";
   const res = await fetch(`${API_BASE}/api/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, docsDir: docsDir || "docs" }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.error || "Failed to create project");
   }
+  return res.json();
+}
+
+export interface TemplateInfo {
+  name: string;
+  description: string;
+}
+
+export async function fetchTemplates(): Promise<TemplateInfo[]> {
+  const res = await fetch(`${API_BASE}/api/templates`);
+  if (!res.ok) throw new Error(`Failed to fetch templates: ${res.statusText}`);
   return res.json();
 }
 

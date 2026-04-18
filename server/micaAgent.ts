@@ -94,8 +94,46 @@ async function saveHistory(chatId: string, messages: ChatMessage[]): Promise<voi
 
 // -- Context builder --
 
-async function buildContext(agentFilename: string): Promise<string> {
+/** Timestamp (ms) of the end of each chat card's last agent turn.
+ *  Keyed by the chat card's filename. Used to compute "since your last turn"
+ *  file diffs for the participate-fully skill. */
+const lastTurnAt = new Map<string, number>();
+export function recordTurnEnd(chatFilename: string): void {
+  lastTurnAt.set(chatFilename, Date.now());
+}
+export function getLastTurnAt(chatFilename: string): number | undefined {
+  return lastTurnAt.get(chatFilename);
+}
+
+async function buildContext(agentFilename: string, since?: number): Promise<string> {
   const parts: string[] = [];
+
+  // 0. Since your last turn — file changes between turns. Skipped on first turn.
+  if (since) {
+    try {
+      const allFiles = await listFiles(_activeProject || undefined);
+      const changed = allFiles
+        .filter((f) => {
+          const m = f.modifiedAt ? new Date(f.modifiedAt).getTime() : 0;
+          return m > since && f.name !== agentFilename;  // ignore the chat card's own marker
+        })
+        .sort((a, b) => {
+          const ma = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
+          const mb = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
+          return mb - ma;
+        });
+      if (changed.length > 0) {
+        const cap = 20;
+        const shown = changed.slice(0, cap);
+        const lines = shown.map((f) => `- \`${f.name}\` (modified)`);
+        const more = changed.length > cap ? `\n- ... and ${changed.length - cap} more` : "";
+        parts.push(
+          `## Since your last turn\n\nThe following files were modified between your previous response and now:\n\n${lines.join("\n")}${more}\n\n` +
+          `Read the \`participate-fully\` skill before composing your reply. Decide whether to acknowledge, reconcile, update related docs, or invoke tools.`,
+        );
+      }
+    } catch { /* ignore */ }
+  }
 
   // 1. Instance-level AI context (per-card behavior instructions)
   try {
@@ -202,11 +240,8 @@ When reacting to file changes:
 - Log decisions and actions taken to ${canvasRoot}/decisions.md
 - If you have questions, add them to your chat response AND create a todo item assigned to @human
 
-## Available Skills
-- When asked to build, create, or make ANY interactive UI (card, widget, visualization, browser, dashboard, chart, game, calculator, tool, viewer, editor, etc.), ALWAYS use the \`create-card-class\` skill.
-- This includes requests like "make a kanban board", "build a dashboard", "create a viewer" — even if the user doesn't say "card", treat it as a card class request.
-- Card classes go in .mica/card-classes/{name}/ (this is the ONE exception to the .mica rule)
-- Before building, confirm with the user what features they want.`);
+## Skills
+This project's skills are bundled by its template and live under \`.qwen/skills/<name>/SKILL.md\`. The Qwen SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.`);
 
   return parts.join("\n\n");
 }
@@ -344,23 +379,95 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       ctx.broadcast({ type: "thinking" });
 
       try {
-        const context = await buildContext(ctx.filename);
+        const since = getLastTurnAt(ctx.filename);
+        const context = await buildContext(ctx.filename, since);
         const baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
 
-        console.log(`[mica-agent] Query: ${message.slice(0, 100)}... (context: ${context.length} chars)`);
+        // Inject recent chat history into the prompt so the agent has conversational
+        // continuity. Without this, each turn is a goldfish — the SDK's `query()`
+        // call only sees the current user message. Include up to ~6 prior turn-pairs
+        // (12 messages), capped at ~6K chars total so the system prompt + history
+        // comfortably fit in ctx=65536. Skip the most recent entry (it's the user
+        // message we just pushed above and will send as the actual prompt).
+        const priorHistory = history.slice(0, -1);
+        const HISTORY_MSG_CAP = 12;
+        const HISTORY_CHAR_CAP = 6000;
+        const MSG_CHAR_CAP = 1200;
+        const recent = priorHistory.slice(-HISTORY_MSG_CAP);
+        let historyBlock = "";
+        if (recent.length > 0) {
+          const lines: string[] = [];
+          let charsSoFar = 0;
+          // Build in reverse so we keep the MOST recent messages when we hit the cap.
+          for (let i = recent.length - 1; i >= 0; i--) {
+            const m = recent[i];
+            const role = m.role === "user" ? "USER" : "ASSISTANT";
+            let c = m.content || "";
+            if (c.length > MSG_CHAR_CAP) c = c.slice(0, MSG_CHAR_CAP) + "…[truncated]";
+            const line = `${role}: ${c}`;
+            if (charsSoFar + line.length > HISTORY_CHAR_CAP) break;
+            charsSoFar += line.length + 2;
+            lines.unshift(line);
+          }
+          if (lines.length > 0) {
+            historyBlock = `Conversation so far (most recent last):\n\n${lines.join("\n\n")}\n\n---\n\nCurrent message:\n`;
+          }
+        }
+        const promptWithHistory = historyBlock + message;
+
+        console.log(`[mica-agent] Query: ${message.slice(0, 100)}... (context: ${context.length} chars, history: ${historyBlock.length} chars)`);
 
         const queryFn = await getQuery();
         activeAbort = new AbortController();
 
+        // Captures questions that the agent emitted via AskUserQuestion. The SDK's
+        // built-in tool tries to render a CLI prompt that has no surface in our
+        // programmatic SDK setup, so we intercept here, deny the tool, and append
+        // the question text to the agent's chat reply at the end of the turn.
+        let pendingQuestionText = "";
+
+        async function canUseToolWithQuestionIntercept(toolName: string, input: Record<string, unknown>) {
+          const safety = await guardTool(toolName, input);
+          if (safety.behavior === "deny") return safety;
+
+          if (toolName === "AskUserQuestion" || toolName === "ask_user_question") {
+            const questions = (input.questions as Array<{
+              question: string;
+              header?: string;
+              options?: Array<{ label: string; description?: string }>;
+              multiSelect?: boolean;
+            }> | undefined) || [];
+            const formatted = questions.map((q) => {
+              let out = `**${q.question}**`;
+              if (q.options && q.options.length > 0) {
+                out += "\n";
+                for (const o of q.options) {
+                  out += `\n- ${o.label}${o.description ? ` — ${o.description}` : ""}`;
+                }
+              }
+              return out;
+            }).join("\n\n");
+            if (formatted) {
+              pendingQuestionText += (pendingQuestionText ? "\n\n" : "") + formatted;
+            }
+            return {
+              behavior: "deny" as const,
+              message: "Question shown to user as a chat message. End your turn now and wait for their reply — their next message will be the answer. Do not call additional tools.",
+            };
+          }
+
+          return safety;
+        }
+
         const q = queryFn({
-          prompt: message,
+          prompt: promptWithHistory,
           options: {
             cwd: getProjectDir(),
             model: "openai:local",
             authType: "openai" as const,
             // "default" + canUseTool gives us auto-approve with guards
             permissionMode: "default" as const,
-            canUseTool: guardTool,
+            canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
             env: {
@@ -381,6 +488,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             if (msg.content) {
               for (const block of msg.content) {
                 if (block.type === "tool_use" && block.name) {
+                  console.log(`[mica-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
                   ctx.broadcast({
                     type: "progress",
                     tool: block.name,
@@ -415,6 +523,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           resultText = filesChanged ? "Done -- I made changes." : "Done.";
         }
 
+        // If the agent tried to ask the user via AskUserQuestion, surface those
+        // questions in the chat reply so they actually reach the user.
+        if (pendingQuestionText) {
+          resultText = (resultText.trim() && resultText.trim() !== "Done.") ? `${resultText}\n\n${pendingQuestionText}` : pendingQuestionText;
+        }
+
         ctx.broadcast({ type: "assistant", content: resultText, agent: "Qwen", filesChanged });
 
         const updatedHistory = await loadHistory(chatId);
@@ -434,6 +548,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
       } finally {
         busy = false; sessionState.busy = false;
+        // Mark the end of this turn — next turn's "Since your last turn" section
+        // will diff against this timestamp.
+        recordTurnEnd(ctx.filename);
         // Priority: user messages first, then coalesced file events
         if (queue.length > 0) {
           const next = queue.shift()!;

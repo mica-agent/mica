@@ -25,8 +25,8 @@ import {
   readSkill,
   writeSkill,
   deleteSkill,
-  syncSkillsToQwen,
-  promoteProjectSkill,
+  listTemplates,
+  createProjectFromTemplate,
   readProjectFile,
   resolveFilePath,
   writeProjectFile,
@@ -47,6 +47,7 @@ import { createAgentHandler, setActiveProject as setAgentProject } from "./micaA
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
 import { createLlmChatHandler } from "./plugins/llmChat.js";
+import { createSkillComposeHandler } from "./plugins/skillCompose.js";
 
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
@@ -138,14 +139,18 @@ app.get("/api/projects", async (_req, res) => {
 
 // Create a new project
 app.post("/api/projects", async (req, res) => {
-  const { name, docsDir } = req.body as { name?: string; docsDir?: string };
+  const { name, docsDir, template } = req.body as { name?: string; docsDir?: string; template?: string };
   if (!name) {
     res.status(400).json({ error: "name required" });
     return;
   }
   try {
-    await createProject(name, docsDir || "docs");
-    res.json({ success: true, name });
+    if (template) {
+      await createProjectFromTemplate(name, template);
+    } else {
+      await createProject(name, docsDir || "docs");
+    }
+    res.json({ success: true, name, template: template || null });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
@@ -502,7 +507,7 @@ app.get("/api/llm/status", (_req, res) => {
   res.json(getLlamaServerStatus());
 });
 
-// ── Skills (global) ──────────────────────────────────────────
+// ── Skills (project-scoped) ──────────────────────────────────
 
 app.get("/api/skills", async (_req, res) => {
   try {
@@ -512,57 +517,57 @@ app.get("/api/skills", async (_req, res) => {
   }
 });
 
-app.get("/api/skills/:category/:name", async (req, res) => {
+app.get("/api/skills/:name", async (req, res) => {
   try {
-    const content = await readSkill(req.params.category, req.params.name, activeProject || undefined);
+    if (!activeProject) {
+      res.status(400).json({ error: "No active project" });
+      return;
+    }
+    const content = await readSkill(req.params.name, activeProject);
     res.type("text/markdown").send(content);
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
   }
 });
 
-app.put("/api/skills/:category/:name", async (req, res) => {
+app.put("/api/skills/:name", async (req, res) => {
   try {
+    if (!activeProject) {
+      res.status(400).json({ error: "No active project" });
+      return;
+    }
     const { content } = req.body as { content?: string };
     if (typeof content !== "string") {
       res.status(400).json({ error: "content (string) required" });
       return;
     }
-    await writeSkill(req.params.category, req.params.name, content, activeProject || undefined);
-    try { await syncSkillsToQwen(join(WORKSPACE_DIR, ".qwen", "skills")); } catch { /* best-effort */ }
+    await writeSkill(req.params.name, content, activeProject);
     res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
 });
 
-app.delete("/api/skills/:category/:name", async (req, res) => {
+app.delete("/api/skills/:name", async (req, res) => {
   try {
-    await deleteSkill(req.params.category, req.params.name, activeProject || undefined);
-    try { await syncSkillsToQwen(join(WORKSPACE_DIR, ".qwen", "skills")); } catch { /* best-effort */ }
+    if (!activeProject) {
+      res.status(400).json({ error: "No active project" });
+      return;
+    }
+    await deleteSkill(req.params.name, activeProject);
     res.json({ ok: true });
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
   }
 });
 
-// Promote a project-scoped agent-generated skill into a global category
-app.post("/api/skills/promote", async (req, res) => {
+// ── Templates ──────────────────────────────────────────────
+
+app.get("/api/templates", async (_req, res) => {
   try {
-    const { name, category } = req.body as { name?: string; category?: string };
-    if (!name || !category) {
-      res.status(400).json({ error: "name and category required" });
-      return;
-    }
-    if (!activeProject) {
-      res.status(400).json({ error: "No active project" });
-      return;
-    }
-    await promoteProjectSkill(name, category, activeProject);
-    try { await syncSkillsToQwen(join(WORKSPACE_DIR, ".qwen", "skills")); } catch { /* best-effort */ }
-    res.json({ ok: true });
+    res.json(await listTemplates());
   } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -947,16 +952,6 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   // Ensure workspace directory exists
   await mkdir(WORKSPACE_DIR, { recursive: true });
 
-  // Sync global skills (mica/skills/<category>/<name>/) to workspace .qwen/skills/
-  // so the Qwen SDK can discover them (it expects a flat directory structure).
-  try {
-    const dstSkills = join(WORKSPACE_DIR, ".qwen", "skills");
-    const count = await syncSkillsToQwen(dstSkills);
-    if (count > 0) console.log(`[startup] Synced ${count} skills to workspace .qwen/skills/`);
-  } catch (err) {
-    console.warn("[startup] Failed to sync skills:", (err as Error).message);
-  }
-
   // Register mica.* RPC plugins
   registerMicaHandler("chat", chatHandler);  // mica.chat.*
   registerMicaHandler("exec", execHandler);  // mica.exec.*
@@ -965,6 +960,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
   channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat
+  channelManager.registerHandler("skills", createSkillComposeHandler());  // .skills files -> collaborative SKILL.md authoring
 
   // Start llama-server for local AI
   ensureLlamaServer().catch((err) => {

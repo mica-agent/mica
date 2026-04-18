@@ -13,8 +13,8 @@ export const WORKSPACE_DIR = process.env.PROJECT_DIR || "/project";
 // Backwards-compatible alias used by other modules
 export const PROJECT_DIR = WORKSPACE_DIR;
 
-/** Global skills library — categorized at mica/skills/<category>/<name>/SKILL.md */
-export const SKILLS_DIR = join(process.cwd(), "skills");
+/** Project templates — copied to <workspace>/<projectName>/ on creation. */
+export const TEMPLATES_DIR = join(process.cwd(), "templates");
 
 /** Directories and patterns to skip when listing files recursively. */
 const IGNORE_DIRS = new Set([
@@ -391,14 +391,12 @@ function validateFilename(filename: string): void {
 }
 
 
-// ── Skills (global) ──────────────────────────────────────────
+// ── Skills (project-scoped, lives in <project>/.qwen/skills/) ─────────────
 
 export interface SkillMeta {
-  category: string;
   name: string;
-  description: string;  // first non-empty line of SKILL.md after the heading, or empty
+  description: string;  // first non-empty, non-frontmatter, non-heading line of SKILL.md
   hasContent: boolean;
-  source: "global" | "project";  // global = mica/skills/, project = <project>/.qwen/skills/
 }
 
 /** Read summary info from SKILL.md at given path */
@@ -408,127 +406,124 @@ async function readSkillSummary(skillPath: string): Promise<{ description: strin
   try {
     const content = await readFile(skillPath, "utf-8");
     hasContent = content.trim().length > 0;
-    for (const line of content.split("\n")) {
-      const t = line.trim();
-      if (!t || t.startsWith("#") || t.startsWith("---")) continue;
-      description = t.slice(0, 200);
-      break;
+    // Try YAML frontmatter description: first
+    const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      const descLine = fmMatch[1].split("\n").find(l => /^description:/i.test(l));
+      if (descLine) description = descLine.replace(/^description:\s*/i, "").trim().slice(0, 200);
+    }
+    if (!description) {
+      // Fall back to first body line that isn't heading or frontmatter fence
+      const body = fmMatch ? content.slice(fmMatch[0].length) : content;
+      for (const line of body.split("\n")) {
+        const t = line.trim();
+        if (!t || t.startsWith("#") || t.startsWith("---")) continue;
+        description = t.slice(0, 200);
+        break;
+      }
     }
   } catch { /* no SKILL.md */ }
   return { description, hasContent };
 }
 
-/** List all skills: global (mica/skills/<category>/<name>/) plus project-scoped
- *  (<project>/.qwen/skills/<name>/) marked with source="project" and category="(project)" */
+/** List skills for a project — flat list from <project>/.qwen/skills/<name>/SKILL.md */
 export async function listSkills(project?: string): Promise<SkillMeta[]> {
+  if (!project) return [];
+  const projSkillsDir = join(WORKSPACE_DIR, project, ".qwen", "skills");
+  if (!existsSync(projSkillsDir)) return [];
   const out: SkillMeta[] = [];
-
-  // Global categorized skills
-  if (existsSync(SKILLS_DIR)) {
-    const cats = await readdir(SKILLS_DIR, { withFileTypes: true });
-    for (const cat of cats) {
-      if (!cat.isDirectory() || cat.name.startsWith(".")) continue;
-      const catDir = join(SKILLS_DIR, cat.name);
-      const skills = await readdir(catDir, { withFileTypes: true });
-      for (const s of skills) {
-        if (!s.isDirectory() || s.name.startsWith(".")) continue;
-        const summary = await readSkillSummary(join(catDir, s.name, "SKILL.md"));
-        out.push({ category: cat.name, name: s.name, ...summary, source: "global" });
-      }
+  try {
+    const entries = await readdir(projSkillsDir, { withFileTypes: true });
+    for (const s of entries) {
+      if (!s.isDirectory() || s.name.startsWith(".")) continue;
+      const summary = await readSkillSummary(join(projSkillsDir, s.name, "SKILL.md"));
+      out.push({ name: s.name, ...summary });
     }
-  }
-
-  // Project-scoped skills (likely agent-generated, awaiting promotion to global)
-  if (project) {
-    const projSkillsDir = join(WORKSPACE_DIR, project, ".qwen", "skills");
-    if (existsSync(projSkillsDir)) {
-      try {
-        const entries = await readdir(projSkillsDir, { withFileTypes: true });
-        for (const s of entries) {
-          if (!s.isDirectory() || s.name.startsWith(".")) continue;
-          // Skip if already present as a global skill (avoid duplicates from sync)
-          const isGlobal = out.some(g => g.name === s.name);
-          if (isGlobal) continue;
-          const summary = await readSkillSummary(join(projSkillsDir, s.name, "SKILL.md"));
-          out.push({ category: "(project)", name: s.name, ...summary, source: "project" });
-        }
-      } catch { /* ignore */ }
-    }
-  }
-
-  return out.sort((a, b) =>
-    a.category === b.category ? a.name.localeCompare(b.name) : a.category.localeCompare(b.category)
-  );
+  } catch { /* ignore */ }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function validateSkillId(category: string, name: string): void {
-  for (const part of [category, name]) {
-    if (!part || part.includes("/") || part.includes("..") || part.startsWith(".")) {
-      throw new Error(`Invalid skill id: ${category}/${name}`);
-    }
+function validateSkillName(name: string): void {
+  if (!name || name.includes("/") || name.includes("..") || name.startsWith(".")) {
+    throw new Error(`Invalid skill name: ${name}`);
   }
 }
 
-/** Resolve the SKILL.md path for a skill — handles (project) virtual category */
-function skillPath(category: string, name: string, project?: string): string {
-  if (category === "(project)") {
-    if (!project) throw new Error("Project required for (project) category");
-    return join(WORKSPACE_DIR, project, ".qwen", "skills", name, "SKILL.md");
-  }
-  validateSkillId(category, name);
-  return join(SKILLS_DIR, category, name, "SKILL.md");
+/** Resolve the SKILL.md path for a project-scoped skill */
+function skillPath(name: string, project: string): string {
+  validateSkillName(name);
+  return join(WORKSPACE_DIR, project, ".qwen", "skills", name, "SKILL.md");
 }
 
 /** Read SKILL.md content for a skill */
-export async function readSkill(category: string, name: string, project?: string): Promise<string> {
-  return await readFile(skillPath(category, name, project), "utf-8");
+export async function readSkill(name: string, project: string): Promise<string> {
+  return await readFile(skillPath(name, project), "utf-8");
 }
 
 /** Write SKILL.md content for a skill (creates skill dir if needed) */
-export async function writeSkill(category: string, name: string, content: string, project?: string): Promise<void> {
-  const path = skillPath(category, name, project);
+export async function writeSkill(name: string, content: string, project: string): Promise<void> {
+  const path = skillPath(name, project);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content, "utf-8");
 }
 
 /** Delete a skill */
-export async function deleteSkill(category: string, name: string, project?: string): Promise<void> {
-  const path = skillPath(category, name, project);
+export async function deleteSkill(name: string, project: string): Promise<void> {
+  const path = skillPath(name, project);
   const dir = dirname(path);
-  if (!existsSync(dir)) throw new Error(`Skill not found: ${category}/${name}`);
+  if (!existsSync(dir)) throw new Error(`Skill not found: ${name}`);
   await rm(dir, { recursive: true, force: true });
 }
 
-/** Promote a project-scoped skill to a global category. Copies the skill from
- *  <project>/.qwen/skills/<name>/ to mica/skills/<targetCategory>/<name>/, then
- *  removes the project copy. The agent-generated skill becomes a global one. */
-export async function promoteProjectSkill(name: string, targetCategory: string, project: string): Promise<void> {
-  validateSkillId(targetCategory, name);
-  const src = join(WORKSPACE_DIR, project, ".qwen", "skills", name);
-  const dst = join(SKILLS_DIR, targetCategory, name);
-  if (!existsSync(src)) throw new Error(`Project skill not found: ${name}`);
-  if (existsSync(dst)) throw new Error(`Skill already exists in global ${targetCategory}/${name}`);
-  await mkdir(dirname(dst), { recursive: true });
-  await cp(src, dst, { recursive: true, force: true });
-  await rm(src, { recursive: true, force: true });
+// ── Templates (project starter directories at mica/templates/<name>/) ─────
+
+export interface TemplateMeta {
+  name: string;
+  description: string;  // first non-empty line of canvas-back.md (or empty)
 }
 
-/** Sync global skills to a flat .qwen/skills/ dir for the Qwen SDK to discover.
- *  Walks SKILLS_DIR/<category>/<name>/ and copies each <name>/ into target/<name>/. */
-export async function syncSkillsToQwen(target: string): Promise<number> {
-  if (!existsSync(SKILLS_DIR)) return 0;
-  await mkdir(target, { recursive: true });
-  let count = 0;
-  const cats = await readdir(SKILLS_DIR, { withFileTypes: true });
-  for (const cat of cats) {
-    if (!cat.isDirectory() || cat.name.startsWith(".")) continue;
-    const catDir = join(SKILLS_DIR, cat.name);
-    const skills = await readdir(catDir, { withFileTypes: true });
-    for (const s of skills) {
-      if (!s.isDirectory() || s.name.startsWith(".")) continue;
-      await cp(join(catDir, s.name), join(target, s.name), { recursive: true, force: true });
-      count++;
-    }
+/** List available templates — directories under mica/templates/ */
+export async function listTemplates(): Promise<TemplateMeta[]> {
+  if (!existsSync(TEMPLATES_DIR)) return [];
+  const out: TemplateMeta[] = [];
+  const entries = await readdir(TEMPLATES_DIR, { withFileTypes: true });
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    let description = "";
+    try {
+      const back = await readFile(join(TEMPLATES_DIR, e.name, ".mica", "canvas-back.md"), "utf-8");
+      for (const line of back.split("\n")) {
+        const t = line.trim();
+        if (!t || t.startsWith("#")) continue;
+        description = t.slice(0, 200);
+        break;
+      }
+    } catch { /* no canvas-back */ }
+    out.push({ name: e.name, description });
   }
-  return count;
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Create a new project by recursively copying a template directory.
+ *  Then runs initProject() to fill any missing .mica defaults. */
+export async function createProjectFromTemplate(projectName: string, templateName: string): Promise<void> {
+  validateProjectName(projectName);
+  if (!templateName || templateName.includes("/") || templateName.includes("..") || templateName.startsWith(".")) {
+    throw new Error(`Invalid template name: ${templateName}`);
+  }
+  const src = join(TEMPLATES_DIR, templateName);
+  const dst = join(WORKSPACE_DIR, projectName);
+  if (!existsSync(src)) throw new Error(`Template not found: ${templateName}`);
+  if (existsSync(dst)) throw new Error(`Project already exists: ${projectName}`);
+  await cp(src, dst, { recursive: true, force: false });
+  // Patch config.json's name field if the template included one
+  try {
+    const configPath = join(dst, ".mica", "config.json");
+    const raw = await readFile(configPath, "utf-8");
+    const config = JSON.parse(raw);
+    config.name = projectName;
+    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
+  } catch { /* template didn't include config; initProject will create it */ }
+  // Fill any missing defaults (config.json, canvas-back.md, canvas root dir)
+  await initProject(projectName);
 }

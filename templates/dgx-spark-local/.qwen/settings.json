@@ -1,0 +1,19 @@
+{
+  "model": {
+    "maxSessionTurns": 50,
+    "generationConfig": {
+      "samplingParams": {
+        "temperature": 0.3,
+        "top_p": 0.95
+      }
+    }
+  },
+  "tools": {
+    "truncateToolOutputThreshold": 50000
+  },
+  "context": {
+    "fileFiltering": {
+      "enableFuzzySearch": false
+    }
+  }
+}

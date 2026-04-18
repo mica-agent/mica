@@ -2,13 +2,5 @@
   "extension": ".skills",
   "badge": "SKILLS",
   "defaultTitle": "Skills Library",
-  "dependencies": {
-    "scripts": [
-      "https://uicdn.toast.com/editor/3.2.2/toastui-editor-all.min.js"
-    ],
-    "styles": [
-      "https://uicdn.toast.com/editor/3.2.2/toastui-editor.min.css",
-      "https://uicdn.toast.com/editor/3.2.2/theme/toastui-editor-dark.min.css"
-    ]
-  }
+  "dependencies": {}
 }

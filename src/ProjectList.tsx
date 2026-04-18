@@ -5,8 +5,9 @@ import {
   cloneProjectApi,
   renameProjectApi,
   deleteProjectApi,
+  fetchTemplates,
 } from './api/canvasFiles';
-import type { ProjectInfo } from './api/canvasFiles';
+import type { ProjectInfo, TemplateInfo } from './api/canvasFiles';
 
 interface Props {
   workspaceName: string;
@@ -15,9 +16,11 @@ interface Props {
 
 export default function ProjectList({ workspaceName, onOpenProject }: Props) {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
+  const [createTemplate, setCreateTemplate] = useState<string | null>(null);  // null = closed; "" = empty project; "<name>" = template
   const [showClone, setShowClone] = useState(false);
+  const [showNewMenu, setShowNewMenu] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadProjects = useCallback(async () => {
@@ -33,13 +36,14 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
 
   useEffect(() => {
     loadProjects();
+    fetchTemplates().then(setTemplates).catch((err) => console.error('Failed to load templates:', err));
   }, [loadProjects]);
 
-  const handleCreate = useCallback(async (name: string, docsDir: string) => {
+  const handleCreate = useCallback(async (name: string, docsDir: string, template: string | null) => {
     setError(null);
     try {
-      await createProjectApi(name, docsDir);
-      setShowCreate(false);
+      await createProjectApi(name, template ? undefined : docsDir, template || undefined);
+      setCreateTemplate(null);
       await loadProjects();
     } catch (err) {
       setError((err as Error).message);
@@ -101,20 +105,45 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
       )}
 
       {/* Action buttons */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
-        <button onClick={() => { setShowCreate(true); setShowClone(false); }} style={btnStyle}>
-          + New Project
-        </button>
-        <button onClick={() => { setShowClone(true); setShowCreate(false); }} style={btnStyle}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 24, position: 'relative' }}>
+        <div style={{ position: 'relative' }}>
+          <button onClick={() => { setShowNewMenu((v) => !v); setShowClone(false); }} style={btnStyle}>
+            + New Project ▾
+          </button>
+          {showNewMenu && (
+            <div style={menuStyle} onMouseLeave={() => setShowNewMenu(false)}>
+              <div
+                style={menuItemStyle}
+                onClick={() => { setCreateTemplate(''); setShowNewMenu(false); setShowClone(false); }}
+              >
+                <div style={{ color: '#ddd', fontSize: 13 }}>Empty project</div>
+                <div style={{ color: '#666', fontSize: 11, marginTop: 2 }}>Bare project, no skills bundled</div>
+              </div>
+              {templates.length > 0 && <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '4px 0' }} />}
+              {templates.map((t) => (
+                <div
+                  key={t.name}
+                  style={menuItemStyle}
+                  onClick={() => { setCreateTemplate(t.name); setShowNewMenu(false); setShowClone(false); }}
+                >
+                  <div style={{ color: '#ddd', fontSize: 13 }}>{t.name}</div>
+                  {t.description && <div style={{ color: '#888', fontSize: 11, marginTop: 2 }}>{t.description}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <button onClick={() => { setShowClone(true); setCreateTemplate(null); setShowNewMenu(false); }} style={btnStyle}>
           Clone Repo
         </button>
       </div>
 
       {/* Create form */}
-      {showCreate && (
+      {createTemplate !== null && (
         <CreateForm
+          template={createTemplate || null}
           onSubmit={handleCreate}
-          onCancel={() => setShowCreate(false)}
+          onCancel={() => setCreateTemplate(null)}
         />
       )}
 
@@ -187,13 +216,15 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
 
 // ── Forms ────────────────────────────────────────────────
 
-function CreateForm({ onSubmit, onCancel }: { onSubmit: (name: string, docsDir: string) => void; onCancel: () => void }) {
+function CreateForm({ template, onSubmit, onCancel }: { template: string | null; onSubmit: (name: string, docsDir: string, template: string | null) => void; onCancel: () => void }) {
   const [name, setName] = useState('');
   const [docsDir, setDocsDir] = useState('docs');
 
   return (
     <div style={formStyle}>
-      <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 500, color: '#ddd' }}>New Project</h3>
+      <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 500, color: '#ddd' }}>
+        {template ? `New Project from "${template}"` : 'New Empty Project'}
+      </h3>
       <label style={labelStyle}>
         Project name
         <input
@@ -204,18 +235,20 @@ function CreateForm({ onSubmit, onCancel }: { onSubmit: (name: string, docsDir: 
           autoFocus
         />
       </label>
-      <label style={labelStyle}>
-        Planning docs directory
-        <input
-          value={docsDir}
-          onChange={(e) => setDocsDir(e.target.value)}
-          placeholder="docs"
-          style={inputStyle}
-        />
-        <span style={{ fontSize: 11, color: '#666' }}>Where Mica places new planning files (spec, todo, etc.)</span>
-      </label>
+      {!template && (
+        <label style={labelStyle}>
+          Planning docs directory
+          <input
+            value={docsDir}
+            onChange={(e) => setDocsDir(e.target.value)}
+            placeholder="docs"
+            style={inputStyle}
+          />
+          <span style={{ fontSize: 11, color: '#666' }}>Where Mica places new planning files (spec, todo, etc.)</span>
+        </label>
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button onClick={() => name.trim() && onSubmit(name.trim(), docsDir.trim() || 'docs')} style={btnStyle} disabled={!name.trim()}>
+        <button onClick={() => name.trim() && onSubmit(name.trim(), docsDir.trim() || 'docs', template)} style={btnStyle} disabled={!name.trim()}>
           Create
         </button>
         <button onClick={onCancel} style={{ ...btnStyle, background: 'transparent' }}>
@@ -329,4 +362,25 @@ const inputStyle: React.CSSProperties = {
   color: '#eee',
   fontSize: 14,
   outline: 'none',
+};
+
+const menuStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: '100%',
+  left: 0,
+  marginTop: 4,
+  background: '#1a1a1a',
+  border: '1px solid rgba(255, 255, 255, 0.1)',
+  borderRadius: 6,
+  minWidth: 280,
+  zIndex: 10,
+  boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+  padding: 4,
+};
+
+const menuItemStyle: React.CSSProperties = {
+  padding: '8px 10px',
+  borderRadius: 4,
+  cursor: 'pointer',
+  transition: 'background 0.1s',
 };

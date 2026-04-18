@@ -268,6 +268,67 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
             .catch(() => { _cachedContent = ""; return ""; })
         : Promise.resolve("");
 
+      // High-level helpers for card authors. Covers the common Mica endpoints
+      // so cards don't need to construct URLs, remember field names, or handle
+      // the `source` field for writes. Prefer these over raw `fetch()` in cards.
+      const files = {
+        /** List all files and directories under the project.
+         *  `isFile` and `isFolder` are always opposites — both provided so you can
+         *  write whichever reads more naturally for your case. */
+        async list(): Promise<Array<{ path: string; isFile: boolean; isFolder: boolean; size: number; modifiedAt: string }>> {
+          const r = await fetch("/api/files");
+          if (!r.ok) throw new Error(`mica.files.list: HTTP ${r.status}`);
+          const raw = (await r.json()) as Array<{ name: string; type: string; size: number; modifiedAt: string }>;
+          return raw.map((f) => ({
+            path: f.name,
+            isFile: f.type === "file",
+            isFolder: f.type === "directory",
+            size: f.size,
+            modifiedAt: f.modifiedAt,
+          }));
+        },
+        /** Read a text file. */
+        async read(path: string): Promise<string> {
+          const r = await fetch(`/api/files/${encodeURIComponent(path)}`);
+          if (!r.ok) throw new Error(`mica.files.read(${path}): HTTP ${r.status}`);
+          return r.text();
+        },
+        /** Read a binary file as ArrayBuffer. */
+        async readBinary(path: string): Promise<ArrayBuffer> {
+          const r = await fetch(`/api/files/${encodeURIComponent(path)}`);
+          if (!r.ok) throw new Error(`mica.files.readBinary(${path}): HTTP ${r.status}`);
+          return r.arrayBuffer();
+        },
+        /** Write a file. `source: mica.windowId` is auto-injected. Parents are auto-created. */
+        async write(path: string, content: string): Promise<void> {
+          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content, source: windowId }),
+          });
+          if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
+        },
+        /** Delete a file. */
+        async delete(path: string): Promise<void> {
+          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { method: "DELETE" });
+          if (!r.ok && r.status !== 404) throw new Error(`mica.files.delete(${path}): HTTP ${r.status}`);
+        },
+        /** Build a URL for inline use (e.g. `<img src={mica.files.url("docs/pic.png")}/>`). */
+        url(path: string): string {
+          return `/api/files/${encodeURIComponent(path)}`;
+        },
+      };
+
+      const cardClasses = {
+        /** List available card classes. */
+        async list(): Promise<Array<{ name: string; builtIn: boolean; format: string }>> {
+          const r = await fetch("/api/card-classes");
+          if (!r.ok) throw new Error(`mica.cardClasses.list: HTTP ${r.status}`);
+          const obj = (await r.json()) as Record<string, { builtIn: boolean; format: string }>;
+          return Object.entries(obj).map(([name, meta]) => ({ name, builtIn: meta.builtIn, format: meta.format }));
+        },
+      };
+
       const micaBridge = {
         ...baseBridge,
         project,
@@ -286,6 +347,8 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
         exports: exportFns || [],
         /** Get the instance file content. Returns cached string or Promise. Use with await. */
         getContent: () => _cachedContent !== null ? _cachedContent : _contentPromise,
+        files,
+        cardClasses,
       };
 
       // Separate external (src) and inline scripts from HTML
