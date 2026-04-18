@@ -9,13 +9,14 @@ import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile } from "./files.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 
-// Active project tracking
-let _activeProject: string | null = null;
-export function setActiveProject(project: string | null) { _activeProject = project; }
-function getProjectDir() {
-  return _activeProject ? join(WORKSPACE_DIR, _activeProject) : WORKSPACE_DIR;
+// Project tracking moved per-session: each handler captures ctx.project at
+// creation. setActiveProject is preserved as a no-op for compatibility with
+// the project-open endpoint, but no longer drives this module.
+export function setActiveProject(_project: string | null) { void _project; }
+function getProjectDir(project: string | null) {
+  return project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
 }
-function getMicaDir() { return micaDir(_activeProject || undefined); }
+function getMicaDir(project: string | null) { return micaDir(project || undefined); }
 
 const MAX_HISTORY = 50;
 
@@ -76,17 +77,17 @@ async function getQuery() {
 
 // -- History persistence --
 
-async function loadHistory(chatId: string): Promise<ChatMessage[]> {
+async function loadHistory(chatId: string, project: string | null): Promise<ChatMessage[]> {
   try {
-    const raw = await readFile(join(getMicaDir(), "chats", `${chatId}.json`), "utf-8");
+    const raw = await readFile(join(getMicaDir(project), "chats", `${chatId}.json`), "utf-8");
     return JSON.parse(raw);
   } catch {
     return [];
   }
 }
 
-async function saveHistory(chatId: string, messages: ChatMessage[]): Promise<void> {
-  const dir = join(getMicaDir(), "chats");
+async function saveHistory(chatId: string, messages: ChatMessage[], project: string | null): Promise<void> {
+  const dir = join(getMicaDir(project), "chats");
   await mkdir(dir, { recursive: true });
   const trimmed = messages.length > MAX_HISTORY ? messages.slice(-MAX_HISTORY) : messages;
   await writeFile(join(dir, `${chatId}.json`), JSON.stringify(trimmed, null, 2), "utf-8");
@@ -105,13 +106,13 @@ export function getLastTurnAt(chatFilename: string): number | undefined {
   return lastTurnAt.get(chatFilename);
 }
 
-async function buildContext(agentFilename: string, since?: number): Promise<string> {
+async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
   const parts: string[] = [];
 
   // 0. Since your last turn — file changes between turns. Skipped on first turn.
   if (since) {
     try {
-      const allFiles = await listFiles(_activeProject || undefined);
+      const allFiles = await listFiles(project || undefined);
       const changed = allFiles
         .filter((f) => {
           const m = f.modifiedAt ? new Date(f.modifiedAt).getTime() : 0;
@@ -139,7 +140,7 @@ async function buildContext(agentFilename: string, since?: number): Promise<stri
   try {
     // Sanitize filename: replace / with _ so files in subdirectories work
     const contextKey = agentFilename.replace(/\//g, "_");
-    const instanceContext = await readFile(join(getMicaDir(), "cards", contextKey + ".context.md"), "utf-8");
+    const instanceContext = await readFile(join(getMicaDir(project), "cards", contextKey + ".context.md"), "utf-8");
     if (instanceContext.trim()) parts.push(`## Your Behavior Instructions\n${instanceContext.trim()}`);
   } catch { /* no instance context */ }
 
@@ -150,7 +151,7 @@ async function buildContext(agentFilename: string, since?: number): Promise<stri
     // Check project-scoped first, then built-in
     let classContext = "";
     try {
-      classContext = await readFile(join(getMicaDir(), "card-classes", ext, "context.md"), "utf-8");
+      classContext = await readFile(join(getMicaDir(project), "card-classes", ext, "context.md"), "utf-8");
     } catch {
       try {
         classContext = await readFile(join(CARD_CLASSES_DIR, ext, "context.md"), "utf-8");
@@ -161,13 +162,13 @@ async function buildContext(agentFilename: string, since?: number): Promise<stri
 
   // 3. Project-level AI context (canvas back)
   try {
-    const canvasBack = await readFile(join(getMicaDir(), "canvas-back.md"), "utf-8");
+    const canvasBack = await readFile(join(getMicaDir(project), "canvas-back.md"), "utf-8");
     if (canvasBack.trim()) parts.push(`## Project Context\n${canvasBack.trim()}`);
   } catch { /* no canvas-back */ }
 
   // Project files — list all, read text content for context
   try {
-    const files = await listFiles(_activeProject || undefined);
+    const files = await listFiles(project || undefined);
     if (files.length > 0) {
       parts.push(`## Project Files`);
       const TEXT_EXTS = new Set([".md", ".txt", ".json", ".todo", ".chat", ".mmd", ".yaml", ".yml", ".toml", ".csv", ".html", ".css", ".js", ".ts", ".py", ".sh", ".rb", ".go", ".rs", ".java"]);
@@ -178,7 +179,7 @@ async function buildContext(agentFilename: string, since?: number): Promise<stri
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
         if (TEXT_EXTS.has(ext) && f.size < 50000 && filesWithContent < MAX_FILES_WITH_CONTENT) {
           try {
-            const file = await readProjectFile(f.name, _activeProject || undefined);
+            const file = await readProjectFile(f.name, project || undefined);
             const preview = file.content.slice(0, MAX_PREVIEW);
             parts.push(`### ${f.name}\n${preview}`);
             filesWithContent++;
@@ -193,7 +194,7 @@ async function buildContext(agentFilename: string, since?: number): Promise<stri
   // Project structure guidance
   let canvasRoot = "docs";
   try {
-    const cfg = JSON.parse(await readFile(join(getMicaDir(), "config.json"), "utf-8"));
+    const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
     canvasRoot = cfg.canvasRoot || cfg.docsDir || "docs";
   } catch { /* use default */ }
 
@@ -327,9 +328,13 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     _args: Record<string, unknown>,
     ctx: SessionContext
   ): Promise<ChannelHandler> {
-    // Sanitize: replace / with _ so files in subdirectories (e.g. docs/agent.chat)
+    // Capture project at session creation. All file ops in this closure
+    // use sessionProject — switching the active project doesn't redirect
+    // this session's writes to the wrong .mica/chats directory.
+    const sessionProject = ctx.project;
+    // Sanitize: replace / with _ so files in subdirectories (e.g. docs/claude.claude)
     // don't break the chats/ directory layout
-    const chatId = ctx.filename.replace(".chat", "").replace(/\//g, "_");
+    const chatId = ctx.filename.replace(".claude", "").replace(/\//g, "_");
     let busy = false;
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
@@ -371,16 +376,16 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       ctx.broadcast({ type: "user", content: message });
 
       // Persist
-      const history = await loadHistory(chatId);
+      const history = await loadHistory(chatId, sessionProject);
       history.push({ role: "user", content: message });
-      await saveHistory(chatId, history);
+      await saveHistory(chatId, history, sessionProject);
 
       // Show thinking state
       ctx.broadcast({ type: "thinking" });
 
       try {
         const since = getLastTurnAt(ctx.filename);
-        const context = await buildContext(ctx.filename, since);
+        const context = await buildContext(ctx.filename, sessionProject, since);
 
         // Inject recent chat history into the prompt so the agent has conversational
         // continuity. Without this, each turn is a goldfish — the SDK's `query()`
@@ -463,7 +468,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         const q = queryFn({
           prompt: promptWithHistory,
           options: {
-            cwd: getProjectDir(),
+            cwd: getProjectDir(sessionProject),
             // Model: SDK default (Claude Code picks the configured default)
             // Auth: inherited from ~/.claude/.credentials.json — no env vars needed
             // "default" + canUseTool gives us auto-approve with guards
@@ -537,9 +542,9 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
         ctx.broadcast({ type: "assistant", content: resultText, agent: "Claude", filesChanged });
 
-        const updatedHistory = await loadHistory(chatId);
+        const updatedHistory = await loadHistory(chatId, sessionProject);
         updatedHistory.push({ role: "assistant", content: resultText, agent: "Claude" });
-        await saveHistory(chatId, updatedHistory);
+        await saveHistory(chatId, updatedHistory, sessionProject);
 
       } catch (err) {
         activeAbort = null;
@@ -574,7 +579,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     return {
       onAttach(clientId, _args) {
         // Send history to newly attached client
-        loadHistory(chatId).then((messages) => {
+        loadHistory(chatId, sessionProject).then((messages) => {
           ctx.sendTo(clientId, { type: "history", messages });
 
           // On first attach with no history, trigger initial project scan
@@ -601,7 +606,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         }
 
         if (msg.type === "get_context") {
-          buildContext(ctx.filename).then((context) => {
+          buildContext(ctx.filename, sessionProject).then((context) => {
             ctx.sendTo(clientId, { type: "context_info", context, contextLength: context.length });
           });
           return;

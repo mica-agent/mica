@@ -26,6 +26,12 @@ interface ClientHandle {
 
 export interface SessionContext {
   filename: string;
+  /** The project this session belongs to. Captured at session creation —
+   *  does NOT change if the user later switches projects. Use this for all
+   *  per-session file ops to avoid the "session writes to wrong project"
+   *  bug from referencing a global activeProject. May be null only for
+   *  workspace-level sessions (none today). */
+  project: string | null;
   broadcast(data: unknown): void;
   sendTo(clientId: string, data: unknown): void;
   clientCount(): number;
@@ -50,6 +56,9 @@ export type HandlerFactory = (
 
 interface Session {
   filename: string;
+  /** Captured project at session creation. Sessions stay tied to the project
+   *  they were created in even if the user later switches the active project. */
+  project: string | null;
   state: SessionState;
   clients: Map<string, ClientHandle>;
   handler: ChannelHandler | null;
@@ -83,6 +92,7 @@ export class ChannelManager {
     const self = this;
     return {
       filename: session.filename,
+      project: session.project,
 
       broadcast(data: unknown): void {
         for (const [clientId, handle] of session.clients) {
@@ -112,20 +122,20 @@ export class ChannelManager {
 
       async readContent(): Promise<string> {
         try {
-          const file = await readProjectFile(session.filename, _activeProject || undefined);
+          const file = await readProjectFile(session.filename, session.project || undefined);
           return file.content;
         } catch { return ""; }
       },
 
       async readFile(filename: string): Promise<string> {
         try {
-          const file = await readProjectFile(filename, _activeProject || undefined);
+          const file = await readProjectFile(filename, session.project || undefined);
           return file.content;
         } catch { return ""; }
       },
 
       async writeFile(filename: string, content: string): Promise<void> {
-        await writeProjectFile(filename, content, _activeProject || undefined);
+        await writeProjectFile(filename, content, session.project || undefined);
       },
 
       destroy(): void {
@@ -157,14 +167,20 @@ export class ChannelManager {
         throw new Error(`No handler registered for: ${cardClass}`);
       }
 
+      // Capture the project at session creation. From here on, this session
+      // uses its captured project for ALL file ops — even if the user later
+      // switches the active project.
+      const sessionProject = _activeProject;
+
       let content = "";
       try {
-        const file = await readProjectFile(filename, _activeProject || undefined);
+        const file = await readProjectFile(filename, sessionProject || undefined);
         content = file.content;
       } catch { /* File may not exist yet */ }
 
       session = {
         filename,
+        project: sessionProject,
         state: "registered",
         clients: new Map(),
         handler: null,
@@ -182,7 +198,7 @@ export class ChannelManager {
       session.handler = handler;
       session.state = "active";
 
-      console.log(`[channel-mgr] Created session ${filename}`);
+      console.log(`[channel-mgr] Created session ${filename} (project: ${sessionProject ?? "<workspace>"})`);
       session.handler?.onAttach?.(clientId, args);
       return;
     }

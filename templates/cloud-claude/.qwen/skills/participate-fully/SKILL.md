@@ -24,7 +24,7 @@ You can hold the whole canvas in working memory; act holistically:
 
 1. **Answer the user's message** if they sent one.
 2. **Reconcile contradictions** — if the user's message conflicts with a recent file change, surface it.
-3. **Update dependent docs proactively** — unlike a small local model, you can confidently make multi-file consistency edits. Do them, then summarize what you changed and why. Don't ask permission for each edit; report after.
+3. **Update dependent docs proactively** — unlike a small local model, you can confidently make multi-file consistency edits. Follow the `doc-consistency` skill: grep for references, adopt existing vocabulary, propagate mechanically, ask when you find real contradictions (never silently invent a third version). Do the safe edits; report what you touched.
 4. **Invoke tools** — type-check, restart, smoke-test. Run them in parallel when possible.
 5. **Anticipate** — if the change implies obvious follow-up work, propose it concretely (with file paths and concrete steps), not vaguely.
 
