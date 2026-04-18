@@ -13,6 +13,7 @@ let serverPort: number = DEFAULT_PORT;
 let serverReady = false;
 let startingPromise: Promise<string> | null = null;
 let loadProgress = "starting";
+let lastStartupSummary = "";  // e.g. "Started in 313s (loading_shards=245s, cuda_graphs=46s)"
 
 /** Ensure vLLM server is running. Returns the base URL. */
 export async function ensureLlamaServer(): Promise<string> {
@@ -49,10 +50,10 @@ export async function stopLlamaServer(): Promise<void> {
 }
 
 /** Get current status. */
-export function getLlamaServerStatus(): { running: boolean; ready: boolean; pid?: number; port?: number; progress?: string } {
+export function getLlamaServerStatus(): { running: boolean; ready: boolean; pid?: number; port?: number; progress?: string; startupSummary?: string } {
   const isAlive = !!(serverProcess && !serverProcess.killed);
   if (serverReady && isAlive) {
-    return { running: true, ready: true, pid: serverProcess?.pid, port: serverPort };
+    return { running: true, ready: true, pid: serverProcess?.pid, port: serverPort, startupSummary: lastStartupSummary };
   }
   if (isAlive) {
     return { running: true, ready: false, pid: serverProcess?.pid, port: serverPort, progress: loadProgress };
@@ -75,6 +76,12 @@ async function startServer(): Promise<string> {
     "--tool-call-parser", "qwen3_coder",
     "--gpu-memory-utilization", "0.7",
     "--enable-prefix-caching",
+    // Reduce startup time: 64K context is plenty for chat/coding, model
+    // native is 256K but KV cache allocation for that is large.
+    "--max-model-len", process.env.VLLM_MAX_MODEL_LEN || "65536",
+    // -O2 = DYNAMO_TRACE_ONCE. Faster startup than O3 (full inductor)
+    // but keeps Dynamo tracing — small inference penalty.
+    "-O2",
     // Aliases: "openai:local" (Qwen SDK), "coder" (llm-chat card), plus the HF id
     "--served-model-name", "openai:local", "local", "coder", "qwen", MODEL_ID,
   ];
@@ -99,6 +106,21 @@ async function startServer(): Promise<string> {
   console.log(`[vllm] Model: ${MODEL_ID}`);
   console.log(`[vllm] Command: ${envStr} ${VLLM_BIN} ${cmdStr}`);
 
+  // Phase timing — tracks how long each startup phase takes
+  const startTime = Date.now();
+  const phaseTimes: Record<string, number> = {};
+  let lastPhase = "init";
+  let lastPhaseStart = startTime;
+  function markPhase(name: string) {
+    if (name === lastPhase) return;
+    const now = Date.now();
+    phaseTimes[lastPhase] = (phaseTimes[lastPhase] || 0) + (now - lastPhaseStart);
+    const dur = ((now - lastPhaseStart) / 1000).toFixed(1);
+    console.log(`[vllm-timing] ${lastPhase} took ${dur}s → entering: ${name}`);
+    lastPhase = name;
+    lastPhaseStart = now;
+  }
+
   const proc = spawn(VLLM_BIN, args, {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...envOverrides },
@@ -111,21 +133,33 @@ async function startServer(): Promise<string> {
     const shardMatch = line.match(/Loading.*?shards:\s*(\d+)% Completed \|\s*(\d+)\/(\d+)/);
     if (shardMatch) {
       loadProgress = `Loading model ${shardMatch[2]}/${shardMatch[3]} shards (${shardMatch[1]}%)`;
+      markPhase("loading_shards");
       return;
     }
     // Capturing CUDA graphs (decode, FULL): 50%|████| 18/35 [00:03<00:03,  4.85it/s]
     const cudaMatch = line.match(/Capturing CUDA graphs[^:]*:\s*(\d+)%\|.*?\|\s*(\d+)\/(\d+)/);
     if (cudaMatch) {
       loadProgress = `Compiling CUDA graphs ${cudaMatch[2]}/${cudaMatch[3]} (${cudaMatch[1]}%)`;
+      markPhase("cuda_graphs");
       return;
     }
-    if (line.includes("Loading weights took")) loadProgress = "Allocating KV cache...";
-    else if (line.includes("Model loading took")) loadProgress = "Profiling memory...";
-    else if (line.includes("determine_available_memory")) loadProgress = "Profiling memory...";
-    else if (line.includes("Capturing CUDA graph") && !cudaMatch) loadProgress = "Starting CUDA graph capture...";
-    else if (line.includes("Starting to load model")) loadProgress = "Starting model load...";
-    else if (line.includes("Loading model weights")) loadProgress = "Loading model weights...";
-    else if (line.includes("Application startup complete") || line.includes("Started server process")) loadProgress = "Ready";
+    if (line.includes("Loading weights took")) { loadProgress = "Allocating KV cache..."; markPhase("kv_cache"); }
+    else if (line.includes("Model loading took")) { loadProgress = "Profiling memory..."; markPhase("memory_profile"); }
+    else if (line.includes("torch.compile") || line.includes("Dynamo")) markPhase("torch_compile");
+    else if (line.includes("Capturing CUDA graph") && !cudaMatch) { loadProgress = "Starting CUDA graph capture..."; markPhase("cuda_graphs"); }
+    else if (line.includes("Starting to load model")) { loadProgress = "Starting model load..."; markPhase("model_init"); }
+    else if (line.includes("Loading model weights")) { loadProgress = "Loading model weights..."; markPhase("loading_shards"); }
+    else if (line.includes("Application startup complete") || line.includes("Started server process")) {
+      loadProgress = "Ready";
+      markPhase("ready");
+      const total = ((Date.now() - startTime) / 1000).toFixed(1);
+      const breakdown = Object.entries(phaseTimes)
+        .filter(([k]) => k !== "ready")
+        .map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}s`)
+        .join(" ");
+      console.log(`[vllm-timing] TOTAL: ${total}s — ${breakdown}`);
+      lastStartupSummary = `Ready in ${total}s (${breakdown})`;
+    }
   }
 
   proc.stdout?.on("data", (chunk: Buffer) => {

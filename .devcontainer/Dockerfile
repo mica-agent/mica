@@ -30,12 +30,18 @@ ENV PATH=/workspace/.venv/bin:$PATH
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# Build llama.cpp with CUDA support (uncomment to restore)
-# RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp && \
-#     cd /opt/llama.cpp && \
-#     cmake -B build -DGGML_CUDA=ON && \
-#     cmake --build build --config Release -j$(nproc) && \
-#     ln -sf /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli && \
-#     ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+# Build llama.cpp with CUDA support (lets us run llama-server alongside vLLM)
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp && \
+    cd /opt/llama.cpp && \
+    cmake -B build -DGGML_CUDA=ON && \
+    cmake --build build --config Release -j$(nproc) && \
+    ln -sf /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli && \
+    ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+
+# NOTE: keep transformers at vLLM 0.15's pinned 4.57.5. Newer transformers
+# breaks Qwen2VL/Qwen3VL image processor (max_pixels removed). Gemma 4 needs
+# transformers 5.x AND has additional vLLM 0.15 bugs (top_k assertion for
+# 26B-A4B MoE, layer_scalar mismatch for 31B FP8) — wait for vLLM 0.16+ NGC
+# image (likely 26.03) which should ship proper Gemma 4 multimodal support.
 
 

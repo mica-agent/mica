@@ -1,29 +1,32 @@
-// LlamaServer — singleton lifecycle manager for llama-server (llama.cpp).
+// LlamaServer — singleton lifecycle manager for llama.cpp's llama-server.
 // Starts on first request, stays running until Mica shuts down.
 // Exposes an OpenAI-compatible API at http://127.0.0.1:{port}/v1/chat/completions.
+//
+// Used for the primary chat/coding model (Qwen3-Coder-Next GGUF).
+// vLLM is used separately for the VLM model (Gemma 4) — see scripts/start-vlm.sh.
 
 import { spawn, type ChildProcess } from "child_process";
 
-const LLAMA_SERVER_BIN = "/usr/local/bin/llama-server";
 const DEFAULT_PORT = 8012;
+// HuggingFace repo + file. Default = Unsloth's dynamic Q4 (best quality 4-bit on Spark).
+const HF_REPO = process.env.LLAMA_HF_REPO || "unsloth/Qwen3-Coder-Next-GGUF";
+const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3-Coder-Next-UD-Q4_K_XL.gguf";
 const MODEL_PATH = process.env.MODEL_PATH || "";
-const HF_REPO = process.env.HF_REPO || "unsloth/Qwen3-Coder-Next-GGUF";
-const HF_FILE = process.env.HF_FILE || "Qwen3-Coder-Next-UD-Q4_K_XL.gguf";
+const CTX_SIZE = process.env.LLAMA_CTX_SIZE || "65536";
+const N_PARALLEL = process.env.LLAMA_N_PARALLEL || "1";
 
 let serverProcess: ChildProcess | null = null;
 let serverPort: number = DEFAULT_PORT;
 let serverReady = false;
 let startingPromise: Promise<string> | null = null;
+let loadProgress = "starting";
+let lastStartupSummary = "";
 
-/** Ensure llama-server is running. Returns the base URL. */
 export async function ensureLlamaServer(): Promise<string> {
   if (serverReady && serverProcess && !serverProcess.killed) {
     return `http://127.0.0.1:${serverPort}`;
   }
-
-  // If already starting, wait for that
   if (startingPromise) return startingPromise;
-
   startingPromise = startServer();
   try {
     return await startingPromise;
@@ -32,7 +35,6 @@ export async function ensureLlamaServer(): Promise<string> {
   }
 }
 
-/** Stop llama-server gracefully. */
 export async function stopLlamaServer(): Promise<void> {
   if (!serverProcess) return;
   console.log("[llama-server] Stopping...");
@@ -41,7 +43,7 @@ export async function stopLlamaServer(): Promise<void> {
     const timeout = setTimeout(() => {
       serverProcess?.kill("SIGKILL");
       resolve();
-    }, 5000);
+    }, 10000);
     serverProcess?.on("exit", () => {
       clearTimeout(timeout);
       resolve();
@@ -52,12 +54,15 @@ export async function stopLlamaServer(): Promise<void> {
   console.log("[llama-server] Stopped.");
 }
 
-/** Get current status. */
-export function getLlamaServerStatus(): { running: boolean; pid?: number; port?: number } {
-  if (serverReady && serverProcess && !serverProcess.killed) {
-    return { running: true, pid: serverProcess.pid, port: serverPort };
+export function getLlamaServerStatus(): { running: boolean; ready: boolean; pid?: number; port?: number; progress?: string; startupSummary?: string } {
+  const isAlive = !!(serverProcess && !serverProcess.killed);
+  if (serverReady && isAlive) {
+    return { running: true, ready: true, pid: serverProcess?.pid, port: serverPort, startupSummary: lastStartupSummary };
   }
-  return { running: false };
+  if (isAlive) {
+    return { running: true, ready: false, pid: serverProcess?.pid, port: serverPort, progress: loadProgress };
+  }
+  return { running: false, ready: false, progress: loadProgress };
 }
 
 // ── Internal ─────────────────────────────────────────────
@@ -66,31 +71,24 @@ async function startServer(): Promise<string> {
   const port = DEFAULT_PORT;
   serverPort = port;
 
-  // Resolve model path: prefer explicit MODEL_PATH, then check local cache, then fall back to HF download
-  const cachedPath = `/home/${process.env.USER || "vscode"}/.cache/llama.cpp/${HF_REPO.replace(/\//g, "_")}_${HF_FILE}`;
-  const { existsSync } = await import("fs");
-  const resolvedModelPath = MODEL_PATH || (existsSync(cachedPath) ? cachedPath : null);
+  // Resolve model path: explicit MODEL_PATH wins, otherwise look in HF cache,
+  // otherwise pass HF args so llama-server downloads on demand.
+  const cachedPath = await findHfCachedFile(HF_REPO, HF_FILE);
+  const useCachedPath = MODEL_PATH || cachedPath;
 
-  const modelArgs = resolvedModelPath
-    ? ["--model", resolvedModelPath]
+  const modelArgs = useCachedPath
+    ? ["--model", useCachedPath]
     : ["-hfr", HF_REPO, "-hff", HF_FILE];
 
-  if (resolvedModelPath) {
-    console.log(`[llama-server] Using cached model: ${resolvedModelPath}`);
-  }
-
-  console.log(`[llama-server] Starting on port ${port}...`);
-  console.log(`[llama-server] Model: ${MODEL_PATH || `${HF_REPO}/${HF_FILE}`}`);
-
-  const proc = spawn(LLAMA_SERVER_BIN, [
+  const args = [
     ...modelArgs,
     "--host", "0.0.0.0",
     "--port", String(port),
-    "--jinja",
-    "--ctx-size", "262144",
-    "--flash-attn", "on",
     "--n-gpu-layers", "999",
-    "-np", "2",
+    "--jinja",
+    "--flash-attn", "on",
+    "--ctx-size", CTX_SIZE,
+    "-np", N_PARALLEL,
     "--reasoning-format", "deepseek",
     // Sampling defaults per Qwen3-Coder-Next recommendations
     "--temp", "1.0",
@@ -98,22 +96,66 @@ async function startServer(): Promise<string> {
     "--top-k", "40",
     "--min-p", "0.01",
     "--repeat-penalty", "1.0",
-    "--seed", "3407",
-  ], {
+  ];
+
+  const LLAMA_BIN = process.env.LLAMA_BIN || "llama-server";
+
+  // Log copy-pasteable command line
+  const quoteArg = (a: string) => /[\s"'`$]/.test(a) ? `'${a.replace(/'/g, "'\\''")}'` : a;
+  const cmdStr = args.map(quoteArg).join(" ");
+  console.log(`[llama-server] Starting on port ${port}...`);
+  console.log(`[llama-server] Model: ${useCachedPath || `${HF_REPO}/${HF_FILE}`}`);
+  console.log(`[llama-server] Command: ${LLAMA_BIN} ${cmdStr}`);
+
+  // Phase timing
+  const startTime = Date.now();
+  const phaseTimes: Record<string, number> = {};
+  let lastPhase = "init";
+  let lastPhaseStart = startTime;
+  function markPhase(name: string) {
+    if (name === lastPhase) return;
+    const now = Date.now();
+    phaseTimes[lastPhase] = (phaseTimes[lastPhase] || 0) + (now - lastPhaseStart);
+    const dur = ((now - lastPhaseStart) / 1000).toFixed(1);
+    console.log(`[llama-timing] ${lastPhase} took ${dur}s → entering: ${name}`);
+    lastPhase = name;
+    lastPhaseStart = now;
+  }
+
+  const proc = spawn(LLAMA_BIN, args, {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
   serverProcess = proc;
 
-  // Pipe output with prefix
+  function trackProgress(line: string) {
+    if (line.includes("loading model tensors")) { loadProgress = "Loading model tensors..."; markPhase("loading_tensors"); }
+    else if (line.includes("CUDA buffer size")) { loadProgress = "Allocating GPU buffers..."; markPhase("allocating"); }
+    else if (line.includes("KV self size")) { loadProgress = "Allocating KV cache..."; markPhase("kv_cache"); }
+    else if (line.includes("graph splits")) { loadProgress = "Building compute graph..."; markPhase("graph"); }
+    else if (line.includes("HTTP server is listening") || line.includes("server is listening")) {
+      loadProgress = "Ready";
+      markPhase("ready");
+      const total = ((Date.now() - startTime) / 1000).toFixed(1);
+      const breakdown = Object.entries(phaseTimes)
+        .filter(([k]) => k !== "ready")
+        .map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}s`)
+        .join(" ");
+      console.log(`[llama-timing] TOTAL: ${total}s — ${breakdown}`);
+      lastStartupSummary = `Ready in ${total}s (${breakdown})`;
+    }
+  }
+
   proc.stdout?.on("data", (chunk: Buffer) => {
     for (const line of chunk.toString().split("\n").filter(Boolean)) {
       console.log(`[llama-server] ${line}`);
+      trackProgress(line);
     }
   });
   proc.stderr?.on("data", (chunk: Buffer) => {
     for (const line of chunk.toString().split("\n").filter(Boolean)) {
       console.log(`[llama-server] ${line}`);
+      trackProgress(line);
     }
   });
 
@@ -129,12 +171,30 @@ async function startServer(): Promise<string> {
     serverProcess = null;
   });
 
-  // Wait for health endpoint
   const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForHealth(baseUrl, 120_000);
+  await waitForHealth(baseUrl, 600_000);
   serverReady = true;
   console.log(`[llama-server] Ready at ${baseUrl}`);
   return baseUrl;
+}
+
+/** Locate a cached GGUF file under ~/.cache/huggingface/hub/models--<owner>--<repo>/snapshots/ */
+async function findHfCachedFile(repo: string, filename: string): Promise<string | null> {
+  const { readdir, stat } = await import("fs/promises");
+  const { join } = await import("path");
+  const cacheRoot = `/home/${process.env.USER || "vscode"}/.cache/huggingface/hub`;
+  const repoDir = `${cacheRoot}/models--${repo.replace("/", "--")}/snapshots`;
+  try {
+    const snapshots = await readdir(repoDir);
+    for (const snap of snapshots) {
+      const candidate = join(repoDir, snap, filename);
+      try {
+        await stat(candidate);
+        return candidate;
+      } catch { /* not in this snapshot */ }
+    }
+  } catch { /* repo not cached */ }
+  return null;
 }
 
 async function waitForHealth(baseUrl: string, timeoutMs: number): Promise<void> {
@@ -146,7 +206,7 @@ async function waitForHealth(baseUrl: string, timeoutMs: number): Promise<void> 
     } catch {
       // Not ready yet
     }
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 1000));
   }
   throw new Error(`llama-server failed to become healthy within ${timeoutMs / 1000}s`);
 }
