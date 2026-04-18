@@ -7,6 +7,62 @@ var sendBtn = container.querySelector('#llm-send');
 var stopBtn = container.querySelector('#llm-stop');
 var modelSelect = container.querySelector('#llm-model');
 var clearBtn = container.querySelector('#llm-clear');
+var fileInput = container.querySelector('#llm-file-input');
+var attachmentsEl = container.querySelector('#llm-attachments');
+var attachBtn = container.querySelector('#llm-attach-btn');
+
+// Pending attachments: [{ name, mime, dataUrl }]
+var pendingAttachments = [];
+
+function renderAttachments() {
+  if (pendingAttachments.length === 0) {
+    attachmentsEl.style.display = 'none';
+    attachmentsEl.innerHTML = '';
+    return;
+  }
+  attachmentsEl.style.display = 'flex';
+  attachmentsEl.innerHTML = pendingAttachments.map(function(att, i) {
+    var thumb;
+    if (att.mime.startsWith('image/')) {
+      thumb = '<img src="' + att.dataUrl + '" style="width:24px;height:24px;object-fit:cover;border-radius:2px"/>';
+    } else if (att.mime.startsWith('video/')) {
+      thumb = '<span style="font-size:14px">🎬</span>';
+    } else {
+      thumb = '<span style="font-size:14px">📎</span>';
+    }
+    var sizeKb = att.dataUrl ? Math.round(att.dataUrl.length * 0.75 / 1024) : 0;  // base64 → bytes
+    var sizeStr = sizeKb > 1024 ? (sizeKb / 1024).toFixed(1) + 'MB' : sizeKb + 'KB';
+    return '<div style="display:flex;align-items:center;gap:4px;background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.3);border-radius:4px;padding:2px 6px;font-size:11px;color:#ccc">' +
+      thumb +
+      ' <span>' + att.name + '</span>' +
+      ' <span style="color:#6e7681">(' + sizeStr + ')</span>' +
+      ' <button data-idx="' + i + '" class="llm-att-remove" style="background:none;border:none;color:#f87171;cursor:pointer;padding:0 2px;font-size:14px;line-height:1">×</button>' +
+      '</div>';
+  }).join('');
+  // Wire remove buttons
+  var btns = attachmentsEl.querySelectorAll('.llm-att-remove');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].addEventListener('click', function(e) {
+      e.stopPropagation();
+      var idx = parseInt(e.currentTarget.getAttribute('data-idx'));
+      pendingAttachments.splice(idx, 1);
+      renderAttachments();
+    });
+  }
+}
+
+fileInput.addEventListener('change', function(e) {
+  var files = Array.from(e.target.files || []);
+  files.forEach(function(file) {
+    var reader = new FileReader();
+    reader.onload = function() {
+      pendingAttachments.push({ name: file.name, mime: file.type || 'image/jpeg', dataUrl: reader.result });
+      renderAttachments();
+    };
+    reader.readAsDataURL(file);
+  });
+  fileInput.value = '';  // allow same file again
+});
 
 var busy = false;
 var currentBubble = null;
@@ -19,12 +75,33 @@ var ch = mica.openChannel('llm_session');
 
 // Poll LLM server status until ready
 var llmReady = false;
+var startupShown = false;
+function showStartupSummary(text) {
+  if (startupShown || !text) return;
+  startupShown = true;
+  if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === 'center') {
+    messagesEl.innerHTML = '';
+  }
+  var el = window.document.createElement('div');
+  el.style.cssText = 'align-self:center;color:#6e7681;font-size:11px;font-family:monospace;padding:6px 10px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:6px;margin:4px 0;';
+  el.textContent = '✓ ' + text;
+  messagesEl.appendChild(el);
+  // Re-add the "select a model" hint below if no real conversation yet
+  if (messagesEl.children.length === 1) {
+    var hint = window.document.createElement('div');
+    hint.style.cssText = 'color:#8b949e;font-size:12px;text-align:center;padding:16px 0;';
+    hint.textContent = 'Select a model and start chatting.';
+    messagesEl.appendChild(hint);
+  }
+  scrollBottom();
+}
 function checkLlmStatus() {
   fetch('/api/llm/status').then(function(r) { return r.json(); }).then(function(s) {
     if (s.ready) {
       llmReady = true;
       sendBtn.disabled = false;
       inputEl.placeholder = 'Message...';
+      if (s.startupSummary) showStartupSummary(s.startupSummary);
     } else {
       llmReady = false;
       sendBtn.disabled = true;
@@ -153,9 +230,32 @@ ch.onClose(function() {});
 
 function send() {
   var text = inputEl.value.trim();
-  if (!text || busy) return;
+  if ((!text && pendingAttachments.length === 0) || busy) return;
   inputEl.value = '';
-  ch.send({ message: text, model: modelSelect.value });
+
+  var payload = { model: modelSelect.value };
+  if (pendingAttachments.length > 0) {
+    // OpenAI-style multimodal content: array of {type:"text"|"image_url"|"video_url", ...}
+    var content = [];
+    var hasVideo = false;
+    for (var i = 0; i < pendingAttachments.length; i++) {
+      var att = pendingAttachments[i];
+      if (att.mime.startsWith('video/')) {
+        content.push({ type: 'video_url', video_url: { url: att.dataUrl } });
+        hasVideo = true;
+      } else {
+        content.push({ type: 'image_url', image_url: { url: att.dataUrl } });
+      }
+    }
+    if (text) content.push({ type: 'text', text: text });
+    payload.content = content;
+    payload.message = text || (hasVideo ? '[video]' : '[image]');  // for display in history
+  } else {
+    payload.message = text;
+  }
+  pendingAttachments = [];
+  renderAttachments();
+  ch.send(payload);
 }
 
 sendBtn.addEventListener('click', function(e) { e.stopPropagation(); send(); });
@@ -171,7 +271,11 @@ inputEl.addEventListener('click', function(e) { e.stopPropagation(); });
 
 clearBtn.addEventListener('click', function(e) {
   e.stopPropagation();
-  // TODO: clear server-side history too
+  // Clear server-side history (vLLM gets full history each request — old
+  // images/videos in history count toward the per-prompt limit)
+  ch.send({ type: 'clear' });
+  pendingAttachments = [];
+  renderAttachments();
   messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Select a model and start chatting.</div>';
 });
 

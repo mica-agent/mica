@@ -8,9 +8,14 @@ const LLM_PORTS: Record<string, number> = {
   vlm: 8013,
 };
 
+// Content can be a plain string or OpenAI-style multimodal content blocks
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "video_url"; video_url: { url: string } };
 interface ChatMessage {
   role: "user" | "assistant" | "system";
-  content: string;
+  content: string | ContentBlock[];
 }
 
 export function createLlmChatHandler() {
@@ -29,21 +34,31 @@ export function createLlmChatHandler() {
       },
 
       async onData(_clientId, data) {
-        const msg = data as { type?: string; message?: string; model?: string };
+        const msg = data as { type?: string; message?: string; model?: string; content?: ContentBlock[] };
 
         if (msg.type === "interrupt") {
           if (activeAbort) activeAbort.abort();
           return;
         }
 
+        if (msg.type === "clear") {
+          history.length = 0;
+          ctx.broadcast({ type: "history", messages: [] });
+          return;
+        }
+
         const userMessage = msg.message;
-        if (!userMessage) return;
+        const userContent = msg.content;  // multimodal content blocks (image+text)
+        if (!userMessage && !userContent) return;
 
         const modelKey = msg.model || "coder";
         const port = LLM_PORTS[modelKey] || LLM_PORTS.coder;
 
-        history.push({ role: "user", content: userMessage });
-        ctx.broadcast({ type: "user", content: userMessage });
+        // Use content blocks if provided (multimodal), else plain text
+        const messageForLlm: string | ContentBlock[] = userContent || userMessage || "";
+        history.push({ role: "user", content: messageForLlm });
+        // Display: show text part to the user (image preview not shown in bubble — TODO)
+        ctx.broadcast({ type: "user", content: userMessage || "[image]" });
         ctx.broadcast({ type: "thinking", model: modelKey });
 
         activeAbort = new AbortController();

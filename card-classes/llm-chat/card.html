@@ -3,7 +3,7 @@
   <div id="llm-toolbar" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid #30363d;flex-shrink:0;">
     <select id="llm-model" style="background:#161b22;color:#ccc;border:1px solid #30363d;border-radius:4px;padding:3px 8px;font-size:12px;outline:none;font-family:inherit;">
       <option value="coder">Qwen3 Coder</option>
-      <option value="vlm">Gemma 4 VLM</option>
+      <option value="vlm">Nemotron Nano 12B VL</option>
     </select>
     <span style="flex:1"></span>
     <button id="llm-clear" style="background:none;border:none;color:#6e7681;cursor:pointer;font-size:11px;padding:2px 6px;" title="Clear chat">Clear</button>
@@ -15,7 +15,12 @@
     </div>
   </div>
 
+  <div id="llm-attachments" style="display:none;padding:6px 12px 0;border-top:1px solid #30363d;flex-shrink:0;flex-wrap:wrap;gap:6px;"></div>
+
   <div style="display:flex;gap:6px;padding:8px 12px;border-top:1px solid #30363d;flex-shrink:0;">
+    <label id="llm-attach-btn" title="Attach image or video (VLM model only)" style="background:rgba(255,255,255,0.06);color:#8b949e;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:14px;cursor:pointer;display:flex;align-items:center;">📎
+      <input id="llm-file-input" type="file" accept="image/*,video/*" multiple style="display:none" />
+    </label>
     <input id="llm-input" type="text" placeholder="Message..." style="flex:1;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:13px;outline:none;font-family:inherit;" />
     <button id="llm-stop" style="background:#f87171;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;display:none;">Stop</button>
     <button id="llm-send" style="background:#3b82f6;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">Send</button>
