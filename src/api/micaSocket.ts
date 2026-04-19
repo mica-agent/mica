@@ -78,6 +78,31 @@ function nextId(): string {
   return `mc-${++idCounter}-${Date.now()}`;
 }
 
+// ── Global fetch override for /api/* — force cache:'no-store' ─
+//
+// Why: two projects often hit identical URLs (e.g. /api/files/docs/spec.md)
+// with different `X-Mica-Project` headers. Browsers key the cache by URL
+// alone unless the response carries `Vary: X-Mica-Project`. Even after we
+// add that response header, OLD cache entries (from before the fix) ignore
+// it and continue to be served on URL match — leading to "I just created a
+// new project but spec.md shows another project's data" bugs.
+//
+// Forcing cache:'no-store' at fetch-time bypasses the disk cache entirely
+// (read AND write). One-time installation here covers every fetch in the
+// app, including those issued from card scripts (which call window.fetch
+// after the CARD_SHIM's wrapper).
+(function installFetchNoStore() {
+  if (typeof window === "undefined") return;
+  const orig = window.fetch.bind(window);
+  window.fetch = function patchedFetch(input: RequestInfo | URL, init?: RequestInit) {
+    const url = typeof input === "string" ? input : (input instanceof URL ? input.href : input.url);
+    if (url && (url.startsWith("/api/") || url.includes("/api/"))) {
+      init = { ...(init || {}), cache: "no-store" };
+    }
+    return orig(input, init);
+  };
+})();
+
 // ── Connection management ────────────────────────────────────
 
 export function connect(url?: string): void {
@@ -387,18 +412,53 @@ export function broadcast(event: string, data: Record<string, unknown> = {}): vo
 }
 
 /**
- * Create a scoped mica bridge for a specific widget instance.
+ * Module-level bridge cache, keyed by (project, canvas, filename).
+ *
+ * Why module-level (and not React useRef): cards correspond to FILES, not to
+ * React component instances. A bridge holds an open WebSocket channel and a
+ * server-side session — those should outlive React's lifecycle quirks
+ * (StrictMode double-mount, parent re-render forcing remount, key changes).
+ *
+ * Without the cache: StrictMode mount → fresh useRef → fresh bridge → fresh
+ * openChannel → fresh server-side session. Two of those happen in dev,
+ * splitting broadcasts between two sessions. With the cache: same bridge is
+ * reused; the dedup inside the bridge returns the same channel.
+ *
+ * Bridge destroy is now driven by FILE LIFECYCLE (file-deleted handler in
+ * CanvasCardRuntime calls destroyBridgeFor), not by React unmount.
  */
+const bridges = new Map<string, ReturnType<typeof createBridge>>();
+const bridgeKey = (project: string, canvas: CanvasId, filename: string) =>
+  `${project}|${canvas}|${filename}`;
+
+/** Get or create the bridge for this card. Caller does NOT need to track its lifetime. */
+export function getOrCreateBridge(project: string, canvas: CanvasId, filename: string) {
+  const key = bridgeKey(project, canvas, filename);
+  let bridge = bridges.get(key);
+  if (!bridge) {
+    bridge = createBridge(project, canvas, filename);
+    bridges.set(key, bridge);
+  }
+  return bridge;
+}
+
+/** Tear down the bridge for a file. Call when the file is deleted or the
+ *  project is closed — NOT on every React unmount. */
+export function destroyBridgeFor(project: string, canvas: CanvasId, filename: string): void {
+  const key = bridgeKey(project, canvas, filename);
+  const bridge = bridges.get(key);
+  if (!bridge) return;
+  bridge._runDestroy();
+  bridges.delete(key);
+}
+
 /**
  * Create a scoped mica bridge for a specific widget instance.
  *
  * The bridge deduplicates openChannel() calls for the same (filename, fn) key.
- * This handles React lifecycle: scripts re-execute on re-render, StrictMode
- * double-mounts — the same channel handle is returned with swapped callbacks
- * instead of opening a new server connection.
- *
- * On page refresh, the bridge is recreated (fresh JS context), so openChannel
- * sends a fresh channel_open and the server attaches to the existing session.
+ * Caller should prefer `getOrCreateBridge` so the bridge is shared across
+ * React remounts; calling `createBridge` directly creates a fresh, unmanaged
+ * bridge that won't dedup against existing channels for the same file.
  */
 export function createBridge(project: string, canvas: CanvasId, filename: string) {
   const destroyCallbacks: Array<() => void> = [];

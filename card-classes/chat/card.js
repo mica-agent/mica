@@ -16,6 +16,7 @@ const statusDetail = container.querySelector("#chat-status-detail");
 let detailExpanded = false;
 const ACCENT = "#7c3aed";
 let busy = false;
+let queuedCount = 0;  // user messages typed during busy — server queues them
 let elapsedSec = 0;
 let elapsedTimer = null;
 let stepCount = 0;
@@ -192,8 +193,10 @@ ch.onData(function(data) {
       break;
     case "thinking":
       busy = true;
-      sendBtn.disabled = true;
-      sendBtn.style.display = "none";
+      // One queued message just started processing; decrement.
+      if (queuedCount > 0) queuedCount--;
+      updateSendButton();
+      // Keep send button visible/clickable so user can queue more.
       stopBtn.style.display = "";
       stepCount = 0;
       elapsedSec = 0;
@@ -212,8 +215,6 @@ ch.onData(function(data) {
       break;
     case "assistant":
       busy = false;
-      sendBtn.disabled = false;
-      sendBtn.style.display = "";
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
@@ -223,8 +224,6 @@ ch.onData(function(data) {
       break;
     case "error":
       busy = false;
-      sendBtn.disabled = false;
-      sendBtn.style.display = "";
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       setStatus("Error", "#f87171", false);
@@ -238,9 +237,19 @@ ch.onClose(function() {});
 
 function send() {
   const text = inputEl.value.trim();
-  if (!text || busy) return;
+  if (!text) return;
   inputEl.value = "";
+  // Server queues if busy — let the user keep typing while the agent works.
+  if (busy) {
+    queuedCount++;
+    addDetailLine(`Queued: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
+  }
   ch.send({ message: text });
+  updateSendButton();
+}
+
+function updateSendButton() {
+  sendBtn.textContent = queuedCount > 0 ? `Send (${queuedCount} queued)` : "Send";
 }
 
 sendBtn.addEventListener("click", send);
@@ -248,8 +257,6 @@ sendBtn.addEventListener("click", send);
 stopBtn.addEventListener("click", function() {
   ch.send({ type: "interrupt" });
   busy = false;
-  sendBtn.disabled = false;
-  sendBtn.style.display = "";
   stopBtn.style.display = "none";
   if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
   setStatus("Stopped", "#fbbf24", false);

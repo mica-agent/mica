@@ -72,6 +72,13 @@ export class ChannelManager {
   private clientToSession = new Map<string, string>();
   private factories = new Map<string, HandlerFactory>();
   private tabClients = new Map<string, Set<string>>();
+  // Tracks in-flight session creation so concurrent `open()` calls for the
+  // same filename collapse onto the same Session. Without this, two
+  // channel_open messages arriving back-to-back both pass the `!session`
+  // check before either finishes the await on readProjectFile / factory(),
+  // resulting in TWO sessions, two scan triggers, two busy/queue closures —
+  // and broadcasts going to the "wrong" session's clients.
+  private creating = new Map<string, Promise<Session>>();
 
   registerHandler(cardClass: string, factory: HandlerFactory): void {
     this.factories.set(cardClass, factory);
@@ -160,49 +167,19 @@ export class ChannelManager {
       session = undefined;
     }
 
+    // If a creation is already in flight for this filename, await it so we
+    // attach to the same Session instead of racing into a duplicate.
     if (!session) {
-      const cardClass = this.resolveCardClass(filename);
-      const factory = this.factories.get(cardClass);
-      if (!factory) {
-        throw new Error(`No handler registered for: ${cardClass}`);
+      let creation = this.creating.get(filename);
+      if (!creation) {
+        creation = this.createSession(filename, args);
+        this.creating.set(filename, creation);
+        creation.finally(() => this.creating.delete(filename));
       }
-
-      // Capture the project at session creation. From here on, this session
-      // uses its captured project for ALL file ops — even if the user later
-      // switches the active project.
-      const sessionProject = _activeProject;
-
-      let content = "";
-      try {
-        const file = await readProjectFile(filename, sessionProject || undefined);
-        content = file.content;
-      } catch { /* File may not exist yet */ }
-
-      session = {
-        filename,
-        project: sessionProject,
-        state: "registered",
-        clients: new Map(),
-        handler: null,
-        ctx: null as unknown as SessionContext,
-      };
-      const ctx = this.buildContext(session);
-      session.ctx = ctx;
-
-      this.sessions.set(filename, session);
-
-      session.clients.set(clientId, { onData, onClose });
-      this.clientToSession.set(clientId, filename);
-
-      const handler = await factory(content, args, ctx);
-      session.handler = handler;
-      session.state = "active";
-
-      console.log(`[channel-mgr] Created session ${filename} (project: ${sessionProject ?? "<workspace>"})`);
-      session.handler?.onAttach?.(clientId, args);
-      return;
+      session = await creation;
     }
 
+    // Attach this client to the (possibly just-created) session.
     // Evict stale clients from same tab
     if (tabId) {
       const peers = this.tabClients.get(tabId);
@@ -226,6 +203,46 @@ export class ChannelManager {
     session.clients.set(clientId, { onData, onClose });
     this.clientToSession.set(clientId, filename);
     session.handler?.onAttach?.(clientId, args);
+  }
+
+  /** Create a session for a filename. Single-flight via `this.creating`. */
+  private async createSession(filename: string, args: Record<string, unknown>): Promise<Session> {
+    const cardClass = this.resolveCardClass(filename);
+    const factory = this.factories.get(cardClass);
+    if (!factory) {
+      throw new Error(`No handler registered for: ${cardClass}`);
+    }
+
+    // Capture the project at session creation. From here on, this session
+    // uses its captured project for ALL file ops — even if the user later
+    // switches the active project.
+    const sessionProject = _activeProject;
+
+    let content = "";
+    try {
+      const file = await readProjectFile(filename, sessionProject || undefined);
+      content = file.content;
+    } catch { /* File may not exist yet */ }
+
+    const session: Session = {
+      filename,
+      project: sessionProject,
+      state: "registered",
+      clients: new Map(),
+      handler: null,
+      ctx: null as unknown as SessionContext,
+    };
+    const ctx = this.buildContext(session);
+    session.ctx = ctx;
+
+    this.sessions.set(filename, session);
+
+    const handler = await factory(content, args, ctx);
+    session.handler = handler;
+    session.state = "active";
+
+    console.log(`[channel-mgr] Created session ${filename} (project: ${sessionProject ?? "<workspace>"})`);
+    return session;
   }
 
   sendData(clientId: string, data: unknown): void {

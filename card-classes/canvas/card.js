@@ -98,7 +98,9 @@ function positionCard(card) {
         }
         card.classList.add('wb-card--resized');
     } else {
-        // Auto-position: next open grid slot
+        // Auto-position: next open grid slot. No prior layout entry =
+        // genuinely new card → bring it to front so it's not hidden behind
+        // dragged-around siblings.
         const cards = Array.from(freeform.querySelectorAll('.wb-card'));
         let idx = cards.indexOf(card);
         if (idx < 0) idx = cards.length;
@@ -106,12 +108,14 @@ function positionCard(card) {
         const row = Math.floor(idx / COLS);
         const x = col * (CARD_W + GAP);
         const y = row * (CARD_H + GAP);
+        const z = ++topZ;
         card.style.left = `${x}px`;
         card.style.top = `${y}px`;
         card.style.width = `${CARD_W}px`;
         card.style.height = `${CARD_H}px`;
+        card.style.zIndex = String(z);
         card.classList.add('wb-card--resized');
-        layout[name] = { x, y, w: CARD_W, h: CARD_H };
+        layout[name] = { x, y, w: CARD_W, h: CARD_H, z };
         persistLayout();
     }
     // Reveal card with fade-in after positioning

@@ -10,11 +10,13 @@
 
 const API_BASE = import.meta.env.VITE_MICA_API || "";
 
-/** Wrap fetch with the X-Mica-Project header for project-scoped endpoints. */
+/** Wrap fetch with the X-Mica-Project header for project-scoped endpoints.
+ *  Also forces cache:'no-store' so two projects hitting the same URL never
+ *  get cross-contaminated responses from the browser's disk cache. */
 function projFetch(project: string, url: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   headers.set("X-Mica-Project", project);
-  return fetch(url, { ...init, headers });
+  return fetch(url, { ...init, headers, cache: "no-store" });
 }
 
 export interface WorkspaceInfo {

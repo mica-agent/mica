@@ -88,6 +88,17 @@ app.use((_req, res, next) => {
   next();
 });
 
+// ── No-cache for API responses ───────────────────────────────
+// Two projects can hit the same URL (e.g. /api/files/docs/spec.md) with
+// different `X-Mica-Project` headers and get different bodies. Browsers
+// cache by URL alone unless told otherwise — without this header the
+// second project sees the first project's stale response.
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Vary", "X-Mica-Project");
+  next();
+});
+
 // ── Active project tracking ─────────────────────────────────
 // Phase 1: per-tab project comes from `X-Mica-Project` header on every API call.
 // `activeProject` global remains as a fallback for callers that don't set the

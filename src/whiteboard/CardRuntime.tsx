@@ -2,11 +2,11 @@
 // Provides the `mica` bridge (call, send, on, openChannel) for interactive cards.
 // Card classes handle their own rendering (e.g., mermaid.js) via inline <script> blocks.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 // morphdom removed — innerHTML replacement is safer with React's lifecycle.
 // TODO: Re-evaluate morphdom for preserving mounted library instances once
 // we add proper lifecycle coordination between React and widget scripts.
-import { createBridge, windowId, type CanvasId } from "../api/micaSocket";
+import { getOrCreateBridge, windowId, type CanvasId } from "../api/micaSocket";
 
 interface CardDependencies {
   scripts?: string[];
@@ -171,30 +171,14 @@ function waitForStyleApplication(): Promise<void> {
 export default function CardRuntime({ html, exports: exportFns, dependencies, project, canvas, filename }: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<HTMLDivElement>(null);
-  // Bridge created once per component instance — survives effect re-runs (StrictMode).
-  // Channel dedup lives inside the bridge, so it persists across mount/cleanup/remount.
-  const bridgeRef = useRef<ReturnType<typeof createBridge> | null>(null);
-  if (!bridgeRef.current) {
-    bridgeRef.current = createBridge(project, canvas, filename);
-  }
+  // Bridge is keyed on (project, canvas, filename) and lives in a module-level
+  // cache. Survives React remounts (StrictMode double-mount, parent re-render
+  // forcing unmount/remount, key changes). Destroy is driven by file lifecycle
+  // (file-deleted event in CanvasCardRuntime calls `destroyBridgeFor`), not by
+  // React unmount — sessions belong to files, not to component instances.
+  const bridge = getOrCreateBridge(project, canvas, filename);
   const activeCallsRef = useRef(0);
   const [loadingDeps, setLoadingDeps] = useState(false);
-
-  // Destroy only on true unmount — not on effect re-runs.
-  // Card sessions (PTY, chat) must survive React re-renders.
-  //
-  // useLayoutEffect (not useEffect) so cleanup fires SYNCHRONOUSLY during the
-  // commit phase, while the card's DOM is still mounted. With passive useEffect
-  // cleanups inside a deleted subtree, React removes the DOM first and runs
-  // cleanups after — that breaks libraries like Toast UI Editor whose
-  // destroy() walks the DOM (NotFoundError on removeChild).
-  useLayoutEffect(() => {
-    return () => {
-      if (bridgeRef.current) {
-        bridgeRef.current._runDestroy();
-      }
-    };
-  }, []);
 
   // Render on mount or when html changes. Re-injects HTML and re-executes scripts.
   // Does NOT destroy sessions — channels survive via bridge dedup.
@@ -242,7 +226,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       });
 
       // Use the stable bridge from the ref (created once per component instance)
-      const baseBridge = bridgeRef.current!;
+      const baseBridge = bridge;
 
       // Provide the refresh implementation — re-fetches content and re-executes scripts
       baseBridge._setRefreshFn(async () => {

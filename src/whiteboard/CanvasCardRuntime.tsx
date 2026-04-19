@@ -15,7 +15,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { fetchCanvasCard, fetchFiles, fetchFileContent, saveFile, deleteFile } from "../api/canvasFiles";
 import type { RenderedCanvasCard, CanvasFile } from "../api/canvasFiles";
-import { on } from "../api/micaSocket";
+import { on, destroyBridgeFor } from "../api/micaSocket";
 import CardRuntime from "./CardRuntime";
 import CardFrame from "./CardFrame";
 import FileEditor from "./FileEditor";
@@ -130,6 +130,9 @@ export default function CanvasCardRuntime({ project }: Props) {
     const unsub3 = on("file-deleted", (msg: unknown) => {
       const m = msg as { filename?: string };
       if (!m.filename) return;
+      // Tear down the bridge for this file. Card sessions belong to files;
+      // deleting the file is the true end-of-life signal (not React unmount).
+      destroyBridgeFor(project, "_", m.filename);
       setChildren((prev) => prev.filter((f) => f.name !== m.filename));
     });
 

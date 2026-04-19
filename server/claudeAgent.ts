@@ -289,7 +289,9 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 
 // -- Channel handler factory --
 
-const COALESCE_QUIET_MS = 15000; // Wait 15s of quiet before delivering file events
+const COALESCE_QUIET_MS = 3000; // Wait 3s of quiet before delivering file events
+// Long enough to swallow a save burst (format-on-save touching N files in <1s),
+// short enough that a single user edit feels reactive.
 
 export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
   // Single file-watcher listener shared across all agent sessions.
@@ -373,7 +375,15 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     sessionState.deliverFn = deliverCoalescedEvents;
 
     async function processMessage(message: string) {
+      // Guard against concurrent invocations. If another processMessage is
+      // mid-flight, queue this one instead of racing.
+      if (busy) {
+        console.log(`[claude-agent] processMessage called while busy — queueing: ${message.slice(0, 60)}`);
+        queue.push(message);
+        return;
+      }
       busy = true; sessionState.busy = true;
+      console.log(`[claude-agent] processMessage START: ${message.slice(0, 60)}`);
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -543,6 +553,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           resultText = (resultText.trim() && resultText.trim() !== "Done.") ? `${resultText}\n\n${pendingQuestionText}` : pendingQuestionText;
         }
 
+        console.log(`[claude-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
         ctx.broadcast({ type: "assistant", content: resultText, agent: "Claude", filesChanged });
 
         const updatedHistory = await loadHistory(chatId, sessionProject);
@@ -554,24 +565,33 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         const errMsg = (err as Error).message || String(err);
         // Empty response = model had nothing to say (common for reactive events)
         if (errMsg.includes("empty response")) {
-          console.log("[claude-agent] Empty response (no action needed)");
+          console.log(`[claude-agent] broadcasting assistant (empty-response path) for: ${message.slice(0, 60)}`);
           ctx.broadcast({ type: "assistant", content: "No action needed.", agent: "Claude", filesChanged: false });
         } else {
-          console.error("[claude-agent] Error:", errMsg);
+          console.error(`[claude-agent] Error during ${message.slice(0, 40)}:`, errMsg);
           ctx.broadcast({ type: "error", error: errMsg });
         }
       } finally {
-        busy = false; sessionState.busy = false;
-        // Mark the end of this turn — next turn's "Since your last turn" section
-        // will diff against this timestamp.
         recordTurnEnd(ctx.filename);
-        // Priority: user messages first, then coalesced file events
+        console.log(`[claude-agent] processMessage DONE: ${message.slice(0, 60)} | queue depth: ${queue.length}`);
+        // Hand off to next queued message WITHOUT releasing busy. This avoids
+        // a race where an incoming WS onData sees busy=false in the millisecond
+        // before setImmediate fires, starting a parallel processMessage call.
         if (queue.length > 0) {
           const next = queue.shift()!;
-          setImmediate(() => processMessage(next));
-        } else if (sessionState.coalesceBuffer.size > 0) {
-          // Deliver accumulated file events now that agent is free
-          setImmediate(() => deliverCoalescedEvents());
+          // busy stays true; the next processMessage just sets it true again (no-op)
+          setImmediate(() => {
+            // The guard at the top of processMessage will let this through since
+            // we're transitioning the in-flight slot, not racing.
+            // Temporarily release the guard so the recursive call proceeds.
+            busy = false; sessionState.busy = false;
+            processMessage(next);
+          });
+        } else {
+          busy = false; sessionState.busy = false;
+          if (sessionState.coalesceBuffer.size > 0) {
+            setImmediate(() => deliverCoalescedEvents());
+          }
         }
       }
     }

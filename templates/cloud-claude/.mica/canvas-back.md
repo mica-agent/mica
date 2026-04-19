@@ -35,3 +35,7 @@ Card `card.js` runs as top-level code with `container` and `mica` as injected gl
 When reviewing or editing existing card code, check against this list. If you see `file.text()` + `mica.files.write()`, that's an outdated text-only pattern — replace with `mica.files.write(path, file)` to pass the File directly (binary-safe, streams to disk).
 
 Full API reference + worked examples in `.qwen/skills/create-card-class/SKILL.md`.
+
+## Canvas seeding
+
+The canvas starts intentionally minimal — a chat card, `spec.md`, and `questions.md`. New cards are not pre-seeded as empty placeholders; that produces clutter before the project has shape. Use the `grow-canvas` skill to **propose** new cards (decisions log, flow diagrams, architecture, todos, READMEs, etc.) when the conversation reveals a real need for them. Existing cards are kept aligned via the `doc-consistency` skill (already invoked from `participate-fully` step 3).

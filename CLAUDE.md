@@ -52,7 +52,7 @@ are **generic infrastructure**. They must NEVER contain card-class-specific logi
 
 - **NO** `if (filename.endsWith(".terminal"))` — card class handles its own behavior
 - **NO** `if (cardClass === "mermaid")` — card class renders itself
-- **NO** hardcoded seed content (`NEW_PROJECT_SEEDS`) — card class defines seeds via `_` (child cards) and `~` (flat files) prefixed files
+- **NO** hardcoded seed content (`NEW_PROJECT_SEEDS`) — project templates seed by placing files at their literal canvas-root path (`templates/foo/docs/...`); `createProjectFromTemplate` is a verbatim `cp -r`
 - **NO** hardcoded card filenames (`"project.project"`) — read from config
 - **NO** special-casing canvas vs non-canvas — any card can contain child cards
 
@@ -69,7 +69,7 @@ things possible in card classes, never to implement features in the server.
 - A canvas is just a card whose card class renders a layout surface.
 - The project's canvas card is stored in `MicaConfig.canvasCard` — config, not convention.
 - `getCanvasDir("_root")` reads this config — the server doesn't hardcode which card is the canvas.
-- Seed files use two prefixes: `_` for child cards, `~` for flat files. One mechanism each — no special cases for canvas vs non-canvas.
+- Project templates seed cards by placing files at their literal canvas-root path (`templates/foo/docs/...`). `createProjectFromTemplate` is a verbatim `cp -r` — no transformation, no naming convention.
 - `spec.md` in each card class directory is the blueprint — source of truth for what the card type does.
 - `brief.md` in each card instance is the assignment — what this specific card is for. Flat file, not a card.
 
@@ -77,8 +77,7 @@ things possible in card classes, never to implement features in the server.
 
 - **Don't add card-class knowledge to the host.** CanvasCardRuntime is a thin mount point. It portals
   children into a container the card class provides. It doesn't know about layout, drag, toolbar, or card types.
-- **Don't propose complex solutions when a universal mechanism exists.** If `_` prefixed files already
-  handle seeding, don't add metadata flags or naming conventions for special cases. Extend the one mechanism.
+- **Don't propose complex solutions when a universal mechanism exists.** Template-based seeding is verbatim `cp -r` — don't add metadata flags or naming conventions for special cases. If a template needs to ship a different canvas layout or extra files, ship them at the literal path; the materialization code stays untouched.
 - **Don't keep legacy code paths.** If containers are always used, remove the non-container fallback.
   If the card class owns the toolbar, remove toolbar state from React. Dead paths cause bugs.
 - **Derive, don't hardcode.** Canvas card filename = project name + class extension (from config).
