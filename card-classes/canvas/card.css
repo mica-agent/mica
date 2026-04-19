@@ -16,8 +16,74 @@
     background: rgba(255,255,255,0.1); color: #fff;
 }
 .project-toolbar .toolbar-spacer { flex: 1; }
+.canvas-body {
+    display: flex; flex: 1; min-height: 0; gap: 0;
+}
 .canvas-freeform {
     position: relative; flex: 1; min-height: 200px; overflow: auto;
+}
+
+/* Meta sidebar — docks "how" cards (canvas-back, skills) on the right */
+.canvas-meta-sidebar {
+    position: relative;
+    display: flex; flex-direction: column;
+    background: rgba(255,255,255,0.02);
+    border-left: 1px solid rgba(255,255,255,0.08);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.canvas-meta-sidebar--collapsed { width: 36px !important; }   /* !important beats inline width set by drag */
+.canvas-meta-sidebar--expanded { width: 360px; }              /* default; overridden by inline width if dragged */
+
+/* Drag handle on the LEFT edge of the sidebar — drag horizontally to resize.
+   Hidden when collapsed (no point in resizing a 36px collapsed bar). */
+.canvas-meta-resize {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 6px; cursor: ew-resize;
+    z-index: 10;
+    background: transparent;
+    transition: background 0.15s ease;
+}
+.canvas-meta-resize:hover { background: rgba(96,165,250,0.3); }
+.canvas-meta-sidebar--collapsed .canvas-meta-resize { display: none; }
+
+.canvas-meta-toggle {
+    background: none; border: none; color: #8b949e;
+    padding: 8px 0; font-size: 16px; cursor: pointer;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
+}
+.canvas-meta-toggle:hover { color: #ccc; background: rgba(255,255,255,0.03); }
+
+.canvas-meta-list {
+    flex: 1; min-height: 0; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 8px;
+}
+.canvas-meta-sidebar--collapsed .canvas-meta-list { display: none; }
+
+/* Meta cards inside the sidebar override the freeform absolute positioning.
+   Expanded cards flex-grow to share the available vertical space — one
+   expanded card uses the whole sidebar height; multiple share. */
+.canvas-meta-list > .wb-card {
+    position: relative !important;
+    left: auto !important; top: auto !important;
+    width: 100% !important;
+    min-height: 220px;
+    flex: 1 1 auto;
+    opacity: 1;
+}
+.canvas-meta-list .wb-card-header { cursor: default; }
+.canvas-meta-list .wb-card-resize-handle { display: none; }
+
+/* Collapsed meta card: only the header is visible. */
+.canvas-meta-list > .wb-card.wb-card--collapsed {
+    min-height: 0;
+    flex: 0 0 auto;
+}
+.canvas-meta-list > .wb-card.wb-card--collapsed .wb-card-body,
+.canvas-meta-list > .wb-card.wb-card--collapsed .wb-card-footer {
+    display: none;
 }
 .canvas-freeform > .wb-card {
     position: absolute; width: 320px;

@@ -438,32 +438,40 @@ app.get("/api/files", async (req, res) => {
   }
 });
 
-// Resolve each file's badge from its card class metadata.json (project-scoped
-// first, then built-in). Uses a per-request Map so each unique extension is
-// read at most once. Empty string cached for "no badge / no metadata".
+// Resolve each file's badge + meta flag from its card class metadata.json
+// (project-scoped first, then built-in). Uses a per-request Map so each
+// unique extension's metadata is read at most once.
+interface ResolvedClassMeta { badge: string; meta: boolean }
 async function decorateBadges(files: FileMeta[], project: string | null): Promise<FileMeta[]> {
-  const cache = new Map<string, string>();
-  const resolveBadge = async (ext: string): Promise<string> => {
+  const cache = new Map<string, ResolvedClassMeta>();
+  const resolveClassMeta = async (ext: string): Promise<ResolvedClassMeta> => {
     if (cache.has(ext)) return cache.get(ext)!;
     const dir = resolveCardClassDir(ext, project);
-    if (!dir) { cache.set(ext, ""); return ""; }
+    if (!dir) { const empty = { badge: "", meta: false }; cache.set(ext, empty); return empty; }
     try {
       const raw = await readFile(join(dir, "metadata.json"), "utf-8");
-      const meta = JSON.parse(raw) as { badge?: string };
-      const badge = typeof meta.badge === "string" ? meta.badge : "";
-      cache.set(ext, badge);
-      return badge;
+      const m = JSON.parse(raw) as { badge?: string; meta?: boolean };
+      const resolved: ResolvedClassMeta = {
+        badge: typeof m.badge === "string" ? m.badge : "",
+        meta: m.meta === true,
+      };
+      cache.set(ext, resolved);
+      return resolved;
     } catch {
-      cache.set(ext, "");
-      return "";
+      const empty = { badge: "", meta: false };
+      cache.set(ext, empty);
+      return empty;
     }
   };
   return Promise.all(files.map(async (f) => {
     if (f.type === "directory") return f;
     const ext = f.name.split(".").pop()?.toLowerCase() || "";
     if (!ext) return f;
-    const badge = await resolveBadge(ext);
-    return badge ? { ...f, badge } : f;
+    const { badge, meta } = await resolveClassMeta(ext);
+    const out: FileMeta = { ...f };
+    if (badge) out.badge = badge;
+    if (meta) out.meta = true;
+    return out;
   }));
 }
 

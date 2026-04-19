@@ -196,6 +196,10 @@ export interface FileMeta {
   modifiedAt: string;
   pinned?: boolean;   // true if file is pinned to canvas (not a canvasRoot child)
   badge?: string;     // Card class badge (resolved from metadata.json), populated by /api/files
+  meta?: boolean;     // True if the file's card class has `meta: true` in its metadata.json.
+                      // Used by the canvas card class to render meta cards in a docked
+                      // sidebar (configures HOW the canvas works) instead of the freeform
+                      // area (the WHAT you're building).
   id?: string;        // Stable per-file UUID (sidecar in .mica/cards/<sanitized>.id.json).
                       // Used as the channel-session key — sessions are file-identity-bound,
                       // not filename-bound, so two projects with the same template-seeded

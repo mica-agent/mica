@@ -1,6 +1,13 @@
 <div class="canvas-root">
     <div id="project-toolbar" class="project-toolbar"></div>
-    <div id="canvas-freeform" class="canvas-freeform"></div>
+    <div class="canvas-body">
+        <div id="canvas-freeform" class="canvas-freeform"></div>
+        <aside id="canvas-meta-sidebar" class="canvas-meta-sidebar canvas-meta-sidebar--collapsed">
+            <div id="canvas-meta-resize" class="canvas-meta-resize" title="Drag to resize"></div>
+            <button id="canvas-meta-toggle" class="canvas-meta-toggle" title="How / project config">&#9776;</button>
+            <div id="canvas-meta-list" class="canvas-meta-list"></div>
+        </aside>
+    </div>
     <div class="project-empty" style="display: none;">
         No cards yet. Use the toolbar above to create your first card.
     </div>

@@ -42,6 +42,8 @@ export interface CanvasFile {
   content?: string;  // Loaded lazily by CardFrame when needed
   pinned?: boolean;  // true if pinned to canvas (not a canvasRoot child)
   badge?: string;    // Card class badge resolved server-side from metadata.json
+  meta?: boolean;    // Card class is "meta" (configures how the canvas works) — canvas
+                     // card class renders these in a docked sidebar instead of freeform.
   id?: string;       // Stable per-file UUID — used as channel-session key
 }
 

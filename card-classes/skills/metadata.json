@@ -2,5 +2,6 @@
   "extension": ".skills",
   "badge": "SKILLS",
   "defaultTitle": "Skills Library",
+  "meta": true,
   "dependencies": {}
 }

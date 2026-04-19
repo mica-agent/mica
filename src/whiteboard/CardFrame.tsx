@@ -60,6 +60,11 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
   const bodyRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Meta cards (canvas-back, skills) live in the sidebar and use an
+  // expand/collapse toggle instead of the flip-card button — flipping doesn't
+  // really apply to config cards, and collapsing saves vertical space when
+  // multiple meta cards stack in the sidebar.
+  const [collapsed, setCollapsed] = useState(false);
 
   const [renderedCard, setRenderedCard] = useState<RenderedCardData | null>(null);
   const [renderChecked, setRenderChecked] = useState(false);
@@ -182,21 +187,32 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
         if (el.style.left) el.classList.add("wb-card--positioned");
         el.classList.add("wb-card--resized");
       }}
-      className={`wb-card wb-card--resized ${flipped ? "wb-card--flipped" : ""}`}
+      className={`wb-card wb-card--resized ${flipped ? "wb-card--flipped" : ""} ${file.meta && collapsed ? "wb-card--collapsed" : ""}`}
       data-filename={file.name}
+      data-meta={file.meta ? "true" : undefined}
     >
       {/* Header */}
       <div className="wb-card-header">
         <span className="wb-card-type">{badge}</span>
         <span className="wb-card-title">{file.name}</span>
         <div className="wb-card-actions">
-          <button
-            onClick={(e) => { e.stopPropagation(); setFlipped(!flipped); setBackLoaded(false); }}
-            title={flipped ? "Show content" : "Card info"}
-            className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}
-          >
-            &#8645;
-          </button>
+          {file.meta ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); setCollapsed(!collapsed); }}
+              title={collapsed ? "Expand" : "Collapse"}
+              className="wb-card-btn"
+            >
+              {collapsed ? "+" : "\u2212"}
+            </button>
+          ) : (
+            <button
+              onClick={(e) => { e.stopPropagation(); setFlipped(!flipped); setBackLoaded(false); }}
+              title={flipped ? "Show content" : "Card info"}
+              className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}
+            >
+              &#8645;
+            </button>
+          )}
           {fileType === "html" && (
             <button
               onClick={(e) => {

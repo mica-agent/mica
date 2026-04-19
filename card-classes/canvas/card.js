@@ -15,6 +15,57 @@
 const toolbar = container.querySelector('#project-toolbar');
 const freeform = container.querySelector('#canvas-freeform');
 const emptyEl = container.querySelector('.project-empty');
+const metaSidebar = container.querySelector('#canvas-meta-sidebar');
+const metaList = container.querySelector('#canvas-meta-list');
+const metaToggle = container.querySelector('#canvas-meta-toggle');
+const metaResize = container.querySelector('#canvas-meta-resize');
+
+// -- Meta sidebar (collapsible + drag-to-resize). State + width persist per
+//    device class via localStorage so phone vs desktop can have independent layouts.
+const _devSuffix = window.innerWidth < 768 ? 'phone' : window.innerWidth < 1200 ? 'tablet' : 'desktop';
+const META_KEY = 'mica-meta-sidebar-' + _devSuffix;
+const META_W_KEY = META_KEY + '-width';
+
+function applyMetaState(expanded) {
+    metaSidebar.classList.toggle('canvas-meta-sidebar--expanded', expanded);
+    metaSidebar.classList.toggle('canvas-meta-sidebar--collapsed', !expanded);
+    if (expanded) {
+        const savedW = parseInt(localStorage.getItem(META_W_KEY) || '', 10);
+        metaSidebar.style.width = savedW > 0 ? savedW + 'px' : '';
+    } else {
+        metaSidebar.style.width = '';  // CSS class controls collapsed width
+    }
+}
+applyMetaState(localStorage.getItem(META_KEY) === '1');
+metaToggle.addEventListener('click', function(e) {
+    e.stopPropagation();
+    const willExpand = metaSidebar.classList.contains('canvas-meta-sidebar--collapsed');
+    applyMetaState(willExpand);
+    localStorage.setItem(META_KEY, willExpand ? '1' : '0');
+});
+
+// Drag the left edge of the sidebar to resize. Drag LEFT increases width.
+let _resizeStart = null;
+metaResize.addEventListener('pointerdown', function(e) {
+    if (metaSidebar.classList.contains('canvas-meta-sidebar--collapsed')) return;
+    e.preventDefault(); e.stopPropagation();
+    _resizeStart = { x: e.clientX, w: metaSidebar.offsetWidth };
+    try { metaResize.setPointerCapture(e.pointerId); } catch (_) {}
+});
+metaResize.addEventListener('pointermove', function(e) {
+    if (!_resizeStart) return;
+    const dx = _resizeStart.x - e.clientX;  // moving cursor LEFT widens sidebar
+    const minW = 240;
+    const maxW = Math.floor(window.innerWidth * 0.7);
+    const w = Math.max(minW, Math.min(maxW, _resizeStart.w + dx));
+    metaSidebar.style.width = w + 'px';
+});
+metaResize.addEventListener('pointerup', function(e) {
+    if (!_resizeStart) return;
+    try { metaResize.releasePointerCapture(e.pointerId); } catch (_) {}
+    localStorage.setItem(META_W_KEY, String(metaSidebar.offsetWidth));
+    _resizeStart = null;
+});
 
 // Canvas root — directory where new cards are created (e.g. "docs")
 let canvasRoot = '';
@@ -124,7 +175,15 @@ function positionCard(card) {
 
 function positionAllCards() {
     const cards = Array.from(freeform.querySelectorAll('.wb-card'));
-    cards.forEach(positionCard);
+    cards.forEach(function(c) {
+        // Re-route meta cards to the sidebar before positioning.
+        if (c.dataset && c.dataset.meta === 'true') {
+            if (c.parentElement !== metaList) metaList.appendChild(c);
+            c.classList.add('wb-card--positioned');
+        } else {
+            positionCard(c);
+        }
+    });
     updateEmptyState();
 }
 
@@ -278,7 +337,21 @@ if (isPhone) {
 }
 
 // -- Watch for React-portaled child cards -------------
+//
+// Cards with `data-meta="true"` (their card class declares `meta: true` in
+// metadata.json) configure HOW the canvas works — canvas-back, skills, etc.
+// They go into the docked sidebar instead of the freeform layout area.
+// Everything else is content (the WHAT) and lays out in the freeform grid.
 let pendingCards = [];
+function placeCard(node) {
+    if (node.dataset && node.dataset.meta === 'true') {
+        // Meta card → sidebar. Skip layout/drag/resize.
+        if (node.parentElement !== metaList) metaList.appendChild(node);
+        node.classList.add('wb-card--positioned');  // reveal (skip the fade-in handled by positionCard)
+    } else {
+        positionCard(node);
+    }
+}
 const childObserver = new MutationObserver((mutations) => {
     for (let i = 0; i < mutations.length; i++) {
         const added = mutations[i].addedNodes;
@@ -286,7 +359,7 @@ const childObserver = new MutationObserver((mutations) => {
             const node = added[j];
             if (node.nodeType === 1 && node.classList && node.classList.contains('wb-card')) {
                 if (layoutLoaded) {
-                    positionCard(node);
+                    placeCard(node);
                 } else {
                     pendingCards.push(node);
                 }
@@ -474,6 +547,6 @@ buildToolbar();
 // -- Load layout then position initial + pending cards --
 loadLayout().then(() => {
     positionAllCards();
-    for (let i = 0; i < pendingCards.length; i++) positionCard(pendingCards[i]);
+    for (let i = 0; i < pendingCards.length; i++) placeCard(pendingCards[i]);
     pendingCards = [];
 });

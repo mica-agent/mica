@@ -1,0 +1,10 @@
+{
+  "extension": ".canvas-back",
+  "badge": "BACK",
+  "defaultTitle": "Canvas Back",
+  "meta": true,
+  "dependencies": {
+    "scripts": [],
+    "styles": []
+  }
+}
