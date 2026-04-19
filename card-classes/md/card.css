@@ -17,6 +17,14 @@
   background: transparent;
 }
 
+/* Toast UI dark theme paints these with their own #121212/#232428 fills,
+   producing a card-within-a-card look against the wb-card surface. Flatten. */
+.card-markdown-editor .toastui-editor-md-container,
+.card-markdown-editor .toastui-editor-ww-container,
+.card-markdown-editor .toastui-editor-defaultUI-toolbar {
+  background-color: transparent;
+}
+
 .card-markdown-editor .toastui-editor-defaultUI .toastui-editor-md-tab-container,
 .card-markdown-editor .toastui-editor-mode-switch {
   display: none;

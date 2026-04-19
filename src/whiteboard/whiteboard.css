@@ -160,7 +160,7 @@
 /* ── File Card ───────────────────────────────────────── */
 
 .wb-card {
-  background: rgba(255, 255, 255, 0.03);
+  background: #16161e;
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;

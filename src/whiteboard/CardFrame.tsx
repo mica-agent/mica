@@ -78,35 +78,36 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
 
     async function loadCardClass() {
       const classesRes = await fetch(`${API_BASE}/api/card-classes`, { headers });
-      const classes = await classesRes.json() as Record<string, { format?: string }>;
-      if (!classes[ext]) return null;
+      const classes = await classesRes.json() as Record<string, { format?: string; hasCss?: boolean; hasJs?: boolean; hasMetadata?: boolean }>;
+      const cls = classes[ext];
+      if (!cls) return null;
 
-      if (classes[ext].format === "html") {
+      if (cls.format === "html") {
         const htmlRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.html`, { headers });
         if (!htmlRes.ok) return null;
         const cardHtml = await htmlRes.text();
 
         let cardCss = "";
-        try {
+        if (cls.hasCss) {
           const cssRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.css`, { headers });
           if (cssRes.ok) cardCss = await cssRes.text();
-        } catch { /* no card.css */ }
+        }
 
         let cardJs = "";
-        try {
+        if (cls.hasJs) {
           const jsRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.js`, { headers });
           if (jsRes.ok) cardJs = await jsRes.text();
-        } catch { /* no card.js */ }
+        }
 
         let meta: Record<string, unknown> = {};
         let deps: { scripts?: string[]; styles?: string[] } = {};
-        try {
+        if (cls.hasMetadata) {
           const metaRes = await fetch(`${API_BASE}/api/card-classes/${ext}/metadata.json`, { headers });
           if (metaRes.ok) {
             meta = await metaRes.json();
             deps = (meta.dependencies as { scripts?: string[]; styles?: string[] }) || {};
           }
-        } catch { /* no metadata */ }
+        }
 
         // Assemble HTML — no data-mica-content attribute needed.
         // Card scripts use mica.getContent() which fetches from API.

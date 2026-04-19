@@ -115,5 +115,8 @@ const unsub = mica.on('file-changed', function(e) {
 mica.onDestroy(function() {
   unsub();
   if (saveTimer) clearTimeout(saveTimer);
-  editor.destroy();
+  // Toast UI Editor's destroy() walks its mounted DOM. When the parent
+  // subtree has already been removed (e.g. file delete → React unmount),
+  // removeChild throws NotFoundError. Swallow — there's nothing left to clean.
+  try { editor.destroy(); } catch (_) { /* DOM already gone */ }
 });

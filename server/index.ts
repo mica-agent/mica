@@ -317,7 +317,13 @@ app.get("/api/card-classes", async (req, res) => {
       const hasHtml = existsSync(join(dir, "card.html"));
       const hasRenderJs = existsSync(join(dir, "render.js"));
       if (hasHtml || hasRenderJs) {
-        classes[name] = { builtIn: true, format: hasHtml ? "html" : "renderjs" };
+        classes[name] = {
+          builtIn: true,
+          format: hasHtml ? "html" : "renderjs",
+          hasCss: existsSync(join(dir, "card.css")),
+          hasJs: existsSync(join(dir, "card.js")),
+          hasMetadata: existsSync(join(dir, "metadata.json")),
+        };
       }
     }
   } catch { /* no card-classes dir */ }
@@ -333,7 +339,13 @@ app.get("/api/card-classes", async (req, res) => {
         const hasHtml = existsSync(join(dir, "card.html"));
         const hasRenderJs = existsSync(join(dir, "render.js"));
         if (hasHtml || hasRenderJs) {
-          classes[name] = { builtIn: false, format: hasHtml ? "html" : "renderjs" };
+          classes[name] = {
+            builtIn: false,
+            format: hasHtml ? "html" : "renderjs",
+            hasCss: existsSync(join(dir, "card.css")),
+            hasJs: existsSync(join(dir, "card.js")),
+            hasMetadata: existsSync(join(dir, "metadata.json")),
+          };
         }
       }
     } catch { /* no project card-classes */ }

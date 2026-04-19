@@ -242,7 +242,7 @@ When reacting to file changes:
 - If you have questions, add them to your chat response AND create a todo item assigned to @human
 
 ## Skills
-This project's skills are bundled by its template and live under \`.qwen/skills/<name>/SKILL.md\`. The Qwen SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.`);
+This project's skills are bundled by its template and live under \`.claude/skills/<name>/SKILL.md\`. The Claude Code SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.`);
 
   return parts.join("\n\n");
 }

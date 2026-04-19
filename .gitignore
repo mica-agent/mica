@@ -18,6 +18,9 @@ layers/
 !.vscode/extensions.json
 .idea
 .claude/
+# But DO track .claude/ inside templates — they're project scaffolds, not user config.
+!templates/**/.claude/
+!templates/**/.claude/**
 .mica-pids/
 .DS_Store
 *.suo

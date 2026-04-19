@@ -2,7 +2,7 @@
 // Provides the `mica` bridge (call, send, on, openChannel) for interactive cards.
 // Card classes handle their own rendering (e.g., mermaid.js) via inline <script> blocks.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 // morphdom removed — innerHTML replacement is safer with React's lifecycle.
 // TODO: Re-evaluate morphdom for preserving mounted library instances once
 // we add proper lifecycle coordination between React and widget scripts.
@@ -182,7 +182,13 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
 
   // Destroy only on true unmount — not on effect re-runs.
   // Card sessions (PTY, chat) must survive React re-renders.
-  useEffect(() => {
+  //
+  // useLayoutEffect (not useEffect) so cleanup fires SYNCHRONOUSLY during the
+  // commit phase, while the card's DOM is still mounted. With passive useEffect
+  // cleanups inside a deleted subtree, React removes the DOM first and runs
+  // cleanups after — that breaks libraries like Toast UI Editor whose
+  // destroy() walks the DOM (NotFoundError on removeChild).
+  useLayoutEffect(() => {
     return () => {
       if (bridgeRef.current) {
         bridgeRef.current._runDestroy();
