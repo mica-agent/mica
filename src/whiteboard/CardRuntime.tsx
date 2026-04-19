@@ -81,6 +81,10 @@ interface Props {
   html: string;
   exports?: string[];
   dependencies?: CardDependencies;
+  /** Stable per-file UUID. Used to key the bridge cache and the channel
+   *  session so two projects with the same template-seeded filename get
+   *  distinct sessions. Caller must supply the file's `id` from /api/files. */
+  sessionId: string;
   project: string;
   canvas: CanvasId;
   filename: string;
@@ -168,7 +172,7 @@ function waitForStyleApplication(): Promise<void> {
   });
 }
 
-export default function CardRuntime({ html, exports: exportFns, dependencies, project, canvas, filename }: Props) {
+export default function CardRuntime({ html, exports: exportFns, dependencies, sessionId, project, canvas, filename }: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<HTMLDivElement>(null);
   // Bridge is keyed on (project, canvas, filename) and lives in a module-level
@@ -176,7 +180,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
   // forcing unmount/remount, key changes). Destroy is driven by file lifecycle
   // (file-deleted event in CanvasCardRuntime calls `destroyBridgeFor`), not by
   // React unmount — sessions belong to files, not to component instances.
-  const bridge = getOrCreateBridge(project, canvas, filename);
+  const bridge = getOrCreateBridge(sessionId, project, canvas, filename);
   const activeCallsRef = useRef(0);
   const [loadingDeps, setLoadingDeps] = useState(false);
 

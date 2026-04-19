@@ -363,7 +363,8 @@ export function openChannel(
   canvas: CanvasId,
   filename: string,
   fn: string,
-  args: Record<string, unknown> = {}
+  args: Record<string, unknown> = {},
+  sessionId?: string,
 ): Channel {
   const id = nextId();
   const handle: ChannelHandle = { onData: null, onClose: null };
@@ -371,7 +372,7 @@ export function openChannel(
   activeChannels.set(id, handle);
 
   waitForConnection().then(() => {
-    sendMsg({ type: "channel_open", id, project, canvas, filename, fn, args, tabId });
+    sendMsg({ type: "channel_open", id, sessionId, project, canvas, filename, fn, args, tabId });
   }).catch((err) => {
     console.error("[mica-socket] channel open failed:", err);
     activeChannels.delete(id);
@@ -427,29 +428,29 @@ export function broadcast(event: string, data: Record<string, unknown> = {}): vo
  * Bridge destroy is now driven by FILE LIFECYCLE (file-deleted handler in
  * CanvasCardRuntime calls destroyBridgeFor), not by React unmount.
  */
+// Bridge cache keyed by sessionId (the file's stable UUID). One bridge per file
+// across all React lifecycle quirks (StrictMode double-mount, parent re-renders,
+// key changes). Different projects with the same template-seeded filename get
+// distinct sessionIds → distinct bridges → no cross-project channel sharing.
 const bridges = new Map<string, ReturnType<typeof createBridge>>();
-const bridgeKey = (project: string, canvas: CanvasId, filename: string) =>
-  `${project}|${canvas}|${filename}`;
 
 /** Get or create the bridge for this card. Caller does NOT need to track its lifetime. */
-export function getOrCreateBridge(project: string, canvas: CanvasId, filename: string) {
-  const key = bridgeKey(project, canvas, filename);
-  let bridge = bridges.get(key);
+export function getOrCreateBridge(sessionId: string, project: string, canvas: CanvasId, filename: string) {
+  let bridge = bridges.get(sessionId);
   if (!bridge) {
-    bridge = createBridge(project, canvas, filename);
-    bridges.set(key, bridge);
+    bridge = createBridge(sessionId, project, canvas, filename);
+    bridges.set(sessionId, bridge);
   }
   return bridge;
 }
 
 /** Tear down the bridge for a file. Call when the file is deleted or the
  *  project is closed — NOT on every React unmount. */
-export function destroyBridgeFor(project: string, canvas: CanvasId, filename: string): void {
-  const key = bridgeKey(project, canvas, filename);
-  const bridge = bridges.get(key);
+export function destroyBridgeFor(sessionId: string): void {
+  const bridge = bridges.get(sessionId);
   if (!bridge) return;
   bridge._runDestroy();
-  bridges.delete(key);
+  bridges.delete(sessionId);
 }
 
 /**
@@ -460,7 +461,7 @@ export function destroyBridgeFor(project: string, canvas: CanvasId, filename: st
  * React remounts; calling `createBridge` directly creates a fresh, unmanaged
  * bridge that won't dedup against existing channels for the same file.
  */
-export function createBridge(project: string, canvas: CanvasId, filename: string) {
+export function createBridge(sessionId: string, project: string, canvas: CanvasId, filename: string) {
   const destroyCallbacks: Array<() => void> = [];
   let refreshFn: (() => Promise<void>) | null = null;
 
@@ -499,8 +500,9 @@ export function createBridge(project: string, canvas: CanvasId, filename: string
       if (existing && activeChannels.has(existing.id)) {
         return existing;
       }
-      // New channel — send channel_open to server
-      const ch = openChannel(project, canvas, filename, fn, args);
+      // New channel — send channel_open to server with the file's sessionId
+      // so the server keys the session correctly.
+      const ch = openChannel(project, canvas, filename, fn, args, sessionId);
       bridgeChannels.set(fn, ch);
       return ch;
     },

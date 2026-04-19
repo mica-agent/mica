@@ -1,19 +1,18 @@
 /**
  * ChannelManager — transport-agnostic session manager.
  *
- * Sessions are keyed by filename. Multiple clients can attach/detach
- * from the same session. Handlers are created by registered factory
- * functions keyed by card class (derived from file extension).
+ * Sessions are keyed by per-file UUID (sessionId). The same file across
+ * different projects (e.g. template-seeded `docs/qwen.chat`) get distinct
+ * UUIDs and thus distinct sessions, so state never leaks across projects.
+ * Multiple clients can attach/detach from the same session. Handlers are
+ * created by registered factory functions keyed by card class (derived from
+ * file extension).
  *
  * States: registered -> active -> idle -> destroyed
  */
 
 import { readProjectFile, writeProjectFile, WORKSPACE_DIR } from "./files.js";
 import { join } from "path";
-
-// Active project tracking for file operations
-let _activeProject: string | null = null;
-export function setActiveProject(project: string | null) { _activeProject = project; }
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -25,6 +24,9 @@ interface ClientHandle {
 }
 
 export interface SessionContext {
+  /** Stable per-file UUID — the session identity. Use as the key for any
+   *  per-session persistence (e.g. chat history file naming). */
+  sessionId: string;
   filename: string;
   /** The project this session belongs to. Captured at session creation —
    *  does NOT change if the user later switches projects. Use this for all
@@ -55,6 +57,7 @@ export type HandlerFactory = (
 ) => ChannelHandler | Promise<ChannelHandler>;
 
 interface Session {
+  sessionId: string;
   filename: string;
   /** Captured project at session creation. Sessions stay tied to the project
    *  they were created in even if the user later switches the active project. */
@@ -68,17 +71,23 @@ interface Session {
 // ── ChannelManager ─────────────────────────────────────────
 
 export class ChannelManager {
+  // Sessions are keyed by sessionId (per-file UUID). Two different projects
+  // with the same template-seeded filename get distinct sessionIds → distinct
+  // sessions → no cross-project state leak.
   private sessions = new Map<string, Session>();
-  private clientToSession = new Map<string, string>();
+  private clientToSession = new Map<string, string>();   // clientId → sessionId
   private factories = new Map<string, HandlerFactory>();
   private tabClients = new Map<string, Set<string>>();
-  // Tracks in-flight session creation so concurrent `open()` calls for the
-  // same filename collapse onto the same Session. Without this, two
-  // channel_open messages arriving back-to-back both pass the `!session`
-  // check before either finishes the await on readProjectFile / factory(),
-  // resulting in TWO sessions, two scan triggers, two busy/queue closures —
-  // and broadcasts going to the "wrong" session's clients.
+  // Reverse lookup so file-deletion can find the session for a (project,
+  // filename) without re-reading the sidecar from disk (which may already
+  // have been removed by the file-deletion handler).
+  private filenameToSessionId = new Map<string, string>();  // `${project}|${filename}` → sessionId
+  // In-flight session creation single-flight (keyed by sessionId).
   private creating = new Map<string, Promise<Session>>();
+
+  private filenameKey(project: string | null, filename: string): string {
+    return `${project ?? "<workspace>"}|${filename}`;
+  }
 
   registerHandler(cardClass: string, factory: HandlerFactory): void {
     this.factories.set(cardClass, factory);
@@ -98,6 +107,7 @@ export class ChannelManager {
   private buildContext(session: Session): SessionContext {
     const self = this;
     return {
+      sessionId: session.sessionId,
       filename: session.filename,
       project: session.project,
 
@@ -146,13 +156,15 @@ export class ChannelManager {
       },
 
       destroy(): void {
-        self.destroySessionByKey(session.filename);
+        self.destroySessionByKey(session.sessionId);
       },
     };
   }
 
   async open(
     clientId: string,
+    sessionId: string,
+    project: string | null,
     filename: string,
     fn: string | undefined,
     args: Record<string, unknown>,
@@ -160,31 +172,31 @@ export class ChannelManager {
     onData: (data: unknown) => void,
     onClose: () => void,
   ): Promise<void> {
-    let session = this.sessions.get(filename);
+    let session = this.sessions.get(sessionId);
 
     if (session && session.state === "destroyed") {
-      this.sessions.delete(filename);
+      this.sessions.delete(sessionId);
       session = undefined;
     }
 
-    // If a creation is already in flight for this filename, await it so we
+    // If a creation is already in flight for this sessionId, await it so we
     // attach to the same Session instead of racing into a duplicate.
     if (!session) {
-      let creation = this.creating.get(filename);
+      let creation = this.creating.get(sessionId);
       if (!creation) {
-        creation = this.createSession(filename, args);
-        this.creating.set(filename, creation);
-        creation.finally(() => this.creating.delete(filename));
+        creation = this.createSession(sessionId, project, filename, args);
+        this.creating.set(sessionId, creation);
+        creation.finally(() => this.creating.delete(sessionId));
       }
       session = await creation;
     }
 
     // Attach this client to the (possibly just-created) session.
-    // Evict stale clients from same tab
+    // Evict stale clients from same tab attached to this same session.
     if (tabId) {
       const peers = this.tabClients.get(tabId);
       if (peers) {
-        const staleIds = [...peers].filter((id) => this.clientToSession.get(id) === filename);
+        const staleIds = [...peers].filter((id) => this.clientToSession.get(id) === sessionId);
         for (const id of staleIds) {
           try { session.handler?.onDetach?.(id); } catch { /* ignore */ }
           try { session.clients.get(id)?.onClose(); } catch { /* gone */ }
@@ -201,32 +213,33 @@ export class ChannelManager {
     }
 
     session.clients.set(clientId, { onData, onClose });
-    this.clientToSession.set(clientId, filename);
+    this.clientToSession.set(clientId, sessionId);
     session.handler?.onAttach?.(clientId, args);
   }
 
-  /** Create a session for a filename. Single-flight via `this.creating`. */
-  private async createSession(filename: string, args: Record<string, unknown>): Promise<Session> {
+  /** Create a session keyed by sessionId. Single-flight via `this.creating`. */
+  private async createSession(
+    sessionId: string,
+    project: string | null,
+    filename: string,
+    args: Record<string, unknown>,
+  ): Promise<Session> {
     const cardClass = this.resolveCardClass(filename);
     const factory = this.factories.get(cardClass);
     if (!factory) {
       throw new Error(`No handler registered for: ${cardClass}`);
     }
 
-    // Capture the project at session creation. From here on, this session
-    // uses its captured project for ALL file ops — even if the user later
-    // switches the active project.
-    const sessionProject = _activeProject;
-
     let content = "";
     try {
-      const file = await readProjectFile(filename, sessionProject || undefined);
+      const file = await readProjectFile(filename, project || undefined);
       content = file.content;
     } catch { /* File may not exist yet */ }
 
     const session: Session = {
+      sessionId,
       filename,
-      project: sessionProject,
+      project,
       state: "registered",
       clients: new Map(),
       handler: null,
@@ -235,14 +248,21 @@ export class ChannelManager {
     const ctx = this.buildContext(session);
     session.ctx = ctx;
 
-    this.sessions.set(filename, session);
+    this.sessions.set(sessionId, session);
+    this.filenameToSessionId.set(this.filenameKey(project, filename), sessionId);
 
     const handler = await factory(content, args, ctx);
     session.handler = handler;
     session.state = "active";
 
-    console.log(`[channel-mgr] Created session ${filename} (project: ${sessionProject ?? "<workspace>"})`);
+    console.log(`[channel-mgr] Created session ${filename} (id=${sessionId.slice(0, 8)}, project: ${project ?? "<workspace>"})`);
     return session;
+  }
+
+  /** Look up a sessionId for (project, filename). Returns undefined if no
+   *  active session exists for that file. Used by file-deletion handlers. */
+  findSessionByFilename(project: string | null, filename: string): string | undefined {
+    return this.filenameToSessionId.get(this.filenameKey(project, filename));
   }
 
   sendData(clientId: string, data: unknown): void {
@@ -263,8 +283,9 @@ export class ChannelManager {
     session.handler?.onDetach?.(clientId);
   }
 
-  destroySession(filename: string): void {
-    this.destroySessionByKey(filename);
+  /** Destroy a session by its UUID. */
+  destroySession(sessionId: string): void {
+    this.destroySessionByKey(sessionId);
   }
 
   destroyAll(): void {
@@ -278,8 +299,8 @@ export class ChannelManager {
     return this.clientToSession.has(clientId);
   }
 
-  private destroySessionByKey(key: string): void {
-    const session = this.sessions.get(key);
+  private destroySessionByKey(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
     if (!session || session.state === "destroyed") return;
     session.state = "destroyed";
     try { session.handler?.onDestroy?.(); } catch { /* ignore */ }
@@ -288,7 +309,8 @@ export class ChannelManager {
       this.clientToSession.delete(clientId);
     }
     session.clients.clear();
-    this.sessions.delete(key);
-    console.log(`[channel-mgr] Session ${key} destroyed`);
+    this.sessions.delete(sessionId);
+    this.filenameToSessionId.delete(this.filenameKey(session.project, session.filename));
+    console.log(`[channel-mgr] Session ${session.filename} (id=${sessionId.slice(0, 8)}) destroyed`);
   }
 }

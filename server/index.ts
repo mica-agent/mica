@@ -31,6 +31,9 @@ import {
   resolveFilePath,
   writeProjectFile,
   deleteProjectFile,
+  getOrCreateCardId,
+  lookupCardId,
+  deleteCardId,
   type FileMeta,
 } from "./files.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
@@ -41,7 +44,7 @@ import { existsSync } from "fs";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import { FileWatcher } from "./fileWatcher.js";
-import { ChannelManager, setActiveProject as setChannelProject } from "./channelManager.js";
+import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llamaServer.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject } from "./micaAgent.js";
@@ -130,7 +133,6 @@ function switchProject(projectName: string) {
   setClaudeAgentProject(projectName);
   setExecProject(projectName);
   setPtyProject(projectName);
-  setChannelProject(projectName);
   console.log(`[mica] Active project: ${projectName}`);
 }
 
@@ -621,7 +623,12 @@ app.put("/api/files/:filename", async (req, res) => {
   }
   try {
     if (source) writeSourceTracker.set(filename, source);
-    await writeProjectFile(filename, content, getRequestProject(req) || undefined);
+    const proj = getRequestProject(req) || undefined;
+    await writeProjectFile(filename, content, proj);
+    // Pre-warm the UUID sidecar BEFORE responding so any client that reacts
+    // to the resulting file-created broadcast can immediately fetch /api/files
+    // and find a stable id.
+    await getOrCreateCardId(proj, filename);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -651,7 +658,11 @@ app.post("/api/files/:filename/upload", async (req, res) => {
   let bytes = 0;
   req.on("data", (chunk: Buffer) => { bytes += chunk.length; });
   req.pipe(ws);
-  ws.on("finish", () => { res.json({ success: true, size: bytes }); });
+  ws.on("finish", async () => {
+    // Pre-warm the UUID sidecar before responding (same reason as PUT handler).
+    try { await getOrCreateCardId(reqProject || undefined, filename); } catch { /* best-effort */ }
+    res.json({ success: true, size: bytes });
+  });
   ws.on("error", (err) => {
     res.status(500).json({ error: err.message });
   });
@@ -920,6 +931,15 @@ wss.on("connection", (ws) => {
           const fname = filename as string;
           const channelArgs = (args || {}) as Record<string, unknown>;
           const msgTabId = (msg.tabId as string | undefined) ?? null;
+          const sessionId = (msg as { sessionId?: string }).sessionId;
+          const wsProject = wsProjects.get(ws) ?? null;
+
+          if (!sessionId) {
+            throw new Error(`channel_open missing sessionId — client must include the file's UUID (file.id from /api/files)`);
+          }
+          if (!wsProject) {
+            throw new Error(`channel_open arrived before subscribe-project — client must subscribe first`);
+          }
 
           const onData = (data: unknown) => {
             if (ws.readyState === WebSocket.OPEN) {
@@ -936,7 +956,7 @@ wss.on("connection", (ws) => {
           const cardClass = channelManager.resolveCardClass(fname);
 
           if (channelManager.hasHandler(cardClass)) {
-            const cardKey = `${fname}#${fn}`;
+            const cardKey = `${sessionId}#${fn}`;
             if (!wsCardChannels.has(ws)) wsCardChannels.set(ws, new Map());
             const cardMap = wsCardChannels.get(ws)!;
             const oldCid = cardMap.get(cardKey);
@@ -945,7 +965,7 @@ wss.on("connection", (ws) => {
               wsChannels.get(ws)?.delete(oldCid);
             }
 
-            await channelManager.open(cid, fname, fn as string, channelArgs, msgTabId, onData, onClose);
+            await channelManager.open(cid, sessionId, wsProject, fname, fn as string, channelArgs, msgTabId, onData, onClose);
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(cid);
             cardMap.set(cardKey, cid);
@@ -1012,9 +1032,12 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
   if (event.type === "deleted") {
     broadcastToProject(event.project, { type: "file-deleted", filename: event.filename });
     // Tear down any channel session keyed to this file (chat/claude/terminal/etc.).
-    // Otherwise the handler stays alive forever — including its SDK subprocess —
-    // and keeps consuming resources as file-watcher events flow in.
-    channelManager.destroySession(event.filename);
+    // Look up the session by (project, filename) → sessionId via the in-memory
+    // reverse map (sidecar may already be gone from disk). Then evict the
+    // sidecar so a future file with the same name gets a fresh UUID.
+    const sessionId = channelManager.findSessionByFilename(event.project, event.filename);
+    if (sessionId) channelManager.destroySession(sessionId);
+    deleteCardId(event.project, event.filename).catch(() => { /* best-effort */ });
     return;
   }
 

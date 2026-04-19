@@ -130,10 +130,14 @@ export default function CanvasCardRuntime({ project }: Props) {
     const unsub3 = on("file-deleted", (msg: unknown) => {
       const m = msg as { filename?: string };
       if (!m.filename) return;
-      // Tear down the bridge for this file. Card sessions belong to files;
-      // deleting the file is the true end-of-life signal (not React unmount).
-      destroyBridgeFor(project, "_", m.filename);
-      setChildren((prev) => prev.filter((f) => f.name !== m.filename));
+      // Tear down the bridge for this file (look up via the children list to
+      // find the file's UUID). Card sessions belong to files; deleting the
+      // file is the true end-of-life signal (not React unmount).
+      setChildren((prev) => {
+        const victim = prev.find((f) => f.name === m.filename);
+        if (victim?.id) destroyBridgeFor(victim.id);
+        return prev.filter((f) => f.name !== m.filename);
+      });
     });
 
     return () => { unsub1(); unsub2(); unsub3(); };
@@ -195,6 +199,7 @@ export default function CanvasCardRuntime({ project }: Props) {
             html={canvasCard.html}
             exports={canvasCard.exports}
             dependencies={canvasCard.dependencies}
+            sessionId={`canvas-${project}`}
             project={project}
             canvas="_"
             filename="__canvas__"

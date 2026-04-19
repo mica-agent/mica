@@ -196,6 +196,91 @@ export interface FileMeta {
   modifiedAt: string;
   pinned?: boolean;   // true if file is pinned to canvas (not a canvasRoot child)
   badge?: string;     // Card class badge (resolved from metadata.json), populated by /api/files
+  id?: string;        // Stable per-file UUID (sidecar in .mica/cards/<sanitized>.id.json).
+                      // Used as the channel-session key — sessions are file-identity-bound,
+                      // not filename-bound, so two projects with the same template-seeded
+                      // filename get distinct sessions.
+}
+
+// ── Card identity (UUID per file) ──────────────────────────
+//
+// Each file in a project gets a stable UUID stored in a sidecar at
+// `.mica/cards/<sanitized>.id.json`. The UUID is the session key used by
+// channelManager — using it instead of filename means two projects with
+// the same filename (e.g. template-seeded `docs/qwen.chat`) don't share
+// state.
+//
+// In-memory cache is the runtime source of truth; sidecar is durability.
+// Single-flight via cardIdPending eliminates the race where two concurrent
+// /api/files calls both generate a UUID for the same missing sidecar.
+
+const cardIdCache = new Map<string, string>();             // `${project}|${filename}` → uuid
+const cardIdPending = new Map<string, Promise<string>>();  // single-flight
+
+function cardIdKey(project: string | null | undefined, filename: string): string {
+  return `${project ?? "<workspace>"}|${filename}`;
+}
+
+function cardIdSidecarPath(project: string | null | undefined, filename: string): string {
+  const sanitized = filename.replace(/\//g, "_");
+  return join(micaDir(project ?? undefined), "cards", `${sanitized}.id.json`);
+}
+
+/** Atomically write JSON: tmp file + rename (POSIX rename is atomic). */
+async function atomicWriteJson(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
+  await writeFile(tmp, JSON.stringify(value), "utf-8");
+  await rename(tmp, path);
+}
+
+/** Get the file's stable UUID. Creates the sidecar (and caches) on first access.
+ *  Concurrent calls for the same file collapse onto the same Promise (single-flight),
+ *  so two /api/files responses for the same file always return the same UUID. */
+export async function getOrCreateCardId(project: string | null | undefined, filename: string): Promise<string> {
+  const key = cardIdKey(project, filename);
+  const cached = cardIdCache.get(key);
+  if (cached) return cached;
+
+  const inflight = cardIdPending.get(key);
+  if (inflight) return inflight;
+
+  const promise = (async (): Promise<string> => {
+    const path = cardIdSidecarPath(project, filename);
+    // Try to read existing sidecar
+    try {
+      const raw = await readFile(path, "utf-8");
+      const parsed = JSON.parse(raw) as { id?: unknown };
+      if (typeof parsed.id === "string" && parsed.id) {
+        cardIdCache.set(key, parsed.id);
+        return parsed.id;
+      }
+      console.warn(`[card-id] Sidecar at ${path} is malformed; regenerating.`);
+    } catch {
+      // sidecar missing or unreadable; generate fresh
+    }
+    const id = (globalThis.crypto?.randomUUID?.() ?? `card-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    await atomicWriteJson(path, { id });
+    cardIdCache.set(key, id);
+    return id;
+  })();
+
+  cardIdPending.set(key, promise);
+  promise.finally(() => cardIdPending.delete(key));
+  return promise;
+}
+
+/** Look up a cached UUID without disk access. Returns undefined if not yet generated. */
+export function lookupCardId(project: string | null | undefined, filename: string): string | undefined {
+  return cardIdCache.get(cardIdKey(project, filename));
+}
+
+/** Tear down the UUID for a deleted file: evict cache, delete sidecar (best-effort). */
+export async function deleteCardId(project: string | null | undefined, filename: string): Promise<void> {
+  cardIdCache.delete(cardIdKey(project, filename));
+  cardIdPending.delete(cardIdKey(project, filename));
+  const path = cardIdSidecarPath(project, filename);
+  try { await unlink(path); } catch { /* sidecar may already be gone */ }
 }
 
 /** Backwards-compatible interface for server-side consumers that need content. */
@@ -242,7 +327,7 @@ export async function updateCanvasConfig(
 
 /**
  * List canvas-visible files: direct children of canvasRoot + pinned files.
- * Excludes directories.
+ * Excludes directories. Each file is decorated with its stable UUID (`id`).
  */
 export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
   const allFiles = await listFiles(project);
@@ -250,7 +335,7 @@ export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
   const root = canvasRoot === "." ? "" : canvasRoot.replace(/\/$/, "") + "/";
   const pinnedSet = new Set(pinned);
 
-  return allFiles
+  const filtered = allFiles
     .filter((f) => {
       if (f.type === "directory") return false;
       if (root === "") {
@@ -262,10 +347,13 @@ export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
       return false;
     })
     .map((f) => pinnedSet.has(f.name) ? { ...f, pinned: true } : f);
+
+  return Promise.all(filtered.map(async (f) => ({ ...f, id: await getOrCreateCardId(project, f.name) })));
 }
 
 /**
  * List all files in a project directory (recursive, metadata only).
+ * Files (not directories) are decorated with their stable UUID (`id`).
  */
 export async function listFiles(project?: string): Promise<FileMeta[]> {
   const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
@@ -273,7 +361,10 @@ export async function listFiles(project?: string): Promise<FileMeta[]> {
 
   const files: FileMeta[] = [];
   await scanDir(root, root, files);
-  return files;
+  return Promise.all(files.map(async (f) => {
+    if (f.type === "directory") return f;
+    return { ...f, id: await getOrCreateCardId(project, f.name) };
+  }));
 }
 
 async function scanDir(dir: string, root: string, files: FileMeta[]): Promise<void> {
@@ -538,6 +629,16 @@ export async function createProjectFromTemplate(projectName: string, templateNam
     if (existsSync(qwenSkillsDir) && !existsSync(claudeSkillsLink)) {
       await mkdir(claudeDir, { recursive: true });
       await symlink("../.qwen/skills", claudeSkillsLink);
+    }
+  } catch { /* best-effort */ }
+
+  // Pre-warm UUIDs for every seeded file. Without this, the first /api/files
+  // call would lazy-backfill — fine, but eager assignment guarantees that
+  // when the user opens the project, the files already have stable IDs.
+  try {
+    const seeded = await listFiles(projectName);
+    for (const f of seeded) {
+      if (f.type === "file") await getOrCreateCardId(projectName, f.name);
     }
   } catch { /* best-effort */ }
 }

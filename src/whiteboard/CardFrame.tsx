@@ -289,6 +289,7 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
             html={renderedCard.html}
             exports={renderedCard.exports}
             dependencies={renderedCard.dependencies}
+            sessionId={file.id ?? `legacy-${file.name}`}
             project={project}
             canvas="_"
             filename={file.name}

@@ -336,9 +336,10 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     // use sessionProject — the user can switch projects without redirecting
     // this session's writes to the wrong .mica/chats directory.
     const sessionProject = ctx.project;
-    // Sanitize: replace / with _ so files in subdirectories (e.g. docs/agent.chat)
-    // don't break the chats/ directory layout
-    const chatId = ctx.filename.replace(".chat", "").replace(/\//g, "_");
+    // Chat history is keyed by the session's stable UUID (the file's per-card
+    // sidecar id). Stable across renames; isolated per file even if two
+    // projects share the same filename.
+    const chatId = ctx.sessionId;
     let busy = false;
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
