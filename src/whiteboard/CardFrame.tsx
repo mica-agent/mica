@@ -68,7 +68,10 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
   const [textContent, setTextContent] = useState<string | null>(null);
 
   const fileType = getFileType(file.name);
-  const badge = renderedCard?.meta?.badge || getFileBadge(fileType);
+  // Prefer the badge the server resolved from metadata.json (sent with the
+  // file list — synchronous on mount, no flash). Fall back to renderedCard
+  // metadata once loaded, then to the extension-based default.
+  const badge = file.badge || renderedCard?.meta?.badge || getFileBadge(fileType);
 
   // Load card class (card.html format)
   useEffect(() => {

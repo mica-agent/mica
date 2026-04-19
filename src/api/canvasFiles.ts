@@ -39,6 +39,7 @@ export interface CanvasFile {
   modifiedAt?: string;
   content?: string;  // Loaded lazily by CardFrame when needed
   pinned?: boolean;  // true if pinned to canvas (not a canvasRoot child)
+  badge?: string;    // Card class badge resolved server-side from metadata.json
 }
 
 // ── Workspace (not project-scoped) ──────────────────────

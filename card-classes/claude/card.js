@@ -101,6 +101,12 @@ function renderMarkdown(text) {
     .replace(/\n\n/g, "<br/><br/>")
     .replace(/\n/g, "<br/>");
 
+  // Wrap consecutive <li> runs in <ul> so browsers render bullet markers
+  // inside the content box (otherwise markers leak outside the chat bubble).
+  text = text.replace(/(?:<li>[\s\S]*?<\/li>(?:<br\/>)?)+/g, (m) => {
+    return "<ul>" + m.replace(/<br\/>/g, "") + "</ul>";
+  });
+
   // Restore fenced blocks and tables
   for (let fi = 0; fi < fenced.length; fi++) {
     text = text.replace(`__FENCED__${fi}__`, fenced[fi]);

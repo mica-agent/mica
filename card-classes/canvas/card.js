@@ -36,9 +36,10 @@ const GAP = isPhone ? 8 : 16;
 const COLS = isPhone ? 1 : 3;
 const MIN_W = 200;
 const MIN_H = 120;
-let layout = {};  // { filename: { x, y, w, h } }
+let layout = {};  // { filename: { x, y, w, h, z } }
 let layoutLoaded = false;
 let saveTimer = null;
+let topZ = 1;     // monotonic — bumped on every card pointerdown, seeded from saved z on load
 const SAVE_DELAY = 500;
 
 // -- Layout persistence -------------------------------
@@ -60,6 +61,22 @@ function persistLayout() {
     }, SAVE_DELAY);
 }
 
+// Z-order persists but is intentionally NOT broadcast — it tracks
+// "what I'm focused on right now" per tab. Other clients pick up the
+// new z values on next layout fetch / reload, but a click here doesn't
+// reorder cards under another viewer's cursor in real time.
+let zSaveTimer = null;
+function persistZSilent() {
+    if (zSaveTimer) clearTimeout(zSaveTimer);
+    zSaveTimer = setTimeout(() => {
+        fetch('/api/layout', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cards: layout, source: mica.windowId || '', silent: true }),
+        }).catch(() => {});
+    }, SAVE_DELAY);
+}
+
 // -- Position a card based on layout data -------------
 function positionCard(card) {
     const name = card.getAttribute('data-filename');
@@ -75,6 +92,10 @@ function positionCard(card) {
         card.style.top = `${pos.y}px`;
         card.style.width = `${pos.w || CARD_W}px`;
         card.style.height = `${pos.h || CARD_H}px`;
+        if (typeof pos.z === 'number') {
+            card.style.zIndex = String(pos.z);
+            if (pos.z > topZ) topZ = pos.z;
+        }
         card.classList.add('wb-card--resized');
     } else {
         // Auto-position: next open grid slot
@@ -108,6 +129,25 @@ function updateEmptyState() {
     const count = freeform.querySelectorAll('.wb-card').length;
     emptyEl.style.display = count === 0 ? 'block' : 'none';
 }
+
+// -- Raise selected card to front (any pointerdown inside the card) ---
+// Capture phase runs before drag/resize handlers below, so the card is
+// already on top by the time it starts being moved.
+// Persists silently so stacking survives reload, but doesn't broadcast —
+// each tab decides its own focus (don't reorder cards under another
+// viewer's cursor in real time).
+freeform.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest('.wb-card');
+    if (!card) return;
+    const z = ++topZ;
+    card.style.zIndex = String(z);
+    const name = card.getAttribute('data-filename');
+    if (name) {
+        const existing = layout[name] || { x: card.offsetLeft, y: card.offsetTop, w: CARD_W, h: CARD_H };
+        layout[name] = { ...existing, z };
+        persistZSilent();
+    }
+}, true);
 
 // -- Drag via event delegation (disabled on phone) ------
 freeform.addEventListener('pointerdown', (e) => {

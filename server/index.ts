@@ -31,6 +31,7 @@ import {
   resolveFilePath,
   writeProjectFile,
   deleteProjectFile,
+  type FileMeta,
 } from "./files.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
 import { createReadStream, createWriteStream } from "fs";
@@ -415,15 +416,43 @@ app.post("/api/cards/:filename/ok", (_req, res) => {
 app.get("/api/files", async (req, res) => {
   try {
     const proj = getRequestProject(req) || undefined;
-    if (req.query.canvas === "true") {
-      res.json(await listCanvasFiles(proj));
-    } else {
-      res.json(await listFiles(proj));
-    }
+    const files = req.query.canvas === "true"
+      ? await listCanvasFiles(proj)
+      : await listFiles(proj);
+    res.json(await decorateBadges(files, proj || null));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
 });
+
+// Resolve each file's badge from its card class metadata.json (project-scoped
+// first, then built-in). Uses a per-request Map so each unique extension is
+// read at most once. Empty string cached for "no badge / no metadata".
+async function decorateBadges(files: FileMeta[], project: string | null): Promise<FileMeta[]> {
+  const cache = new Map<string, string>();
+  const resolveBadge = async (ext: string): Promise<string> => {
+    if (cache.has(ext)) return cache.get(ext)!;
+    const dir = resolveCardClassDir(ext, project);
+    if (!dir) { cache.set(ext, ""); return ""; }
+    try {
+      const raw = await readFile(join(dir, "metadata.json"), "utf-8");
+      const meta = JSON.parse(raw) as { badge?: string };
+      const badge = typeof meta.badge === "string" ? meta.badge : "";
+      cache.set(ext, badge);
+      return badge;
+    } catch {
+      cache.set(ext, "");
+      return "";
+    }
+  };
+  return Promise.all(files.map(async (f) => {
+    if (f.type === "directory") return f;
+    const ext = f.name.split(".").pop()?.toLowerCase() || "";
+    if (!ext) return f;
+    const badge = await resolveBadge(ext);
+    return badge ? { ...f, badge } : f;
+  }));
+}
 
 // Pin/unpin files to canvas
 app.post("/api/canvas/pin", async (req, res) => {
@@ -661,8 +690,13 @@ app.put("/api/layout", async (req, res) => {
     const dir = micaDir(proj);
     await mkdir(dir, { recursive: true });
     const source = req.body.source;
+    // `silent: true` skips the layout-changed broadcast. Used for changes
+    // that are intentionally local-feeling (e.g. z-order: each tab tracks
+    // its own focus, but we still want it to survive reload).
+    const silent = req.body.silent === true;
     const dataToStore = { ...req.body };
     delete dataToStore.source;
+    delete dataToStore.silent;
 
     let all: Record<string, unknown> = {};
     try {
@@ -675,7 +709,7 @@ app.put("/api/layout", async (req, res) => {
 
     all[device] = dataToStore;
     await writeFile(join(dir, "layout.json"), JSON.stringify(all, null, 2), "utf-8");
-    broadcast({ type: "layout-changed", source, device });
+    if (!silent) broadcast({ type: "layout-changed", source, device });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });

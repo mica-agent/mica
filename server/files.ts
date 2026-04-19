@@ -195,6 +195,7 @@ export interface FileMeta {
   size: number;
   modifiedAt: string;
   pinned?: boolean;   // true if file is pinned to canvas (not a canvasRoot child)
+  badge?: string;     // Card class badge (resolved from metadata.json), populated by /api/files
 }
 
 /** Backwards-compatible interface for server-side consumers that need content. */
