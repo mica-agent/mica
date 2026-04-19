@@ -9,8 +9,22 @@ A **card class** defines a UI component. An **instance** is a file the class ren
 
 ## Where files go
 
-- **Card class**: `.mica/card-classes/{name}/` — project-scoped. Built-in classes live in the Mica repo's `card-classes/` and are NOT the place to add new ones. The name becomes the file extension (`kanban/` handles `.kanban` files).
+- **Card class**: `.mica/card-classes/{name}/` — project-scoped. Built-in classes live in the Mica repo's `card-classes/` and are NOT the place to add new ones.
 - **Instance**: a plain file in the canvas root (usually `docs/`), e.g. `docs/my-board.kanban`. NEVER in `.mica/`.
+
+## ⚠️ NAMING RULE — directory name MUST equal the extension (no dot)
+
+The Mica resolver maps an instance file's extension directly to a directory name. If your extension is `.kanban`, the directory MUST be `kanban/`. If your extension is `.solar`, the directory MUST be `solar/`. **NOT** `solar-system/`, **NOT** `solarSystem/`, **NOT** anything else.
+
+`metadata.json`'s `extension` field is documentation — the **directory name is the actual lookup key**. A mismatch silently fails: `.solar` files in `docs/` will fall through to plain text rendering with a "TXT" badge, even though `metadata.json` declares the extension correctly. There is NO error message; the symptom is just "my custom card renders as text."
+
+| Extension | Directory | Instance filename |
+|---|---|---|
+| `.counter` | `.mica/card-classes/counter/` | `docs/score.counter` |
+| `.solar` | `.mica/card-classes/solar/` | `docs/solar-system.solar` |
+| `.kanban` | `.mica/card-classes/kanban/` | `docs/sprint-12.kanban` |
+
+If the user asks for "a solar system card," your extension is `.solar` and your directory is `solar/` — the instance filename can be anything (`solar-system.solar`, `our-system.solar`, etc.).
 
 ## Required files in `.mica/card-classes/{name}/`
 

@@ -1,6 +1,6 @@
 # Project AI environment
 
-This project routes the agent through a cloud model (Claude Sonnet/Opus via the Claude bridge — see [project_claude_bridge.md](../../.qwen/cache/) once integration lands).
+This project routes the agent through a cloud Claude model (Sonnet/Opus).
 
 The cloud model:
 - Has long context (200K+) — read full files, not 150-line chunks.
@@ -8,9 +8,7 @@ The cloud model:
 - Supports parallel tool calls — launch multiple Read/Grep/Agent calls in one message instead of serial back-and-forth.
 - Has strong reasoning — work top-down (plan → execute → verify) instead of bottom-up (one tiny step → verify → repeat).
 
-Skills in `.qwen/skills/` encode the strengths. Treating this model like a small local model wastes its capability — and per-token cost — by serializing what could be parallel.
-
-NOTE: The Claude bridge runtime integration is not yet wired (planned, see project memory). These skills ship as preparation; verify they remain valid once the bridge lands.
+Skills in `.claude/skills/` and `.qwen/skills/` encode the strengths. Treating this model like a small local model wastes its capability — and per-token cost — by serializing what could be parallel.
 
 ## You are a canvas participant, not a chatbot
 
@@ -18,36 +16,23 @@ You stay engaged with this canvas across turns. Each turn your context is rebuil
 
 The `participate-fully` skill encodes how to read changes and decide what to do.
 
-## Mica card class helpers (always use these — do NOT hand-roll `fetch('/api/files/...')`)
+## Writing card code
 
-Card `card.js` runs as top-level code with `container` and `mica` as injected globals. Key helpers ALWAYS available to every card script:
+Before writing or modifying any `card.js`, you MUST first read `.claude/skills/create-card-class/SKILL.md`. The Mica API surface (`mica.files.*`, `mica.openChannel`, `mica.on`, etc.) is documented there — do NOT improvise raw `fetch('/api/files/...')` calls.
 
-- `mica.files.list()` → `[{ path, isFile, isFolder, size, modifiedAt }]` — all files + folders
-- `mica.files.read(path)` → string (text files)
-- `mica.files.readBinary(path)` → ArrayBuffer (binary)
-- `mica.files.write(path, content)` — **accepts `string | ArrayBuffer | Uint8Array | Blob | File`**; auto-routes text vs binary; streamed to disk with no size limit; `source` auto-injected
-- `mica.files.delete(path)` / `mica.files.url(path)` — delete / build URL for `<img src>`, `<embed>`, downloads
-- `mica.getContent()` → string — this card's instance file content
-- `mica.on(event, cb)` — `file-changed`, `file-created`, `file-deleted`, `layout-changed`
-- `mica.onDestroy(cb)` — cleanup on unmount
-- `mica.filename` / `mica.windowId` / `mica.refresh()` — identity + refresh
+## Per-turn behavior (apply EVERY turn, before sending your reply)
 
-When reviewing or editing existing card code, check against this list. If you see `file.text()` + `mica.files.write()`, that's an outdated text-only pattern — replace with `mica.files.write(path, file)` to pass the File directly (binary-safe, streams to disk).
+Standing rules. The canvas starts intentionally minimal so it can grow with the project — your job each turn is to keep the right artifacts on canvas and route the right things to the right place.
 
-Full API reference + worked examples in `.qwen/skills/create-card-class/SKILL.md`.
+1. **Questions go to `docs/questions.md`.** ANY question for the user (`@human` items, choices, "should I go ahead?") gets APPENDED to questions.md before sending. Mention briefly in chat: "Filed question in questions.md." Do NOT bury questions in chat scrollback.
 
-## Canvas seeding
+2. **Substantive content goes into a card, not chat.** If your reply has >~10 lines of structured material (a spec, plan, design, decision, options list, proposal-of-an-upcoming-build), put it in a card — update `docs/spec.md`, append to `docs/decisions.md`, or create a new `docs/<topic>-design.md` via the `grow-canvas` skill. Chat reply just announces what was written. **A proposal is not an exception** — the substance (what you'll build, options, scope, files, tech) goes in a doc card; chat carries only the brief summary. NEVER paste the design/options list itself into chat.
 
-The canvas starts intentionally minimal — a chat card, `spec.md`, and `questions.md`. New cards are not pre-seeded as empty placeholders; that produces clutter before the project has shape. Use the `grow-canvas` skill to **propose** new cards (decisions log, flow diagrams, architecture, todos, READMEs, etc.) when the conversation reveals a real need for them. Existing cards are kept aligned via the `doc-consistency` skill (already invoked from `participate-fully` step 3).
+3. **Notice when a card needs to exist (`grow-canvas` skill).** When the conversation reveals a dimension that deserves its own surface (UX flows, architecture, decisions, todos, README), CREATE it (per the aggressiveness rule below). Don't pre-litter with empty placeholders; don't bury durable content in chat scrollback.
 
-## Per-turn discipline (apply on EVERY turn, before sending your reply)
+4. **Keep cards consistent (`doc-consistency` skill).** When you edit one doc, scan related siblings, propagate or flag mismatches.
 
-Standing rules. Run through these on every turn — they are not skill-conditional. The user's complaint with chat-only behavior was that questions ended up in chat scrollback, design discussions stayed in chat instead of becoming docs, and spec wasn't kept current. Fix that by routing the right things to the right place per the rules below.
-
-1. **Questions go to `docs/questions.md`.** If your reply contains a question for the user (`@human` items, missing decisions, anything you can't answer alone), APPEND it to `docs/questions.md` BEFORE sending the reply. Mention briefly in chat: "Filed question in questions.md." Do NOT bury questions inside long chat replies — the user reviews questions.md as their action queue.
-
-2. **Substantive content goes into a card, not chat.** If your reply contains more than ~10 lines of structured material (a spec, a plan, a design, a decision, a list of options), put it in the appropriate card on canvas — update `docs/spec.md`, append to `docs/decisions.md`, create a new `docs/<topic>-design.md` via the `grow-canvas` skill. The chat reply just announces what was written: "Updated spec.md with the orbital scaling decisions." Long markdown in chat is scrollback noise; cards are durable.
-
-3. **Keep cards consistent.** When you edit one doc (spec, design, decisions), use the `doc-consistency` skill: scan related siblings, propose / apply mechanical updates so the canvas doesn't drift.
-
-4. **Aggressiveness: act, then summarize.** When the user asks for substantive work, produce the artifacts directly (new doc cards, spec edits, decision logs, questions filings) — no preliminary "want me to?" gate. Chat reply summarizes what was done. User reverts what they don't want. You have plentiful tokens and long context — use them to keep the canvas current rather than to discuss what could be on the canvas.
+5. **Aggressiveness: act, then summarize.**
+   - **Cheap operations — DO immediately.** Writing or updating any doc card (`spec.md`, `decisions.md`, `questions.md`, new `<topic>-design.md`, `flows.mmd`, etc.) is just text — instantly revertable. Write thorough drafts; you have the context budget. Chat reply just announces what was written: "Drafted solar system spec in spec.md."
+   - **Expensive operations — also DO directly when the request is clear.** Creating new card classes, writing code, running localized commands — produce the artifacts; user reverts what they don't want. The DESIGN/SPEC for the build always goes in `spec.md` or `<topic>-design.md` first (cheap doc edit) so the canvas captures it; the build follows immediately after. Reserve "propose first" only for genuinely irreversible actions (deploys, commits, destructive shell commands).
+   - You have plentiful tokens and long context — use them to keep the canvas current rather than to discuss what could be on the canvas.

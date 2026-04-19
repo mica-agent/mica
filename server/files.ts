@@ -622,6 +622,17 @@ export async function createProjectFromTemplate(projectName: string, templateNam
   } catch { /* template didn't include config; initProject will create it */ }
   // Fill any missing defaults (config.json, canvas-back.md, canvas root dir)
   await initProject(projectName);
+
+  // Record the template lineage so "Reset canvas-back to template default"
+  // knows which template to read from. Idempotent — only writes if not set.
+  try {
+    const configPath = join(dst, ".mica", "config.json");
+    const cfg = JSON.parse(await readFile(configPath, "utf-8"));
+    if (!cfg.template) {
+      cfg.template = templateName;
+      await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf-8");
+    }
+  } catch { /* best-effort */ }
   // Make skills visible to the Claude Code SDK too — it reads from .claude/skills/
   // while Qwen reads from .qwen/skills/. Symlink `.claude/skills → ../.qwen/skills`
   // so both SDKs see the same SKILL.md files. Skip silently if the template has no

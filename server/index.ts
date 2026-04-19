@@ -53,6 +53,7 @@ import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
 import { createLlmChatHandler } from "./plugins/llmChat.js";
 import { createSkillComposeHandler } from "./plugins/skillCompose.js";
+import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
@@ -772,6 +773,31 @@ app.put("/api/canvas-back", async (req, res) => {
   }
 });
 
+// Returns the originating template's canvas-back.md content. Used by the
+// canvas-back card's "Reset" button. Looks up `template:` from the project's
+// .mica/config.json (recorded by createProjectFromTemplate); 404 if absent.
+app.get("/api/canvas-back/template-default", async (req, res) => {
+  const proj = getRequestProject(req);
+  if (!proj) { res.status(400).json({ error: "No active project" }); return; }
+  try {
+    const cfg = JSON.parse(await readFile(join(micaDir(proj), "config.json"), "utf-8"));
+    const template = cfg.template;
+    if (!template || typeof template !== "string") {
+      res.status(404).json({ error: "no template recorded for this project" });
+      return;
+    }
+    const tplPath = join(process.cwd(), "templates", template, ".mica", "canvas-back.md");
+    if (!existsSync(tplPath)) {
+      res.status(404).json({ error: `template '${template}' has no canvas-back.md` });
+      return;
+    }
+    const content = await readFile(tplPath, "utf-8");
+    res.json({ content, template });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // ── Card Backs (per-card AI context) ─────────────────────────
 
 app.get("/api/card-back/:filename", async (req, res) => {
@@ -1076,6 +1102,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
   channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat
   channelManager.registerHandler("skills", createSkillComposeHandler());  // .skills files -> collaborative SKILL.md authoring
+  channelManager.registerHandler("canvas-back", createCanvasBackComposeHandler());  // .canvas-back files -> propose-then-apply canvas-back editor
 
   // Start llama-server for local AI
   ensureLlamaServer().catch((err) => {

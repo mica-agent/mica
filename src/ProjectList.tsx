@@ -42,24 +42,25 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
   const handleCreate = useCallback(async (name: string, docsDir: string, template: string | null) => {
     setError(null);
     try {
-      await createProjectApi(name, template ? undefined : docsDir, template || undefined);
+      const result = await createProjectApi(name, template ? undefined : docsDir, template || undefined);
       setCreateTemplate(null);
-      await loadProjects();
+      // Open the new project immediately — same flow as clicking it from the list.
+      onOpenProject({ name: result.name, path: "" });
     } catch (err) {
       setError((err as Error).message);
     }
-  }, [loadProjects]);
+  }, [onOpenProject]);
 
   const handleClone = useCallback(async (url: string, name: string, docsDir: string) => {
     setError(null);
     try {
-      await cloneProjectApi(url, name || undefined, docsDir);
+      const result = await cloneProjectApi(url, name || undefined, docsDir);
       setShowClone(false);
-      await loadProjects();
+      onOpenProject({ name: result.name, path: "" });
     } catch (err) {
       setError((err as Error).message);
     }
-  }, [loadProjects]);
+  }, [onOpenProject]);
 
   const handleRename = useCallback(async (project: ProjectInfo) => {
     const newName = prompt('New name:', project.name);

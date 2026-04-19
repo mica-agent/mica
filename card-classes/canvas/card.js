@@ -81,12 +81,19 @@ const isPhone = deviceClass === 'phone';
 const isDisplay = deviceClass === 'display';
 
 // -- Constants ----------------------------------------
-const CARD_W = isPhone ? vw - 32 : 320;
-const CARD_H = isPhone ? 320 : 280;
+// Card sizing scales with device class so default-sized cards don't clip
+// content (and so the user isn't forced to resize every new card to actually
+// use it). Display = TV/4K screens; desktop = laptop; tablet = ~iPad; phone
+// = single-column stack.
+const CARD_W = isPhone ? vw - 32 : isDisplay ? 540 : 440;
+const CARD_H = isPhone ? 360 : isDisplay ? 460 : 360;
 const GAP = isPhone ? 8 : 16;
-const COLS = isPhone ? 1 : 3;
-const MIN_W = 200;
-const MIN_H = 120;
+const COLS = isPhone ? 1 : isDisplay ? 4 : 3;
+// Resize floor — small enough for "minimize" feel, large enough that the
+// content card classes (chat, terminal, markdown) still have room for their
+// chrome (header, toolbar, footer) plus a usable body region.
+const MIN_W = 280;
+const MIN_H = 220;
 let layout = {};  // { filename: { x, y, w, h, z } }
 let layoutLoaded = false;
 let saveTimer = null;
@@ -149,16 +156,45 @@ function positionCard(card) {
         }
         card.classList.add('wb-card--resized');
     } else {
-        // Auto-position: next open grid slot. No prior layout entry =
-        // genuinely new card → bring it to front so it's not hidden behind
-        // dragged-around siblings.
-        const cards = Array.from(freeform.querySelectorAll('.wb-card'));
-        let idx = cards.indexOf(card);
-        if (idx < 0) idx = cards.length;
-        const col = idx % COLS;
-        const row = Math.floor(idx / COLS);
-        const x = col * (CARD_W + GAP);
-        const y = row * (CARD_H + GAP);
+        // Auto-position: scan grid slots row-major and pick the FIRST one
+        // that doesn't overlap any existing card. The naive "next index"
+        // approach put new cards on top of dragged-around siblings.
+        // Fall back to stacking below the lowest existing card if every
+        // grid slot in the visible viewport is occupied.
+        const occupied = Object.values(layout).map(function(p) {
+            return { x: p.x, y: p.y, w: p.w || CARD_W, h: p.h || CARD_H };
+        });
+        function rectsOverlap(a, b) {
+            return !(a.x + a.w + GAP <= b.x || b.x + b.w + GAP <= a.x ||
+                     a.y + a.h + GAP <= b.y || b.y + b.h + GAP <= a.y);
+        }
+        function slotFree(x, y) {
+            const candidate = { x: x, y: y, w: CARD_W, h: CARD_H };
+            for (let i = 0; i < occupied.length; i++) {
+                if (rectsOverlap(candidate, occupied[i])) return false;
+            }
+            return true;
+        }
+        let x = 0, y = 0;
+        // Scan up to 8 rows × COLS columns of grid candidates.
+        let placed = false;
+        outer: for (let row = 0; row < 8; row++) {
+            for (let col = 0; col < COLS; col++) {
+                const cx = col * (CARD_W + GAP);
+                const cy = row * (CARD_H + GAP);
+                if (slotFree(cx, cy)) { x = cx; y = cy; placed = true; break outer; }
+            }
+        }
+        if (!placed) {
+            // Stack below the lowest existing card.
+            let maxBottom = 0;
+            for (let i = 0; i < occupied.length; i++) {
+                const b = occupied[i].y + occupied[i].h;
+                if (b > maxBottom) maxBottom = b;
+            }
+            x = 0;
+            y = maxBottom + GAP;
+        }
         const z = ++topZ;
         card.style.left = `${x}px`;
         card.style.top = `${y}px`;
@@ -174,16 +210,11 @@ function positionCard(card) {
 }
 
 function positionAllCards() {
+    // Only operate on cards in the freeform area. Meta cards live in the
+    // metaList (sidebar) and are React-portaled there directly; we never
+    // move them between containers (see MutationObserver comment below).
     const cards = Array.from(freeform.querySelectorAll('.wb-card'));
-    cards.forEach(function(c) {
-        // Re-route meta cards to the sidebar before positioning.
-        if (c.dataset && c.dataset.meta === 'true') {
-            if (c.parentElement !== metaList) metaList.appendChild(c);
-            c.classList.add('wb-card--positioned');
-        } else {
-            positionCard(c);
-        }
-    });
+    cards.forEach(positionCard);
     updateEmptyState();
 }
 
@@ -338,20 +369,15 @@ if (isPhone) {
 
 // -- Watch for React-portaled child cards -------------
 //
-// Cards with `data-meta="true"` (their card class declares `meta: true` in
-// metadata.json) configure HOW the canvas works — canvas-back, skills, etc.
-// They go into the docked sidebar instead of the freeform layout area.
-// Everything else is content (the WHAT) and lays out in the freeform grid.
+// React (CanvasCardRuntime) portals each card into the correct container
+// directly: meta cards (data-meta="true") into `#canvas-meta-list`, content
+// cards into `#canvas-freeform`. We DON'T move cards between containers
+// here — doing so violates React's portal contract (its reconciler expects
+// the portaled node to stay in the parent it was portaled into, and throws
+// NotFoundError on the next layout commit if it moved). So this observer
+// only handles content cards arriving in freeform; meta cards are entirely
+// React's responsibility.
 let pendingCards = [];
-function placeCard(node) {
-    if (node.dataset && node.dataset.meta === 'true') {
-        // Meta card → sidebar. Skip layout/drag/resize.
-        if (node.parentElement !== metaList) metaList.appendChild(node);
-        node.classList.add('wb-card--positioned');  // reveal (skip the fade-in handled by positionCard)
-    } else {
-        positionCard(node);
-    }
-}
 const childObserver = new MutationObserver((mutations) => {
     for (let i = 0; i < mutations.length; i++) {
         const added = mutations[i].addedNodes;
@@ -359,7 +385,7 @@ const childObserver = new MutationObserver((mutations) => {
             const node = added[j];
             if (node.nodeType === 1 && node.classList && node.classList.contains('wb-card')) {
                 if (layoutLoaded) {
-                    placeCard(node);
+                    positionCard(node);
                 } else {
                     pendingCards.push(node);
                 }
@@ -547,6 +573,6 @@ buildToolbar();
 // -- Load layout then position initial + pending cards --
 loadLayout().then(() => {
     positionAllCards();
-    for (let i = 0; i < pendingCards.length; i++) placeCard(pendingCards[i]);
+    for (let i = 0; i < pendingCards.length; i++) positionCard(pendingCards[i]);
     pendingCards = [];
 });

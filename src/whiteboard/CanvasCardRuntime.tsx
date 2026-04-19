@@ -37,8 +37,13 @@ export default function CanvasCardRuntime({ project }: Props) {
   const [editingFile, setEditingFile] = useState<CanvasFile | null>(null);
   const [creatingFile, setCreatingFile] = useState(false);
 
-  // Portal target: the #canvas-freeform element rendered by the canvas card class
+  // Portal targets: #canvas-freeform (content cards) + #canvas-meta-list (meta
+  // sidebar). The canvas card class declares both containers; we portal each
+  // CardFrame into the right one based on `file.meta` so React's reconciler
+  // never sees a portaled element move between parents (which throws
+  // NotFoundError on the next layout commit).
   const [freeformEl, setFreeformEl] = useState<HTMLElement | null>(null);
+  const [metaListEl, setMetaListEl] = useState<HTMLElement | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // ── Data loading ────────────────────────────────────────
@@ -90,21 +95,40 @@ export default function CanvasCardRuntime({ project }: Props) {
     const container = containerRef.current;
     if (!container || !canvasCard) return;
 
-    // Reset freeformEl — clear any stale reference from a previous render.
+    // Reset both portal targets — clear any stale references from a previous render.
     setFreeformEl(null);
+    setMetaListEl(null);
 
     // CardRuntime (child) runs its effect before this (parent) effect.
     // For canvas (no declared deps), innerHTML is injected synchronously
-    // in CardRuntime's effect, so #canvas-freeform is already in the DOM.
+    // in CardRuntime's effect, so the containers are already in the DOM.
     // Always check isConnected to reject stale elements from previous renders.
+    let freeformFound = false;
+    let metaFound = false;
     const poll = setInterval(() => {
-      const el = container.querySelector("#canvas-freeform");
-      if (el && (el as HTMLElement).isConnected) {
-        setFreeformEl(el as HTMLElement);
-        clearInterval(poll);
+      if (!freeformFound) {
+        const el = container.querySelector("#canvas-freeform");
+        if (el && (el as HTMLElement).isConnected) {
+          setFreeformEl(el as HTMLElement);
+          freeformFound = true;
+        }
       }
+      if (!metaFound) {
+        const el = container.querySelector("#canvas-meta-list");
+        if (el && (el as HTMLElement).isConnected) {
+          setMetaListEl(el as HTMLElement);
+          metaFound = true;
+        }
+      }
+      // Keep polling until BOTH targets resolve. (metaListEl is optional —
+      // if the canvas card class doesn't ship a sidebar, we never find it
+      // and meta cards just won't render. Stop polling after a few seconds
+      // to avoid an infinite poll on canvases without a sidebar.)
+      if (freeformFound && metaFound) clearInterval(poll);
     }, 50);
-    return () => clearInterval(poll);
+    // Hard stop after 3s; freeform alone is sufficient for non-sidebar canvases.
+    const stop = setTimeout(() => clearInterval(poll), 3000);
+    return () => { clearInterval(poll); clearTimeout(stop); };
   }, [canvasCard]);
 
   // ── Real-time updates via WebSocket ─────────────────────
@@ -207,21 +231,25 @@ export default function CanvasCardRuntime({ project }: Props) {
         </div>
       )}
 
-      {/* Portal child cards into the card class's #canvas-freeform container */}
-      {freeformEl &&
-        children.map((file) =>
-          createPortal(
-            <CardFrame
-              key={file.name}
-              project={project}
-              file={file}
-              onEdit={() => handleEdit(file.name)}
-              onDelete={() => handleDelete(file.name)}
-              onUnpin={file.pinned ? () => handleUnpin(file.name) : undefined}
-            />,
-            freeformEl,
-          )
-        )}
+      {/* Portal each child card into the right container based on file.meta:
+          meta cards land in the canvas-meta-list (sidebar), content cards
+          land in canvas-freeform. We portal directly into the correct
+          container so React's reconciler never sees a node move parents. */}
+      {children.map((file) => {
+        const target = file.meta ? metaListEl : freeformEl;
+        if (!target) return null;
+        return createPortal(
+          <CardFrame
+            key={file.name}
+            project={project}
+            file={file}
+            onEdit={() => handleEdit(file.name)}
+            onDelete={() => handleDelete(file.name)}
+            onUnpin={file.pinned ? () => handleUnpin(file.name) : undefined}
+          />,
+          target,
+        );
+      })}
 
       {/* Empty state — only if canvas loaded but no children */}
       {!loading && children.length === 0 && !canvasCard && (

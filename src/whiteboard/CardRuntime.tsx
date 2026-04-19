@@ -127,6 +127,11 @@ function ensureScript(src: string): Promise<void> {
 
     const s = document.createElement("script");
     s.src = src;
+    // Dynamically-created scripts default to async=true (executes whenever
+    // its network completes, regardless of source order). Force false so
+    // multi-script dependency ordering (e.g. THREE before OrbitControls)
+    // is respected even if upstream code happens to insert them concurrently.
+    s.async = false;
     s.onload = () => { loadedExternalScripts.add(src); s.dataset.loaded = "1"; resolve(); };
     s.onerror = () => reject(new Error(`Failed to load ${src}`));
     document.head.appendChild(s);
@@ -198,10 +203,18 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
     const declaredStyles = dependencies?.styles || [];
 
     const preloadDeps = async () => {
-      // Load all declared styles first (so CSS is applied before scripts run)
+      // Load all declared styles in parallel (CSS load order doesn't matter —
+      // CSSOM merges rules regardless of arrival order).
       await Promise.all(declaredStyles.map(ensureStyle));
-      // Then load all declared scripts
-      await Promise.all(declaredScripts.map(ensureScript));
+      // Load declared scripts SEQUENTIALLY — order matters when scripts have
+      // dependencies (e.g., OrbitControls.js requires `window.THREE` to be
+      // defined first). Promise.all would race them, leading to
+      // "Can't find variable: THREE" when the dependent script's network
+      // completes before its dependency's. Sequential = source-order = the
+      // contract card-class authors expect.
+      for (const src of declaredScripts) {
+        await ensureScript(src);
+      }
       // Wait for CSS rules to be fully applied
       if (declaredStyles.length > 0) {
         await waitForStyleApplication();
