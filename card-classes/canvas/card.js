@@ -429,6 +429,11 @@ const unsubDeleted = mica.on('file-deleted', (msg) => {
 });
 mica.onDestroy(unsubDeleted);
 
+const unsubCardClass = mica.on('card-class-changed', () => {
+    buildToolbar();
+});
+mica.onDestroy(unsubCardClass);
+
 // -- Toolbar ------------------------------------------
 // Default content stubs for each card class
 const defaultStubs = {
@@ -442,26 +447,6 @@ const defaultStubs = {
 function buildToolbar() {
     toolbar.innerHTML = '';
 
-    // + New File button (plain text file)
-    const newFileBtn = window.document.createElement('button');
-    newFileBtn.className = 'toolbar-btn';
-    newFileBtn.textContent = '+ File';
-    newFileBtn.title = 'Create a plain file';
-    newFileBtn.addEventListener('click', () => {
-        let filename = prompt('Filename (e.g. notes.txt):');
-        if (!filename) return;
-        filename = filename.trim();
-        if (!filename) return;
-        if (filename.indexOf('.') === -1) filename += '.txt';
-        const path = filename.indexOf('/') === -1 ? canvasRoot + filename : filename;
-        fetch(`/api/files/${encodeURIComponent(path)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: '' }),
-        }).catch(err => { console.error('[canvas] File creation failed:', err); });
-    });
-    toolbar.appendChild(newFileBtn);
-
     // Dynamically load card classes and create buttons
     fetch('/api/card-classes').then(r => r.json()).then(classes => {
         // Skip canvas class (that is us)
@@ -473,7 +458,10 @@ function buildToolbar() {
             btn.className = 'toolbar-btn';
             btn.textContent = `+ ${name.charAt(0).toUpperCase()}${name.slice(1)}`;
             btn.title = classes[name].builtIn ? 'Built-in card class' : 'Project card class';
-            if (!classes[name].builtIn) btn.style.borderColor = 'rgba(74,222,128,0.3)';
+            if (!classes[name].builtIn) {
+                btn.style.borderColor = 'rgba(74,222,128,0.3)';
+                btn.style.fontStyle = 'italic';
+            }
 
             btn.addEventListener('click', () => {
                 const baseName = prompt(`Name for the ${name} card:`, `${name}-${Date.now().toString(36)}`);

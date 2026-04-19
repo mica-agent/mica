@@ -1086,6 +1086,11 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
   }
 });
 
+fileWatcher.on("card-class-change", (event: { type: string; filename: string; project: string }) => {
+  console.log(`[file-watcher:${event.project}] card-class ${event.type}: ${event.filename}`);
+  broadcastToProject(event.project, { type: "card-class-changed", filename: event.filename, change: event.type });
+});
+
 // ── Startup ──────────────────────────────────────────────────
 
 (async () => {

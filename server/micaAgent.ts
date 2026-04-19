@@ -503,9 +503,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           const evtType = evt.type as string;
 
           if (evtType === "assistant" && evt.message) {
-            const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; input?: Record<string, unknown> }> };
+            const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; thinking?: string; input?: Record<string, unknown> }> };
             if (msg.content) {
               for (const block of msg.content) {
+                if (block.type === "thinking") {
+                  const t = block.thinking || "";
+                  console.log(`[mica-agent] THINKING block (${t.length} chars): ${t.slice(0, 120).replace(/\n/g, " ")}...`);
+                }
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[mica-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
                   ctx.broadcast({

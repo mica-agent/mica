@@ -59,7 +59,8 @@ export class FileWatcher extends EventEmitter {
 
       const normalized = filename.split(path.sep).join("/");
       const parts = normalized.split("/");
-      if (parts.some((p) => p.startsWith(".") || IGNORE_DIRS.has(p))) return;
+      const isCardClassPath = parts[0] === ".mica" && parts[1] === "card-classes" && parts.length >= 3;
+      if (!isCardClassPath && parts.some((p) => p.startsWith(".") || IGNORE_DIRS.has(p))) return;
 
       const existingTimer = debounceTimers.get(normalized);
       if (existingTimer) clearTimeout(existingTimer);
@@ -139,21 +140,22 @@ export class FileWatcher extends EventEmitter {
     const w = this.projects.get(project);
     if (!w) return;
     const filePath = path.join(w.watchDir, filename);
+    const eventName = filename.startsWith(".mica/card-classes/") ? "card-class-change" : "file-change";
 
     try {
       const s = await fs.promises.stat(filePath);
       if (s.isDirectory()) return;
 
       if (w.knownFiles.has(filename)) {
-        this.emit("file-change", { type: "changed", filename, project } as FileChangeEvent);
+        this.emit(eventName, { type: "changed", filename, project } as FileChangeEvent);
       } else {
         w.knownFiles.add(filename);
-        this.emit("file-change", { type: "created", filename, project } as FileChangeEvent);
+        this.emit(eventName, { type: "created", filename, project } as FileChangeEvent);
       }
     } catch {
       if (w.knownFiles.has(filename)) {
         w.knownFiles.delete(filename);
-        this.emit("file-change", { type: "deleted", filename, project } as FileChangeEvent);
+        this.emit(eventName, { type: "deleted", filename, project } as FileChangeEvent);
       }
     }
   }
