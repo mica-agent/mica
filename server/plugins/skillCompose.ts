@@ -191,6 +191,9 @@ export function createSkillComposeHandler() {
               max_tokens: 4096,
               temperature: 0.4,
               stream: true,
+              // Skill compose just writes a SKILL.md doc — no need for chain-of-thought
+              // overhead. Disable Qwen3.6+ thinking so all output is the doc itself.
+              chat_template_kwargs: { enable_thinking: false },
             }),
             signal: activeAbort.signal,
           });

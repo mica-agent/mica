@@ -22,6 +22,8 @@ interface RenderedCardData {
 }
 
 interface Props {
+  /** Per-tab active project name. Threaded into every project-scoped API call. */
+  project: string;
   file: CanvasFile;
   onEdit: () => void;
   onDelete: () => void;
@@ -51,7 +53,7 @@ function getFileBadge(type: string): string {
   }
 }
 
-export default function CardFrame({ file, onEdit, onDelete, onUnpin }: Props) {
+export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: Props) {
   const [flipped, setFlipped] = useState(false);
   const [backContent, setBackContent] = useState("");
   const [backLoaded, setBackLoaded] = useState(false);
@@ -72,33 +74,34 @@ export default function CardFrame({ file, onEdit, onDelete, onUnpin }: Props) {
   useEffect(() => {
     const API_BASE = import.meta.env.VITE_MICA_API || "";
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
+    const headers = { "X-Mica-Project": project };
 
     async function loadCardClass() {
-      const classesRes = await fetch(`${API_BASE}/api/card-classes`);
+      const classesRes = await fetch(`${API_BASE}/api/card-classes`, { headers });
       const classes = await classesRes.json() as Record<string, { format?: string }>;
       if (!classes[ext]) return null;
 
       if (classes[ext].format === "html") {
-        const htmlRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.html`);
+        const htmlRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.html`, { headers });
         if (!htmlRes.ok) return null;
         const cardHtml = await htmlRes.text();
 
         let cardCss = "";
         try {
-          const cssRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.css`);
+          const cssRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.css`, { headers });
           if (cssRes.ok) cardCss = await cssRes.text();
         } catch { /* no card.css */ }
 
         let cardJs = "";
         try {
-          const jsRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.js`);
+          const jsRes = await fetch(`${API_BASE}/api/card-classes/${ext}/card.js`, { headers });
           if (jsRes.ok) cardJs = await jsRes.text();
         } catch { /* no card.js */ }
 
         let meta: Record<string, unknown> = {};
         let deps: { scripts?: string[]; styles?: string[] } = {};
         try {
-          const metaRes = await fetch(`${API_BASE}/api/card-classes/${ext}/metadata.json`);
+          const metaRes = await fetch(`${API_BASE}/api/card-classes/${ext}/metadata.json`, { headers });
           if (metaRes.ok) {
             meta = await metaRes.json();
             deps = (meta.dependencies as { scripts?: string[]; styles?: string[] }) || {};
@@ -135,17 +138,17 @@ export default function CardFrame({ file, onEdit, onDelete, onUnpin }: Props) {
         setRenderedCard(null);
         setRenderChecked(true);
       });
-  }, [file.name, file.modifiedAt]);
+  }, [file.name, file.modifiedAt, project]);
 
   // Load text content for fallback renderer (no card class)
   useEffect(() => {
     if (renderedCard?.html || !renderChecked) return;
     if (fileType === "image" || fileType === "binary") return;
 
-    fetchFileContent(file.name)
+    fetchFileContent(project, file.name)
       .then(setTextContent)
       .catch(() => setTextContent("(failed to load)"));
-  }, [file.name, file.modifiedAt, renderChecked, renderedCard, fileType]);
+  }, [file.name, file.modifiedAt, renderChecked, renderedCard, fileType, project]);
 
   // Check overflow
   useEffect(() => {
@@ -157,16 +160,16 @@ export default function CardFrame({ file, onEdit, onDelete, onUnpin }: Props) {
   // Load card back on flip
   useEffect(() => {
     if (flipped && !backLoaded) {
-      fetchCardBack(file.name).then((c) => {
+      fetchCardBack(project, file.name).then((c) => {
         setBackContent(c);
         setBackLoaded(true);
       });
     }
-  }, [flipped, backLoaded, file.name]);
+  }, [flipped, backLoaded, file.name, project]);
 
   const handleSaveBack = useCallback(() => {
-    saveCardBack(file.name, backContent);
-  }, [file.name, backContent]);
+    saveCardBack(project, file.name, backContent);
+  }, [file.name, backContent, project]);
 
   return (
     <div
@@ -282,7 +285,7 @@ export default function CardFrame({ file, onEdit, onDelete, onUnpin }: Props) {
             html={renderedCard.html}
             exports={renderedCard.exports}
             dependencies={renderedCard.dependencies}
-            project="_"
+            project={project}
             canvas="_"
             filename={file.name}
           />

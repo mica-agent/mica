@@ -21,7 +21,12 @@ import CardFrame from "./CardFrame";
 import FileEditor from "./FileEditor";
 import "./whiteboard.css";
 
-export default function CanvasCardRuntime() {
+interface Props {
+  /** Per-tab active project name. Threaded into every project-scoped API call. */
+  project: string;
+}
+
+export default function CanvasCardRuntime({ project }: Props) {
   // Canvas card (the layout surface itself)
   const [canvasCard, setCanvasCard] = useState<RenderedCanvasCard | null>(null);
   // Child files displayed as cards on the canvas
@@ -41,8 +46,8 @@ export default function CanvasCardRuntime() {
   const loadData = useCallback(async (signal?: AbortSignal) => {
     try {
       const [cardResult, childrenResult] = await Promise.allSettled([
-        fetchCanvasCard(signal),
-        fetchFiles(true),
+        fetchCanvasCard(project, signal),
+        fetchFiles(project, true),
       ]);
       if (signal?.aborted) return;
 
@@ -70,7 +75,7 @@ export default function CanvasCardRuntime() {
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, []);
+  }, [project]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -107,7 +112,7 @@ export default function CanvasCardRuntime() {
   useEffect(() => {
     const unsub1 = on("file-created", (_msg: unknown) => {
       // Re-fetch canvas files — server determines membership
-      fetchFiles(true).then((files) => setChildren(files)).catch(() => {});
+      fetchFiles(project, true).then((files) => setChildren(files)).catch(() => {});
     });
 
     const unsub2 = on("file-changed", (msg: unknown) => {
@@ -129,44 +134,44 @@ export default function CanvasCardRuntime() {
     });
 
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, []);
+  }, [project]);
 
   // ── File operations (for modals) ────────────────────────
 
   const handleSave = useCallback(async (content: string, filename?: string) => {
     const name = filename || editingFile?.name;
     if (!name) return;
-    await saveFile(name, content);
+    await saveFile(project, name, content);
     setEditingFile(null);
     setCreatingFile(false);
-  }, [editingFile]);
+  }, [editingFile, project]);
 
   const handleDelete = useCallback(async (filename: string) => {
-    await deleteFile(filename);
-  }, []);
+    await deleteFile(project, filename);
+  }, [project]);
 
   const handleEdit = useCallback(async (filename: string) => {
     try {
-      const content = await fetchFileContent(filename);
+      const content = await fetchFileContent(project, filename);
       setEditingFile({ name: filename, size: content.length, content });
     } catch (err) {
       console.error("Failed to fetch file for editing:", err);
     }
-  }, []);
+  }, [project]);
 
   const handleUnpin = useCallback(async (filename: string) => {
     try {
       const API_BASE = import.meta.env.VITE_MICA_API || "";
       await fetch(`${API_BASE}/api/canvas/pin`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Mica-Project": project },
         body: JSON.stringify({ filename }),
       });
       setChildren((prev) => prev.filter((f) => f.name !== filename));
     } catch (err) {
       console.error("Failed to unpin:", err);
     }
-  }, []);
+  }, [project]);
 
   // ── Render ──────────────────────────────────────────────
 
@@ -187,7 +192,7 @@ export default function CanvasCardRuntime() {
             html={canvasCard.html}
             exports={canvasCard.exports}
             dependencies={canvasCard.dependencies}
-            project="_"
+            project={project}
             canvas="_"
             filename="__canvas__"
           />
@@ -200,6 +205,7 @@ export default function CanvasCardRuntime() {
           createPortal(
             <CardFrame
               key={file.name}
+              project={project}
               file={file}
               onEdit={() => handleEdit(file.name)}
               onDelete={() => handleDelete(file.name)}

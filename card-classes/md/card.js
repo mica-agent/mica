@@ -3,10 +3,13 @@
 
 const content = await mica.getContent();
 
-// Strip YAML frontmatter (--- ... ---) before editing, preserve for save
+// Strip YAML frontmatter (--- ... ---) before editing, preserve for save.
+// Must be anchored to the very start of the file (NO /m flag) — otherwise it
+// would match a mid-file `---` horizontal rule and eat content up to the next
+// `---` (which can be inside a table row like `|---|---|`).
 let frontmatter = '';
-const fmMatch = content.match(/^(---[\s\S]*?---\n*)/m);
-if (fmMatch) frontmatter = fmMatch[1];
+const fmMatch = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+if (fmMatch) frontmatter = fmMatch[0];
 const body = fmMatch ? content.slice(fmMatch[0].length) : content;
 
 const editorEl = container.querySelector('#editor');

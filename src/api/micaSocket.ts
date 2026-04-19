@@ -101,6 +101,10 @@ export function connect(url?: string): void {
     console.log("[mica-socket] Connected");
     wasEverConnected = true;
     setConnected(true);
+    // Re-subscribe after reconnect so the file watcher rejoins this tab's project.
+    if (subscribedProject) {
+      try { sendMsg({ type: "subscribe-project", project: subscribedProject }); } catch { /* ignored */ }
+    }
   };
 
   ws.onclose = () => {
@@ -273,6 +277,31 @@ export function send(
   waitForConnection().then(() => {
     sendMsg({ type: "send", project, canvas, filename, fn, args });
   }).catch((err) => console.error("[mica-socket] send failed:", err));
+}
+
+// Per-tab subscribed project. Persisted across reconnects so the WS
+// auto-resubscribes on `onopen`. Server uses this to:
+//   1. Add/release a watcher for this project (ref-counted)
+//   2. Filter file-* broadcasts to subscribers only
+let subscribedProject: string | null = null;
+
+export function subscribeProject(project: string): void {
+  if (subscribedProject === project) return;
+  const prev = subscribedProject;
+  subscribedProject = project;
+  waitForConnection().then(() => {
+    if (prev) sendMsg({ type: "unsubscribe-project", project: prev });
+    sendMsg({ type: "subscribe-project", project });
+  }).catch((err) => console.error("[mica-socket] subscribeProject failed:", err));
+}
+
+export function unsubscribeProject(): void {
+  if (!subscribedProject) return;
+  const prev = subscribedProject;
+  subscribedProject = null;
+  waitForConnection().then(() => {
+    sendMsg({ type: "unsubscribe-project", project: prev });
+  }).catch(() => { /* socket closed; server cleans up on disconnect */ });
 }
 
 export function on(event: string, callback: (data: unknown) => void): () => void {

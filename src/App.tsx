@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWorkspace, fetchProjects, openProjectApi } from './api/canvasFiles';
 import type { WorkspaceInfo, ProjectInfo } from './api/canvasFiles';
-import { connect as connectMicaSocket, onConnectionChange } from './api/micaSocket';
+import { connect as connectMicaSocket, onConnectionChange, subscribeProject, unsubscribeProject } from './api/micaSocket';
 import CanvasCardRuntime from './whiteboard/CanvasCardRuntime';
 import ProjectList from './ProjectList';
 import './App.css';
@@ -18,6 +18,17 @@ export default function App() {
     setWsConnected(val);
     if (val) setWasConnected(true);
   }), []);
+
+  // Tell the server which project this tab is subscribed to. Server uses this
+  // to route file-watcher events to the right tabs (and to ref-count the
+  // multi-project file watcher).
+  useEffect(() => {
+    if (activeProject) {
+      subscribeProject(activeProject.name);
+    } else {
+      unsubscribeProject();
+    }
+  }, [activeProject]);
 
   useEffect(() => {
     fetchWorkspace().then(setWorkspace).catch(console.error);
@@ -106,7 +117,7 @@ export default function App() {
       {/* Content */}
       <div style={{ flex: 1, overflow: 'auto', overflowX: 'hidden' }}>
         {activeProject ? (
-          <CanvasCardRuntime key={activeProject.name} />
+          <CanvasCardRuntime key={activeProject.name} project={activeProject.name} />
         ) : (
           <ProjectList
             workspaceName={workspace.name}

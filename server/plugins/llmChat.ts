@@ -73,6 +73,10 @@ export function createLlmChatHandler() {
               max_tokens: 2048,
               temperature: 0.7,
               stream: true,
+              // Qwen3.6+ has thinking mode on by default — turn it off for direct chat
+              // so the model writes reply tokens immediately instead of burning the
+              // budget on reasoning. Templates that don't recognize the field ignore it.
+              chat_template_kwargs: { enable_thinking: false },
             }),
             signal: activeAbort.signal,
           });

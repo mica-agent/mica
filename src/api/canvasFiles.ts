@@ -1,6 +1,21 @@
 // Frontend API client for Mica — multi-project workspace.
+//
+// Per-tab project scoping: every request that operates on a specific project
+// passes `project` as the first argument. The wrapper `projFetch` injects an
+// `X-Mica-Project: <project>` header so the server routes to the right project,
+// regardless of what other tabs in the same browser are doing.
+//
+// Endpoints that are NOT project-scoped (workspace, project listing/create/etc.)
+// use the bare `fetch` and don't need the header.
 
 const API_BASE = import.meta.env.VITE_MICA_API || "";
+
+/** Wrap fetch with the X-Mica-Project header for project-scoped endpoints. */
+function projFetch(project: string, url: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  headers.set("X-Mica-Project", project);
+  return fetch(url, { ...init, headers });
+}
 
 export interface WorkspaceInfo {
   name: string;
@@ -26,7 +41,7 @@ export interface CanvasFile {
   pinned?: boolean;  // true if pinned to canvas (not a canvasRoot child)
 }
 
-// ── Workspace ───────────────────────────────────────────
+// ── Workspace (not project-scoped) ──────────────────────
 
 export async function fetchWorkspace(): Promise<WorkspaceInfo> {
   const res = await fetch(`${API_BASE}/api/workspace`);
@@ -34,7 +49,7 @@ export async function fetchWorkspace(): Promise<WorkspaceInfo> {
   return res.json();
 }
 
-// ── Projects ────────────────────────────────────────────
+// ── Projects (not project-scoped — operate on the project list) ─────────
 
 export async function fetchProjects(): Promise<ProjectInfo[]> {
   const res = await fetch(`${API_BASE}/api/projects`);
@@ -117,8 +132,9 @@ export async function deleteProjectApi(project: string): Promise<void> {
   }
 }
 
-export async function fetchProject(): Promise<ProjectInfo> {
-  const res = await fetch(`${API_BASE}/api/project`);
+/** Get info about a specific project (returns workspace info if project is empty/null). */
+export async function fetchProject(project: string): Promise<ProjectInfo> {
+  const res = await projFetch(project, `${API_BASE}/api/project`);
   if (!res.ok) throw new Error(`Failed to fetch project: ${res.statusText}`);
   return res.json();
 }
@@ -132,8 +148,8 @@ export interface RenderedCanvasCard {
   meta: Record<string, string>;
 }
 
-export async function fetchCanvasCard(signal?: AbortSignal): Promise<RenderedCanvasCard> {
-  const res = await fetch(`${API_BASE}/api/canvas-card`, { signal });
+export async function fetchCanvasCard(project: string, signal?: AbortSignal): Promise<RenderedCanvasCard> {
+  const res = await projFetch(project, `${API_BASE}/api/canvas-card`, { signal });
   if (!res.ok) throw new Error(`Failed to fetch canvas card: ${res.statusText}`);
   return res.json();
 }
@@ -141,33 +157,35 @@ export async function fetchCanvasCard(signal?: AbortSignal): Promise<RenderedCan
 // ── Files ────────────────────────────────────────────────
 
 /** Fetch file list (metadata only — name, size, modifiedAt). */
-export async function fetchFiles(canvas?: boolean): Promise<CanvasFile[]> {
+export async function fetchFiles(project: string, canvas?: boolean): Promise<CanvasFile[]> {
   const q = canvas ? "?canvas=true" : "";
-  const res = await fetch(`${API_BASE}/api/files${q}`);
+  const res = await projFetch(project, `${API_BASE}/api/files${q}`);
   if (!res.ok) throw new Error(`Failed to fetch files: ${res.statusText}`);
   return res.json();
 }
 
 /** Fetch raw file content as text. */
-export async function fetchFileContent(filename: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`);
+export async function fetchFileContent(project: string, filename: string): Promise<string> {
+  const res = await projFetch(project, `${API_BASE}/api/files/${encodeURIComponent(filename)}`);
   if (!res.ok) throw new Error(`Failed to fetch file: ${res.statusText}`);
   return res.text();
 }
 
 /** Fetch file metadata + content (convenience wrapper). */
-export async function fetchFile(filename: string): Promise<CanvasFile> {
-  const content = await fetchFileContent(filename);
+export async function fetchFile(project: string, filename: string): Promise<CanvasFile> {
+  const content = await fetchFileContent(project, filename);
   return { name: filename, size: content.length, content };
 }
 
-/** Get the raw file URL (for binary files — images, PDFs, etc.). */
+/** Get the raw file URL (for binary files — images, PDFs, etc.).
+ *  Note: returns just the URL; binary fetches won't auto-include the project header.
+ *  For project-scoped binary fetches use `projFetch` directly or set a header on `<img>`. */
 export function getFileUrl(filename: string): string {
   return `${API_BASE}/api/files/${encodeURIComponent(filename)}`;
 }
 
-export async function saveFile(filename: string, content: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
+export async function saveFile(project: string, filename: string, content: string): Promise<void> {
+  const res = await projFetch(project, `${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
@@ -175,8 +193,8 @@ export async function saveFile(filename: string, content: string): Promise<void>
   if (!res.ok) throw new Error(`Failed to save file: ${res.statusText}`);
 }
 
-export async function deleteFile(filename: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
+export async function deleteFile(project: string, filename: string): Promise<void> {
+  const res = await projFetch(project, `${API_BASE}/api/files/${encodeURIComponent(filename)}`, {
     method: "DELETE",
   });
   if (!res.ok) throw new Error(`Failed to delete file: ${res.statusText}`);
@@ -192,8 +210,8 @@ export interface RenderedCard {
   meta: Record<string, string>;
 }
 
-export async function fetchRenderedCard(project: string, canvas: string, filename: string): Promise<RenderedCard> {
-  const res = await fetch(`${API_BASE}/api/rendered-card/${encodeURIComponent(filename)}`);
+export async function fetchRenderedCard(project: string, _canvas: string, filename: string): Promise<RenderedCard> {
+  const res = await projFetch(project, `${API_BASE}/api/rendered-card/${encodeURIComponent(filename)}`);
   if (!res.ok) throw new Error(`Failed to fetch rendered card: ${res.statusText}`);
   return res.json();
 }
@@ -210,16 +228,16 @@ export function getDeviceClass(): string {
 
 // ── Layout (per device class) ────────────────────────────
 
-export async function fetchLayout(): Promise<Record<string, unknown>> {
+export async function fetchLayout(project: string): Promise<Record<string, unknown>> {
   const device = getDeviceClass();
-  const res = await fetch(`${API_BASE}/api/layout?device=${device}`);
+  const res = await projFetch(project, `${API_BASE}/api/layout?device=${device}`);
   if (!res.ok) return {};
   return res.json();
 }
 
-export async function saveLayout(data: Record<string, unknown>): Promise<void> {
+export async function saveLayout(project: string, data: Record<string, unknown>): Promise<void> {
   const device = getDeviceClass();
-  await fetch(`${API_BASE}/api/layout?device=${device}`, {
+  await projFetch(project, `${API_BASE}/api/layout?device=${device}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -236,15 +254,15 @@ export function broadcastFocus(filename: string): void {
 
 // ── Canvas Back (project-level AI context) ───────────────
 
-export async function fetchCanvasBack(): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/canvas-back`);
+export async function fetchCanvasBack(project: string): Promise<string> {
+  const res = await projFetch(project, `${API_BASE}/api/canvas-back`);
   if (!res.ok) return "";
   const data = await res.json();
   return data.content || "";
 }
 
-export async function saveCanvasBack(content: string): Promise<void> {
-  await fetch(`${API_BASE}/api/canvas-back`, {
+export async function saveCanvasBack(project: string, content: string): Promise<void> {
+  await projFetch(project, `${API_BASE}/api/canvas-back`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
@@ -253,15 +271,15 @@ export async function saveCanvasBack(content: string): Promise<void> {
 
 // ── Card Backs (per-card AI context) ─────────────────────
 
-export async function fetchCardBack(filename: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/card-back/${encodeURIComponent(filename)}`);
+export async function fetchCardBack(project: string, filename: string): Promise<string> {
+  const res = await projFetch(project, `${API_BASE}/api/card-back/${encodeURIComponent(filename)}`);
   if (!res.ok) return "";
   const data = await res.json();
   return data.content || "";
 }
 
-export async function saveCardBack(filename: string, content: string): Promise<void> {
-  await fetch(`${API_BASE}/api/card-back/${encodeURIComponent(filename)}`, {
+export async function saveCardBack(project: string, filename: string, content: string): Promise<void> {
+  await projFetch(project, `${API_BASE}/api/card-back/${encodeURIComponent(filename)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),

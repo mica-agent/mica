@@ -88,13 +88,30 @@ app.use((_req, res, next) => {
 });
 
 // ── Active project tracking ─────────────────────────────────
+// Phase 1: per-tab project comes from `X-Mica-Project` header on every API call.
+// `activeProject` global remains as a fallback for callers that don't set the
+// header (curl, legacy callers). Phase 3 will remove the fallback and 400.
 
 let activeProject: string | null = null;
 const fileWatcher = new FileWatcher();
 
+/** Resolve the project for an HTTP request.
+ *  Preferred: `X-Mica-Project` header set by the client per tab.
+ *  Fallback (Phase 1): the server's global `activeProject`.
+ *  Returns null if neither is available. */
+function getRequestProject(req: express.Request): string | null {
+  const header = req.header("x-mica-project");
+  if (header && typeof header === "string" && header.trim()) {
+    return header.trim();
+  }
+  return activeProject;
+}
+
 function switchProject(projectName: string) {
-  if (activeProject === projectName) return;
-  fileWatcher.stop();
+  // Phase 1/2: setActiveProject() updates module-level globals in plugins that
+  // haven't been migrated to per-session ctx.project yet (chat/exec/pty/channel).
+  // The file watcher is now multi-project + ref-counted; switching no longer
+  // tears down other projects' watches. Phase 3 removes these globals entirely.
   activeProject = projectName;
   setChatProject(projectName);
   setAgentProject(projectName);
@@ -102,10 +119,6 @@ function switchProject(projectName: string) {
   setExecProject(projectName);
   setPtyProject(projectName);
   setChannelProject(projectName);
-  fileWatcher.setWatchDir(projectDir(projectName));
-  fileWatcher.start().catch((err) => {
-    console.error(`[startup] File watcher failed for ${projectName}:`, (err as Error).message);
-  });
   console.log(`[mica] Active project: ${projectName}`);
 }
 
@@ -117,14 +130,15 @@ app.get("/api/workspace", async (_req, res) => {
   res.json({ name, path: WORKSPACE_DIR });
 });
 
-// Backwards-compatible: /api/project returns active project info
-app.get("/api/project", async (_req, res) => {
-  if (!activeProject) {
+// Backwards-compatible: /api/project returns active project info for this tab
+app.get("/api/project", async (req, res) => {
+  const proj = getRequestProject(req);
+  if (!proj) {
     res.json({ name: getWorkspaceName(), path: WORKSPACE_DIR });
     return;
   }
-  const name = await getProjectName(activeProject);
-  res.json({ name, path: projectDir(activeProject), project: activeProject });
+  const name = await getProjectName(proj);
+  res.json({ name, path: projectDir(proj), project: proj });
 });
 
 // ── Projects ────────────────────────────────────────────────
@@ -198,11 +212,12 @@ app.put("/api/projects/:project/rename", async (req, res) => {
   }
   try {
     const oldName = req.params.project;
-    // If this is the active project, stop watching first
-    if (activeProject === oldName) {
-      fileWatcher.stop();
-      activeProject = null;
+    // Force-release the watcher for this project before mutating its directory.
+    // (Subscribers still attached at the WS level will be cleaned up on disconnect.)
+    while (fileWatcher.watchedProjects().includes(oldName)) {
+      fileWatcher.releaseProject(oldName);
     }
+    if (activeProject === oldName) activeProject = null;
     await renameProject(oldName, newName);
     res.json({ success: true, name: newName });
   } catch (err) {
@@ -214,10 +229,10 @@ app.put("/api/projects/:project/rename", async (req, res) => {
 app.delete("/api/projects/:project", async (req, res) => {
   try {
     const name = req.params.project;
-    if (activeProject === name) {
-      fileWatcher.stop();
-      activeProject = null;
+    while (fileWatcher.watchedProjects().includes(name)) {
+      fileWatcher.releaseProject(name);
     }
+    if (activeProject === name) activeProject = null;
     await deleteProject(name);
     res.json({ success: true });
   } catch (err) {
@@ -253,9 +268,9 @@ app.post("/api/projects/:project/open", async (req, res) => {
 const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
 
 // Resolve card class directory: project .mica/card-classes/:name first, then built-in
-function resolveCardClassDir(className: string): string | null {
-  if (activeProject) {
-    const projectScoped = join(micaDir(activeProject), "card-classes", className);
+function resolveCardClassDir(className: string, project: string | null): string | null {
+  if (project) {
+    const projectScoped = join(micaDir(project), "card-classes", className);
     if (existsSync(join(projectScoped, "card.html")) || existsSync(join(projectScoped, "render.js"))) return projectScoped;
   }
   const builtIn = join(CARD_CLASSES_DIR, className);
@@ -265,7 +280,7 @@ function resolveCardClassDir(className: string): string | null {
 
 // Serve any file from a card class directory
 app.get("/api/card-classes/:className/:file", async (req, res) => {
-  const dir = resolveCardClassDir(req.params.className);
+  const dir = resolveCardClassDir(req.params.className, getRequestProject(req));
   if (!dir) {
     res.status(404).json({ error: `Card class not found: ${req.params.className}` });
     return;
@@ -290,7 +305,7 @@ app.get("/api/card-classes/:className/:file", async (req, res) => {
 });
 
 // List available card classes
-app.get("/api/card-classes", async (_req, res) => {
+app.get("/api/card-classes", async (req, res) => {
   const { readdir: rd } = await import("fs/promises");
   const classes: Record<string, unknown> = {};
 
@@ -308,9 +323,10 @@ app.get("/api/card-classes", async (_req, res) => {
   } catch { /* no card-classes dir */ }
 
   // Project-scoped (overrides built-in)
-  if (activeProject) {
+  const reqProject = getRequestProject(req);
+  if (reqProject) {
     try {
-      const projDir = join(micaDir(activeProject), "card-classes");
+      const projDir = join(micaDir(reqProject), "card-classes");
       const entries = await rd(projDir);
       for (const name of entries) {
         const dir = join(projDir, name);
@@ -327,16 +343,17 @@ app.get("/api/card-classes", async (_req, res) => {
 });
 
 // Render the canvas card (assembles card.html + card.css + card.js)
-app.get("/api/canvas-card", async (_req, res) => {
+app.get("/api/canvas-card", async (req, res) => {
   try {
+    const reqProject = getRequestProject(req);
     let canvasClass = "canvas";
-    if (activeProject) {
+    if (reqProject) {
       try {
-        const cfg = JSON.parse(await readFile(join(micaDir(activeProject), "config.json"), "utf-8"));
+        const cfg = JSON.parse(await readFile(join(micaDir(reqProject), "config.json"), "utf-8"));
         if (cfg.canvasClass) canvasClass = cfg.canvasClass;
       } catch { /* use default */ }
     }
-    const classDir = resolveCardClassDir(canvasClass);
+    const classDir = resolveCardClassDir(canvasClass, reqProject);
     if (!classDir) throw new Error(`Canvas card class not found: ${canvasClass}`);
 
     const cardHtml = await readFile(join(classDir, "card.html"), "utf-8");
@@ -385,7 +402,7 @@ app.post("/api/cards/:filename/ok", (_req, res) => {
 // ?canvas=true returns only canvas-visible files (direct children of canvasRoot + pinned)
 app.get("/api/files", async (req, res) => {
   try {
-    const proj = activeProject || undefined;
+    const proj = getRequestProject(req) || undefined;
     if (req.query.canvas === "true") {
       res.json(await listCanvasFiles(proj));
     } else {
@@ -401,7 +418,7 @@ app.post("/api/canvas/pin", async (req, res) => {
   try {
     const { filename } = req.body as { filename?: string };
     if (!filename) { res.status(400).json({ error: "filename required" }); return; }
-    const proj = activeProject || undefined;
+    const proj = getRequestProject(req) || undefined;
     const cfg = await readCanvasConfig(proj);
     if (!cfg.pinned.includes(filename)) {
       cfg.pinned.push(filename);
@@ -417,7 +434,7 @@ app.delete("/api/canvas/pin", async (req, res) => {
   try {
     const { filename } = req.body as { filename?: string };
     if (!filename) { res.status(400).json({ error: "filename required" }); return; }
-    const proj = activeProject || undefined;
+    const proj = getRequestProject(req) || undefined;
     const cfg = await readCanvasConfig(proj);
     cfg.pinned = cfg.pinned.filter((f: string) => f !== filename);
     await updateCanvasConfig(proj, { pinned: cfg.pinned });
@@ -428,9 +445,9 @@ app.delete("/api/canvas/pin", async (req, res) => {
 });
 
 // Get/update canvas config
-app.get("/api/canvas/config", async (_req, res) => {
+app.get("/api/canvas/config", async (req, res) => {
   try {
-    res.json(await readCanvasConfig(activeProject || undefined));
+    res.json(await readCanvasConfig(getRequestProject(req) || undefined));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -439,7 +456,7 @@ app.get("/api/canvas/config", async (_req, res) => {
 app.put("/api/canvas/config", async (req, res) => {
   try {
     const updates = req.body as { canvasRoot?: string; pinned?: string[] };
-    await updateCanvasConfig(activeProject || undefined, updates);
+    await updateCanvasConfig(getRequestProject(req) || undefined, updates);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -453,9 +470,9 @@ app.get("/api/llm/status", (_req, res) => {
 
 // ── Skills (project-scoped) ──────────────────────────────────
 
-app.get("/api/skills", async (_req, res) => {
+app.get("/api/skills", async (req, res) => {
   try {
-    res.json(await listSkills(activeProject || undefined));
+    res.json(await listSkills(getRequestProject(req) || undefined));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -463,11 +480,12 @@ app.get("/api/skills", async (_req, res) => {
 
 app.get("/api/skills/:name", async (req, res) => {
   try {
-    if (!activeProject) {
+    const proj = getRequestProject(req);
+    if (!proj) {
       res.status(400).json({ error: "No active project" });
       return;
     }
-    const content = await readSkill(req.params.name, activeProject);
+    const content = await readSkill(req.params.name, proj);
     res.type("text/markdown").send(content);
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
@@ -476,7 +494,8 @@ app.get("/api/skills/:name", async (req, res) => {
 
 app.put("/api/skills/:name", async (req, res) => {
   try {
-    if (!activeProject) {
+    const proj = getRequestProject(req);
+    if (!proj) {
       res.status(400).json({ error: "No active project" });
       return;
     }
@@ -485,7 +504,7 @@ app.put("/api/skills/:name", async (req, res) => {
       res.status(400).json({ error: "content (string) required" });
       return;
     }
-    await writeSkill(req.params.name, content, activeProject);
+    await writeSkill(req.params.name, content, proj);
     res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -494,11 +513,12 @@ app.put("/api/skills/:name", async (req, res) => {
 
 app.delete("/api/skills/:name", async (req, res) => {
   try {
-    if (!activeProject) {
+    const proj = getRequestProject(req);
+    if (!proj) {
       res.status(400).json({ error: "No active project" });
       return;
     }
-    await deleteSkill(req.params.name, activeProject);
+    await deleteSkill(req.params.name, proj);
     res.json({ ok: true });
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
@@ -519,7 +539,7 @@ app.get("/api/templates", async (_req, res) => {
 app.get("/api/files/:filename", async (req, res) => {
   const filename = req.params.filename;
   try {
-    const filePath = resolveFilePath(filename, activeProject || undefined);
+    const filePath = resolveFilePath(filename, getRequestProject(req) || undefined);
     const fileStat = await fsStat(filePath);
     if (!fileStat.isFile()) {
       res.status(404).json({ error: "Not a file" });
@@ -549,7 +569,7 @@ app.put("/api/files/:filename", async (req, res) => {
   }
   try {
     if (source) writeSourceTracker.set(filename, source);
-    await writeProjectFile(filename, content, activeProject || undefined);
+    await writeProjectFile(filename, content, getRequestProject(req) || undefined);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -562,7 +582,8 @@ app.put("/api/files/:filename", async (req, res) => {
 app.post("/api/files/:filename/upload", async (req, res) => {
   const filename = req.params.filename;
   const source = typeof req.query.source === "string" ? req.query.source : undefined;
-  const root = activeProject ? join(WORKSPACE_DIR, activeProject) : WORKSPACE_DIR;
+  const reqProject = getRequestProject(req);
+  const root = reqProject ? join(WORKSPACE_DIR, reqProject) : WORKSPACE_DIR;
   const filePath = join(root, filename);
   if (!filePath.startsWith(root + "/")) {
     res.status(400).json({ error: "Invalid filename" });
@@ -592,7 +613,7 @@ app.post("/api/files/:filename/upload", async (req, res) => {
 app.delete("/api/files/:filename", async (req, res) => {
   const filename = req.params.filename;
   try {
-    await deleteProjectFile(filename, activeProject || undefined);
+    await deleteProjectFile(filename, getRequestProject(req) || undefined);
     res.json({ success: true });
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
@@ -602,10 +623,11 @@ app.delete("/api/files/:filename", async (req, res) => {
 // ── Layout persistence (.mica/layout.json, keyed by device class) ────
 
 app.get("/api/layout", async (req, res) => {
-  if (!activeProject) { res.json({}); return; }
+  const proj = getRequestProject(req);
+  if (!proj) { res.json({}); return; }
   const device = (req.query.device as string) || "desktop";
   try {
-    const data = await readFile(join(micaDir(activeProject), "layout.json"), "utf-8");
+    const data = await readFile(join(micaDir(proj), "layout.json"), "utf-8");
     const all = JSON.parse(data);
     if (all[device] && typeof all[device] === "object" && all[device].cards) {
       res.json(all[device]);
@@ -620,10 +642,11 @@ app.get("/api/layout", async (req, res) => {
 });
 
 app.put("/api/layout", async (req, res) => {
-  if (!activeProject) { res.status(400).json({ error: "No active project" }); return; }
+  const proj = getRequestProject(req);
+  if (!proj) { res.status(400).json({ error: "No active project" }); return; }
   const device = (req.query.device as string) || "desktop";
   try {
-    const dir = micaDir(activeProject);
+    const dir = micaDir(proj);
     await mkdir(dir, { recursive: true });
     const source = req.body.source;
     const dataToStore = { ...req.body };
@@ -649,10 +672,11 @@ app.put("/api/layout", async (req, res) => {
 
 // ── Canvas Back (project-level AI context) ───────────────────
 
-app.get("/api/canvas-back", async (_req, res) => {
-  if (!activeProject) { res.json({ content: "" }); return; }
+app.get("/api/canvas-back", async (req, res) => {
+  const proj = getRequestProject(req);
+  if (!proj) { res.json({ content: "" }); return; }
   try {
-    const content = await readFile(join(micaDir(activeProject), "canvas-back.md"), "utf-8");
+    const content = await readFile(join(micaDir(proj), "canvas-back.md"), "utf-8");
     res.json({ content });
   } catch {
     res.json({ content: "" });
@@ -660,9 +684,10 @@ app.get("/api/canvas-back", async (_req, res) => {
 });
 
 app.put("/api/canvas-back", async (req, res) => {
-  if (!activeProject) { res.status(400).json({ error: "No active project" }); return; }
+  const proj = getRequestProject(req);
+  if (!proj) { res.status(400).json({ error: "No active project" }); return; }
   try {
-    const dir = micaDir(activeProject);
+    const dir = micaDir(proj);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "canvas-back.md"), req.body.content || "", "utf-8");
     res.json({ success: true });
@@ -674,12 +699,13 @@ app.put("/api/canvas-back", async (req, res) => {
 // ── Card Backs (per-card AI context) ─────────────────────────
 
 app.get("/api/card-back/:filename", async (req, res) => {
-  if (!activeProject) { res.json({ content: "" }); return; }
+  const proj = getRequestProject(req);
+  if (!proj) { res.json({ content: "" }); return; }
   const filename = req.params.filename;
   try {
     // Replace path separators with -- for flat storage
     const safeFilename = filename.replace(/\//g, "--") + ".context.md";
-    const content = await readFile(join(micaDir(activeProject), "cards", safeFilename), "utf-8");
+    const content = await readFile(join(micaDir(proj), "cards", safeFilename), "utf-8");
     res.json({ content });
   } catch {
     res.json({ content: "" });
@@ -687,10 +713,11 @@ app.get("/api/card-back/:filename", async (req, res) => {
 });
 
 app.put("/api/card-back/:filename", async (req, res) => {
-  if (!activeProject) { res.status(400).json({ error: "No active project" }); return; }
+  const proj = getRequestProject(req);
+  if (!proj) { res.status(400).json({ error: "No active project" }); return; }
   const filename = req.params.filename;
   try {
-    const cardsDir = join(micaDir(activeProject), "cards");
+    const cardsDir = join(micaDir(proj), "cards");
     await mkdir(cardsDir, { recursive: true });
     const safeFilename = filename.replace(/\//g, "--") + ".context.md";
     await writeFile(join(cardsDir, safeFilename), req.body.content || "", "utf-8");
@@ -747,6 +774,9 @@ const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>();
 const wsCardChannels = new Map<WebSocket, Map<string, string>>();
+// Per-WS subscribed project (one project per tab). Used by broadcastToProject
+// to fan out file events only to interested clients.
+const wsProjects = new Map<WebSocket, string>();
 
 const channelManager = new ChannelManager();
 
@@ -759,6 +789,12 @@ wss.on("connection", (ws) => {
 
   const cleanupWsChannels = () => {
     wsClients.delete(ws);
+    // Drop file-watcher ref for this client's subscribed project
+    const subscribed = wsProjects.get(ws);
+    if (subscribed) {
+      wsProjects.delete(ws);
+      fileWatcher.releaseProject(subscribed);
+    }
     const channels = wsChannels.get(ws);
     if (channels) {
       for (const channelId of channels) {
@@ -793,6 +829,31 @@ wss.on("connection", (ws) => {
         const event = (msg as { event?: string }).event;
         const data = (msg as { data?: Record<string, unknown> }).data || {};
         if (event) broadcast({ type: event, ...data });
+        break;
+      }
+
+      case "subscribe-project": {
+        const proj = (msg as { project?: string }).project;
+        if (!proj) break;
+        const prev = wsProjects.get(ws);
+        if (prev === proj) break;
+        if (prev) fileWatcher.releaseProject(prev);
+        wsProjects.set(ws, proj);
+        try {
+          await fileWatcher.addProject(proj, projectDir(proj));
+        } catch (err) {
+          console.error(`[ws] subscribe-project ${proj} failed:`, (err as Error).message);
+        }
+        console.log(`[ws] client subscribed to project: ${proj} (now watching: ${fileWatcher.watchedProjects().join(", ")})`);
+        break;
+      }
+
+      case "unsubscribe-project": {
+        const prev = wsProjects.get(ws);
+        if (!prev) break;
+        wsProjects.delete(ws);
+        fileWatcher.releaseProject(prev);
+        console.log(`[ws] client unsubscribed from project: ${prev}`);
         break;
       }
 
@@ -874,13 +935,25 @@ function broadcast(msg: Record<string, unknown>) {
   }
 }
 
+/** Send a message only to WS clients subscribed to the given project. */
+function broadcastToProject(project: string, msg: Record<string, unknown>) {
+  const data = JSON.stringify(msg);
+  let count = 0;
+  for (const [ws, proj] of wsProjects) {
+    if (proj !== project) continue;
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    try { ws.send(data); count++; } catch { wsClients.delete(ws); wsProjects.delete(ws); }
+  }
+  console.log(`[broadcast:${project}] ${msg.type} → ${count} subscribers`);
+}
+
 // ── File Watcher Events ──────────────────────────────────────
 
-fileWatcher.on("file-change", async (event: { type: string; filename: string }) => {
-  console.log(`[file-watcher] ${event.type}: ${event.filename}`);
+fileWatcher.on("file-change", async (event: { type: string; filename: string; project: string }) => {
+  console.log(`[file-watcher:${event.project}] ${event.type}: ${event.filename}`);
 
   if (event.type === "deleted") {
-    broadcast({ type: "file-deleted", filename: event.filename });
+    broadcastToProject(event.project, { type: "file-deleted", filename: event.filename });
     // Tear down any channel session keyed to this file (chat/claude/terminal/etc.).
     // Otherwise the handler stays alive forever — including its SDK subprocess —
     // and keeps consuming resources as file-watcher events flow in.
@@ -889,13 +962,13 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   }
 
   if (event.type === "created") {
-    broadcast({ type: "file-created", filename: event.filename });
+    broadcastToProject(event.project, { type: "file-created", filename: event.filename });
   }
 
   if (event.type === "changed") {
     const source = writeSourceTracker.get(event.filename) || "external";
     writeSourceTracker.delete(event.filename);
-    broadcast({ type: "file-changed", filename: event.filename, source });
+    broadcastToProject(event.project, { type: "file-changed", filename: event.filename, source });
   }
 });
 
@@ -938,7 +1011,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string }) 
   const shutdown = async () => {
     console.log("\n[shutdown] Stopping...");
     channelManager.destroyAll();
-    fileWatcher.stop();
+    fileWatcher.stopAll();
     await stopLlamaServer();
     process.exit(0);
   };

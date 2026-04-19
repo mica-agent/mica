@@ -8,9 +8,13 @@
 import { spawn, type ChildProcess } from "child_process";
 
 const DEFAULT_PORT = 8012;
-// HuggingFace repo + file. Default = Unsloth's dynamic Q4 (best quality 4-bit on Spark).
-const HF_REPO = process.env.LLAMA_HF_REPO || "unsloth/Qwen3-Coder-Next-GGUF";
-const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3-Coder-Next-UD-Q4_K_XL.gguf";
+// HuggingFace repo + file. Default = Qwen3.6-35B-A3B (April 2026 release).
+// Hybrid Linear+Gated Attention MoE: 35B total / 3B active. Strong code +
+// agentic abilities (73.4% SWE-Bench). Override via LLAMA_HF_REPO + LLAMA_HF_FILE
+// to A/B against Qwen3-Coder-Next ("unsloth/Qwen3-Coder-Next-GGUF" /
+// "Qwen3-Coder-Next-UD-Q4_K_XL.gguf").
+const HF_REPO = process.env.LLAMA_HF_REPO || "unsloth/Qwen3.6-35B-A3B-GGUF";
+const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf";
 const MODEL_PATH = process.env.MODEL_PATH || "";
 const CTX_SIZE = process.env.LLAMA_CTX_SIZE || "65536";
 const N_PARALLEL = process.env.LLAMA_N_PARALLEL || "1";
@@ -90,11 +94,19 @@ async function startServer(): Promise<string> {
     "--ctx-size", CTX_SIZE,
     "-np", N_PARALLEL,
     "--reasoning-format", "deepseek",
-    // Sampling defaults per Qwen3-Coder-Next recommendations
-    "--temp", "1.0",
+    // Default thinking OFF for ALL requests, regardless of caller.
+    // Per-request override possible via chat_template_kwargs.enable_thinking,
+    // but most Mica surfaces (chat agents, llm-chat, skill compose) want
+    // immediate output, not 500-2000 tokens of <think> overhead per turn.
+    "--reasoning", "off",
+    // Sampling defaults per Qwen3.6 "precise coding" recommendations.
+    // (Qwen3-Coder-Next used temp=1.0/top_k=40/min_p=0.01 — different model,
+    // different optima.) Lower temp + tighter top_k for deterministic code.
+    "--temp", "0.6",
     "--top-p", "0.95",
-    "--top-k", "40",
-    "--min-p", "0.01",
+    "--top-k", "20",
+    "--min-p", "0.0",
+    "--presence-penalty", "0.0",
     "--repeat-penalty", "1.0",
   ];
 

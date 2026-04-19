@@ -4,7 +4,8 @@
     "generationConfig": {
       "samplingParams": {
         "temperature": 0.3,
-        "top_p": 0.95
+        "top_p": 0.95,
+        "enable_thinking": false
       }
     }
   },

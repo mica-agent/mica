@@ -295,6 +295,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
   // Single file-watcher listener shared across all agent sessions.
   // Maps filename -> session state. Prevents listener leaks from StrictMode.
   const activeSessions = new Map<string, {
+    project: string | null;
     busy: boolean;
     agentWrittenFiles: Set<string>;
     coalesceBuffer: Map<string, number>;
@@ -302,10 +303,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     deliverFn: (() => void) | null;
   }>();
 
-  fileWatcher.on("file-change", (event: { type: string; filename: string }) => {
+  fileWatcher.on("file-change", (event: { type: string; filename: string; project: string }) => {
     if (event.filename.startsWith(".")) return;
 
     for (const [sessionFile, state] of activeSessions) {
+      if (state.project && state.project !== event.project) continue; // different project
       if (event.filename === sessionFile) continue; // ignore own chat file
       if (state.busy) continue; // agent is working, skip
       if (state.agentWrittenFiles.has(event.filename)) {
@@ -341,6 +343,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
     // Register this session in the shared state (replaces any previous from StrictMode)
     const sessionState = {
+      project: sessionProject,
       busy: false,
       agentWrittenFiles: new Set<string>(),
       coalesceBuffer: new Map<string, number>(),

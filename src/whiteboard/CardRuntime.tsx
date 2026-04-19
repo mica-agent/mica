@@ -6,8 +6,7 @@ import { useEffect, useRef, useState } from "react";
 // morphdom removed — innerHTML replacement is safer with React's lifecycle.
 // TODO: Re-evaluate morphdom for preserving mounted library instances once
 // we add proper lifecycle coordination between React and widget scripts.
-import type { CanvasId } from "../api/canvasFiles";
-import { createBridge, windowId } from "../api/micaSocket";
+import { createBridge, windowId, type CanvasId } from "../api/micaSocket";
 
 interface CardDependencies {
   scripts?: string[];
@@ -29,6 +28,17 @@ interface CardDependencies {
 const CARD_SHIM = `
 var container=_c;
 var _cleanups=[];
+var _origFetch=window.fetch.bind(window);
+var fetch=function(input,init){
+  init=init||{};
+  var url=typeof input==='string'?input:(input&&input.url)||'';
+  if(url.indexOf('/api/')===0||url.indexOf('api/')===0){
+    var h=new Headers(init.headers||(typeof input!=='string'?input.headers:undefined));
+    if(!h.has('X-Mica-Project'))h.set('X-Mica-Project',mica.project);
+    init.headers=h;
+  }
+  return _origFetch(input,init);
+};
 var _rd=window.document;
 var document=new Proxy(_rd,{get:function(t,p){
   if(p==='querySelector')return function(s){return _c.querySelector(s)};
@@ -233,7 +243,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
         // Re-fetch file content
         if (filename && filename !== "__canvas__") {
           try {
-            const res = await fetch(`/api/files/${encodeURIComponent(filename)}`);
+            const res = await fetch(`/api/files/${encodeURIComponent(filename)}`, { headers: { "X-Mica-Project": project } });
             _cachedContent = res.ok ? await res.text() : "";
           } catch { _cachedContent = ""; }
         }
@@ -262,7 +272,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       // Content fetch — starts immediately, cards access via mica.getContent()
       let _cachedContent: string | null = null;
       const _contentPromise: Promise<string> = (filename && filename !== "__canvas__")
-        ? fetch(`/api/files/${encodeURIComponent(filename)}`)
+        ? fetch(`/api/files/${encodeURIComponent(filename)}`, { headers: { "X-Mica-Project": project } })
             .then(r => r.ok ? r.text() : "")
             .then(c => { _cachedContent = c; return c; })
             .catch(() => { _cachedContent = ""; return ""; })
@@ -271,12 +281,18 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       // High-level helpers for card authors. Covers the common Mica endpoints
       // so cards don't need to construct URLs, remember field names, or handle
       // the `source` field for writes. Prefer these over raw `fetch()` in cards.
+      const projectHeaders = (extra?: HeadersInit): HeadersInit => {
+        const h = new Headers(extra);
+        if (!h.has("X-Mica-Project")) h.set("X-Mica-Project", project);
+        return h;
+      };
+
       const files = {
         /** List all files and directories under the project.
          *  `isFile` and `isFolder` are always opposites — both provided so you can
          *  write whichever reads more naturally for your case. */
         async list(): Promise<Array<{ path: string; isFile: boolean; isFolder: boolean; size: number; modifiedAt: string }>> {
-          const r = await fetch("/api/files");
+          const r = await fetch("/api/files", { headers: projectHeaders() });
           if (!r.ok) throw new Error(`mica.files.list: HTTP ${r.status}`);
           const raw = (await r.json()) as Array<{ name: string; type: string; size: number; modifiedAt: string }>;
           return raw.map((f) => ({
@@ -289,13 +305,13 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
         },
         /** Read a text file. */
         async read(path: string): Promise<string> {
-          const r = await fetch(`/api/files/${encodeURIComponent(path)}`);
+          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { headers: projectHeaders() });
           if (!r.ok) throw new Error(`mica.files.read(${path}): HTTP ${r.status}`);
           return r.text();
         },
         /** Read a binary file as ArrayBuffer. */
         async readBinary(path: string): Promise<ArrayBuffer> {
-          const r = await fetch(`/api/files/${encodeURIComponent(path)}`);
+          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { headers: projectHeaders() });
           if (!r.ok) throw new Error(`mica.files.readBinary(${path}): HTTP ${r.status}`);
           return r.arrayBuffer();
         },
@@ -309,7 +325,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
           if (typeof content === "string") {
             const r = await fetch(`/api/files/${encodeURIComponent(path)}`, {
               method: "PUT",
-              headers: { "Content-Type": "application/json" },
+              headers: projectHeaders({ "Content-Type": "application/json" }),
               body: JSON.stringify({ content, source: windowId }),
             });
             if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
@@ -318,13 +334,13 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
             const body = content instanceof Blob
               ? content
               : (content instanceof ArrayBuffer ? content : content.buffer);
-            const r = await fetch(url, { method: "POST", body: body as BodyInit });
+            const r = await fetch(url, { method: "POST", body: body as BodyInit, headers: projectHeaders() });
             if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
           }
         },
         /** Delete a file. */
         async delete(path: string): Promise<void> {
-          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { method: "DELETE" });
+          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { method: "DELETE", headers: projectHeaders() });
           if (!r.ok && r.status !== 404) throw new Error(`mica.files.delete(${path}): HTTP ${r.status}`);
         },
         /** Build a URL for inline use (e.g. `<img src={mica.files.url("docs/pic.png")}/>`). */
@@ -336,7 +352,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, pr
       const cardClasses = {
         /** List available card classes. */
         async list(): Promise<Array<{ name: string; builtIn: boolean; format: string }>> {
-          const r = await fetch("/api/card-classes");
+          const r = await fetch("/api/card-classes", { headers: projectHeaders() });
           if (!r.ok) throw new Error(`mica.cardClasses.list: HTTP ${r.status}`);
           const obj = (await r.json()) as Record<string, { builtIn: boolean; format: string }>;
           return Object.entries(obj).map(([name, meta]) => ({ name, builtIn: meta.builtIn, format: meta.format }));
