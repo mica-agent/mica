@@ -300,7 +300,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     project: string | null;
     busy: boolean;
     agentWrittenFiles: Set<string>;
-    coalesceBuffer: Map<string, number>;
+    coalesceBuffer: Map<string, { type: "created" | "changed" | "deleted"; count: number }>;
     coalesceTimer: ReturnType<typeof setTimeout> | null;
     deliverFn: (() => void) | null;
   }>();
@@ -317,7 +317,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         continue; // agent wrote this file
       }
 
-      state.coalesceBuffer.set(event.filename, (state.coalesceBuffer.get(event.filename) || 0) + 1);
+      const existing = state.coalesceBuffer.get(event.filename);
+      const newType = event.type as "created" | "changed" | "deleted";
+      if (existing?.type === "created" && newType === "deleted") {
+        // Created then deleted within the coalesce window: net nothing.
+        state.coalesceBuffer.delete(event.filename);
+      } else if (existing?.type === "deleted" && newType === "created") {
+        // Deleted then recreated: net effect is a modification.
+        state.coalesceBuffer.set(event.filename, { type: "changed", count: existing.count + 1 });
+      } else {
+        state.coalesceBuffer.set(event.filename, {
+          type: newType,
+          count: (existing?.count ?? 0) + 1,
+        });
+      }
 
       if (state.coalesceTimer) clearTimeout(state.coalesceTimer);
       state.coalesceTimer = setTimeout(() => {
@@ -349,7 +362,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       project: sessionProject,
       busy: false,
       agentWrittenFiles: new Set<string>(),
-      coalesceBuffer: new Map<string, number>(),
+      coalesceBuffer: new Map<string, { type: "created" | "changed" | "deleted"; count: number }>(),
       coalesceTimer: null as ReturnType<typeof setTimeout> | null,
       deliverFn: null as (() => void) | null,
     };
@@ -358,13 +371,23 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     function deliverCoalescedEvents() {
       if (sessionState.coalesceBuffer.size === 0) return;
 
-      const changes: string[] = [];
-      for (const [filename, count] of sessionState.coalesceBuffer) {
-        changes.push(count > 1 ? `${filename} (${count}x)` : filename);
+      const label = { created: "added", changed: "modified", deleted: "deleted" } as const;
+      const lines: string[] = [];
+      let hasSurvivors = false;
+      for (const [filename, entry] of sessionState.coalesceBuffer) {
+        const suffix = entry.type !== "deleted" && entry.count > 1
+          ? ` (${label[entry.type]}, ${entry.count}x)`
+          : ` (${label[entry.type]})`;
+        lines.push(`- ${filename}${suffix}`);
+        if (entry.type !== "deleted") hasSurvivors = true;
       }
       sessionState.coalesceBuffer.clear();
 
-      const message = `[File changes detected] The following files were modified:\n${changes.map(c => "- " + c).join("\n")}\n\nReview the canvas back context and these files. If any changes require your attention (e.g., @agent tasks in a todo, spec changes to review), respond. Otherwise, acknowledge briefly.`;
+      const tail = hasSurvivors
+        ? "Review the canvas back context and any files that still exist. If any changes require your attention (e.g., @agent tasks in a todo, spec changes to review), respond. Otherwise, acknowledge briefly."
+        : "Note the deletions above. If none require action, acknowledge briefly.";
+
+      const message = `[File changes detected] The following files changed:\n${lines.join("\n")}\n\n${tail}`;
 
       if (busy) {
         queue.push(message);
