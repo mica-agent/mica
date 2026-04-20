@@ -527,6 +527,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
         let resultText = "";
         let filesChanged = false;
+        // Final turn usage from the SDK's `result` event. Shape: { input_tokens, output_tokens, ... }.
+        // Forwarded verbatim to the client so the chat card can compute tokens/sec from elapsed time.
+        let usage: Record<string, unknown> | null = null;
 
         for await (const evt of q) {
           const evtType = evt.type as string;
@@ -566,6 +569,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           if (evtType === "result") {
             const result = evt.result as { text?: string } | undefined;
             if (result?.text) resultText = result.text;
+            // Capture `usage` from whichever shape the SDK surfaces it on: some
+            // versions put it on `evt.usage`, others nest it under `evt.result.usage`.
+            const evtUsage = (evt as { usage?: unknown }).usage;
+            const resultUsage = (evt.result as { usage?: unknown } | undefined)?.usage;
+            if (evtUsage && typeof evtUsage === "object") usage = evtUsage as Record<string, unknown>;
+            else if (resultUsage && typeof resultUsage === "object") usage = resultUsage as Record<string, unknown>;
           }
         }
 
@@ -587,6 +596,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           content: resultText,
           agent: "Qwen",
           filesChanged,
+          ...(usage ? { usage } : {}),
           ...(pendingQuestions.length > 0 ? { questions: pendingQuestions } : {}),
         });
 

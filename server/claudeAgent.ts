@@ -502,6 +502,9 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
         let resultText = "";
         let filesChanged = false;
+        // Final turn usage from the SDK's `result` event. Shape: { input_tokens, output_tokens, ... }.
+        // Forwarded to the client so the chat card can compute tokens/sec from elapsed time.
+        let usage: Record<string, unknown> | null = null;
 
         for await (const evt of q) {
           const evtType = evt.type as string;
@@ -539,6 +542,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             // Qwen SDK used .result.text — don't expect that here.
             const result = evt.result;
             if (typeof result === "string" && result) resultText = result;
+            // Capture usage from wherever the SDK exposes it this version.
+            const evtUsage = (evt as { usage?: unknown }).usage;
+            const resultUsage = typeof evt.result === "object" ? (evt.result as { usage?: unknown })?.usage : undefined;
+            if (evtUsage && typeof evtUsage === "object") usage = evtUsage as Record<string, unknown>;
+            else if (resultUsage && typeof resultUsage === "object") usage = resultUsage as Record<string, unknown>;
           }
         }
 
@@ -555,7 +563,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         }
 
         console.log(`[claude-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
-        ctx.broadcast({ type: "assistant", content: resultText, agent: "Claude", filesChanged });
+        ctx.broadcast({ type: "assistant", content: resultText, agent: "Claude", filesChanged, ...(usage ? { usage } : {}) });
 
         const updatedHistory = await loadHistory(chatId, sessionProject);
         updatedHistory.push({ role: "assistant", content: resultText, agent: "Claude" });

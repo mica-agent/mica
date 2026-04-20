@@ -330,8 +330,24 @@ ch.onData(function(data) {
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
-      setStatus(`${doneMsg} (${elapsedSec}s, ${stepCount} steps)`, "#3fb950", false);
-      addDetailLine(`Completed in ${elapsedSec}s with ${stepCount} steps`);
+      setStatus(doneMsg, "#3fb950", false);
+      // Final stats go on the RIGHT (statusMeta), replacing the live "Xs · N steps"
+      // that was ticking there during the turn. Append tokens + tok/s when the
+      // server forwarded usage; skip silently on tool-only turns / errors /
+      // "No action needed" paths that lack usage.
+      {
+        const parts = [];
+        if (elapsedSec > 0) parts.push(elapsedSec + "s");
+        if (stepCount > 0) parts.push(stepCount + (stepCount === 1 ? " step" : " steps"));
+        const outTok = data.usage && (data.usage.output_tokens || data.usage.completion_tokens);
+        if (outTok && outTok > 0) {
+          const tps = Math.round(outTok / Math.max(1, elapsedSec));
+          parts.push(outTok + " tok");
+          parts.push(tps + " tok/s");
+        }
+        statusMeta.textContent = parts.join(" · ");
+        addDetailLine("Completed: " + parts.join(" · "));
+      }
       addMessage("assistant", data.content, data.agent || "Qwen", data.questions);
       playChime();
       break;
