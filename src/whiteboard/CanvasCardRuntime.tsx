@@ -135,20 +135,36 @@ export default function CanvasCardRuntime({ project }: Props) {
 
   useEffect(() => {
     const unsub1 = on("file-created", (_msg: unknown) => {
-      // Re-fetch canvas files — server determines membership
-      fetchFiles(project, true).then((files) => setChildren(files)).catch(() => {});
+      // Re-fetch canvas files — server determines membership. Skip the
+      // setChildren if the new file isn't canvas-visible (e.g. the agent
+      // wrote to backend/data/foo.py — not on the canvas, so the membership
+      // list is unchanged and we don't want to thrash the React tree).
+      fetchFiles(project, true).then((files) => {
+        setChildren((prev) => {
+          if (prev.length !== files.length) return files;
+          const prevNames = new Set(prev.map((f) => f.name));
+          for (const f of files) if (!prevNames.has(f.name)) return files;
+          return prev;
+        });
+      }).catch(() => {});
     });
 
     const unsub2 = on("file-changed", (msg: unknown) => {
       const m = msg as { filename?: string };
       if (!m.filename || m.filename.startsWith(".")) return;
-      // Update modifiedAt to trigger CardFrame re-render
-      setChildren((prev) =>
-        prev.map((f) => f.name === m.filename
-          ? { ...f, modifiedAt: new Date().toISOString() }
-          : f
-        )
-      );
+      // Update modifiedAt to trigger CardFrame re-render — but only when the
+      // changed file is actually on the canvas. Without this guard, every
+      // agent file write (even to non-canvas paths like backend/data/) churns
+      // the entire children array and re-renders all CardFrames.
+      setChildren((prev) => {
+        let mutated = false;
+        const next = prev.map((f) => {
+          if (f.name !== m.filename) return f;
+          mutated = true;
+          return { ...f, modifiedAt: new Date().toISOString() };
+        });
+        return mutated ? next : prev;
+      });
     });
 
     const unsub3 = on("file-deleted", (msg: unknown) => {
@@ -238,9 +254,14 @@ export default function CanvasCardRuntime({ project }: Props) {
       {children.map((file) => {
         const target = file.meta ? metaListEl : freeformEl;
         if (!target) return null;
+        // IMPORTANT: key is the THIRD arg to createPortal, not on CardFrame.
+        // The portal is what lives in `children.map`'s array slot; React
+        // reconciles by the portal's key. Putting key on the inner CardFrame
+        // leaves the portal itself key-less, so when the array changes (e.g.
+        // a file is added) React falls back to positional reconciliation and
+        // every CardFrame unmounts+remounts, blowing away card state.
         return createPortal(
           <CardFrame
-            key={file.name}
             project={project}
             file={file}
             onEdit={() => handleEdit(file.name)}
@@ -248,6 +269,7 @@ export default function CanvasCardRuntime({ project }: Props) {
             onUnpin={file.pinned ? () => handleUnpin(file.name) : undefined}
           />,
           target,
+          file.name,
         );
       })}
 

@@ -429,10 +429,22 @@ const unsubDeleted = mica.on('file-deleted', (msg) => {
 });
 mica.onDestroy(unsubDeleted);
 
+// Coalesce bursts of card-class events (the agent typically copies card.html +
+// card.js + card.css + metadata.json in quick succession; without coalescing,
+// each fires its own buildToolbar and overlapping async fetches duplicate the
+// button row before settling).
+let cardClassRebuildTimer = null;
 const unsubCardClass = mica.on('card-class-changed', () => {
-    buildToolbar();
+    if (cardClassRebuildTimer) clearTimeout(cardClassRebuildTimer);
+    cardClassRebuildTimer = setTimeout(() => {
+        cardClassRebuildTimer = null;
+        buildToolbar();
+    }, 250);
 });
-mica.onDestroy(unsubCardClass);
+mica.onDestroy(() => {
+    if (cardClassRebuildTimer) clearTimeout(cardClassRebuildTimer);
+    unsubCardClass();
+});
 
 // -- Toolbar ------------------------------------------
 // Default content stubs for each card class
@@ -444,11 +456,18 @@ const defaultStubs = {
     'terminal': () => '',
 };
 
+// Monotonic counter so an in-flight fetch from a previous buildToolbar() is
+// recognized as stale and dropped on the floor. Without this, two overlapping
+// rebuilds can both call .appendChild(btn) for their N buttons → duplicates.
+let toolbarBuildGen = 0;
+
 function buildToolbar() {
+    const myGen = ++toolbarBuildGen;
     toolbar.innerHTML = '';
 
     // Dynamically load card classes and create buttons
     fetch('/api/card-classes').then(r => r.json()).then(classes => {
+        if (myGen !== toolbarBuildGen) return;  // a newer build superseded us
         // Skip canvas class (that is us)
         const names = Object.keys(classes).filter(n => n !== 'canvas');
         names.sort();

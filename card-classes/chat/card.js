@@ -21,6 +21,16 @@ let elapsedSec = 0;
 let elapsedTimer = null;
 let stepCount = 0;
 
+// Toggle the busy flag AND a .wb-card--busy class on the outer card wrapper.
+// The class drives the "breathing" halo defined in whiteboard.css; card classes
+// opt in by calling this helper, no React changes needed. Uses closest() to
+// climb out of the card's own DOM up to the React-managed .wb-card element.
+function setBusy(b) {
+  busy = b;
+  const card = container.closest('.wb-card');
+  if (card) card.classList.toggle('wb-card--busy', b);
+}
+
 // Toggle detail panel
 statusMain.addEventListener("click", function(e) {
   e.stopPropagation();
@@ -35,6 +45,7 @@ function addDetailLine(text) {
   line.style.cssText = "padding:1px 0;border-bottom:1px solid rgba(48,54,61,0.3);";
   line.textContent = text;
   statusDetail.appendChild(line);
+  while (statusDetail.children.length > 200) statusDetail.removeChild(statusDetail.firstChild);
   if (detailExpanded) statusDetail.scrollTop = statusDetail.scrollHeight;
 }
 
@@ -55,8 +66,34 @@ function showStartupSummaryQwen(text) {
   messagesEl.appendChild(el);
   scrollBottom();
 }
+// Top-bar model/provider label (truncated via CSS). Updated whenever settings load,
+// status polls return, or save fires. For local provider we prefer the model the
+// llama-server is actually serving (from /api/llm/status) over any override in
+// this card's settings — the override takes effect inside llama-server's routing
+// but the served model is the source of truth the user cares about.
+var modelLabelEl = container.querySelector('#chat-model-label');
+var serverModel = '';  // populated from /api/llm/status
+function renderModelLabel() {
+  var provider = currentSettings.provider || 'local';
+  var providerShort = provider === 'openrouter' ? 'OpenRouter' : 'Local';
+  var model = provider === 'openrouter'
+    ? (currentSettings.model || '')
+    : (serverModel || currentSettings.model || '');
+  var display = model ? providerShort + ' · ' + model : providerShort;
+  modelLabelEl.textContent = display;
+  modelLabelEl.title = display;  // full text on hover (the CSS ellipsis hides the tail)
+}
+
 function checkLlmStatus() {
+  // Skip llama-server status polling for OpenRouter cards — the local server
+  // is irrelevant to them, so don't show "Model loading..." or block Send.
+  if (currentSettings.provider === 'openrouter') {
+    sendBtn.disabled = false;
+    inputEl.placeholder = 'Ask Qwen Agent...';
+    return;
+  }
   fetch('/api/llm/status').then(function(r) { return r.json(); }).then(function(s) {
+    if (s.model && s.model !== serverModel) { serverModel = s.model; renderModelLabel(); }
     if (s.ready) {
       sendBtn.disabled = false;
       inputEl.placeholder = 'Ask Qwen Agent...';
@@ -68,7 +105,20 @@ function checkLlmStatus() {
     }
   }).catch(function() { setTimeout(checkLlmStatus, 5000); });
 }
-checkLlmStatus();
+
+// Load this card's settings before first status check so we know which
+// provider to poll against. Defaults to local on any failure.
+var currentSettings = { provider: 'local', model: '' };
+function settingsUrl(qs) {
+  var sep = qs.indexOf('?') === -1 ? '?' : '&';
+  return '/api/cards/settings' + qs + sep + 'path=' + encodeURIComponent(mica.filename);
+}
+fetch(settingsUrl('')).then(function(r) { return r.json(); }).then(function(s) {
+  currentSettings = { provider: s.provider || 'local', model: s.model || '' };
+}).catch(function() { /* defaults */ }).finally(function() {
+  renderModelLabel();
+  checkLlmStatus();
+});
 
 function scrollBottom() {
   requestAnimationFrame(function() {
@@ -143,7 +193,7 @@ function renderMarkdown(text) {
   return text;
 }
 
-function addMessage(role, content, agent) {
+function addMessage(role, content, agent, questions) {
   if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === "center") {
     messagesEl.innerHTML = "";
   }
@@ -155,6 +205,41 @@ function addMessage(role, content, agent) {
     msg.style.cssText = "align-self:flex-start;background:rgba(255,255,255,0.05);border-radius:12px 12px 12px 4px;padding:8px 12px;max-width:90%;";
     const header = agent ? `<div style="color:${ACCENT};font-size:11px;font-weight:600;margin-bottom:4px;">${escapeHtml(agent)}</div>` : "";
     msg.innerHTML = `${header}<div class="chat-md" style="color:#e6edf3;font-size:13px;line-height:1.5;">${renderMarkdown(content)}</div>`;
+    if (questions && questions.length > 0) {
+      const buttonRows = window.document.createElement("div");
+      buttonRows.style.cssText = "display:flex;flex-direction:column;gap:8px;margin-top:10px;";
+      for (let qi = 0; qi < questions.length; qi++) {
+        const q = questions[qi];
+        if (!q.options || q.options.length === 0) continue;
+        const row = window.document.createElement("div");
+        row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;";
+        for (let oi = 0; oi < q.options.length; oi++) {
+          const opt = q.options[oi];
+          const btn = window.document.createElement("button");
+          btn.textContent = opt.label;
+          btn.title = opt.description || opt.label;
+          btn.style.cssText = "background:rgba(124,58,237,0.15);color:#e6edf3;border:1px solid rgba(124,58,237,0.4);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit;";
+          btn.addEventListener("mouseenter", function() { btn.style.background = "rgba(124,58,237,0.3)"; });
+          btn.addEventListener("mouseleave", function() { btn.style.background = "rgba(124,58,237,0.15)"; });
+          btn.addEventListener("click", function() {
+            // Disable the entire button row to prevent double-answers; the user's choice
+            // gets sent immediately as a normal message so the agent sees it as their reply.
+            const rowButtons = buttonRows.querySelectorAll("button");
+            for (let i = 0; i < rowButtons.length; i++) {
+              rowButtons[i].disabled = true;
+              rowButtons[i].style.opacity = "0.4";
+              rowButtons[i].style.cursor = "default";
+            }
+            btn.style.background = "rgba(124,58,237,0.5)";
+            inputEl.value = opt.label;
+            send();
+          });
+          row.appendChild(btn);
+        }
+        buttonRows.appendChild(row);
+      }
+      msg.appendChild(buttonRows);
+    }
   }
   messagesEl.appendChild(msg);
   scrollBottom();
@@ -172,6 +257,33 @@ function updateMeta() {
   if (elapsedSec > 0) parts.push(elapsedSec + "s");
   if (stepCount > 0) parts.push(stepCount + (stepCount === 1 ? " step" : " steps"));
   statusMeta.textContent = parts.join(" . ");
+}
+
+// Two-note chime played when the agent finishes a turn. Browsers require a
+// user gesture before audio can start; the user's first Send click satisfies
+// that, so chimes from then on play fine. Errors silently no-op (audio
+// unavailable, autoplay blocked, etc.).
+function playChime() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ac = new Ctx();
+    const now = ac.currentTime;
+    [880, 1320].forEach(function(freq, i) {
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const t0 = now + i * 0.08;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
+      osc.connect(gain).connect(ac.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.5);
+    });
+    setTimeout(function() { try { ac.close(); } catch (_) {} }, 1000);
+  } catch (_) { /* audio unavailable */ }
 }
 
 // Handle channel data from server
@@ -192,7 +304,7 @@ ch.onData(function(data) {
       addMessage("user", data.content);
       break;
     case "thinking":
-      busy = true;
+      setBusy(true);
       // One queued message just started processing; decrement.
       if (queuedCount > 0) queuedCount--;
       updateSendButton();
@@ -214,16 +326,17 @@ ch.onData(function(data) {
       }
       break;
     case "assistant":
-      busy = false;
+      setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(`${doneMsg} (${elapsedSec}s, ${stepCount} steps)`, "#3fb950", false);
       addDetailLine(`Completed in ${elapsedSec}s with ${stepCount} steps`);
-      addMessage("assistant", data.content, data.agent || "Qwen");
+      addMessage("assistant", data.content, data.agent || "Qwen", data.questions);
+      playChime();
       break;
     case "error":
-      busy = false;
+      setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       setStatus("Error", "#f87171", false);
@@ -256,7 +369,7 @@ sendBtn.addEventListener("click", send);
 
 stopBtn.addEventListener("click", function() {
   ch.send({ type: "interrupt" });
-  busy = false;
+  setBusy(false);
   stopBtn.style.display = "none";
   if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
   setStatus("Stopped", "#fbbf24", false);
@@ -322,6 +435,156 @@ ctxBtn.addEventListener("mouseenter", function() {
 
 ctxBtn.addEventListener("mouseleave", function() {
   if (!ctxVisible) ctxTooltip.style.display = "none";
+});
+
+// ── Settings panel ─────────────────────────────────────────
+//
+// Per-card provider/model config + per-project OpenRouter API key. The key
+// is project-scoped so it's typed once across all chat cards in this project;
+// provider/model is per-card so different cards can run different models.
+const settingsBtn = container.querySelector('#chat-settings-btn');
+const settingsPanel = container.querySelector('#chat-settings-panel');
+const settingsClose = container.querySelector('#chat-settings-close');
+const settingsCancel = container.querySelector('#chat-settings-cancel');
+const settingsSave = container.querySelector('#chat-settings-save');
+const settingsModel = container.querySelector('#chat-settings-model');
+const settingsModelHint = container.querySelector('#chat-settings-model-hint');
+const settingsKeyRow = container.querySelector('#chat-settings-key-row');
+const settingsKey = container.querySelector('#chat-settings-key');
+const settingsKeyStatus = container.querySelector('#chat-settings-key-status');
+const providerRadios = container.querySelectorAll('input[name="chat-provider"]');
+
+const MODEL_DEFAULTS = {
+  local: 'openai:local',
+  openrouter: 'anthropic/claude-3.5-sonnet'
+};
+
+function updateProviderUI(provider) {
+  if (provider === 'openrouter') {
+    settingsKeyRow.style.display = 'block';
+    settingsModel.placeholder = MODEL_DEFAULTS.openrouter + ' (default)';
+    settingsModelHint.textContent = 'Any OpenRouter model id, e.g. anthropic/claude-3.5-sonnet, openai/gpt-4o';
+  } else {
+    settingsKeyRow.style.display = 'none';
+    settingsModel.placeholder = MODEL_DEFAULTS.local + ' (default)';
+    settingsModelHint.textContent = 'For local llama-server the model name is informational; the loaded model is whatever the server started with.';
+  }
+}
+
+providerRadios.forEach(function(r) {
+  r.addEventListener('change', function() { updateProviderUI(r.value); });
+});
+
+function openSettings() {
+  // Pull fresh state every time so opening the panel after another tab saved
+  // shows the current values, not a stale snapshot.
+  Promise.allSettled([
+    fetch(settingsUrl('')).then(function(r) { return r.json(); }),
+    fetch('/api/openrouter-key').then(function(r) { return r.json(); })
+  ]).then(function(results) {
+    const s = results[0].status === 'fulfilled' ? results[0].value : {};
+    const k = results[1].status === 'fulfilled' ? results[1].value : { hasKey: false };
+    const provider = s.provider || 'local';
+    providerRadios.forEach(function(r) { r.checked = (r.value === provider); });
+    settingsModel.value = s.model || '';
+    settingsKey.value = '';
+    // Swap the input placeholder so the user can tell at a glance whether a
+    // key is already stored. Leaving the field blank on save keeps the existing
+    // key (see save handler), so the masked placeholder is purely visual.
+    settingsKey.placeholder = k.hasKey ? 'sk-or-••••••••••••••••' : 'sk-or-...';
+    settingsKeyStatus.style.color = '#6e7681';
+    settingsModelHint.style.color = '#6e7681';
+    settingsKeyStatus.textContent = k.hasKey
+      ? 'Key set ✓ — paste a new one to replace, or clear it to remove.'
+      : 'No key set yet.';
+    updateProviderUI(provider);
+    settingsPanel.style.display = 'block';
+    setTimeout(function() {
+      (provider === 'openrouter' ? settingsKey : settingsModel).focus();
+    }, 0);
+  });
+}
+
+function closeSettings() { settingsPanel.style.display = 'none'; }
+
+settingsBtn.addEventListener('click', openSettings);
+settingsClose.addEventListener('click', closeSettings);
+settingsCancel.addEventListener('click', closeSettings);
+
+settingsSave.addEventListener('click', function() {
+  let provider = 'local';
+  providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
+  const model = settingsModel.value.trim();
+  const keyValue = settingsKey.value;  // do NOT trim — leading/trailing whitespace in a key is the user's problem to fix, but we preserve the field exactly
+  settingsSave.disabled = true;
+  settingsSave.textContent = 'Saving...';
+
+  // Clear any stale error styling from a previous attempt.
+  settingsKeyStatus.style.color = '#6e7681';
+  settingsModelHint.style.color = '#6e7681';
+
+  // For OpenRouter, validate the (key, model) pair with openrouter.ai BEFORE
+  // saving anything. If either is rejected we keep the panel open and surface
+  // the specific error next to the offending field. Local provider skips this.
+  const needsValidation = provider === 'openrouter' && (keyValue.length > 0 || model.length > 0);
+  const validateP = needsValidation
+    ? fetch('/api/openrouter/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: keyValue, model: model })
+      }).then(function(r) { return r.json(); })
+    : Promise.resolve({ ok: true, errors: {} });
+
+  validateP.then(function(v) {
+    const errors = v.errors || {};
+    if (errors.key) {
+      settingsKeyStatus.textContent = errors.key;
+      settingsKeyStatus.style.color = '#f87171';
+    }
+    if (errors.model) {
+      settingsModelHint.textContent = errors.model;
+      settingsModelHint.style.color = '#f87171';
+    }
+    if (!v.ok) { var e = new Error('validation failed'); e.validationFailure = true; throw e; }
+
+    // Both valid (or network-unverified) — proceed with the two saves in parallel.
+    const cardP = fetch(settingsUrl(''), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: provider, model: model })
+    }).then(function(r) { return r.json(); });
+    const keyP = keyValue.length > 0
+      ? fetch('/api/openrouter-key', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: keyValue })
+        }).then(function(r) { return r.json(); })
+      : Promise.resolve(null);
+    return Promise.all([cardP, keyP]).then(function() {
+      return { warning: v.warning };  // forward any "couldn't verify" warning to the toast
+    });
+  }).then(function(meta) {
+    currentSettings = { provider: provider, model: model };
+    renderModelLabel();
+    closeSettings();
+    const saveMsg = meta && meta.warning ? 'Saved. ' + meta.warning : 'Settings saved.';
+    statusLabel.textContent = saveMsg;
+    statusBar.style.display = 'block';
+    statusDot.style.background = meta && meta.warning ? '#d29922' : '#4ade80';
+    setTimeout(function() {
+      if (statusLabel.textContent === saveMsg) statusBar.style.display = 'none';
+    }, 3000);
+  }).catch(function(err) {
+    // Stay on the settings panel when validation fails — the field-level errors
+    // were already rendered above. For other errors surface a generic message.
+    if (!err || !err.validationFailure) {
+      settingsKeyStatus.textContent = 'Save failed: ' + (err && err.message ? err.message : 'unknown error');
+      settingsKeyStatus.style.color = '#f87171';
+    }
+  }).finally(function() {
+    settingsSave.disabled = false;
+    settingsSave.textContent = 'Save';
+  });
 });
 
 mica.onDestroy(function() {

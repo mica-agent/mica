@@ -295,6 +295,19 @@ export class ChannelManager {
     console.log("[channel-mgr] All sessions destroyed");
   }
 
+  /** Destroy every session bound to the given project. Called on rename/delete
+   *  so sessions that captured the old project name (in their handler closure)
+   *  don't keep writing to the now-stale path. */
+  destroyAllForProject(project: string): void {
+    let n = 0;
+    for (const [key, session] of [...this.sessions]) {
+      if (session.project !== project) continue;
+      this.destroySessionByKey(key);
+      n++;
+    }
+    if (n > 0) console.log(`[channel-mgr] Destroyed ${n} session(s) for project ${project}`);
+  }
+
   has(clientId: string): boolean {
     return this.clientToSession.has(clientId);
   }

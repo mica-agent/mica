@@ -29,3 +29,9 @@
 .chat-md strong { color: #fff; }
 .chat-md a { color: #58a6ff; }
 #chat-input:focus { border-color: rgba(124,58,237,0.5); }
+#chat-ctx-btn:hover, #chat-settings-btn:hover { color: #ccc; }
+#chat-settings-model:focus, #chat-settings-key:focus { border-color: rgba(124,58,237,0.5); }
+#chat-settings-cancel:hover { background: rgba(255,255,255,0.04); }
+#chat-settings-save:hover:not(:disabled) { background: #6d28d9; }
+#chat-settings-save:disabled { opacity: 0.6; cursor: default; }
+#chat-settings-close:hover { color: #e6edf3; }

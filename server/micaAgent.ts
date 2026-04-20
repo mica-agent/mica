@@ -4,7 +4,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile, readCardSettings, readOpenRouterKey } from "./files.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 
@@ -400,7 +400,32 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       try {
         const since = getLastTurnAt(ctx.filename);
         const context = await buildContext(ctx.filename, sessionProject, since);
-        const baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
+
+        // Per-card provider routing. Read fresh each turn so settings changes
+        // take effect on the next message without restarting the session.
+        const cardSettings = await readCardSettings(sessionProject || undefined, ctx.filename);
+        const provider = cardSettings.provider === "openrouter" ? "openrouter" : "local";
+        let baseUrl: string;
+        let apiKey: string;
+        let modelName: string;
+        if (provider === "openrouter") {
+          const key = await readOpenRouterKey(sessionProject || undefined);
+          if (!key) {
+            ctx.broadcast({
+              type: "error",
+              error: "OpenRouter selected but no API key set. Open the gear icon and add a key (saved per-project).",
+            });
+            return;
+          }
+          baseUrl = "https://openrouter.ai/api/v1";
+          apiKey = key;
+          modelName = cardSettings.model || "anthropic/claude-3.5-sonnet";
+        } else {
+          baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
+          apiKey = "dummy";
+          modelName = cardSettings.model || "openai:local";
+        }
+        console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
 
         // Inject recent chat history into the prompt so the agent has conversational
         // continuity. Without this, each turn is a goldfish — the SDK's `query()`
@@ -442,8 +467,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // Captures questions that the agent emitted via AskUserQuestion. The SDK's
         // built-in tool tries to render a CLI prompt that has no surface in our
         // programmatic SDK setup, so we intercept here, deny the tool, and append
-        // the question text to the agent's chat reply at the end of the turn.
+        // the question text to the agent's chat reply at the end of the turn. The
+        // structured form is also broadcast so the chat card can render answer
+        // buttons next to the bubble.
         let pendingQuestionText = "";
+        const pendingQuestions: Array<{ question: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }> = [];
 
         async function canUseToolWithQuestionIntercept(toolName: string, input: Record<string, unknown>) {
           const safety = await guardTool(toolName, input);
@@ -456,18 +484,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               options?: Array<{ label: string; description?: string }>;
               multiSelect?: boolean;
             }> | undefined) || [];
-            const formatted = questions.map((q) => {
-              let out = `**${q.question}**`;
-              if (q.options && q.options.length > 0) {
-                out += "\n";
-                for (const o of q.options) {
-                  out += `\n- ${o.label}${o.description ? ` — ${o.description}` : ""}`;
-                }
-              }
-              return out;
-            }).join("\n\n");
+            // Text version: just the question prompts (no bullet list of options) —
+            // the buttons render the choices, the bullets would duplicate them.
+            const formatted = questions.map((q) => `**${q.question}**`).join("\n\n");
             if (formatted) {
               pendingQuestionText += (pendingQuestionText ? "\n\n" : "") + formatted;
+            }
+            for (const q of questions) {
+              pendingQuestions.push({ question: q.question, options: q.options, multiSelect: q.multiSelect });
             }
             return {
               behavior: "deny" as const,
@@ -482,7 +506,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           prompt: promptWithHistory,
           options: {
             cwd: getProjectDir(sessionProject),
-            model: "openai:local",
+            // For local llama-server the model name is informational (server uses
+            // the model loaded at startup). The legacy "openai:local" magic string
+            // worked because llama-server ignores model. OpenRouter validates strictly,
+            // so we send the bare id (e.g. "anthropic/claude-3.5-sonnet"). The
+            // openai-compatible provider is selected via authType, not via prefix.
+            model: provider === "local" ? `openai:${modelName}` : modelName,
             authType: "openai" as const,
             // "default" + canUseTool gives us auto-approve with guards
             permissionMode: "default" as const,
@@ -490,7 +519,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
             env: {
-              OPENAI_API_KEY: "dummy",
+              OPENAI_API_KEY: apiKey,
               OPENAI_BASE_URL: baseUrl,
             },
           },
@@ -553,7 +582,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
 
         console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
-        ctx.broadcast({ type: "assistant", content: resultText, agent: "Qwen", filesChanged });
+        ctx.broadcast({
+          type: "assistant",
+          content: resultText,
+          agent: "Qwen",
+          filesChanged,
+          ...(pendingQuestions.length > 0 ? { questions: pendingQuestions } : {}),
+        });
 
         const updatedHistory = await loadHistory(chatId, sessionProject);
         updatedHistory.push({ role: "assistant", content: resultText, agent: "Qwen" });

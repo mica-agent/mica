@@ -105,9 +105,7 @@ editor.on('change', function() {
 
 // Sync from other windows — refresh if someone else changed the file
 const unsub = mica.on('file-changed', function(e) {
-  console.log('[md-card] file-changed event', { filename: e.filename, expected: mica.filename, source: e.source, windowId: mica.windowId, justSaved: justSaved });
   if (e.filename === mica.filename && e.source !== mica.windowId && !justSaved) {
-    console.log('[md-card] refresh firing for', e.filename);
     mica.refresh();
   }
 });

@@ -204,6 +204,21 @@
   100% { background-position: -100% 0; }
 }
 
+/* ── Card busy pulse ──────────────────────────────────
+   Soft halo that breathes while a card class is processing (e.g. chat card
+   waiting on an agent turn). Generic — any card class opts in by toggling
+   .wb-card--busy on its outer .wb-card element. Box-shadow is already in
+   the base transition list so it composes cleanly with :hover/:focus-within. */
+
+.wb-card--busy {
+  animation: wb-card-breathe 2s ease-in-out infinite;
+}
+
+@keyframes wb-card-breathe {
+  0%, 100% { box-shadow: 0 0 6px 0 rgba(167, 139, 250, 0.25); }
+  50%      { box-shadow: 0 0 28px 6px rgba(167, 139, 250, 0.85); }
+}
+
 /* ── Card flash on update ─────────────────────────── */
 
 .wb-card--flash {

@@ -350,9 +350,11 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { method: "DELETE", headers: projectHeaders() });
           if (!r.ok && r.status !== 404) throw new Error(`mica.files.delete(${path}): HTTP ${r.status}`);
         },
-        /** Build a URL for inline use (e.g. `<img src={mica.files.url("docs/pic.png")}/>`). */
+        /** Build a URL for inline use (e.g. `<img src={mica.files.url("docs/pic.png")}/>`).
+         *  Includes `?project=` so the URL works in contexts that can't send the
+         *  `X-Mica-Project` header (window.open new tabs, <img src>, etc.). */
         url(path: string): string {
-          return `/api/files/${encodeURIComponent(path)}`;
+          return `/api/files/${encodeURIComponent(path)}?project=${encodeURIComponent(project)}`;
         },
       };
 

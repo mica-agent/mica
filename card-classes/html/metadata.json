@@ -1,0 +1,6 @@
+{
+  "extension": ".html",
+  "badge": "HTML",
+  "defaultTitle": "Web Page",
+  "dependencies": { "scripts": [], "styles": [] }
+}

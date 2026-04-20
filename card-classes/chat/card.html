@@ -1,5 +1,10 @@
 <div id="chat-root" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;font-family:inherit;-webkit-font-smoothing:antialiased;">
 
+  <div id="chat-topbar" style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid #30363d;flex-shrink:0;font-size:11px;color:#8b949e;min-width:0;">
+    <span id="chat-model-label" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=""></span>
+    <span id="chat-settings-btn" title="Settings" style="cursor:pointer;color:#8b949e;font-size:14px;padding:0 2px;flex-shrink:0;">&#9881;</span>
+  </div>
+
   <div id="chat-messages" style="flex:1;overflow-y:auto;padding:8px 12px;min-height:0;display:flex;flex-direction:column;gap:8px;">
     <div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">
       Send a message to start the Qwen Code agent.
@@ -19,6 +24,44 @@
   <div id="chat-context-tooltip" style="display:none;position:absolute;bottom:80px;left:8px;right:8px;background:#1c2028;border:1px solid #30363d;border-radius:6px;padding:8px 10px;z-index:10;font-size:11px;font-family:monospace;color:#8b949e;max-height:200px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,0.4);">
     <div style="color:#ccc;margin-bottom:4px;font-weight:600;">Context for LLM</div>
     <div id="chat-context-files">Loading...</div>
+  </div>
+
+  <div id="chat-settings-panel" style="display:none;position:absolute;inset:0;background:rgba(13,17,23,0.96);backdrop-filter:blur(2px);z-index:20;padding:16px;overflow-y:auto;color:#e6edf3;font-size:12px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div style="font-weight:600;color:#e6edf3;font-size:13px;">Chat settings</div>
+      <span id="chat-settings-close" title="Close" style="cursor:pointer;color:#8b949e;font-size:16px;line-height:1;padding:0 4px;">&times;</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">Provider</div>
+        <label style="display:block;margin-bottom:4px;cursor:pointer;">
+          <input type="radio" name="chat-provider" value="local" style="vertical-align:middle;margin-right:6px;" />
+          <span>Local llama-server</span>
+        </label>
+        <label style="display:block;cursor:pointer;">
+          <input type="radio" name="chat-provider" value="openrouter" style="vertical-align:middle;margin-right:6px;" />
+          <span>OpenRouter</span>
+        </label>
+      </div>
+
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">Model</div>
+        <input id="chat-settings-model" type="text" placeholder="" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div id="chat-settings-model-hint" style="color:#6e7681;font-size:11px;margin-top:4px;"></div>
+      </div>
+
+      <div id="chat-settings-key-row" style="display:none;">
+        <div style="color:#ccc;margin-bottom:6px;">OpenRouter API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span></div>
+        <input id="chat-settings-key" type="password" placeholder="sk-or-..." autocomplete="off" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div id="chat-settings-key-status" style="color:#6e7681;font-size:11px;margin-top:4px;"></div>
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button id="chat-settings-cancel" style="background:transparent;color:#ccc;border:1px solid #30363d;border-radius:4px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;">Cancel</button>
+        <button id="chat-settings-save" style="background:#7c3aed;color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Save</button>
+      </div>
+    </div>
   </div>
 
   <div style="display:flex;gap:6px;padding:8px 12px;border-top:1px solid #30363d;flex-shrink:0;">

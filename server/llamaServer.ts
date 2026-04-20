@@ -25,6 +25,7 @@ let serverReady = false;
 let startingPromise: Promise<string> | null = null;
 let loadProgress = "starting";
 let lastStartupSummary = "";
+let loadedModel = "";
 
 export async function ensureLlamaServer(): Promise<string> {
   if (serverReady && serverProcess && !serverProcess.killed) {
@@ -58,10 +59,10 @@ export async function stopLlamaServer(): Promise<void> {
   console.log("[llama-server] Stopped.");
 }
 
-export function getLlamaServerStatus(): { running: boolean; ready: boolean; pid?: number; port?: number; progress?: string; startupSummary?: string } {
+export function getLlamaServerStatus(): { running: boolean; ready: boolean; pid?: number; port?: number; progress?: string; startupSummary?: string; model?: string } {
   const isAlive = !!(serverProcess && !serverProcess.killed);
   if (serverReady && isAlive) {
-    return { running: true, ready: true, pid: serverProcess?.pid, port: serverPort, startupSummary: lastStartupSummary };
+    return { running: true, ready: true, pid: serverProcess?.pid, port: serverPort, startupSummary: lastStartupSummary, model: loadedModel };
   }
   if (isAlive) {
     return { running: true, ready: false, pid: serverProcess?.pid, port: serverPort, progress: loadProgress };
@@ -186,7 +187,18 @@ async function startServer(): Promise<string> {
   const baseUrl = `http://127.0.0.1:${port}`;
   await waitForHealth(baseUrl, 600_000);
   serverReady = true;
-  console.log(`[llama-server] Ready at ${baseUrl}`);
+  // Cache the loaded model id from /v1/models so chat cards can display the
+  // real served model rather than guess from config. Best-effort — if the
+  // query fails we just leave loadedModel empty.
+  try {
+    const r = await fetch(`${baseUrl}/v1/models`);
+    if (r.ok) {
+      const data = await r.json() as { data?: Array<{ id?: string }> };
+      const id = data.data?.[0]?.id;
+      if (typeof id === "string" && id) loadedModel = id;
+    }
+  } catch { /* ignore — leave loadedModel empty */ }
+  console.log(`[llama-server] Ready at ${baseUrl} (model=${loadedModel || "unknown"})`);
   return baseUrl;
 }
 

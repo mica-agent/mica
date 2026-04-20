@@ -287,6 +287,54 @@ export async function deleteCardId(project: string | null | undefined, filename:
   try { await unlink(path); } catch { /* sidecar may already be gone */ }
 }
 
+/** Evict every cardId cache entry for a project. Used when a project is renamed
+ *  or deleted so stale `${oldName}|filename → uuid` entries don't shadow the
+ *  new project's lookups. */
+export function evictCardIdsForProject(project: string): void {
+  const prefix = `${project}|`;
+  for (const k of cardIdCache.keys()) if (k.startsWith(prefix)) cardIdCache.delete(k);
+  for (const k of cardIdPending.keys()) if (k.startsWith(prefix)) cardIdPending.delete(k);
+}
+
+// ── Per-card settings (alongside the UUID in the same sidecar) ──
+//
+// The card sidecar at `.mica/cards/<sanitized>.id.json` carries an optional
+// `settings` blob. Today the only consumer is the chat card (provider/model
+// override), but the field is generic — any card class can stash structured
+// state here without needing its own sidecar file.
+
+export interface CardSettings {
+  provider?: "local" | "openrouter";
+  model?: string;
+}
+
+export async function readCardSettings(project: string | undefined, filename: string): Promise<CardSettings> {
+  const path = cardIdSidecarPath(project, filename);
+  try {
+    const raw = await readFile(path, "utf-8");
+    const parsed = JSON.parse(raw) as { settings?: CardSettings };
+    return parsed.settings ?? {};
+  } catch {
+    return {};
+  }
+}
+
+export async function writeCardSettings(
+  project: string | undefined,
+  filename: string,
+  settings: CardSettings,
+): Promise<void> {
+  // Ensure the UUID exists; we want one source of truth, no orphan settings without an id.
+  await getOrCreateCardId(project, filename);
+  const path = cardIdSidecarPath(project, filename);
+  let cur: Record<string, unknown> = {};
+  try {
+    cur = JSON.parse(await readFile(path, "utf-8"));
+  } catch { /* freshly created above; re-read race ok */ }
+  cur.settings = settings;
+  await atomicWriteJson(path, cur);
+}
+
 /** Backwards-compatible interface for server-side consumers that need content. */
 export interface FileInfo {
   name: string;
@@ -326,6 +374,35 @@ export async function updateCanvasConfig(
   } catch { /* start fresh */ }
   if (updates.canvasRoot !== undefined) cfg.canvasRoot = updates.canvasRoot;
   if (updates.pinned !== undefined) cfg.pinned = updates.pinned;
+  await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf-8");
+}
+
+/** Read project-wide OpenRouter API key from .mica/config.json. Returns null when unset. */
+export async function readOpenRouterKey(project: string | undefined): Promise<string | null> {
+  const configPath = project
+    ? join(WORKSPACE_DIR, project, ".mica", "config.json")
+    : join(WORKSPACE_DIR, ".mica", "config.json");
+  try {
+    const cfg = JSON.parse(await readFile(configPath, "utf-8"));
+    const k = cfg.openrouterApiKey;
+    return typeof k === "string" && k.length > 0 ? k : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write or clear the project-wide OpenRouter API key in .mica/config.json. Empty string clears. */
+export async function writeOpenRouterKey(project: string | undefined, key: string): Promise<void> {
+  const configPath = project
+    ? join(WORKSPACE_DIR, project, ".mica", "config.json")
+    : join(WORKSPACE_DIR, ".mica", "config.json");
+  await mkdir(dirname(configPath), { recursive: true });
+  let cfg: Record<string, unknown> = {};
+  try {
+    cfg = JSON.parse(await readFile(configPath, "utf-8"));
+  } catch { /* start fresh */ }
+  if (key.length === 0) delete cfg.openrouterApiKey;
+  else cfg.openrouterApiKey = key;
   await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf-8");
 }
 

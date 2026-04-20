@@ -34,7 +34,13 @@ import {
   getOrCreateCardId,
   lookupCardId,
   deleteCardId,
+  evictCardIdsForProject,
+  readCardSettings,
+  writeCardSettings,
+  readOpenRouterKey,
+  writeOpenRouterKey,
   type FileMeta,
+  type CardSettings,
 } from "./files.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
 import { createReadStream, createWriteStream } from "fs";
@@ -119,6 +125,10 @@ function getRequestProject(req: express.Request): string | null {
   const header = req.header("x-mica-project");
   if (header && typeof header === "string" && header.trim()) {
     return header.trim();
+  }
+  const q = req.query.project;
+  if (typeof q === "string" && q.trim()) {
+    return q.trim();
   }
   return activeProject;
 }
@@ -232,7 +242,13 @@ app.put("/api/projects/:project/rename", async (req, res) => {
     while (fileWatcher.watchedProjects().includes(oldName)) {
       fileWatcher.releaseProject(oldName);
     }
-    if (activeProject === oldName) activeProject = null;
+    // Tear down channel sessions and cardId caches keyed to the old name.
+    // Otherwise sessions captured the old project in their handler closure
+    // and would keep reading/writing the now-stale path (chat history reads
+    // come back empty, the card looks confused).
+    channelManager.destroyAllForProject(oldName);
+    evictCardIdsForProject(oldName);
+    if (activeProject === oldName) activeProject = newName;
     await renameProject(oldName, newName);
     res.json({ success: true, name: newName });
   } catch (err) {
@@ -247,6 +263,8 @@ app.delete("/api/projects/:project", async (req, res) => {
     while (fileWatcher.watchedProjects().includes(name)) {
       fileWatcher.releaseProject(name);
     }
+    channelManager.destroyAllForProject(name);
+    evictCardIdsForProject(name);
     if (activeProject === name) activeProject = null;
     await deleteProject(name);
     res.json({ success: true });
@@ -407,6 +425,95 @@ app.get("/api/canvas-card", async (req, res) => {
     res.json({ html, exports: [], dependencies: deps, meta });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── Per-card settings + per-project secrets ─────────────────
+//
+// Settings live in the existing `.mica/cards/<sanitized>.id.json` sidecar
+// alongside the UUID. The OpenRouter API key is project-wide (one key, many
+// cards) and lives in `.mica/config.json`. The GET key endpoint never returns
+// the key itself — only `{ hasKey }` — so the client can render a "Key set ✓"
+// indicator without exposing the secret.
+
+app.get("/api/cards/settings", async (req, res) => {
+  const path = (req.query.path as string | undefined)?.trim();
+  if (!path) { res.status(400).json({ error: "missing ?path=<filename>" }); return; }
+  const proj = getRequestProject(req) || undefined;
+  const settings = await readCardSettings(proj, path);
+  res.json(settings);
+});
+
+app.put("/api/cards/settings", async (req, res) => {
+  const path = (req.query.path as string | undefined)?.trim();
+  if (!path) { res.status(400).json({ error: "missing ?path=<filename>" }); return; }
+  const proj = getRequestProject(req) || undefined;
+  const body = (req.body || {}) as CardSettings;
+  const provider = body.provider === "openrouter" ? "openrouter" : "local";
+  const model = typeof body.model === "string" ? body.model.trim() : "";
+  const settings: CardSettings = { provider };
+  if (model) settings.model = model;
+  await writeCardSettings(proj, path, settings);
+  res.json({ ok: true, settings });
+});
+
+app.get("/api/openrouter-key", async (req, res) => {
+  const proj = getRequestProject(req) || undefined;
+  const key = await readOpenRouterKey(proj);
+  res.json({ hasKey: Boolean(key) });
+});
+
+app.put("/api/openrouter-key", async (req, res) => {
+  const proj = getRequestProject(req) || undefined;
+  const body = (req.body || {}) as { key?: string };
+  const key = typeof body.key === "string" ? body.key.trim() : "";
+  await writeOpenRouterKey(proj, key);
+  res.json({ ok: true, hasKey: Boolean(key) });
+});
+
+// Validate an OpenRouter (key, model) pair against openrouter.ai before persisting.
+// Returns { ok, errors: { key?, model? }, warning? } — `warning` is used when
+// the network call failed and we fell back to "unverified".
+//
+// Key check: GET /api/v1/auth/key with Authorization: Bearer — 200 = valid, 401/403 = invalid.
+// Model check: GET /api/v1/models (public) — the `model` string must appear as `id` in the list.
+app.post("/api/openrouter/validate", async (req, res) => {
+  const body = (req.body || {}) as { key?: string; model?: string };
+  const key = typeof body.key === "string" ? body.key.trim() : "";
+  const model = typeof body.model === "string" ? body.model.trim() : "";
+  const errors: { key?: string; model?: string } = {};
+
+  if (!key && !model) { res.json({ ok: true, errors }); return; }
+
+  try {
+    const calls: Promise<unknown>[] = [];
+    if (key) {
+      calls.push(fetch("https://openrouter.ai/api/v1/auth/key", {
+        method: "GET",
+        headers: { "Authorization": `Bearer ${key}` },
+        signal: AbortSignal.timeout(8000),
+      }).then(async (r) => {
+        if (r.status === 401 || r.status === 403) { errors.key = "Invalid OpenRouter API key (rejected by openrouter.ai)"; }
+        else if (!r.ok) { errors.key = `OpenRouter returned HTTP ${r.status} while validating the key`; }
+      }));
+    }
+    if (model) {
+      calls.push(fetch("https://openrouter.ai/api/v1/models", {
+        method: "GET",
+        signal: AbortSignal.timeout(8000),
+      }).then(async (r) => {
+        if (!r.ok) { errors.model = `Could not list models (HTTP ${r.status})`; return; }
+        const data = await r.json() as { data?: Array<{ id?: string }> };
+        const ids = new Set((data.data || []).map((m) => m.id).filter((x): x is string => typeof x === "string"));
+        if (!ids.has(model)) { errors.model = `Model "${model}" not found on OpenRouter`; }
+      }));
+    }
+    await Promise.all(calls);
+    res.json({ ok: Object.keys(errors).length === 0, errors });
+  } catch (err) {
+    // Network/DNS/timeout — treat as "unverified" rather than a hard failure.
+    const msg = (err as Error).message || String(err);
+    res.json({ ok: true, errors: {}, warning: `Could not verify: ${msg}` });
   }
 });
 
