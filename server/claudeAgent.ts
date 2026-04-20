@@ -8,6 +8,18 @@ import { join } from "path";
 import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile } from "./files.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
+import { markAgentWrite } from "./writeSource.js";
+
+// Tool names (normalized to lowercase) that mutate a file and therefore should
+// tag the write as agent-originated. Covers the Qwen/OpenRouter dialect
+// (snake_case: write_file, edit, patch_file, ...) and the Claude Code SDK
+// dialect (PascalCase: Write, Edit, MultiEdit, NotebookEdit). Anything else
+// with a `file_path` input is assumed read-only.
+const WRITE_TOOL_NAMES = new Set([
+  "write", "edit", "multiedit", "notebookedit",
+  "write_file", "write_to_file", "edit_file", "create_file",
+  "patch_file", "patch", "str_replace", "str_replace_editor",
+]);
 
 // Project tracking moved per-session: each handler captures ctx.project at
 // creation. setActiveProject is preserved as a no-op for compatibility with
@@ -543,12 +555,21 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
                     tool: block.name,
                     description: describeToolUse(block.name, block.input || {}),
                   });
-                  if (["write_file", "write_to_file", "edit_file", "create_file"].includes(block.name)) {
+                  if (WRITE_TOOL_NAMES.has(block.name.toLowerCase())) {
                     filesChanged = true;
-                    // Track the file so we ignore the resulting file-changed event
+                    // Track the file so we ignore the resulting file-changed event,
+                    // and mark it so the broadcast carries source: "agent" for the
+                    // client-side glow.
                     const writtenPath = String((block.input as Record<string, unknown>)?.file_path || (block.input as Record<string, unknown>)?.filePath || "");
-                    const writtenFile = writtenPath.split("/").pop();
-                    if (writtenFile) sessionState.agentWrittenFiles.add(writtenFile);
+                    if (writtenPath) {
+                      const writtenFile = writtenPath.split("/").pop();
+                      if (writtenFile) sessionState.agentWrittenFiles.add(writtenFile);
+                      const projRoot = sessionProject ? join(WORKSPACE_DIR, sessionProject) : "";
+                      const relPath = projRoot && writtenPath.startsWith(projRoot + "/")
+                        ? writtenPath.slice(projRoot.length + 1)
+                        : writtenFile || writtenPath;
+                      markAgentWrite(relPath);
+                    }
                   }
                 }
               }

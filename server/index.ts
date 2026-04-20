@@ -60,6 +60,7 @@ import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/p
 import { createLlmChatHandler } from "./plugins/llmChat.js";
 import { createSkillComposeHandler } from "./plugins/skillCompose.js";
 import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
+import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
@@ -725,9 +726,6 @@ app.get("/api/files/:filename", async (req, res) => {
   }
 });
 
-// Track which source caused a file write
-const writeSourceTracker = new Map<string, string>();
-
 // Create or update a file
 // Accepts JSON body: { content: string, source?: string }
 app.put("/api/files/:filename", async (req, res) => {
@@ -738,7 +736,7 @@ app.put("/api/files/:filename", async (req, res) => {
     return;
   }
   try {
-    if (source) writeSourceTracker.set(filename, source);
+    if (source) markWriteSource(filename, source);
     const proj = getRequestProject(req) || undefined;
     await writeProjectFile(filename, content, proj);
     // Pre-warm the UUID sidecar BEFORE responding so any client that reacts
@@ -768,7 +766,7 @@ app.post("/api/files/:filename/upload", async (req, res) => {
     await mkdir(join(filePath, ".."), { recursive: true });
   } catch { /* dir exists */ }
 
-  if (source) writeSourceTracker.set(filename, source);
+  if (source) markWriteSource(filename, source);
 
   const ws = createWriteStream(filePath);
   let bytes = 0;
@@ -1183,12 +1181,12 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
   }
 
   if (event.type === "created") {
-    broadcastToProject(event.project, { type: "file-created", filename: event.filename });
+    const source = consumeWriteSource(event.filename);
+    broadcastToProject(event.project, { type: "file-created", filename: event.filename, source });
   }
 
   if (event.type === "changed") {
-    const source = writeSourceTracker.get(event.filename) || "external";
-    writeSourceTracker.delete(event.filename);
+    const source = consumeWriteSource(event.filename);
     broadcastToProject(event.project, { type: "file-changed", filename: event.filename, source });
   }
 });

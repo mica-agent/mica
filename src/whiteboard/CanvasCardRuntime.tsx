@@ -15,7 +15,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { fetchCanvasCard, fetchFiles, fetchFileContent, saveFile, deleteFile } from "../api/canvasFiles";
 import type { RenderedCanvasCard, CanvasFile } from "../api/canvasFiles";
-import { on, destroyBridgeFor } from "../api/micaSocket";
+import { on, destroyBridgeFor, windowId } from "../api/micaSocket";
 import CardRuntime from "./CardRuntime";
 import CardFrame from "./CardFrame";
 import FileEditor from "./FileEditor";
@@ -133,8 +133,39 @@ export default function CanvasCardRuntime({ project }: Props) {
 
   // ── Real-time updates via WebSocket ─────────────────────
 
+  // Apply a transient glow class to a card. For create events the card may not
+  // be in the DOM yet (React hasn't rendered the new CardFrame), so we retry
+  // up to 3 times over ~300ms. For change events it's already there and the
+  // first attempt succeeds.
+  const applyGlow = useCallback((filename: string, className: string) => {
+    const root = containerRef.current;
+    if (!root) return;
+    const safe = filename.replace(/"/g, '\\"');
+    const attempt = (left: number) => {
+      const el = root.querySelector(`.wb-card[data-filename="${safe}"]`) as HTMLElement | null;
+      if (el) {
+        el.classList.remove(className);
+        void el.offsetWidth;
+        el.classList.add(className);
+        window.setTimeout(() => el.classList.remove(className), 5000);
+      } else if (left > 0) {
+        window.setTimeout(() => attempt(left - 1), 100);
+      }
+    };
+    attempt(3);
+  }, []);
+
+  // Pick which glow (if any) to apply for a broadcast's source field.
+  // Skips echoes from this same tab so you don't glow on your own writes.
+  const glowClassFor = (source: string | undefined): string | null => {
+    if (source === windowId) return null;
+    if (source === "agent") return "wb-card--agent-write";
+    return "wb-card--external-write";
+  };
+
   useEffect(() => {
-    const unsub1 = on("file-created", (_msg: unknown) => {
+    const unsub1 = on("file-created", (msg: unknown) => {
+      const m = msg as { filename?: string; source?: string };
       // Re-fetch canvas files — server determines membership. Skip the
       // setChildren if the new file isn't canvas-visible (e.g. the agent
       // wrote to backend/data/foo.py — not on the canvas, so the membership
@@ -147,10 +178,14 @@ export default function CanvasCardRuntime({ project }: Props) {
           return prev;
         });
       }).catch(() => {});
+      if (m.filename && !m.filename.startsWith(".")) {
+        const cls = glowClassFor(m.source);
+        if (cls) applyGlow(m.filename, cls);
+      }
     });
 
     const unsub2 = on("file-changed", (msg: unknown) => {
-      const m = msg as { filename?: string };
+      const m = msg as { filename?: string; source?: string };
       if (!m.filename || m.filename.startsWith(".")) return;
       // Update modifiedAt to trigger CardFrame re-render — but only when the
       // changed file is actually on the canvas. Without this guard, every
@@ -165,6 +200,8 @@ export default function CanvasCardRuntime({ project }: Props) {
         });
         return mutated ? next : prev;
       });
+      const cls = glowClassFor(m.source);
+      if (cls) applyGlow(m.filename, cls);
     });
 
     const unsub3 = on("file-deleted", (msg: unknown) => {
