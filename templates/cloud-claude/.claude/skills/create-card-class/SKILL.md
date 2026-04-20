@@ -7,6 +7,44 @@ description: Build, create, make, or implement a card, widget, visualization, ch
 
 A **card class** defines a UI component. An **instance** is a file the class renders.
 
+## STEP 0 — Check what already handles this (do this FIRST)
+
+Before writing a new card class, introspect the registry. The server is the source of truth for what's installed — never guess, never cache, never hardcode.
+
+```javascript
+// In card.js (or from the chat agent via a shell call to the API):
+const classes = await mica.cardClasses.list();
+// → [{ name: "mmd", builtIn: true, format: "html" }, { name: "md", ... }, ...]
+```
+
+Or raw:
+
+```
+GET /api/card-classes
+→ { mmd: { builtIn: true, format: "html" }, md: {...}, ... }
+```
+
+If any listed class matches your intent, **use it** — do NOT create another class, and especially do NOT create a project-scoped copy of a built-in (that just shadows the built-in for this project with no benefit).
+
+If a listed class *might* fit but you're not sure, read its metadata or spec before deciding:
+
+```
+GET /api/card-classes/{name}/metadata.json   # declared extension, badge, defaultTitle
+GET /api/card-classes/{name}/spec.md         # prose description, if the class ships one
+```
+
+Only proceed past this step when you have confirmed that no existing class handles the intent.
+
+## Extension conventions — use community-standard short forms
+
+Extensions follow external conventions, not invention. Always use the canonical short form — the registered class will match it.
+
+- Mermaid diagrams → `.mmd` (NOT `.mermaid`)
+- Markdown → `.md` (NOT `.markdown`)
+- TypeScript → `.ts`, YAML → `.yml`/`.yaml`, etc.
+
+Your new class's extension should also follow this pattern: short, lowercase, matches the community name for the format.
+
 ## Where files go
 
 - **Card class**: `.mica/card-classes/{name}/` — project-scoped. Built-in classes live in the Mica repo's `card-classes/` and are NOT the place to add new ones.

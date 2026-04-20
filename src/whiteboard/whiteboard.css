@@ -219,6 +219,24 @@
   50%      { box-shadow: 0 0 28px 6px rgba(167, 139, 250, 0.85); }
 }
 
+/* ── Expand/contract card ──────────────────────────────
+   The button in the card header carries both icons; we swap visibility based
+   on whether the outer .wb-card has the .wb-card--expanded class. Expanded
+   cards float above siblings so they're not clipped by later-painted cards
+   behind them. The size/position is set inline by canvas card.js (transient,
+   not persisted to layout.json until the user hits Tidy). */
+
+.wb-card-expand-btn .wb-card-contract-icon { display: none; }
+.wb-card--expanded .wb-card-expand-btn .wb-card-expand-icon { display: none; }
+.wb-card--expanded .wb-card-expand-btn .wb-card-contract-icon { display: inline; }
+
+/* Deeper shadow makes an expanded card read as "lifted" above the canvas.
+   Stacking is handled by the existing topZ raise-on-pointerdown in canvas
+   card.js — no z-index override here so it can't fight with that system. */
+.wb-card--expanded {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
 /* ── Card flash on update ─────────────────────────── */
 
 .wb-card--flash {

@@ -17,12 +17,14 @@ Use the FIRST trigger that fits. Don't pile multiple proposals into one turn.
 |---|---|
 | Discrete actionable items pile up in chat ("we should do X, then Y, then Z") | `todo.todo` |
 | A real tradeoff is decided ("OK, let's go with option B because…") | `decisions.md` (and append the decision) |
-| User describes a multi-step user flow / journey | `flows.mmd` |
-| User talks about components, services, or system boundaries | `architecture.mmd` |
-| Data shape / entities / relationships become a topic | `data-model.mmd` |
+| User describes a multi-step user flow / journey | `flows.mmd` (mermaid) |
+| User talks about components, services, or system boundaries | `architecture.mmd` (mermaid) |
+| Data shape / entities / relationships become a topic | `data-model.mmd` (mermaid) |
 | Project shape is clear enough that a newcomer would benefit from orientation | `README.md` |
 | Shell access is needed for a specific task ("can you run X?") | `terminal.terminal` |
 | Specialized data needs structured editing not covered above | propose a new card class via the `create-card-class` skill |
+
+**Use the existing class, don't invent.** For mermaid specifically: the extension is `.mmd` (NOT `.mermaid`) and the built-in `mmd` card class renders it. Do NOT create a custom "diagram" or project-scoped `mmd` class — `mica.cardClasses.list()` will show `mmd` is already there. Same logic for any entry in the table above: these extensions map to built-in classes; use them directly.
 
 ## How to propose
 

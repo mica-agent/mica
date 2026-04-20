@@ -12,6 +12,43 @@ let altHeld = false;
 let dragging = false;
 let dragStart = { x: 0, y: 0, origX: 0, origY: 0 };
 
+// Fit the rendered SVG inside the viewport. Called on initial render, Reset,
+// and whenever the containing card expands/contracts. Returns true if fit was
+// applied (SVG + viewport both had non-zero dimensions).
+//
+// Trade-off: for small cards with wide `flowchart LR` diagrams (very common),
+// a strict fit-both yields unreadable <30% scales. We floor the scale at
+// MIN_FIT_SCALE so the initial view is always legible — overflow gets clipped
+// by the viewport, and the user can pan (Option+drag) to explore it. Expanded
+// cards are large enough that the floor almost never kicks in.
+const MIN_FIT_SCALE = 0.6;
+
+function fitToViewport() {
+  const svgEl = svgContainer.querySelector('svg');
+  if (!svgEl) return false;
+  // Prefer viewBox (logical) dimensions — the SVG's actual drawing area —
+  // over bounding rect which reflects the already-transformed element.
+  const vb = svgEl.viewBox && svgEl.viewBox.baseVal;
+  const svgW = (vb && vb.width) || svgEl.getBoundingClientRect().width;
+  const svgH = (vb && vb.height) || svgEl.getBoundingClientRect().height;
+  const vpW = viewport.clientWidth;
+  const vpH = viewport.clientHeight;
+  if (!(svgW > 0 && svgH > 0 && vpW > 0 && vpH > 0)) return false;
+
+  // Biggest scale that keeps BOTH dims inside, capped at 1 so small diagrams
+  // don't balloon, then floored at MIN_FIT_SCALE for readability on tiny cards.
+  const natural = Math.min(1, vpW / svgW, vpH / svgH);
+  const scale = Math.max(MIN_FIT_SCALE, natural);
+
+  // Centre if the scaled SVG fits; otherwise pin to top-left so the diagram's
+  // root is visible (user pans from there to explore the rest).
+  transform.scale = scale;
+  transform.x = svgW * scale <= vpW ? Math.max(0, (vpW - svgW * scale) / 2) : 0;
+  transform.y = svgH * scale <= vpH ? Math.max(0, (vpH - svgH * scale) / 2) : 0;
+  applyTransform();
+  return true;
+}
+
 // Render mermaid
 async function renderDiagram() {
   try {
@@ -23,19 +60,8 @@ async function renderDiagram() {
     const { svg } = await mermaid.render(id, content);
     svgContainer.innerHTML = svg;
 
-    // Auto-fit to viewport width
-    requestAnimationFrame(() => {
-      const svgEl = svgContainer.querySelector('svg');
-      if (!svgEl) return;
-      const svgW = svgEl.viewBox?.baseVal?.width || svgEl.getBoundingClientRect().width;
-      const vpW = viewport.clientWidth;
-      if (svgW > 0 && vpW > 0) {
-        transform.scale = Math.min(1, vpW / svgW);
-        transform.x = 0;
-        transform.y = 0;
-        applyTransform();
-      }
-    });
+    // Initial auto-fit (after next paint so the SVG has measurable dimensions).
+    requestAnimationFrame(() => { fitToViewport(); });
   } catch (err) {
     svgContainer.innerHTML = `<pre style="color:#f66;font-size:12px;padding:16px;">${err.message}</pre>`;
   }
@@ -110,18 +136,7 @@ container.querySelector('#mmd-zoomout').addEventListener('click', function(e) {
 
 container.querySelector('#mmd-reset').addEventListener('click', function(e) {
   e.stopPropagation();
-  transform = { x: 0, y: 0, scale: 1 };
-  applyTransform();
-  // Re-fit to width
-  const svgEl = svgContainer.querySelector('svg');
-  if (svgEl) {
-    const svgW = svgEl.viewBox?.baseVal?.width || svgEl.getBoundingClientRect().width;
-    const vpW = viewport.clientWidth;
-    if (svgW > 0 && vpW > 0) {
-      transform.scale = Math.min(1, vpW / svgW);
-      applyTransform();
-    }
-  }
+  fitToViewport();
 });
 
 // Sync from external changes
@@ -131,8 +146,23 @@ const unsub = mica.on('file-changed', function(e) {
   }
 });
 
+// Re-fit when the containing card expands or contracts. The outer .wb-card's
+// class list toggles .wb-card--expanded via the canvas's expand button; size
+// changes land before the MutationObserver fires, but we still wait one rAF
+// for the browser to commit the new clientWidth/clientHeight before refitting.
+const cardEl = container.closest('.wb-card');
+let wasExpanded = cardEl ? cardEl.classList.contains('wb-card--expanded') : false;
+const cardObserver = cardEl ? new MutationObserver(function() {
+  const isExpanded = cardEl.classList.contains('wb-card--expanded');
+  if (isExpanded === wasExpanded) return;
+  wasExpanded = isExpanded;
+  requestAnimationFrame(function() { fitToViewport(); });
+}) : null;
+if (cardObserver) cardObserver.observe(cardEl, { attributes: true, attributeFilter: ['class'] });
+
 mica.onDestroy(function() {
   unsub();
+  if (cardObserver) cardObserver.disconnect();
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
 });

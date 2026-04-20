@@ -34,3 +34,29 @@
   font-size: 0.9rem;
   line-height: 1.6;
 }
+
+/* Force monospace on code blocks inside the WYSIWYG editor. Toast UI's default
+   stylesheet sets this, but an ancestor rule (ours or the host page's) can win
+   and leave <pre>/<code> inheriting the UI font — which wrecks ASCII-art
+   alignment. tab-size makes actual tab characters resolve to 2-char stops
+   instead of 8; white-space: pre is already the <pre> default but we restate
+   it on <code> in case the editor's theme set it to pre-wrap. */
+.card-markdown-editor .ProseMirror pre,
+.card-markdown-editor .ProseMirror pre code,
+.card-markdown-editor .ProseMirror code {
+  font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  tab-size: 2;
+  -moz-tab-size: 2;
+  /* Render emoji codepoints as text glyphs (using the monospace font) rather
+     than the browser's color-emoji font. Emoji fonts are always proportional
+     and ~2 char widths wide; without this, any emoji inside ASCII art will
+     drift the grid. Missing glyphs fall back to a tofu — author's choice then. */
+  font-variant-emoji: text;
+}
+
+.card-markdown-editor .ProseMirror pre,
+.card-markdown-editor .ProseMirror pre code {
+  white-space: pre;
+}

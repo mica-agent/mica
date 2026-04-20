@@ -330,6 +330,54 @@ freeform.addEventListener('pointerdown', (e) => {
     window.document.addEventListener('pointerup', onUp);
 });
 
+// -- Expand/contract a card to 80% of viewport ----------
+// Click .wb-card-expand-btn → toggle .wb-card--expanded on the parent card.
+// Expand stashes the pre-expand layout in data-prev-layout (transient — lives
+// on the DOM node, not in layout.json). Contract restores from that stash.
+// Tidy clears the transient state so the expanded size becomes permanent
+// (the Tidy arrangement reads offsetWidth/offsetHeight which is already the
+// expanded size; Tidy just needs to stop pretending the card is "peeking").
+freeform.addEventListener('click', (e) => {
+    const btn = e.target.closest('.wb-card-expand-btn');
+    if (!btn) return;
+    const card = btn.closest('.wb-card');
+    if (!card) return;
+    e.stopPropagation();
+    const name = card.getAttribute('data-filename');
+    if (card.classList.contains('wb-card--expanded')) {
+        // Contract — restore to saved layout
+        const saved = card.dataset.prevLayout;
+        if (saved) {
+            try {
+                const p = JSON.parse(saved);
+                card.style.left = p.x + 'px';
+                card.style.top = p.y + 'px';
+                card.style.width = p.w + 'px';
+                card.style.height = p.h + 'px';
+            } catch (_) { /* malformed — fall through, just drop the expanded flag */ }
+            delete card.dataset.prevLayout;
+        }
+        card.classList.remove('wb-card--expanded');
+    } else {
+        // Expand — stash current layout, resize to 80% of viewport centered
+        // in the currently visible portion of the freeform area.
+        card.dataset.prevLayout = JSON.stringify({
+            x: card.offsetLeft, y: card.offsetTop,
+            w: card.offsetWidth, h: card.offsetHeight,
+        });
+        const w = Math.floor(window.innerWidth * 0.8);
+        const h = Math.floor(window.innerHeight * 0.8);
+        const x = (freeform.scrollLeft || 0) + Math.max(0, Math.floor((freeform.clientWidth - w) / 2));
+        const y = (freeform.scrollTop || 0) + Math.max(0, Math.floor((freeform.clientHeight - h) / 2));
+        card.style.left = x + 'px';
+        card.style.top = y + 'px';
+        card.style.width = w + 'px';
+        card.style.height = h + 'px';
+        card.classList.add('wb-card--expanded');
+        card.classList.add('wb-card--resized');
+    }
+});
+
 // -- Pinch-to-resize height (phone only) ---------------
 if (isPhone) {
     let pinchCard = null;
@@ -514,6 +562,17 @@ function buildToolbar() {
     tidyBtn.addEventListener('click', (e) => {
         const cards = Array.from(freeform.querySelectorAll('.wb-card'));
         if (cards.length === 0) return;
+
+        // Commit any expanded cards' current size as permanent: clear the
+        // transient flag + stash so Tidy's offsetWidth/offsetHeight reads
+        // flow through unchanged. This is the "Tidy while expanded → makes
+        // the new size stick" behavior.
+        cards.forEach((c) => {
+            if (c.classList.contains('wb-card--expanded')) {
+                c.classList.remove('wb-card--expanded');
+                delete c.dataset.prevLayout;
+            }
+        });
 
         cards.sort((a, b) => {
             const aName = a.getAttribute('data-filename') || '';

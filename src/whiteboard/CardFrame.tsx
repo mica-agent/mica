@@ -225,6 +225,17 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
               &#8599;
             </button>
           )}
+          {/* Expand/contract button — canvas card.js handles the click via
+              event delegation, toggles .wb-card--expanded on the outer card,
+              and stashes the pre-expand layout in data-prev-layout. No onClick
+              here so the click bubbles freely to canvas.js. Meta (sidebar)
+              cards don't get the button — they're docked and can't resize. */}
+          {!file.meta && (
+            <button className="wb-card-btn wb-card-expand-btn" title="Expand to fill screen (click again to restore; Tidy commits the new size)">
+              <span className="wb-card-expand-icon">&#10530;</span>
+              <span className="wb-card-contract-icon">&#10529;</span>
+            </button>
+          )}
           <button onClick={(e) => { e.stopPropagation(); onEdit(); }} title="Edit" className="wb-card-btn">
             &#9998;
           </button>
