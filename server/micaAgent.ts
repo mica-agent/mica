@@ -4,7 +4,8 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile, readCardSettings, readOpenRouterKey } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig } from "./files.js";
+import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
@@ -178,23 +179,42 @@ async function buildContext(agentFilename: string, project: string | null, since
     if (canvasBack.trim()) parts.push(`## Project Context\n${canvasBack.trim()}`);
   } catch { /* no canvas-back */ }
 
-  // Project files — list all, read text content for context
+  // Project files — list all, read text content for context.
+  // Custom card-class instances (e.g. `.sheet`, `.solar`, `.kanban`, `.stopwatch`)
+  // are almost always text (JSON, YAML, TOML), so we don't gate on a hardcoded
+  // text-extension allowlist — instead we attempt a UTF-8 read and fall back
+  // to "<binary, N bytes>" if the file isn't decodable cleanly. Hardcoded BINARY_EXTS
+  // for the common known-binary cases (images, archives, executables) avoid wasting
+  // a read attempt.
   try {
     const files = await listFiles(project || undefined);
     if (files.length > 0) {
       parts.push(`## Project Files`);
-      const TEXT_EXTS = new Set([".md", ".txt", ".json", ".todo", ".chat", ".mmd", ".yaml", ".yml", ".toml", ".csv", ".html", ".css", ".js", ".ts", ".py", ".sh", ".rb", ".go", ".rs", ".java"]);
+      const BINARY_EXTS = new Set([
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg",
+        ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+        ".mp3", ".mp4", ".m4a", ".wav", ".ogg", ".webm", ".mov", ".avi",
+        ".woff", ".woff2", ".ttf", ".otf", ".eot",
+        ".exe", ".dll", ".so", ".dylib", ".o", ".a",
+      ]);
       const MAX_PREVIEW = 1500;
       const MAX_FILES_WITH_CONTENT = 20;
       let filesWithContent = 0;
       for (const f of files) {
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
-        if (TEXT_EXTS.has(ext) && f.size < 50000 && filesWithContent < MAX_FILES_WITH_CONTENT) {
+        const skipContent = BINARY_EXTS.has(ext) || f.size >= 50000 || filesWithContent >= MAX_FILES_WITH_CONTENT;
+        if (!skipContent) {
           try {
             const file = await readProjectFile(f.name, project || undefined);
-            const preview = file.content.slice(0, MAX_PREVIEW);
-            parts.push(`### ${f.name}\n${preview}`);
-            filesWithContent++;
+            // Cheap heuristic: a text file shouldn't have NUL bytes in the first 1KB.
+            const head = file.content.slice(0, 1024);
+            if (head.includes("\0")) {
+              parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+            } else {
+              const preview = file.content.slice(0, MAX_PREVIEW);
+              parts.push(`### ${f.name}\n${preview}`);
+              filesWithContent++;
+            }
           } catch { parts.push(`### ${f.name} (${f.size} bytes)`); }
         } else {
           parts.push(`### ${f.name} (${f.size} bytes)`);
@@ -315,7 +335,16 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     coalesceBuffer: Map<string, { type: "created" | "changed" | "deleted"; count: number }>;
     coalesceTimer: ReturnType<typeof setTimeout> | null;
     deliverFn: (() => void) | null;
+    canvasRoot: string;        // e.g. "docs" — files outside this (and not pinned) don't trigger reactive turns
+    pinnedFiles: Set<string>;  // files explicitly pinned to the canvas regardless of folder
   }>();
+
+  function inCanvasScope(filename: string, canvasRoot: string, pinned: Set<string>): boolean {
+    if (pinned.has(filename)) return true;
+    if (canvasRoot === "" || canvasRoot === ".") return !filename.includes("/");
+    const prefix = canvasRoot.replace(/\/$/, "") + "/";
+    return filename.startsWith(prefix);
+  }
 
   fileWatcher.on("file-change", (event: { type: string; filename: string; project: string }) => {
     if (event.filename.startsWith(".")) return;
@@ -324,6 +353,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       if (state.project && state.project !== event.project) continue; // different project
       if (event.filename === sessionFile) continue; // ignore own chat file
       if (state.busy) continue; // agent is working, skip
+      if (!inCanvasScope(event.filename, state.canvasRoot, state.pinnedFiles)) continue;
       if (state.agentWrittenFiles.has(event.filename)) {
         state.agentWrittenFiles.delete(event.filename);
         continue; // agent wrote this file
@@ -369,6 +399,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
 
+    // Read once at session start. If the user reconfigures canvasRoot/pinned
+    // mid-session, this stays stale until the session is recreated (acceptable
+    // — those are rare config changes).
+    const cfg = await readCanvasConfig(sessionProject || undefined);
+
     // Register this session in the shared state (replaces any previous from StrictMode)
     const sessionState = {
       project: sessionProject,
@@ -377,6 +412,8 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       coalesceBuffer: new Map<string, { type: "created" | "changed" | "deleted"; count: number }>(),
       coalesceTimer: null as ReturnType<typeof setTimeout> | null,
       deliverFn: null as (() => void) | null,
+      canvasRoot: cfg.canvasRoot,
+      pinnedFiles: new Set(cfg.pinned),
     };
     activeSessions.set(ctx.filename, sessionState);
 
@@ -420,6 +457,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       }
       busy = true; sessionState.busy = true;
       console.log(`[mica-agent] processMessage START: ${message.slice(0, 60)}`);
+
+      // Per-turn read tracking. Used by checkCardClassPrecondition to refuse
+      // card-class authoring writes until the agent has read the create-card-class
+      // skill in this same turn. Reset each processMessage so the requirement
+      // is per-turn rather than per-session (skills fall out of context as
+      // history scrolls; safer to require a fresh read).
+      const readFilesThisTurn = new Set<string>();
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -511,6 +555,42 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         async function canUseToolWithQuestionIntercept(toolName: string, input: Record<string, unknown>) {
           const safety = await guardTool(toolName, input);
           if (safety.behavior === "deny") return safety;
+
+          // Track which files the agent has read this turn (for precondition checks).
+          if (toolName === "read_file" || toolName === "Read") {
+            const p = pathFromReadInput(input);
+            if (p) readFilesThisTurn.add(p);
+          } else if (toolName === "read_many_files") {
+            const paths = (input.paths as string[]) || [];
+            for (const p of paths) if (p) readFilesThisTurn.add(p);
+          }
+
+          // Per-extension write_file validators + cross-cutting preconditions.
+          // A card class can ship a validate.js that flags malformed content
+          // (e.g. mmd files wrapped in markdown fences). Preconditions enforce
+          // ordering — e.g. don't write card class code without reading the skill.
+          if (["write_file", "write_to_file", "create_file"].includes(toolName)) {
+            const filePath = pathFromWriteInput(input);
+            const preReason = checkCardClassPrecondition(filePath, readFilesThisTurn);
+            if (preReason) return { behavior: "deny" as const, message: preReason };
+
+            const content = contentFromWriteInput(input);
+            if (content !== null) {
+              const metaReason = checkCardClassMetadataConsistency(filePath, content);
+              if (metaReason) return { behavior: "deny" as const, message: metaReason };
+            }
+
+            const ext = extensionFromWriteInput(input);
+            if (ext && content !== null) {
+              const validator = await loadValidator(sessionProject, ext);
+              if (validator) {
+                const reason = await validator(content);
+                if (reason) {
+                  return { behavior: "deny" as const, message: reason };
+                }
+              }
+            }
+          }
 
           if (toolName === "AskUserQuestion" || toolName === "ask_user_question") {
             const questions = (input.questions as Array<{

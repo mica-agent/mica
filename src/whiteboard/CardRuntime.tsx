@@ -221,6 +221,18 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       }
     };
 
+    // POST CDN/dependency load failures to /api/cards/:filename/error so the
+    // chat card can surface them with a "Send to agent" button. Same endpoint
+    // the CARD_SHIM uses for script throws — gives the agent a uniform signal.
+    const reportLoadError = (err: unknown) => {
+      const msg = (err as Error)?.message || String(err);
+      fetch(`/api/cards/${encodeURIComponent(filename)}/error`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Mica-Project": project },
+        body: JSON.stringify({ error: `Failed to load dependency: ${msg}` }),
+      }).catch(() => { /* best-effort; chat-card surfacing isn't critical-path */ });
+    };
+
     const continueRender = () => {
       // ── Phase 2: Inject HTML ──────────────────────────────────
       el.innerHTML = html;
@@ -454,6 +466,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           executeInlineScripts();
         }).catch((err) => {
           console.error("[card-runtime] External resource load failed:", err);
+          reportLoadError(err);
         });
       } else {
         executeInlineScripts();
@@ -472,6 +485,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         continueRender();
       }).catch((err) => {
         console.error("[card-runtime] Dependency preload failed:", err);
+        reportLoadError(err);
         setLoadingDeps(false);
         continueRender();
       });

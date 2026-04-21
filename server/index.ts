@@ -74,6 +74,20 @@ process.on("uncaughtException", (err) => {
   setTimeout(() => process.exit(1), 1000);
 });
 
+// Install signal traps EARLY so a kill during llama-server boot still leaves
+// a "received <SIG>" line in the log. The graceful shutdown that owns
+// channelManager + llama-server cleanup runs later (in the startup IIFE) —
+// these handlers are temporary log-only catchers replaced once the real
+// shutdown is wired in. Order matters: kill -TERM during boot would otherwise
+// die silently because the late handlers haven't been installed yet.
+let _earlySignalLogger: NodeJS.SignalsListener | null = (sig) => {
+  console.log(`[mica] received ${sig} during startup — exiting`);
+  setTimeout(() => process.exit(0), 100);
+};
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as NodeJS.Signals[]) {
+  process.on(sig, (s) => { if (_earlySignalLogger) _earlySignalLogger(s); });
+}
+
 const app = express();
 app.use(cors());
 // JSON body parser — skip binary upload routes
@@ -277,6 +291,7 @@ app.delete("/api/projects/:project", async (req, res) => {
 // Open/activate a project (switches file watcher, initializes .mica if needed)
 app.post("/api/projects/:project/open", async (req, res) => {
   const name = req.params.project;
+  const t0 = Date.now();
   try {
     const dir = projectDir(name);
     if (!existsSync(dir)) {
@@ -288,9 +303,13 @@ app.post("/api/projects/:project/open", async (req, res) => {
       const { docsDir } = req.body as { docsDir?: string };
       await initProject(name, docsDir || "docs");
     }
+    const tAfterInit = Date.now();
     switchProject(name);
+    const tAfterSwitch = Date.now();
 
     const displayName = await getProjectName(name);
+    const tAfterName = Date.now();
+    console.log(`[timing] /projects/${name}/open total=${tAfterName - t0}ms init=${tAfterInit - t0}ms switch=${tAfterSwitch - tAfterInit}ms name=${tAfterName - tAfterSwitch}ms`);
     res.json({ success: true, name: displayName, project: name });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -313,11 +332,19 @@ function resolveCardClassDir(className: string, project: string | null): string 
 }
 
 // Serve any file from a card class directory
+const cardClassServeCount = { n: 0, bytes: 0, windowStart: Date.now() };
 app.get("/api/card-classes/:className/:file", async (req, res) => {
   const dir = resolveCardClassDir(req.params.className, getRequestProject(req));
   if (!dir) {
     res.status(404).json({ error: `Card class not found: ${req.params.className}` });
     return;
+  }
+  cardClassServeCount.n++;
+  if (Date.now() - cardClassServeCount.windowStart > 5000 || cardClassServeCount.n === 1) {
+    // Roll-up log every 5s so we don't spam the console per-file.
+    if (cardClassServeCount.n > 1) console.log(`[timing] card-class file serves: ${cardClassServeCount.n} in the last window (~${Math.round((Date.now() - cardClassServeCount.windowStart) / 100) / 10}s)`);
+    cardClassServeCount.n = 0;
+    cardClassServeCount.windowStart = Date.now();
   }
   const fileName = req.params.file;
   const allowed = ["render.js", "card.html", "card.js", "card.css", "metadata.json", "spec.md"];
@@ -390,6 +417,7 @@ app.get("/api/card-classes", async (req, res) => {
 
 // Render the canvas card (assembles card.html + card.css + card.js)
 app.get("/api/canvas-card", async (req, res) => {
+  const t0 = Date.now();
   try {
     const reqProject = getRequestProject(req);
     let canvasClass = "canvas";
@@ -423,6 +451,7 @@ app.get("/api/canvas-card", async (req, res) => {
       (cardCss ? `<style>${cardCss}</style>` : "") +
       (cardJs ? `<script>${cardJs}</script>` : "");
 
+    console.log(`[timing] /canvas-card proj=${reqProject || "(none)"} class=${canvasClass} total=${Date.now() - t0}ms htmlBytes=${html.length}`);
     res.json({ html, exports: [], dependencies: deps, meta });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -523,7 +552,15 @@ app.post("/api/openrouter/validate", async (req, res) => {
 app.post("/api/cards/:filename/error", (req, res) => {
   const { filename } = req.params;
   const { error } = req.body as { error?: string };
-  if (error) console.log(`[card-error] ${filename}: ${error.slice(0, 200)}`);
+  if (error) {
+    console.log(`[card-error] ${filename}: ${error.slice(0, 200)}`);
+    // Broadcast so the chat card (or any subscriber) can surface the error
+    // with a "Send to agent" affordance. Project-scoped via existing helper.
+    const proj = getRequestProject(req);
+    if (proj) {
+      broadcastToProject(proj, { type: "card-error", filename, error });
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -536,12 +573,16 @@ app.post("/api/cards/:filename/ok", (_req, res) => {
 // List files for active project (metadata only — no content)
 // ?canvas=true returns only canvas-visible files (direct children of canvasRoot + pinned)
 app.get("/api/files", async (req, res) => {
+  const t0 = Date.now();
   try {
     const proj = getRequestProject(req) || undefined;
-    const files = req.query.canvas === "true"
-      ? await listCanvasFiles(proj)
-      : await listFiles(proj);
-    res.json(await decorateBadges(files, proj || null));
+    const isCanvas = req.query.canvas === "true";
+    const files = isCanvas ? await listCanvasFiles(proj) : await listFiles(proj);
+    const tAfterList = Date.now();
+    const decorated = await decorateBadges(files, proj || null);
+    const tAfterBadges = Date.now();
+    console.log(`[timing] /files${isCanvas ? "?canvas=true" : ""} proj=${proj || "(none)"} files=${files.length} total=${tAfterBadges - t0}ms list=${tAfterList - t0}ms badges=${tAfterBadges - tAfterList}ms`);
+    res.json(decorated);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -1233,13 +1274,21 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
 `);
   });
 
-  const shutdown = async () => {
-    console.log("\n[shutdown] Stopping...");
+  // Replace the early log-only signal trap with the full graceful shutdown.
+  // Logs which signal arrived so when the process dies unexpectedly we know
+  // who killed it (SIGHUP = terminal disconnect, SIGTERM = normal kill,
+  // SIGINT = Ctrl-C, SIGQUIT = quit). The shutdown handler is set as the
+  // single source of truth — the early one becomes a no-op.
+  _earlySignalLogger = null;
+  const shutdown = async (sig: NodeJS.Signals | "manual") => {
+    console.log(`\n[shutdown] received ${sig} — stopping...`);
     channelManager.destroyAll();
     fileWatcher.stopAll();
     await stopLlamaServer();
     process.exit(0);
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as NodeJS.Signals[]) {
+    process.removeAllListeners(sig);
+    process.on(sig, () => { void shutdown(sig); });
+  }
 })();

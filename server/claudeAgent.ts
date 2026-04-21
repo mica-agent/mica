@@ -5,7 +5,8 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile, readCanvasConfig } from "./files.js";
+import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
@@ -315,7 +316,16 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     coalesceBuffer: Map<string, { type: "created" | "changed" | "deleted"; count: number }>;
     coalesceTimer: ReturnType<typeof setTimeout> | null;
     deliverFn: (() => void) | null;
+    canvasRoot: string;
+    pinnedFiles: Set<string>;
   }>();
+
+  function inCanvasScope(filename: string, canvasRoot: string, pinned: Set<string>): boolean {
+    if (pinned.has(filename)) return true;
+    if (canvasRoot === "" || canvasRoot === ".") return !filename.includes("/");
+    const prefix = canvasRoot.replace(/\/$/, "") + "/";
+    return filename.startsWith(prefix);
+  }
 
   fileWatcher.on("file-change", (event: { type: string; filename: string; project: string }) => {
     if (event.filename.startsWith(".")) return;
@@ -324,6 +334,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       if (state.project && state.project !== event.project) continue; // different project
       if (event.filename === sessionFile) continue; // ignore own chat file
       if (state.busy) continue; // agent is working, skip
+      if (!inCanvasScope(event.filename, state.canvasRoot, state.pinnedFiles)) continue;
       if (state.agentWrittenFiles.has(event.filename)) {
         state.agentWrittenFiles.delete(event.filename);
         continue; // agent wrote this file
@@ -369,6 +380,8 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
 
+    const cfg = await readCanvasConfig(sessionProject || undefined);
+
     // Register this session in the shared state (replaces any previous from StrictMode)
     const sessionState = {
       project: sessionProject,
@@ -377,6 +390,8 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       coalesceBuffer: new Map<string, { type: "created" | "changed" | "deleted"; count: number }>(),
       coalesceTimer: null as ReturnType<typeof setTimeout> | null,
       deliverFn: null as (() => void) | null,
+      canvasRoot: cfg.canvasRoot,
+      pinnedFiles: new Set(cfg.pinned),
     };
     activeSessions.set(ctx.filename, sessionState);
 
@@ -420,6 +435,9 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       }
       busy = true; sessionState.busy = true;
       console.log(`[claude-agent] processMessage START: ${message.slice(0, 60)}`);
+
+      // Per-turn read tracking — see micaAgent.ts for rationale.
+      const readFilesThisTurn = new Set<string>();
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -484,6 +502,40 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           void _options;
           const safety = await guardTool(toolName, input);
           if (safety.behavior === "deny") return safety;
+
+          // Track which files the agent has read this turn (for precondition checks).
+          if (toolName === "read_file" || toolName === "Read") {
+            const p = pathFromReadInput(input);
+            if (p) readFilesThisTurn.add(p);
+          } else if (toolName === "read_many_files") {
+            const paths = (input.paths as string[]) || [];
+            for (const p of paths) if (p) readFilesThisTurn.add(p);
+          }
+
+          // Per-extension write_file validators + cross-cutting preconditions
+          // (see server/cardValidators.ts).
+          if (["write_file", "write_to_file", "create_file", "Write"].includes(toolName)) {
+            const filePath = pathFromWriteInput(input);
+            const preReason = checkCardClassPrecondition(filePath, readFilesThisTurn);
+            if (preReason) return { behavior: "deny" as const, message: preReason };
+
+            const content = contentFromWriteInput(input);
+            if (content !== null) {
+              const metaReason = checkCardClassMetadataConsistency(filePath, content);
+              if (metaReason) return { behavior: "deny" as const, message: metaReason };
+            }
+
+            const ext = extensionFromWriteInput(input);
+            if (ext && content !== null) {
+              const validator = await loadValidator(sessionProject, ext);
+              if (validator) {
+                const reason = await validator(content);
+                if (reason) {
+                  return { behavior: "deny" as const, message: reason };
+                }
+              }
+            }
+          }
 
           if (toolName === "AskUserQuestion" || toolName === "ask_user_question") {
             const questions = (input.questions as Array<{

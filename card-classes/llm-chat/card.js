@@ -167,29 +167,37 @@ function getModelLabel() {
   return modelSelect.options[modelSelect.selectedIndex].text;
 }
 
-// Two-note chime played when the model finishes a response. Browsers require a
-// user gesture before audio can start; the user's first Send click satisfies
-// that, so chimes from then on play fine. Errors silently no-op.
+// Two-note chime played when a response finishes (success or error). One
+// AudioContext per card, lazily created. resume() flips a suspended ctx to
+// running once a user gesture has occurred.
+var _audioCtx = null;
 function playChime() {
   try {
     var Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return;
-    var ac = new Ctx();
-    var now = ac.currentTime;
-    [880, 1320].forEach(function(freq, i) {
-      var osc = ac.createOscillator();
-      var gain = ac.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      var t0 = now + i * 0.08;
-      gain.gain.setValueAtTime(0, t0);
-      gain.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
-      osc.connect(gain).connect(ac.destination);
-      osc.start(t0);
-      osc.stop(t0 + 0.5);
-    });
-    setTimeout(function() { try { ac.close(); } catch (_) {} }, 1000);
+    if (!_audioCtx) _audioCtx = new Ctx();
+    var ac = _audioCtx;
+    var fire = function() {
+      var now = ac.currentTime;
+      [880, 1320].forEach(function(freq, i) {
+        var osc = ac.createOscillator();
+        var gain = ac.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        var t0 = now + i * 0.08;
+        gain.gain.setValueAtTime(0, t0);
+        gain.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
+        osc.connect(gain).connect(ac.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.5);
+      });
+    };
+    if (ac.state === 'suspended') {
+      ac.resume().then(fire).catch(function() {});
+    } else {
+      fire();
+    }
   } catch (_) { /* audio unavailable */ }
 }
 
@@ -249,6 +257,7 @@ ch.onData(function(data) {
       addBubble('assistant', 'Error: ' + (data.error || 'Unknown'), 'System');
       currentBubble = null;
       currentText = '';
+      playChime();
       break;
   }
 });

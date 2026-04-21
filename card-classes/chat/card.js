@@ -245,6 +245,69 @@ function addMessage(role, content, agent, questions) {
   scrollBottom();
 }
 
+// Render an error bubble for a card-error WebSocket event. Distinct red-tinted
+// styling so it's not mistaken for a regular assistant message. The "Send to
+// agent" button feeds a structured fix-request through the normal send() path.
+function addErrorBubble(filename, errorText) {
+  if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === "center") {
+    messagesEl.innerHTML = "";
+  }
+  const wrap = window.document.createElement("div");
+  wrap.style.cssText = "align-self:stretch;background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.4);border-radius:8px;padding:8px 10px;font-size:12px;";
+  const header = window.document.createElement("div");
+  header.style.cssText = "color:#fca5a5;font-weight:600;margin-bottom:4px;";
+  header.textContent = "\u26A0 Card '" + filename + "' errored";
+  const pre = window.document.createElement("pre");
+  pre.style.cssText = "background:rgba(0,0,0,0.3);color:#fecaca;padding:6px 8px;border-radius:4px;margin:4px 0 8px;font-family:monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:120px;overflow-y:auto;";
+  pre.textContent = errorText;
+  const btn = window.document.createElement("button");
+  btn.textContent = "Send to agent";
+  btn.style.cssText = "background:rgba(248,113,113,0.18);color:#fecaca;border:1px solid rgba(248,113,113,0.5);border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;";
+  btn.addEventListener("mouseenter", function() { btn.style.background = "rgba(248,113,113,0.32)"; });
+  btn.addEventListener("mouseleave", function() { btn.style.background = "rgba(248,113,113,0.18)"; });
+  btn.addEventListener("click", function() {
+    btn.disabled = true;
+    btn.style.opacity = "0.4";
+    btn.style.cursor = "default";
+    btn.textContent = "Sent";
+    inputEl.value =
+      "The card `" + filename + "` errored at runtime:\n\n```\n" + errorText + "\n```\n\n" +
+      "Read the card class files for this card, identify the cause, and fix it. " +
+      "After applying the fix the card will reload — verify the error is gone.";
+    send();
+  });
+  wrap.appendChild(header);
+  wrap.appendChild(pre);
+  wrap.appendChild(btn);
+  messagesEl.appendChild(wrap);
+  scrollBottom();
+}
+
+// De-dup card-error events: CARD_SHIM's setInterval / event-handler wrappers
+// can fire the same throw N times in a tight burst; one bubble per (filename,
+// error) per 2s is plenty.
+const _recentCardErrors = new Map();  // key → timestamp
+const _CARD_ERROR_DEDUP_MS = 2000;
+
+const _unsubCardError = mica.on("card-error", function(ev) {
+  if (!ev || !ev.filename || !ev.error) return;
+  // Skip self — the chat card showing its own error risks loops if Send-to-agent
+  // re-triggers the same throw, and is confusing UX. Server still logs it.
+  if (ev.filename === mica.filename) return;
+  const key = ev.filename + "::" + ev.error;
+  const now = Date.now();
+  const last = _recentCardErrors.get(key);
+  if (last && now - last < _CARD_ERROR_DEDUP_MS) return;
+  _recentCardErrors.set(key, now);
+  // Trim the dedup map so it doesn't grow unbounded over a long session.
+  if (_recentCardErrors.size > 200) {
+    const cutoff = now - _CARD_ERROR_DEDUP_MS;
+    for (const [k, t] of _recentCardErrors) if (t < cutoff) _recentCardErrors.delete(k);
+  }
+  addErrorBubble(ev.filename, ev.error);
+});
+mica.onDestroy(_unsubCardError);
+
 function setStatus(text, dot, pulsing) {
   statusBar.style.display = "block";
   statusDot.style.background = dot;
@@ -259,31 +322,44 @@ function updateMeta() {
   statusMeta.textContent = parts.join(" . ");
 }
 
-// Two-note chime played when the agent finishes a turn. Browsers require a
-// user gesture before audio can start; the user's first Send click satisfies
-// that, so chimes from then on play fine. Errors silently no-op (audio
-// unavailable, autoplay blocked, etc.).
+// Two-note chime played when a turn finishes (success or error — the user
+// wants to know "the agent is done", regardless of outcome). One AudioContext
+// per card, lazily created. Browser autoplay policy: a fresh context is
+// "suspended" until a user gesture; resume() (kicked here on every chime)
+// flips it to "running" the moment a gesture has occurred. The first chime
+// after page load is silent unless Send has been clicked at least once —
+// that click is the gesture.
+let _audioCtx = null;
 function playChime() {
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    const ac = new Ctx();
-    const now = ac.currentTime;
-    [880, 1320].forEach(function(freq, i) {
-      const osc = ac.createOscillator();
-      const gain = ac.createGain();
-      osc.type = "sine";
-      osc.frequency.value = freq;
-      const t0 = now + i * 0.08;
-      gain.gain.setValueAtTime(0, t0);
-      gain.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
-      osc.connect(gain).connect(ac.destination);
-      osc.start(t0);
-      osc.stop(t0 + 0.5);
-    });
-    setTimeout(function() { try { ac.close(); } catch (_) {} }, 1000);
-  } catch (_) { /* audio unavailable */ }
+    if (!Ctx) { console.warn("[chime] AudioContext not supported"); return; }
+    if (!_audioCtx) _audioCtx = new Ctx();
+    const ac = _audioCtx;
+    console.log("[chime] state=" + ac.state);
+    const fire = function() {
+      console.log("[chime] firing oscillators, currentTime=" + ac.currentTime);
+      const now = ac.currentTime;
+      [880, 1320].forEach(function(freq, i) {
+        const osc = ac.createOscillator();
+        const gain = ac.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const t0 = now + i * 0.08;
+        gain.gain.setValueAtTime(0, t0);
+        gain.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
+        osc.connect(gain).connect(ac.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.5);
+      });
+    };
+    if (ac.state === "suspended") {
+      ac.resume().then(function() { console.log("[chime] resumed → state=" + ac.state); fire(); }).catch(function(e) { console.warn("[chime] resume rejected:", e); });
+    } else {
+      fire();
+    }
+  } catch (e) { console.warn("[chime] threw:", e); }
 }
 
 // Handle channel data from server
@@ -358,6 +434,7 @@ ch.onData(function(data) {
       setStatus("Error", "#f87171", false);
       addDetailLine("ERROR: " + (data.error || "Unknown"));
       addMessage("assistant", "Error: " + (data.error || "Unknown"), "System");
+      playChime();
       break;
   }
 });
@@ -408,7 +485,8 @@ function formatSize(chars) {
 }
 
 function loadContextInfo() {
-  fetch("/api/files").then(function(r) { return r.json(); }).then(function(files) {
+  ctxLoaded = false;
+  fetch("/api/files", { headers: { "X-Mica-Project": (typeof mica !== "undefined" && mica.project) || "" } }).then(function(r) { return r.json(); }).then(function(files) {
     const lines = [];
     let totalChars = 0;
     for (let i = 0; i < files.length; i++) {
@@ -439,13 +517,15 @@ ctxBtn.addEventListener("click", function(e) {
   e.stopPropagation();
   ctxVisible = !ctxVisible;
   ctxTooltip.style.display = ctxVisible ? "block" : "none";
-  if (ctxVisible && !ctxLoaded) loadContextInfo();
+  // Always reload — the file list can change between opens (new card added,
+  // file deleted). The fetch is cheap; staleness is the worse failure mode.
+  if (ctxVisible) loadContextInfo();
 });
 
 ctxBtn.addEventListener("mouseenter", function() {
   if (!ctxVisible) {
     ctxTooltip.style.display = "block";
-    if (!ctxLoaded) loadContextInfo();
+    loadContextInfo();
   }
 });
 

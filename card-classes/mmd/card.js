@@ -49,6 +49,21 @@ function fitToViewport() {
   return true;
 }
 
+// Strip markdown wrapping if the file was written as a fenced ```mmd / ```mermaid
+// block (a common agent mistake — they default to fenced markdown). If a fence
+// exists we use the FIRST one; if none, we render the raw content as-is.
+function extractMermaidSource(raw) {
+  const fenced = raw.match(/```(?:mmd|mermaid)\s*\n([\s\S]*?)\n```/);
+  if (fenced) return fenced[1];
+  // Heuristic: if the file starts with a markdown heading and contains a known
+  // mermaid keyword later, peel off everything before the keyword.
+  if (/^\s*#/.test(raw)) {
+    const m = raw.match(/^(?:flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|mindmap|timeline|quadrantChart|requirementDiagram|sankey|xychart-beta|block-beta|architecture-beta)\b/m);
+    if (m) return raw.slice(m.index);
+  }
+  return raw;
+}
+
 // Render mermaid
 async function renderDiagram() {
   try {
@@ -57,7 +72,8 @@ async function renderDiagram() {
     mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
 
     const id = `mmd-${Date.now()}`;
-    const { svg } = await mermaid.render(id, content);
+    const source = extractMermaidSource(content);
+    const { svg } = await mermaid.render(id, source);
     svgContainer.innerHTML = svg;
 
     // Initial auto-fit (after next paint so the SVG has measurable dimensions).

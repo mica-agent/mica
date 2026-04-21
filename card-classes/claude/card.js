@@ -149,29 +149,37 @@ function updateMeta() {
   statusMeta.textContent = parts.join(" . ");
 }
 
-// Two-note chime played when the agent finishes a turn. Browsers require a
-// user gesture before audio can start; the user's first Send click satisfies
-// that, so chimes from then on play fine. Errors silently no-op.
+// Two-note chime played when a turn finishes (success or error). One
+// AudioContext per card, lazily created. resume() flips a suspended ctx to
+// running once a user gesture has occurred.
+let _audioCtx = null;
 function playChime() {
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return;
-    const ac = new Ctx();
-    const now = ac.currentTime;
-    [880, 1320].forEach(function(freq, i) {
-      const osc = ac.createOscillator();
-      const gain = ac.createGain();
-      osc.type = "sine";
-      osc.frequency.value = freq;
-      const t0 = now + i * 0.08;
-      gain.gain.setValueAtTime(0, t0);
-      gain.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
-      osc.connect(gain).connect(ac.destination);
-      osc.start(t0);
-      osc.stop(t0 + 0.5);
-    });
-    setTimeout(function() { try { ac.close(); } catch (_) {} }, 1000);
+    if (!_audioCtx) _audioCtx = new Ctx();
+    const ac = _audioCtx;
+    const fire = function() {
+      const now = ac.currentTime;
+      [880, 1320].forEach(function(freq, i) {
+        const osc = ac.createOscillator();
+        const gain = ac.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const t0 = now + i * 0.08;
+        gain.gain.setValueAtTime(0, t0);
+        gain.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.4);
+        osc.connect(gain).connect(ac.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.5);
+      });
+    };
+    if (ac.state === "suspended") {
+      ac.resume().then(fire).catch(function() {});
+    } else {
+      fire();
+    }
   } catch (_) { /* audio unavailable */ }
 }
 
@@ -231,6 +239,7 @@ ch.onData(function(data) {
       setStatus("Error", "#f87171", false);
       addDetailLine("ERROR: " + (data.error || "Unknown"));
       addMessage("assistant", "Error: " + (data.error || "Unknown"), "System");
+      playChime();
       break;
   }
 });

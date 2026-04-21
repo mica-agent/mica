@@ -69,15 +69,36 @@ cd "$PROJECT_DIR"
 # Set workspace directory for the server (default: /workspaces/testproj for dev)
 export PROJECT_DIR="${PROJECT_DIR_OVERRIDE:-/workspaces/testproj}"
 
-# Start backend
-echo "Starting backend on port $BACKEND_PORT..."
-npm run server > "$PID_DIR/backend.log" 2>&1 &
-echo $! > "$PID_DIR/backend.pid"
+# Start backend. We invoke tsx, which itself spawns a node child running our
+# code. We record the *child* PID so that external kills (e.g. `kill -TERM`)
+# target the actual server process — its signal traps fire and the log captures
+# which signal arrived. If we recorded the wrapper, SIGHUP would kill the child
+# silently without any log evidence of the cause.
+record_child_pid() {
+  local wrapper_pid=$1
+  local pid_file=$2
+  local child=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    # Suppress pgrep's non-zero exit (no match) so `set -e + pipefail` doesn't abort.
+    child=$(pgrep -P "$wrapper_pid" 2>/dev/null || true)
+    child=$(echo "$child" | head -1)
+    if [ -n "$child" ]; then
+      echo "$child" > "$pid_file"
+      return 0
+    fi
+    sleep 0.2
+  done
+  # Fall back to wrapper if the child never appeared.
+  echo "$wrapper_pid" > "$pid_file"
+}
 
-# Start frontend
+echo "Starting backend on port $BACKEND_PORT..."
+node /workspaces/mica/node_modules/.bin/tsx server/index.ts > "$PID_DIR/backend.log" 2>&1 &
+record_child_pid $! "$PID_DIR/backend.pid"
+
 echo "Starting frontend on port $FRONTEND_PORT..."
-npm run dev > "$PID_DIR/frontend.log" 2>&1 &
-echo $! > "$PID_DIR/frontend.pid"
+node /workspaces/mica/node_modules/.bin/vite > "$PID_DIR/frontend.log" 2>&1 &
+record_child_pid $! "$PID_DIR/frontend.pid"
 
 # Wait for backend to be ready (up to 15 seconds)
 echo ""

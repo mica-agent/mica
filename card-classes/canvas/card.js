@@ -87,7 +87,12 @@ const isDisplay = deviceClass === 'display';
 // = single-column stack.
 const CARD_W = isPhone ? vw - 32 : isDisplay ? 540 : 440;
 const CARD_H = isPhone ? 360 : isDisplay ? 460 : 360;
-const GAP = isPhone ? 8 : 16;
+// GAP + EDGE_PAD are sized so the card-write glow (peak box-shadow ~34px beyond
+// the card box) has room to render without being clipped by the viewport edge
+// or by a neighbor card. Phone keeps tight spacing since glow matters less
+// on a small screen.
+const GAP = isPhone ? 8 : 28;
+const EDGE_PAD = isPhone ? 8 : 40;
 const COLS = isPhone ? 1 : isDisplay ? 4 : 3;
 // Resize floor — small enough for "minimize" feel, large enough that the
 // content card classes (chat, terminal, markdown) still have room for their
@@ -175,13 +180,13 @@ function positionCard(card) {
             }
             return true;
         }
-        let x = 0, y = 0;
+        let x = EDGE_PAD, y = EDGE_PAD;
         // Scan up to 8 rows × COLS columns of grid candidates.
         let placed = false;
         outer: for (let row = 0; row < 8; row++) {
             for (let col = 0; col < COLS; col++) {
-                const cx = col * (CARD_W + GAP);
-                const cy = row * (CARD_H + GAP);
+                const cx = EDGE_PAD + col * (CARD_W + GAP);
+                const cy = EDGE_PAD + row * (CARD_H + GAP);
                 if (slotFree(cx, cy)) { x = cx; y = cy; placed = true; break outer; }
             }
         }
@@ -192,7 +197,7 @@ function positionCard(card) {
                 const b = occupied[i].y + occupied[i].h;
                 if (b > maxBottom) maxBottom = b;
             }
-            x = 0;
+            x = EDGE_PAD;
             y = maxBottom + GAP;
         }
         const z = ++topZ;
@@ -589,8 +594,8 @@ function buildToolbar() {
             // Calculate optimal grid: try to make it roughly square
             const cols = Math.ceil(Math.sqrt(count));
             const rows = Math.ceil(count / cols);
-            let cardW = Math.floor((maxWidth - (cols - 1) * GAP) / cols);
-            let cardH = Math.floor((maxHeight - (rows - 1) * GAP) / rows);
+            let cardW = Math.floor((maxWidth - 2 * EDGE_PAD - (cols - 1) * GAP) / cols);
+            let cardH = Math.floor((maxHeight - 2 * EDGE_PAD - (rows - 1) * GAP) / rows);
             // Clamp to reasonable minimums
             cardW = Math.max(MIN_W, cardW);
             cardH = Math.max(MIN_H, cardH);
@@ -599,8 +604,8 @@ function buildToolbar() {
             cards.forEach((card, i) => {
                 const col = i % cols;
                 const row = Math.floor(i / cols);
-                const x = col * (cardW + GAP);
-                const y = row * (cardH + GAP);
+                const x = EDGE_PAD + col * (cardW + GAP);
+                const y = EDGE_PAD + row * (cardH + GAP);
                 card.style.left = `${x}px`;
                 card.style.top = `${y}px`;
                 card.style.width = `${cardW}px`;
@@ -612,13 +617,13 @@ function buildToolbar() {
         } else {
             // Normal tidy: arrange in grid with current card sizes
             layout = {};
-            let x = 0, y = 0, rowMaxH = 0;
+            let x = EDGE_PAD, y = EDGE_PAD, rowMaxH = 0;
             cards.forEach(card => {
                 const w = card.offsetWidth || CARD_W;
                 const h = card.offsetHeight || CARD_H;
-                if (x > 0 && x + w > maxWidth) {
+                if (x > EDGE_PAD && x + w > maxWidth - EDGE_PAD) {
                     y += rowMaxH + GAP;
-                    x = 0;
+                    x = EDGE_PAD;
                     rowMaxH = 0;
                 }
                 card.style.left = `${x}px`;
