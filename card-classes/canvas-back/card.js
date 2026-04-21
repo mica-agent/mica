@@ -43,6 +43,14 @@ function setStatus(text, color) {
   statusEl.style.color = color || '#6e7681';
 }
 
+// Scope /api/* calls to this card's project. Without X-Mica-Project the server
+// can't tell one project's canvas-back from another's — reads/writes collide.
+function projectHeaders(extra) {
+  var h = { 'X-Mica-Project': (typeof mica !== 'undefined' && mica.project) || '' };
+  if (extra) for (var k in extra) h[k] = extra[k];
+  return h;
+}
+
 function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -68,7 +76,7 @@ function setState(next) {
 }
 
 // ── Initial load ──────────────────────────────────────────
-fetch('/api/canvas-back')
+fetch('/api/canvas-back', { headers: projectHeaders() })
   .then(function(r) { return r.ok ? r.json() : { content: '' }; })
   .then(function(data) {
     var content = data.content || '';
@@ -94,7 +102,7 @@ currentEl.addEventListener('input', function() {
     setStatus('saving\u2026');
     fetch('/api/canvas-back', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: projectHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ content: content })
     })
       .then(function(r) {
@@ -119,7 +127,7 @@ resetBtn.addEventListener('click', function(e) {
   }
   if (!confirm('Load the template\u2019s default canvas-back as a proposed change? You\u2019ll review and click Apply or Reject before anything is saved.')) return;
   setStatus('loading template default\u2026');
-  fetch('/api/canvas-back/template-default')
+  fetch('/api/canvas-back/template-default', { headers: projectHeaders() })
     .then(function(r) {
       if (r.status === 404) throw new Error('no template recorded');
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -145,7 +153,7 @@ applyBtn.addEventListener('click', function(e) {
   setStatus('applying\u2026');
   fetch('/api/canvas-back', {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: projectHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ content: newContent })
   })
     .then(function(r) {

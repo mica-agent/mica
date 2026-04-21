@@ -114,6 +114,8 @@ Available without import:
 
 **Prefer `mica.files.*` over raw `fetch('/api/files/...')`.** The helpers handle URL encoding, the `source` field for writes, and field-name normalization — you can't hallucinate endpoint paths or response shapes if you use them.
 
+**If you do use raw `fetch()` for `/api/*`**, the card runtime auto-injects the `X-Mica-Project` header so the server can tell which project's state to read/write. This works for fetches in your top-level card.js code. For belt-and-suspenders reliability (e.g. fetches inside dynamically-generated strings or edge-case code paths), pass `{ headers: { 'X-Mica-Project': mica.project } }` explicitly — the auto-inject skips headers you already set.
+
 ## WebSocket events via `mica.on(event, cb)`
 
 | Event | Payload shape |

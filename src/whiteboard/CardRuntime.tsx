@@ -452,16 +452,21 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           });
           // Wrap in try-catch so a single card's script failure doesn't crash the page.
           // On error (sync or async), report back to server so agents can auto-fix.
+          // The /ok and /error fetches here run OUTSIDE CARD_SHIM's closure,
+          // so they use window.fetch directly (the shim's fetch-override is
+          // scoped to the async IIFE above). We explicitly pass X-Mica-Project
+          // so the server broadcasts card-error events to the right project.
           newScript.textContent =
             `(function(){` +
             `const _m=document.currentScript.__mica;` +
+            `const _ph={'X-Mica-Project':_m.project||''};` +
             `try{(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
             `_m,document.currentScript.parentElement);` +
-            `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/ok',{method:'POST'}).catch(function(){});` +
+            `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/ok',{method:'POST',headers:_ph}).catch(function(){});` +
             `}catch(e){` +
             `console.error("[card-runtime] Script error in ${filename}:",e);` +
             `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/error',` +
-            `{method:'POST',headers:{'Content-Type':'application/json'},` +
+            `{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_ph),` +
             `body:JSON.stringify({error:e.message||String(e)})}).catch(()=>{});` +
             `}})()`;
           oldScript.remove();

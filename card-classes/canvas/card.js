@@ -67,9 +67,18 @@ metaResize.addEventListener('pointerup', function(e) {
     _resizeStart = null;
 });
 
+// Scope /api/* calls to this card's project. Canvas layout, canvas-root, and
+// project-scoped card-classes all live per-project — two tabs on different
+// projects would collide without this header.
+function projectHeaders(extra) {
+    const h = { 'X-Mica-Project': (typeof mica !== 'undefined' && mica.project) || '' };
+    if (extra) for (const k in extra) h[k] = extra[k];
+    return h;
+}
+
 // Canvas root — directory where new cards are created (e.g. "docs")
 let canvasRoot = '';
-fetch('/api/canvas/config').then(r => r.json()).then(cfg => {
+fetch('/api/canvas/config', { headers: projectHeaders() }).then(r => r.json()).then(cfg => {
     const root = cfg.canvasRoot || 'docs';
     canvasRoot = root === '.' ? '' : root.replace(/\/$/, '') + '/';
 }).catch(() => {});
@@ -107,7 +116,7 @@ const SAVE_DELAY = 500;
 
 // -- Layout persistence -------------------------------
 function loadLayout() {
-    return fetch('/api/layout')
+    return fetch('/api/layout', { headers: projectHeaders() })
         .then(r => r.ok ? r.json() : {})
         .then(data => { if (data.cards) layout = data.cards; layoutLoaded = true; })
         .catch(() => { layoutLoaded = true; });
@@ -118,7 +127,7 @@ function persistLayout() {
     saveTimer = setTimeout(() => {
         fetch('/api/layout', {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: projectHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ cards: layout, source: mica.windowId || '' }),
         }).catch(() => {});
     }, SAVE_DELAY);
@@ -134,7 +143,7 @@ function persistZSilent() {
     zSaveTimer = setTimeout(() => {
         fetch('/api/layout', {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: projectHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ cards: layout, source: mica.windowId || '', silent: true }),
         }).catch(() => {});
     }, SAVE_DELAY);
@@ -453,7 +462,7 @@ mica.onDestroy(() => { childObserver.disconnect(); });
 // -- Cross-window layout sync -------------------------
 const unsubLayout = mica.on('layout-changed', (msg) => {
     if (msg.source === (mica.windowId || '')) return;
-    fetch('/api/layout')
+    fetch('/api/layout', { headers: projectHeaders() })
         .then(r => r.ok ? r.json() : {})
         .then(data => {
             if (data.cards) {
@@ -519,7 +528,7 @@ function buildToolbar() {
     toolbar.innerHTML = '';
 
     // Dynamically load card classes and create buttons
-    fetch('/api/card-classes').then(r => r.json()).then(classes => {
+    fetch('/api/card-classes', { headers: projectHeaders() }).then(r => r.json()).then(classes => {
         if (myGen !== toolbarBuildGen) return;  // a newer build superseded us
         // Skip canvas class (that is us)
         const names = Object.keys(classes).filter(n => n !== 'canvas');
@@ -546,7 +555,7 @@ function buildToolbar() {
                 const content = stubFn ? stubFn(trimmed) : '';
                 fetch(`/api/files/${encodeURIComponent(path)}`, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: projectHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ content }),
                 }).catch(err => { console.error('[canvas] Card creation failed:', err); });
             });

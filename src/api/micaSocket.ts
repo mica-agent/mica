@@ -147,9 +147,19 @@ export function connect(url?: string): void {
       ch.onClose?.();
       activeChannels.delete(id);
     }
-    // Poll the server until it's back, then force reload the page.
-    // Uses relative URL so it works through Vite's proxy in dev containers.
+    // Two parallel recovery paths; whichever succeeds first wins.
+    //   (1) Retry the WebSocket directly at its own port. The backend lives on
+    //       :3002; WS connects there, NOT through Vite. So even if the Vite
+    //       dev server is also restarting (and /api/* fetches are failing as
+    //       a result), the WS can reach Mica as soon as the backend is ready.
+    //       Successful reconnect → onopen → setConnected(true) → overlay gone.
+    //   (2) HTTP probe via relative URL. Works once Vite is back up. On 200,
+    //       force-reload so the page picks up any fresh frontend build.
+    // Previously we only did (2) — which wedged when Vite was slow to recover.
     const poll = setInterval(async () => {
+      if (!ws || ws.readyState === WebSocket.CLOSED) {
+        try { connect(wsUrl); } catch { /* will retry next tick */ }
+      }
       try {
         const r = await fetch("/api/project");
         if (r.ok) {
@@ -161,6 +171,14 @@ export function connect(url?: string): void {
         // server still down, try again
       }
     }, 2000);
+    // If WS reconnects before HTTP does, we want to stop polling so we don't
+    // force-reload a working session. Subscribe once; unsubscribe after firing.
+    const stopPollOnReconnect = onConnectionChange((c) => {
+      if (c) {
+        clearInterval(poll);
+        stopPollOnReconnect();
+      }
+    });
   };
 
   ws.onerror = (err) => {

@@ -125,17 +125,14 @@ app.use("/api", (_req, res, next) => {
 });
 
 // ── Active project tracking ─────────────────────────────────
-// Phase 1: per-tab project comes from `X-Mica-Project` header on every API call.
-// `activeProject` global remains as a fallback for callers that don't set the
-// header (curl, legacy callers). Phase 3 will remove the fallback and 400.
+// Per-tab project comes from `X-Mica-Project` header (or `?project=` query)
+// on every API call; channel sessions capture `ctx.project` at open time.
+// No module-level fallback — stale globals caused test6-vs-bigtest1 mixups
+// when multiple tabs/projects were open. getRequestProject() returns null
+// if neither header nor query is set; callers handle the null explicitly.
 
-let activeProject: string | null = null;
 const fileWatcher = new FileWatcher();
 
-/** Resolve the project for an HTTP request.
- *  Preferred: `X-Mica-Project` header set by the client per tab.
- *  Fallback (Phase 1): the server's global `activeProject`.
- *  Returns null if neither is available. */
 function getRequestProject(req: express.Request): string | null {
   const header = req.header("x-mica-project");
   if (header && typeof header === "string" && header.trim()) {
@@ -145,15 +142,14 @@ function getRequestProject(req: express.Request): string | null {
   if (typeof q === "string" && q.trim()) {
     return q.trim();
   }
-  return activeProject;
+  return null;
 }
 
+// `switchProject` is kept as a named-event emitter for logging and because the
+// `/api/projects/:project/open` endpoint still calls it. The old setXxxProject
+// shims are now no-ops in their respective modules (see micaAgent, claudeAgent,
+// micaChat, exec, pty) — project scoping lives in ctx.project / request header.
 function switchProject(projectName: string) {
-  // Phase 1/2: setActiveProject() updates module-level globals in plugins that
-  // haven't been migrated to per-session ctx.project yet (chat/exec/pty/channel).
-  // The file watcher is now multi-project + ref-counted; switching no longer
-  // tears down other projects' watches. Phase 3 removes these globals entirely.
-  activeProject = projectName;
   setChatProject(projectName);
   setAgentProject(projectName);
   setClaudeAgentProject(projectName);
@@ -263,7 +259,6 @@ app.put("/api/projects/:project/rename", async (req, res) => {
     // come back empty, the card looks confused).
     channelManager.destroyAllForProject(oldName);
     evictCardIdsForProject(oldName);
-    if (activeProject === oldName) activeProject = newName;
     await renameProject(oldName, newName);
     res.json({ success: true, name: newName });
   } catch (err) {
@@ -280,7 +275,6 @@ app.delete("/api/projects/:project", async (req, res) => {
     }
     channelManager.destroyAllForProject(name);
     evictCardIdsForProject(name);
-    if (activeProject === name) activeProject = null;
     await deleteProject(name);
     res.json({ success: true });
   } catch (err) {

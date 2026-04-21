@@ -157,10 +157,14 @@ function addBubble(role, content, label) {
 }
 
 function setBusy(val) {
+  var wasBusy = busy;
   busy = val;
   sendBtn.style.display = val ? 'none' : '';
   stopBtn.style.display = val ? '' : 'none';
   sendBtn.disabled = val;
+  // Completion chime on busy→idle — covers every path that ends a turn
+  // (done, error, interrupt, clear) via the single transition point.
+  if (wasBusy && !val) playChime();
 }
 
 function getModelLabel() {
@@ -250,14 +254,12 @@ ch.onData(function(data) {
       }
       currentBubble = null;
       currentText = '';
-      playChime();
       break;
     case 'error':
       setBusy(false);
       addBubble('assistant', 'Error: ' + (data.error || 'Unknown'), 'System');
       currentBubble = null;
       currentText = '';
-      playChime();
       break;
   }
 });

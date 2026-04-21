@@ -16,6 +16,18 @@ const statusDetail = container.querySelector("#chat-status-detail");
 let detailExpanded = false;
 const ACCENT = "#7c3aed";
 let busy = false;
+
+// Toggle the busy flag AND a .wb-card--busy class on the outer card wrapper.
+// Drives the breathing halo defined in whiteboard.css (same one the qwen
+// chat card uses). Rings the completion chime on busy→idle so any path
+// that ends a turn triggers it without needing per-branch playChime calls.
+function setBusy(b) {
+  const wasBusy = busy;
+  busy = b;
+  const card = container.closest('.wb-card');
+  if (card) card.classList.toggle('wb-card--busy', b);
+  if (wasBusy && !b) playChime();
+}
 let queuedCount = 0;  // user messages typed during busy — server queues them
 let elapsedSec = 0;
 let elapsedTimer = null;
@@ -201,7 +213,7 @@ ch.onData(function(data) {
       addMessage("user", data.content);
       break;
     case "thinking":
-      busy = true;
+      setBusy(true);
       // One queued message just started processing; decrement.
       if (queuedCount > 0) queuedCount--;
       updateSendButton();
@@ -223,23 +235,21 @@ ch.onData(function(data) {
       }
       break;
     case "assistant":
-      busy = false;
+      setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(`${doneMsg} (${elapsedSec}s, ${stepCount} steps)`, "#3fb950", false);
       addDetailLine(`Completed in ${elapsedSec}s with ${stepCount} steps`);
       addMessage("assistant", data.content, data.agent || "Claude");
-      playChime();
       break;
     case "error":
-      busy = false;
+      setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       setStatus("Error", "#f87171", false);
       addDetailLine("ERROR: " + (data.error || "Unknown"));
       addMessage("assistant", "Error: " + (data.error || "Unknown"), "System");
-      playChime();
       break;
   }
 });
@@ -267,7 +277,7 @@ sendBtn.addEventListener("click", send);
 
 stopBtn.addEventListener("click", function() {
   ch.send({ type: "interrupt" });
-  busy = false;
+  setBusy(false);
   stopBtn.style.display = "none";
   if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
   setStatus("Stopped", "#fbbf24", false);
@@ -289,8 +299,10 @@ function formatSize(chars) {
   return (chars / 1024).toFixed(1) + "K chars";
 }
 
+const _projectHeaders = { "X-Mica-Project": (typeof mica !== "undefined" && mica.project) || "" };
+
 function loadContextInfo() {
-  fetch("/api/files").then(function(r) { return r.json(); }).then(function(files) {
+  fetch("/api/files", { headers: _projectHeaders }).then(function(r) { return r.json(); }).then(function(files) {
     const lines = [];
     let totalChars = 0;
     for (let i = 0; i < files.length; i++) {
@@ -299,7 +311,7 @@ function loadContextInfo() {
       lines.push(files[i].name + "  " + formatSize(size));
     }
     let canvasBackLine = "";
-    fetch("/api/canvas-back").then(function(r) { return r.json(); }).then(function(data) {
+    fetch("/api/canvas-back", { headers: _projectHeaders }).then(function(r) { return r.json(); }).then(function(data) {
       const cbSize = (data.content || "").length;
       if (cbSize > 0) {
         totalChars += cbSize;

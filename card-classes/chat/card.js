@@ -25,10 +25,17 @@ let stepCount = 0;
 // The class drives the "breathing" halo defined in whiteboard.css; card classes
 // opt in by calling this helper, no React changes needed. Uses closest() to
 // climb out of the card's own DOM up to the React-managed .wb-card element.
+//
+// Rings the completion chime on ANY busy→idle transition so every code path
+// that ends a turn (assistant, error, interrupt, empty-response, future
+// additions) is covered by a single hook. Previously we put playChime() at
+// each "done" branch, which meant any new branch silently missed the chime.
 function setBusy(b) {
+  const wasBusy = busy;
   busy = b;
   const card = container.closest('.wb-card');
   if (card) card.classList.toggle('wb-card--busy', b);
+  if (wasBusy && !b) playChime();
 }
 
 // Toggle detail panel
@@ -106,6 +113,16 @@ function checkLlmStatus() {
   }).catch(function() { setTimeout(checkLlmStatus, 5000); });
 }
 
+// Headers that scope /api/* calls to THIS card's project. Every server
+// handler reads project from `X-Mica-Project` (or `?project=` query). Without
+// this header the server can't tell two projects' chat cards apart — they
+// collide on workspace-level state (card settings, openrouter key).
+function projectHeaders(extra) {
+  var h = { 'X-Mica-Project': (typeof mica !== 'undefined' && mica.project) || '' };
+  if (extra) for (var k in extra) h[k] = extra[k];
+  return h;
+}
+
 // Load this card's settings before first status check so we know which
 // provider to poll against. Defaults to local on any failure.
 var currentSettings = { provider: 'local', model: '' };
@@ -113,7 +130,7 @@ function settingsUrl(qs) {
   var sep = qs.indexOf('?') === -1 ? '?' : '&';
   return '/api/cards/settings' + qs + sep + 'path=' + encodeURIComponent(mica.filename);
 }
-fetch(settingsUrl('')).then(function(r) { return r.json(); }).then(function(s) {
+fetch(settingsUrl(''), { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(s) {
   currentSettings = { provider: s.provider || 'local', model: s.model || '' };
 }).catch(function() { /* defaults */ }).finally(function() {
   renderModelLabel();
@@ -315,9 +332,23 @@ function setStatus(text, dot, pulsing) {
   statusLabel.textContent = text;
 }
 
+// Format elapsed seconds: raw seconds up to 59 ("42s"), h:m:s above a minute
+// so long-running turns (3-minute card builds, multi-minute OpenRouter calls)
+// stay readable. Drops the hours segment when it's zero.
+function formatDuration(s) {
+  if (s < 60) return s + "s";
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n) => (n < 10 ? "0" + n : String(n));
+  return h > 0
+    ? h + ":" + pad(m) + ":" + pad(sec)
+    : m + ":" + pad(sec);
+}
+
 function updateMeta() {
   const parts = [];
-  if (elapsedSec > 0) parts.push(elapsedSec + "s");
+  if (elapsedSec > 0) parts.push(formatDuration(elapsedSec));
   if (stepCount > 0) parts.push(stepCount + (stepCount === 1 ? " step" : " steps"));
   statusMeta.textContent = parts.join(" . ");
 }
@@ -407,25 +438,46 @@ ch.onData(function(data) {
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(doneMsg, "#3fb950", false);
-      // Final stats go on the RIGHT (statusMeta), replacing the live "Xs · N steps"
-      // that was ticking there during the turn. Append tokens + tok/s when the
-      // server forwarded usage; skip silently on tool-only turns / errors /
-      // "No action needed" paths that lack usage.
+      // Final stats go on the RIGHT (statusMeta), replacing the live
+      // "Xs · N steps" ticker. The SDK accumulates usage across every LLM
+      // call in the turn (20 tool rounds → 20 prompt sends summed together),
+      // so input_tokens is NOT "current context size" — it's cumulative
+      // tokens shipped this turn. We report it as "sent XK" so users aren't
+      // misled into thinking they're over the model's context window.
       {
         const parts = [];
-        if (elapsedSec > 0) parts.push(elapsedSec + "s");
+        if (elapsedSec > 0) parts.push(formatDuration(elapsedSec));
         if (stepCount > 0) parts.push(stepCount + (stepCount === 1 ? " step" : " steps"));
-        const outTok = data.usage && (data.usage.output_tokens || data.usage.completion_tokens);
+        const usage = data.usage || {};
+        const outTok = usage.output_tokens || usage.completion_tokens;
         if (outTok && outTok > 0) {
           const tps = Math.round(outTok / Math.max(1, elapsedSec));
-          parts.push(outTok + " tok");
+          parts.push("out " + formatK(outTok) + " tok");
           parts.push(tps + " tok/s");
+        }
+        const inTok = usage.input_tokens || usage.prompt_tokens;
+        if (inTok && inTok > 0) {
+          parts.push("sent " + formatK(inTok) + " tok");
+        }
+        // Baseline prompt size going into next turn's first LLM call — this
+        // IS comparable to contextWindow (single-call, not cumulative).
+        // Shows how much context you're starting with + headroom before the
+        // tool-loop accumulation that exceeded 65K before auto-compress.
+        if (data.baselineTokens && data.contextWindow && data.contextWindow > 0) {
+          const pct = Math.round((data.baselineTokens / data.contextWindow) * 100);
+          parts.push("next " + formatK(data.baselineTokens) + "/" + formatK(data.contextWindow) + " (" + pct + "%)");
+        }
+        // Cache hit: only meaningful for providers that return it (OpenRouter
+        // does, local llama-server doesn't). Suppress when zero or missing.
+        const cacheRead = usage.cache_read_input_tokens;
+        if (cacheRead && inTok && cacheRead > 0) {
+          const hit = Math.round((cacheRead / inTok) * 100);
+          if (hit > 0) parts.push("cache " + hit + "%");
         }
         statusMeta.textContent = parts.join(" · ");
         addDetailLine("Completed: " + parts.join(" · "));
       }
       addMessage("assistant", data.content, data.agent || "Qwen", data.questions);
-      playChime();
       break;
     case "error":
       setBusy(false);
@@ -434,7 +486,6 @@ ch.onData(function(data) {
       setStatus("Error", "#f87171", false);
       addDetailLine("ERROR: " + (data.error || "Unknown"));
       addMessage("assistant", "Error: " + (data.error || "Unknown"), "System");
-      playChime();
       break;
   }
 });
@@ -484,9 +535,16 @@ function formatSize(chars) {
   return (chars / 1024).toFixed(1) + "K chars";
 }
 
+// Compact token count: 1234 → "1.2K", 65536 → "65K".
+function formatK(n) {
+  if (n < 1000) return String(n);
+  if (n < 10000) return (n / 1000).toFixed(1) + "K";
+  return Math.round(n / 1000) + "K";
+}
+
 function loadContextInfo() {
   ctxLoaded = false;
-  fetch("/api/files", { headers: { "X-Mica-Project": (typeof mica !== "undefined" && mica.project) || "" } }).then(function(r) { return r.json(); }).then(function(files) {
+  fetch("/api/files", { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(files) {
     const lines = [];
     let totalChars = 0;
     for (let i = 0; i < files.length; i++) {
@@ -495,7 +553,7 @@ function loadContextInfo() {
       lines.push(files[i].name + "  " + formatSize(size));
     }
     let canvasBackLine = "";
-    fetch("/api/canvas-back").then(function(r) { return r.json(); }).then(function(data) {
+    fetch("/api/canvas-back", { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(data) {
       const cbSize = (data.content || "").length;
       if (cbSize > 0) {
         totalChars += cbSize;
@@ -575,8 +633,8 @@ function openSettings() {
   // Pull fresh state every time so opening the panel after another tab saved
   // shows the current values, not a stale snapshot.
   Promise.allSettled([
-    fetch(settingsUrl('')).then(function(r) { return r.json(); }),
-    fetch('/api/openrouter-key').then(function(r) { return r.json(); })
+    fetch(settingsUrl(''), { headers: projectHeaders() }).then(function(r) { return r.json(); }),
+    fetch('/api/openrouter-key', { headers: projectHeaders() }).then(function(r) { return r.json(); })
   ]).then(function(results) {
     const s = results[0].status === 'fulfilled' ? results[0].value : {};
     const k = results[1].status === 'fulfilled' ? results[1].value : { hasKey: false };
@@ -626,7 +684,7 @@ settingsSave.addEventListener('click', function() {
   const validateP = needsValidation
     ? fetch('/api/openrouter/validate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: projectHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ key: keyValue, model: model })
       }).then(function(r) { return r.json(); })
     : Promise.resolve({ ok: true, errors: {} });
@@ -646,13 +704,13 @@ settingsSave.addEventListener('click', function() {
     // Both valid (or network-unverified) — proceed with the two saves in parallel.
     const cardP = fetch(settingsUrl(''), {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: projectHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ provider: provider, model: model })
     }).then(function(r) { return r.json(); });
     const keyP = keyValue.length > 0
       ? fetch('/api/openrouter-key', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: projectHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ key: keyValue })
         }).then(function(r) { return r.json(); })
       : Promise.resolve(null);

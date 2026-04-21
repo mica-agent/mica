@@ -32,8 +32,16 @@ function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Scope /api/* calls to this card's project. Skills live per-project at
+// .mica/skills/<name>/; without this header we'd collide across projects.
+function projectHeaders(extra) {
+  var h = { 'X-Mica-Project': (typeof mica !== 'undefined' && mica.project) || '' };
+  if (extra) for (var k in extra) h[k] = extra[k];
+  return h;
+}
+
 function loadSkills() {
-  fetch('/api/skills').then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/skills', { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(data) {
     skills = data || [];
     render();
   }).catch(function(err) {
@@ -86,7 +94,7 @@ function openSkill(name) {
   editorEl.style.display = 'flex';
   contentEl.value = '';
   resetChat();
-  fetch('/api/skills/' + encodeURIComponent(name))
+  fetch('/api/skills/' + encodeURIComponent(name), { headers: projectHeaders() })
     .then(function(r) { return r.text(); })
     .then(function(text) {
       contentEl.value = text;
@@ -219,7 +227,7 @@ function saveSkill() {
   statusEl.textContent = 'Saving...';
   fetch('/api/skills/' + encodeURIComponent(current.name), {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: projectHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ content: contentEl.value }),
   }).then(function(r) {
     if (!r.ok) throw new Error('Save failed');
@@ -235,6 +243,7 @@ function deleteSkill() {
   if (!confirm('Delete skill "' + current.name + '"?')) return;
   fetch('/api/skills/' + encodeURIComponent(current.name), {
     method: 'DELETE',
+    headers: projectHeaders(),
   }).then(function() { closeEditor(); loadSkills(); })
     .catch(function(err) { statusEl.textContent = 'Delete failed: ' + err.message; });
 }
@@ -247,7 +256,7 @@ function newSkill() {
   var stub = '---\nname: ' + name + '\ndescription: \n---\n\n# ' + name + '\n\n';
   fetch('/api/skills/' + encodeURIComponent(name), {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: projectHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ content: stub }),
   }).then(function() {
     loadSkills();

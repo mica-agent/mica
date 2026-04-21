@@ -1,22 +1,21 @@
 // exec plugin -- mica.exec.* server primitive.
-// Runs one-shot shell commands scoped to the active project directory.
+// Runs one-shot shell commands. NOTE: currently unused from cards
+// (mica.exec is not exposed in the client bridge). The exported
+// setActiveProject is a backward-compat no-op shim kept so imports
+// elsewhere don't break; project scoping must come from the `cwd`
+// param in each call (an absolute path or relative to WORKSPACE_DIR).
 
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import { WORKSPACE_DIR } from "../files.js";
-import { join } from "path";
 
 const execAsync = promisify(execCb);
 
 const MAX_TIMEOUT = 60000; // 60s max
 const MAX_OUTPUT = 1024 * 1024; // 1MB max output
 
-// Active project tracking
-let _activeProject: string | null = null;
-export function setActiveProject(project: string | null) { _activeProject = project; }
-function getProjectDir() {
-  return _activeProject ? join(WORKSPACE_DIR, _activeProject) : WORKSPACE_DIR;
-}
+// Phase-1 shim, retained so server/index.ts's import doesn't break. No-op.
+export function setActiveProject(_project: string | null) { void _project; }
 
 export async function execHandler(method: string, params: unknown): Promise<unknown> {
   switch (method) {
@@ -28,9 +27,8 @@ export async function execHandler(method: string, params: unknown): Promise<unkn
       };
       if (!command) throw new Error("command required");
 
-      const projectDir = getProjectDir();
       const execTimeout = Math.min(timeout || 30000, MAX_TIMEOUT);
-      const execCwd = cwd ? `${projectDir}/${cwd}` : projectDir;
+      const execCwd = cwd ? (cwd.startsWith("/") ? cwd : `${WORKSPACE_DIR}/${cwd}`) : WORKSPACE_DIR;
 
       try {
         const { stdout, stderr } = await execAsync(command, {

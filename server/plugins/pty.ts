@@ -9,12 +9,12 @@ import type { ChannelHandler, SessionContext } from "../channelManager.js";
 
 const SCROLLBACK_SIZE = 4000;
 
-// Active project tracking
-let _activeProject: string | null = null;
-export function setActiveProject(project: string | null) { _activeProject = project; }
-function getProjectDir() {
-  return _activeProject ? join(WORKSPACE_DIR, _activeProject) : WORKSPACE_DIR;
-}
+// Backward-compat shim: server/index.ts still calls setActiveProject on
+// project-switch to update phase-1 globals. Keep the no-op so the import
+// doesn't break, but DON'T read it here — session's cwd is captured from
+// ctx.project at channel-open time, not from whatever project was last
+// switched to in some other tab.
+export function setActiveProject(_project: string | null) { void _project; }
 
 export function createPtyHandler() {
   return async function ptyHandlerFactory(
@@ -27,6 +27,12 @@ export function createPtyHandler() {
     const shell = (args.shell as string) || process.env.SHELL || "/bin/bash";
     const shellArgs = (args.args as string[]) || ["--login"];
 
+    // Per-session project — captured when this channel opened, stable for
+    // the session's life. Multiple tabs with different active projects each
+    // get their own correct cwd; subsequent project-switches in any tab
+    // don't redirect this already-open terminal.
+    const cwd = ctx.project ? join(WORKSPACE_DIR, ctx.project) : WORKSPACE_DIR;
+
     // Scrollback buffer for reconnecting clients
     let scrollback = "";
 
@@ -35,7 +41,7 @@ export function createPtyHandler() {
       name: "xterm-256color",
       cols,
       rows,
-      cwd: getProjectDir(),
+      cwd,
       env: {
         ...process.env,
         TERM: "xterm-256color",

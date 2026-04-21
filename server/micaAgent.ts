@@ -31,6 +31,11 @@ function getProjectDir(project: string | null) {
 function getMicaDir(project: string | null) { return micaDir(project || undefined); }
 
 const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
+// Context window the local llama-server is configured for. Mirrors CTX_SIZE in
+// llamaServer.ts. Passed to the chat card so it can render a live context-usage
+// footer — OpenRouter cards get the per-model value from SDK result.modelUsage
+// when present, falling back to this constant otherwise.
+const LOCAL_CTX_WINDOW = parseInt(process.env.LLAMA_CTX_SIZE || "65536", 10);
 const MAX_HISTORY = 50;
 
 // Patterns that would disrupt Mica itself. Block these before the shell runs them.
@@ -538,7 +543,16 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
         const promptWithHistory = historyBlock + message;
 
-        console.log(`[mica-agent] Query: ${message.slice(0, 100)}... (context: ${context.length} chars, history: ${historyBlock.length} chars)`);
+        // Baseline size of the prompt the SDK will send on the first LLM call
+        // of this turn (before any tool-loop accumulation). context includes
+        // canvas-back + file previews; historyBlock includes prior chat turns;
+        // ~1K tokens for the Qwen preset system prompt; message is the current
+        // user turn. Divide by 4 for a rough token estimate. This is the
+        // "baseline" number; true usage climbs if the turn runs many tools.
+        const baselineChars = context.length + historyBlock.length + message.length + 4000; // ~1K system-prompt tokens ≈ 4K chars
+        const baselineTokens = Math.round(baselineChars / 4);
+
+        console.log(`[mica-agent] Query: ${message.slice(0, 100)}... (context: ${context.length} chars, history: ${historyBlock.length} chars, baseline: ~${baselineTokens} tokens)`);
 
         const queryFn = await getQuery();
         activeAbort = new AbortController();
@@ -645,6 +659,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // Final turn usage from the SDK's `result` event. Shape: { input_tokens, output_tokens, ... }.
         // Forwarded verbatim to the client so the chat card can compute tokens/sec from elapsed time.
         let usage: Record<string, unknown> | null = null;
+        let contextWindow: number = provider === "openrouter" ? 0 : LOCAL_CTX_WINDOW;
 
         for await (const evt of q) {
           const evtType = evt.type as string;
@@ -699,6 +714,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             const resultUsage = (evt.result as { usage?: unknown } | undefined)?.usage;
             if (evtUsage && typeof evtUsage === "object") usage = evtUsage as Record<string, unknown>;
             else if (resultUsage && typeof resultUsage === "object") usage = resultUsage as Record<string, unknown>;
+            // Prefer per-model context window when the SDK provides it (OpenRouter
+            // returns it in modelUsage); fall back to our local llama ctx.
+            const modelUsage = (evt as { modelUsage?: Record<string, { contextWindow?: number }> }).modelUsage;
+            if (modelUsage) {
+              for (const m of Object.values(modelUsage)) {
+                if (typeof m?.contextWindow === "number" && m.contextWindow > 0) {
+                  contextWindow = m.contextWindow;
+                  break;
+                }
+              }
+            }
           }
         }
 
@@ -721,6 +747,8 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           agent: "Qwen",
           filesChanged,
           ...(usage ? { usage } : {}),
+          ...(contextWindow > 0 ? { contextWindow } : {}),
+          baselineTokens,
           ...(pendingQuestions.length > 0 ? { questions: pendingQuestions } : {}),
         });
 
