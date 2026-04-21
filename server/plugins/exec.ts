@@ -17,7 +17,8 @@ const MAX_OUTPUT = 1024 * 1024; // 1MB max output
 // Phase-1 shim, retained so server/index.ts's import doesn't break. No-op.
 export function setActiveProject(_project: string | null) { void _project; }
 
-export async function execHandler(method: string, params: unknown): Promise<unknown> {
+export async function execHandler(method: string, params: unknown, _project: string | null = null): Promise<unknown> {
+  void _project;
   switch (method) {
     case "run": {
       const { command, cwd, timeout } = params as {

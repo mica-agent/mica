@@ -415,6 +415,61 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         getContent: () => _cachedContent !== null ? _cachedContent : _contentPromise,
         files,
         cardClasses,
+        /** Proxy HTTP request through the Mica server. The server enforces
+         *  SSRF protection (resolves DNS, blocks private/loopback IPs), a
+         *  per-project rate limit, a response-size cap, and redacts common
+         *  secret patterns from its audit log. Returns a result object;
+         *  NEVER rejects on upstream or our-side failure — upstream HTTP
+         *  errors come back as `status`, and our-side failures come back
+         *  with `status: 0` plus a structured `errorCode`/`error`. Always
+         *  check `errorCode` first, then `status`, before reading `body`.
+         *  Body is a string; call JSON.parse() yourself. */
+        fetch: async (url: string, opts: {
+          method?: "GET" | "POST" | "PUT" | "DELETE" | "HEAD" | "PATCH";
+          headers?: Record<string, string>;
+          body?: string;
+          timeout?: number;
+        } = {}): Promise<{
+          status: number;
+          headers: Record<string, string>;
+          body: string;
+          truncated?: boolean;
+          durationMs: number;
+          error?: string;
+          errorCode?: string;
+          retryAfterMs?: number;
+        }> => {
+          const payload: Record<string, unknown> = { url };
+          if (opts.method) payload.method = opts.method;
+          if (opts.headers) payload.headers = opts.headers;
+          if (opts.body !== undefined) payload.body = opts.body;
+          if (typeof opts.timeout === "number") payload.timeout = opts.timeout;
+          try {
+            const r = await fetch("/api/mica/fetch/request", {
+              method: "POST",
+              headers: projectHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify(payload),
+            });
+            if (!r.ok) {
+              // Should never happen — the handler always resolves with a
+              // structured result. If it does (e.g. network between card and
+              // Mica server), surface as internal_error so callers see it.
+              const txt = await r.text().catch(() => "");
+              return {
+                status: 0, headers: {}, body: "", durationMs: 0,
+                error: `mica.fetch transport failed: HTTP ${r.status} ${txt.slice(0, 200)}`,
+                errorCode: "internal_error",
+              };
+            }
+            return await r.json();
+          } catch (e) {
+            return {
+              status: 0, headers: {}, body: "", durationMs: 0,
+              error: `mica.fetch transport failed: ${(e as Error).message}`,
+              errorCode: "internal_error",
+            };
+          }
+        },
       };
 
       // Separate external (src) and inline scripts from HTML

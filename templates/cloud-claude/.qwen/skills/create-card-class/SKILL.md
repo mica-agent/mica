@@ -107,6 +107,7 @@ Available without import:
 | `mica.files.delete(path)` | `async (path) => void` |
 | `mica.files.url(path)` | `(path) => string` — URL for `<img src>` / `<embed>` / download links |
 | `mica.cardClasses.list()` | `async () => [{ name, builtIn, format }]` |
+| `mica.fetch(url, opts?)` | `async (url, { method?, headers?, body?, timeout? }) => { status, headers, body, durationMs, error?, errorCode?, truncated? }` — server-proxied HTTP (bypasses CORS). SSRF-protected (blocks private/loopback IPs). Rate-limited 120 req/60s per project. 10MB response cap, 60s max timeout. **Always resolves**; check `errorCode` then `status`. See "External HTTP" section below. |
 | `mica.on(event, cb)` | subscribe; returns unsub fn. Events: `file-changed`, `file-created`, `file-deleted`, `layout-changed` |
 | `mica.onDestroy(cb)` | cleanup on unmount |
 | `mica.openChannel(fn, args)` | bidirectional stream to a server plugin |
@@ -115,6 +116,63 @@ Available without import:
 **Prefer `mica.files.*` over raw `fetch('/api/files/...')`.** The helpers handle URL encoding, the `source` field for writes, and field-name normalization — you can't hallucinate endpoint paths or response shapes if you use them.
 
 **If you do use raw `fetch()` for `/api/*`**, the card runtime auto-injects the `X-Mica-Project` header so the server can tell which project's state to read/write. This works for fetches in your top-level card.js code. For belt-and-suspenders reliability (e.g. fetches inside dynamically-generated strings or edge-case code paths), pass `{ headers: { 'X-Mica-Project': mica.project } }` explicitly — the auto-inject skips headers you already set.
+
+## External HTTP via `mica.fetch(url, opts)`
+
+Cards cannot hit most public APIs directly from the browser — CORS blocks them. `mica.fetch` proxies the request through the Mica server, which strips CORS. The server enforces SSRF protection (blocks loopback / private / link-local / cloud-metadata IPs), a per-project rate limit (120 req / 60s rolling window), a 10 MB response cap, and a 60s max timeout.
+
+**The Promise always resolves.** Check `errorCode` first (our-side failures: SSRF, DNS, timeout, rate limit, bad URL), then `status` (upstream HTTP code). Body is always a string — call `JSON.parse()` yourself when needed.
+
+### Usage
+
+```js
+// Simple GET
+const r = await mica.fetch('https://api.openweathermap.org/data/2.5/weather?q=NYC&appid=' + KEY);
+if (r.errorCode) {
+  // Our-side failure: r.error is human-readable, r.errorCode is stable
+  statusEl.textContent = 'Fetch failed: ' + r.error;
+  return;
+}
+if (r.status >= 400) {
+  // Upstream HTTP error
+  statusEl.textContent = 'API returned ' + r.status;
+  return;
+}
+const data = JSON.parse(r.body);
+// ... use data
+
+// POST with JSON body
+const r2 = await mica.fetch('https://api.example.com/v1/items', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + KEY },
+  body: JSON.stringify({ name: 'foo' }),
+  timeout: 15000,  // ms; clamped to [1, 60000]
+});
+```
+
+### What you get back
+
+```js
+{
+  status: 200,            // upstream HTTP status; 0 when our-side failure prevented completion
+  headers: { ... },       // lowercased upstream response headers; empty when status === 0
+  body: '{"..."}',        // response body as a string (JSON.parse yourself); empty when status === 0
+  durationMs: 142,        // total time including DNS + connect + read
+  truncated: true,        // only present if body hit the 10 MB cap (the fetch succeeded otherwise)
+  error: 'human msg',     // only present on our-side failure
+  errorCode: 'timeout',   // only present on our-side failure; one of:
+                          //   url_invalid | ssrf_blocked | dns_error | connect_error
+                          //   timeout | rate_limited | response_error | internal_error
+  retryAfterMs: 12340,    // only on errorCode='rate_limited' — wait this long before retrying
+}
+```
+
+### Rules
+
+1. **Don't retry indefinitely on rate_limited.** Use `retryAfterMs` or show a user message. Fire-looping will keep you throttled.
+2. **API keys live in your card code.** The card author/user provides them — Mica doesn't vault them. If you don't want them in card source, read them from a project file (`mica.files.read('docs/secrets.json')`) or from the instance file's content (`mica.getContent()`).
+3. **Don't try to reach localhost or private IPs through `mica.fetch`** — SSRF protection will reject them. For calls to Mica's own `/api/*`, use the appropriate `mica.*` helper or raw `fetch('/api/...')` (which auto-scopes to the project).
+4. **Binary responses are returned as UTF-8 strings** (may contain replacement chars). For PDFs, images, etc. use `mica.files.url()` + `<img>`/`<embed>` tags or proxy through `mica.files.write()` + `mica.files.readBinary()` — don't go via `mica.fetch` for binaries.
 
 ## WebSocket events via `mica.on(event, cb)`
 

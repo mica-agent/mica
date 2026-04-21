@@ -128,7 +128,8 @@ async function clearHistory(params: { chatId: string; project?: string }): Promi
 
 // ── Namespace handler (dispatches mica.chat.* methods) ────────
 
-export async function chatHandler(method: string, params: unknown): Promise<unknown> {
+export async function chatHandler(method: string, params: unknown, _project: string | null = null): Promise<unknown> {
+  void _project;
   switch (method) {
     case "send":
       return send(params as { chatId: string; message: string; project?: string });

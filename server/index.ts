@@ -56,6 +56,7 @@ import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject } from "./micaAgent.js";
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject } from "./claudeAgent.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
+import { fetchHandler } from "./plugins/micaFetch.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
 import { createLlmChatHandler } from "./plugins/llmChat.js";
 import { createSkillComposeHandler } from "./plugins/skillCompose.js";
@@ -975,10 +976,20 @@ app.put("/api/card-back/:filename", async (req, res) => {
 });
 
 // ── mica.* API (server-side bridge for client library) ───────
+//
+// Handler signature carries the request's project so handlers can scope
+// their work (per-project rate limits, per-project state). Older handlers
+// that don't care accept the arg and ignore it.
 
-const micaHandlers = new Map<string, (method: string, params: unknown) => Promise<unknown>>();
+type MicaHandler = (
+  method: string,
+  params: unknown,
+  project: string | null,
+) => Promise<unknown>;
 
-export function registerMicaHandler(namespace: string, handler: (method: string, params: unknown) => Promise<unknown>) {
+const micaHandlers = new Map<string, MicaHandler>();
+
+export function registerMicaHandler(namespace: string, handler: MicaHandler) {
   micaHandlers.set(namespace, handler);
   console.log(`[mica] Registered handler: mica.${namespace}.*`);
 }
@@ -991,7 +1002,8 @@ app.post("/api/mica/:namespace/:method", async (req, res) => {
     return;
   }
   try {
-    const result = await handler(method, req.body);
+    const project = getRequestProject(req);
+    const result = await handler(method, req.body, project);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -1255,6 +1267,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // Register mica.* RPC plugins
   registerMicaHandler("chat", chatHandler);  // mica.chat.*
   registerMicaHandler("exec", execHandler);  // mica.exec.*
+  registerMicaHandler("fetch", fetchHandler);  // mica.fetch.*
 
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
