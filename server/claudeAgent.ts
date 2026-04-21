@@ -10,6 +10,15 @@ import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFrom
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
+import {
+  loadProjectSubagents,
+  configureConcurrency,
+  canStartSubagentTask,
+  beginSubagentTask,
+  endSubagentTask,
+  getConcurrencyStatus,
+  type ParsedSubagent,
+} from "./subagents.js";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
 // tag the write as agent-originated. Covers the Qwen/OpenRouter dialect
@@ -526,6 +535,31 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
         console.log(`[claude-agent] Query: ${message.slice(0, 100)}... (context: ${context.length} chars, history: ${historyBlock.length} chars)`);
 
+        // Per-project subagent concurrency cap. Claude doesn't have our local
+        // GPU-slot constraint, but we still bound parallel delegations so one
+        // runaway turn can't fan out indefinitely.
+        if (sessionProject) {
+          configureConcurrency(sessionProject, "openrouter");
+        }
+
+        // Load subagent definitions from `.claude/agents/*.md` (project) with
+        // server/builtin-agents/*.md as fallbacks. Convert our ParsedSubagent
+        // to Claude SDK's AgentDefinition record-keyed shape (the Claude SDK
+        // uses an object-keyed-by-name, not an array).
+        const parsedAgents: ParsedSubagent[] = await loadProjectSubagents(sessionProject, "claude");
+        const agentsRecord: Record<string, { description: string; tools?: string[]; prompt: string; model?: string }> = {};
+        for (const a of parsedAgents) {
+          agentsRecord[a.name] = {
+            description: a.description,
+            prompt: a.systemPrompt,
+            ...(a.tools ? { tools: a.tools } : {}),
+            ...(a.modelConfig?.model ? { model: a.modelConfig.model } : {}),
+          };
+        }
+        if (parsedAgents.length > 0) {
+          console.log(`[claude-agent] subagents: ${parsedAgents.map((a) => a.name).join(", ")}`);
+        }
+
         const queryFn = await getQuery();
         activeAbort = new AbortController();
 
@@ -548,6 +582,21 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           } else if (toolName === "read_many_files") {
             const paths = (input.paths as string[]) || [];
             for (const p of paths) if (p) readFilesThisTurn.add(p);
+          }
+
+          // Subagent concurrency for Claude. Claude SDK uses the "Agent" tool
+          // (capitalized) rather than Qwen's "task". Same semaphore semantics.
+          if (toolName === "Agent" && sessionProject) {
+            if (!canStartSubagentTask(sessionProject)) {
+              const status = getConcurrencyStatus(sessionProject);
+              return {
+                behavior: "deny" as const,
+                message:
+                  `Subagent concurrency cap reached (${status?.active}/${status?.cap} in flight). ` +
+                  `Wait for an active subagent to finish, then retry.`,
+              };
+            }
+            beginSubagentTask(sessionProject);
           }
 
           // Per-extension write_file validators + cross-cutting preconditions
@@ -614,6 +663,10 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "claude_code", append: context },
+            // Project-defined subagents (loaded from .claude/agents/*.md with
+            // server/builtin-agents fallback). Parent delegates heavy single-
+            // component work via the SDK's Agent tool.
+            ...(Object.keys(agentsRecord).length > 0 ? { agents: agentsRecord } : {}),
             // Clear CLAUDECODE — if Mica is launched from inside a Claude Code shell
             // the SDK would otherwise refuse ("cannot launch inside another session").
             env: { ...process.env, CLAUDECODE: "" } as NodeJS.ProcessEnv,
@@ -630,15 +683,22 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         // Forwarded to the client so the chat card can compute tokens/sec from elapsed time.
         let usage: Record<string, unknown> | null = null;
 
+        // Track in-flight subagent invocations by tool_use_id for concurrency
+        // accounting (see micaAgent.ts for matching logic / rationale).
+        const outstandingSubagentTasks = new Set<string>();
+
         for await (const evt of q) {
           const evtType = evt.type as string;
 
           if (evtType === "assistant" && evt.message) {
-            const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; input?: Record<string, unknown> }> };
+            const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; input?: Record<string, unknown>; id?: string }> };
             if (msg.content) {
               for (const block of msg.content) {
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[claude-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
+                  if (block.name === "Agent" && block.id) {
+                    outstandingSubagentTasks.add(block.id);
+                  }
                   ctx.broadcast({
                     type: "progress",
                     tool: block.name,
@@ -670,6 +730,21 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             }
           }
 
+          // Detect completed subagent (Agent-tool) invocations — tool_result
+          // blocks arrive as user messages; drain the concurrency counter.
+          if (evtType === "user" && evt.message) {
+            const msg = evt.message as { content?: Array<{ type: string; tool_use_id?: string }> };
+            if (msg.content) {
+              for (const block of msg.content) {
+                if (block.type === "tool_result" && block.tool_use_id) {
+                  if (outstandingSubagentTasks.delete(block.tool_use_id) && sessionProject) {
+                    endSubagentTask(sessionProject);
+                  }
+                }
+              }
+            }
+          }
+
           if (evtType === "result") {
             // Claude SDK: evt.result is a string (success); also exposes .subtype, .total_cost_usd, .usage.
             // Qwen SDK used .result.text — don't expect that here.
@@ -684,6 +759,13 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         }
 
         activeAbort = null;
+
+        // Drain any outstanding subagent tasks from the concurrency counter
+        // (error / abort path). See micaAgent.ts for the same safety.
+        if (sessionProject && outstandingSubagentTasks.size > 0) {
+          for (const _id of outstandingSubagentTasks) endSubagentTask(sessionProject);
+          outstandingSubagentTasks.clear();
+        }
 
         if (!resultText.trim()) {
           resultText = filesChanged ? "Done -- I made changes." : "Done.";

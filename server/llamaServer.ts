@@ -17,7 +17,11 @@ const HF_REPO = process.env.LLAMA_HF_REPO || "unsloth/Qwen3.6-35B-A3B-GGUF";
 const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf";
 const MODEL_PATH = process.env.MODEL_PATH || "";
 const CTX_SIZE = process.env.LLAMA_CTX_SIZE || "65536";
-const N_PARALLEL = process.env.LLAMA_N_PARALLEL || "1";
+// Default 3 parallel slots so the chat agent can fan out subagent tasks on
+// the local llama-server without queueing. KV-cache cost for Qwen3.6's
+// hybrid Linear+Gated Delta Net architecture is small (~100-500 MiB/slot),
+// cheap on DGX Spark. Override via LLAMA_N_PARALLEL for tighter GPU budgets.
+const N_PARALLEL = process.env.LLAMA_N_PARALLEL || "3";
 
 let serverProcess: ChildProcess | null = null;
 let serverPort: number = DEFAULT_PORT;

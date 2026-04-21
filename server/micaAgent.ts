@@ -9,6 +9,14 @@ import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFrom
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
+import {
+  loadProjectSubagents,
+  configureConcurrency,
+  canStartSubagentTask,
+  beginSubagentTask,
+  endSubagentTask,
+  getConcurrencyStatus,
+} from "./subagents.js";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
 // tag the write as agent-originated. Covers the Qwen/OpenRouter dialect
@@ -560,6 +568,23 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
         console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
 
+        // Configure per-project subagent concurrency cap based on provider.
+        // Local llama-server parallelism is bounded by its -np setting; OpenRouter
+        // is bounded to prevent fan-out runaway. Re-run every turn so a config
+        // change or provider switch takes effect without restarting.
+        if (sessionProject) {
+          configureConcurrency(sessionProject, provider);
+        }
+
+        // Load subagent definitions from the project (.qwen/agents/*.md) with
+        // server/builtin-agents/*.md as fallbacks. Loaded fresh each turn so the
+        // user can edit an agent file without restarting Mica.
+        const subagents = await loadProjectSubagents(sessionProject, "qwen");
+        if (subagents.length > 0) {
+          const names = subagents.map((s) => s.name).join(", ");
+          console.log(`[mica-agent] subagents: ${names}`);
+        }
+
         // Inject recent chat history into the prompt so the agent has conversational
         // continuity. Without this, each turn is a goldfish — the SDK's `query()`
         // call only sees the current user message. Include up to ~6 prior turn-pairs
@@ -625,6 +650,34 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           } else if (toolName === "read_many_files") {
             const paths = (input.paths as string[]) || [];
             for (const p of paths) if (p) readFilesThisTurn.add(p);
+          }
+
+          // Subagent concurrency. SDK invokes subagents via the "task" tool;
+          // its `input` has { agent: <name>, prompt: <string> }. Bound the
+          // number of concurrent subagents per project so a burst of delegation
+          // doesn't saturate the model. The semaphore's accounting is best-
+          // effort here — we begin on approval and rely on the SDK's event
+          // stream (handled below) to fire endSubagentTask when the tool
+          // result arrives. If an error breaks that loop, the counter drifts
+          // up and future starts are blocked until something clears it — that
+          // fails safe rather than fails loud.
+          if (toolName === "task" && sessionProject) {
+            if (!canStartSubagentTask(sessionProject)) {
+              const status = getConcurrencyStatus(sessionProject);
+              return {
+                behavior: "deny" as const,
+                message:
+                  `Subagent concurrency cap reached (${status?.active}/${status?.cap} in flight for this project). ` +
+                  `Wait for an active subagent to finish, then retry. ` +
+                  `Do NOT invoke more tools in the meantime — your next response should be plain text, ` +
+                  `either summarizing work-in-progress or waiting briefly before retrying.`,
+              };
+            }
+            beginSubagentTask(sessionProject);
+            // No increment/decrement of writesThisTurn for task tool — it's a
+            // delegation, not a direct write. Subagent-originated writes run
+            // inside the subagent's session (distinct context) and do not
+            // re-enter this canUseTool via the parent.
           }
 
           // Per-extension write_file validators + cross-cutting preconditions.
@@ -724,6 +777,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
+            // Project-defined subagents. Parent delegates heavy single-component
+            // work (e.g. "implement src/email_monitor.py") via the SDK's `task`
+            // tool, keeping the parent's context small. See plan:
+            // /home/vscode/.claude/plans/joyful-honking-hinton.md
+            ...(subagents.length > 0 ? { agents: subagents } : {}),
             env: {
               OPENAI_API_KEY: apiKey,
               OPENAI_BASE_URL: baseUrl,
@@ -737,6 +795,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // Forwarded verbatim to the client so the chat card can compute tokens/sec from elapsed time.
         let usage: Record<string, unknown> | null = null;
         let contextWindow: number = provider === "openrouter" ? 0 : LOCAL_CTX_WINDOW;
+
+        // Track in-flight subagent task invocations (tool_use_id → nothing,
+        // Set is sufficient). beginSubagentTask was called in canUseTool; we
+        // call endSubagentTask when the matching tool_result arrives so the
+        // concurrency counter drains naturally. Turn-end cleanup handles any
+        // stragglers (SDK error, abort) so the counter never drifts across
+        // turns.
+        const outstandingSubagentTasks = new Set<string>();
 
         for await (const evt of q) {
           const evtType = evt.type as string;
@@ -756,6 +822,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     tool: block.name,
                     description: describeToolUse(block.name, block.input || {}),
                   });
+                  // Track outstanding subagent tasks so the concurrency counter
+                  // decrements when they finish. SDK tags each tool_use with an
+                  // `id` we'll match against the tool_result.
+                  if (block.name === "task") {
+                    const taskId = String((block as { id?: unknown }).id || "");
+                    if (taskId) outstandingSubagentTasks.add(taskId);
+                  }
                   if (WRITE_TOOL_NAMES.has(block.name.toLowerCase())) {
                     filesChanged = true;
                     // Track the file so we ignore the resulting file-changed event,
@@ -779,6 +852,23 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "text" && block.text) turnText += block.text;
               }
               if (turnText) resultText = turnText;
+            }
+          }
+
+          // Detect completed subagent tasks. SDK sends tool results back as
+          // user messages containing tool_result blocks; each tool_result has
+          // a `tool_use_id` pointing to the originating tool_use. When a
+          // tracked task's result arrives, drain the concurrency counter.
+          if (evtType === "user" && evt.message) {
+            const msg = evt.message as { content?: Array<{ type: string; tool_use_id?: string }> };
+            if (msg.content) {
+              for (const block of msg.content) {
+                if (block.type === "tool_result" && block.tool_use_id) {
+                  if (outstandingSubagentTasks.delete(block.tool_use_id) && sessionProject) {
+                    endSubagentTask(sessionProject);
+                  }
+                }
+              }
             }
           }
 
@@ -806,6 +896,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
 
         activeAbort = null;
+
+        // Drain any outstanding subagent tasks from the concurrency counter.
+        // Normal flow decrements per-task as tool_results arrive; this covers
+        // the SDK-error / abort path where some tasks never got their result.
+        if (sessionProject && outstandingSubagentTasks.size > 0) {
+          for (const _id of outstandingSubagentTasks) endSubagentTask(sessionProject);
+          outstandingSubagentTasks.clear();
+        }
 
         if (!resultText.trim()) {
           resultText = filesChanged ? "Done -- I made changes." : "Done.";
