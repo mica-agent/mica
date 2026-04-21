@@ -94,18 +94,15 @@ editor.on('change', function() {
   saveTimer = setTimeout(function() {
     justSaved = true;
     const md = frontmatter + editor.getMarkdown();
-    fetch('/api/files/' + encodeURIComponent(mica.filename), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: md, source: mica.windowId })
-    }).catch(function(err) { console.error('[markdown] save failed:', err); });
+    mica.files.write(mica.filename, md)
+      .catch(function(err) { console.error('[markdown] save failed:', err); });
     setTimeout(function() { justSaved = false; }, 1000);
   }, 800);
 });
 
 // Sync from other windows — refresh if someone else changed the file
 const unsub = mica.on('file-changed', function(e) {
-  if (e.filename === mica.filename && e.source !== mica.windowId && !justSaved) {
+  if (e.filename === mica.filename && !mica.isSelfEcho(e) && !justSaved) {
     mica.refresh();
   }
 });

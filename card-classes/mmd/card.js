@@ -157,7 +157,7 @@ container.querySelector('#mmd-reset').addEventListener('click', function(e) {
 
 // Sync from external changes
 const unsub = mica.on('file-changed', function(e) {
-  if (e.filename === mica.filename && e.source !== mica.windowId) {
+  if (e.filename === mica.filename && !mica.isSelfEcho(e)) {
     mica.refresh();
   }
 });

@@ -21,9 +21,11 @@ bodyEl.textContent = content || '(empty)';
 // const text  = await mica.files.read('docs/spec.md');
 // const url   = mica.files.url('docs/image.png');    // for <img src>, <embed>, downloads
 
-// React to changes from elsewhere:
+// React to changes from elsewhere. Use mica.isSelfEcho(e) to skip your own
+// writes — comparing e.source to mica.windowId would also suppress writes
+// from sibling cards in the same browser tab (windowId is per-tab, not per-card).
 // const unsubChanged = mica.on('file-changed', (e) => {
-//   if (e.filename === mica.filename && e.source !== mica.windowId) {
+//   if (e.filename === mica.filename && !mica.isSelfEcho(e)) {
 //     mica.refresh();
 //   }
 // });

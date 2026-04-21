@@ -345,11 +345,14 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             const r = await fetch(`/api/files/${encodeURIComponent(path)}`, {
               method: "PUT",
               headers: projectHeaders({ "Content-Type": "application/json" }),
-              body: JSON.stringify({ content, source: windowId }),
+              // Send both: `source` (windowId) for backward compat with existing
+              // cards that filter on mica.windowId, and `cardSource` (per-card
+              // UUID) for sibling-friendly self-echo via mica.isSelfEcho().
+              body: JSON.stringify({ content, source: windowId, cardSource: sessionId }),
             });
             if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
           } else {
-            const url = `/api/files/${encodeURIComponent(path)}/upload?source=${encodeURIComponent(windowId)}`;
+            const url = `/api/files/${encodeURIComponent(path)}/upload?source=${encodeURIComponent(windowId)}&cardSource=${encodeURIComponent(sessionId)}`;
             const body = content instanceof Blob
               ? content
               : (content instanceof ArrayBuffer ? content : content.buffer);
@@ -386,6 +389,18 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         canvas,
         filename,
         windowId,
+        /** Per-card-instance UUID. Stable across reloads (sidecar in
+         *  `.mica/cards/<sanitized>.id.json`); same UUID used as the channel
+         *  session key. Use `mica.isSelfEcho(event)` to skip your own writes
+         *  without suppressing sibling cards in the same browser tab. */
+        cardId: sessionId,
+        /** Returns true if `event` was caused by THIS card instance writing
+         *  through `mica.files.write()`. Prefer this over comparing `event.source`
+         *  to `mica.windowId` — windowId is per-tab, so the windowId comparison
+         *  also suppresses writes from sibling cards in the same tab. */
+        isSelfEcho(event: { cardSource?: string } | null | undefined): boolean {
+          return Boolean(event && event.cardSource && event.cardSource === sessionId);
+        },
         call: async (fn: string, args: Record<string, unknown> = {}) => {
           activeCallsRef.current++;
           try {

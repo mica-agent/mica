@@ -150,22 +150,16 @@ function saveAll() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(function() {
     const content = rebuildContent(items, otherLines);
-    fetch('/api/files/' + encodeURIComponent(mica.filename), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, source: mica.windowId })
-    }).catch(function(err) { console.error('[todo] save failed:', err); });
+    mica.files.write(mica.filename, content)
+      .catch(function(err) { console.error('[todo] save failed:', err); });
   }, 300);
 }
 
 function saveAndRefresh() {
   if (saveTimer) clearTimeout(saveTimer);
   const content = rebuildContent(items, otherLines);
-  fetch('/api/files/' + encodeURIComponent(mica.filename), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, source: mica.windowId })
-  }).then(function() { mica.refresh(); })
+  mica.files.write(mica.filename, content)
+    .then(function() { mica.refresh(); })
     .catch(function(err) { console.error('[todo] save failed:', err); });
 }
 
@@ -267,7 +261,7 @@ addInput.addEventListener('click', function(e) { e.stopPropagation(); });
 
 // Sync from other browsers — only refresh if someone else changed the file
 const unsub = mica.on('file-changed', function(e) {
-  if (e.filename === mica.filename && e.source !== mica.windowId) mica.refresh();
+  if (e.filename === mica.filename && !mica.isSelfEcho(e)) mica.refresh();
 });
 
 mica.onDestroy(function() {

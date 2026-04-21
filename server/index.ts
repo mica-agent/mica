@@ -768,16 +768,20 @@ app.get("/api/files/:filename", async (req, res) => {
 });
 
 // Create or update a file
-// Accepts JSON body: { content: string, source?: string }
+// Accepts JSON body: { content: string, source?: string, cardSource?: string }
+//   source     — windowId (per-tab); existing cards filter on this
+//   cardSource — per-card-instance UUID (the channel session id); new cards
+//                use mica.isSelfEcho() which checks this for sibling-friendly
+//                self-echo suppression.
 app.put("/api/files/:filename", async (req, res) => {
   const filename = req.params.filename;
-  const { content, source } = req.body;
+  const { content, source, cardSource } = req.body;
   if (typeof content !== "string") {
     res.status(400).json({ error: "content (string) required" });
     return;
   }
   try {
-    if (source) markWriteSource(filename, source);
+    if (source) markWriteSource(filename, source, typeof cardSource === "string" ? cardSource : undefined);
     const proj = getRequestProject(req) || undefined;
     await writeProjectFile(filename, content, proj);
     // Pre-warm the UUID sidecar BEFORE responding so any client that reacts
@@ -796,6 +800,7 @@ app.put("/api/files/:filename", async (req, res) => {
 app.post("/api/files/:filename/upload", async (req, res) => {
   const filename = req.params.filename;
   const source = typeof req.query.source === "string" ? req.query.source : undefined;
+  const cardSource = typeof req.query.cardSource === "string" ? req.query.cardSource : undefined;
   const reqProject = getRequestProject(req);
   const root = reqProject ? join(WORKSPACE_DIR, reqProject) : WORKSPACE_DIR;
   const filePath = join(root, filename);
@@ -807,7 +812,7 @@ app.post("/api/files/:filename/upload", async (req, res) => {
     await mkdir(join(filePath, ".."), { recursive: true });
   } catch { /* dir exists */ }
 
-  if (source) markWriteSource(filename, source);
+  if (source) markWriteSource(filename, source, cardSource);
 
   const ws = createWriteStream(filePath);
   let bytes = 0;
@@ -1222,13 +1227,23 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
   }
 
   if (event.type === "created") {
-    const source = consumeWriteSource(event.filename);
-    broadcastToProject(event.project, { type: "file-created", filename: event.filename, source });
+    const ws = consumeWriteSource(event.filename);
+    broadcastToProject(event.project, {
+      type: "file-created",
+      filename: event.filename,
+      source: ws.source,
+      ...(ws.cardSource ? { cardSource: ws.cardSource } : {}),
+    });
   }
 
   if (event.type === "changed") {
-    const source = consumeWriteSource(event.filename);
-    broadcastToProject(event.project, { type: "file-changed", filename: event.filename, source });
+    const ws = consumeWriteSource(event.filename);
+    broadcastToProject(event.project, {
+      type: "file-changed",
+      filename: event.filename,
+      source: ws.source,
+      ...(ws.cardSource ? { cardSource: ws.cardSource } : {}),
+    });
   }
 });
 

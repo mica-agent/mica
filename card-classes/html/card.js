@@ -55,7 +55,7 @@ openBtn.addEventListener('click', (e) => {
 });
 
 const unsub = mica.on('file-changed', (msg) => {
-  if (msg.filename === mica.filename && msg.source !== mica.windowId) {
+  if (msg.filename === mica.filename && !mica.isSelfEcho(msg)) {
     loadHtml();
   }
 });

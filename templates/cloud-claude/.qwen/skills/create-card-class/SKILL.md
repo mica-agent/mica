@@ -96,7 +96,9 @@ Available without import:
 |---|---|
 | `container` | this card's DOM element. `container.querySelector(...)` is scoped here |
 | `mica.filename` | the instance file path (e.g. `"docs/my.counter"`) |
-| `mica.windowId` | stable id for this browser (mostly used by the helpers below) |
+| `mica.windowId` | stable id for this browser **tab** (per-tab, NOT per-card) |
+| `mica.cardId` | stable id for this card **instance** (the per-file UUID) |
+| `mica.isSelfEcho(event)` | `(event) => boolean` — true if `event` was caused by THIS card writing. Use this instead of `event.source !== mica.windowId` (windowId is per-tab, so the windowId check also suppresses sibling cards in the same tab). |
 | `mica.getContent()` | `async () => string` — read the instance file content |
 | `mica.files.list()` | `async () => [{ path, isFile, isFolder, size, modifiedAt }]` — list project files AND directories. `isFile` and `isFolder` are opposites; use whichever reads natural. |
 | `mica.files.read(path)` | `async (path) => string` — read a text file |
@@ -116,12 +118,14 @@ Available without import:
 
 | Event | Payload shape |
 |---|---|
-| `file-changed` | `{ type: "file-changed", filename: string, source: string }` |
-| `file-created` | `{ type: "file-created", filename: string }` |
+| `file-changed` | `{ type: "file-changed", filename: string, source: string, cardSource?: string }` |
+| `file-created` | `{ type: "file-created", filename: string, source: string, cardSource?: string }` |
 | `file-deleted` | `{ type: "file-deleted", filename: string }` |
 | `layout-changed` | `{ type: "layout-changed", source: string, device: string }` |
 
-`source` is either a writer's `mica.windowId` (writes that went through `mica.files.write()`) or the literal string `"external"` (e.g. the agent wrote the file directly). To skip self-echoes: `source !== mica.windowId`.
+`source` is the writer's `mica.windowId` (per browser tab), or `"agent"` (the chat agent wrote it), or `"external"` (an outside process — git pull, manual edit). `cardSource` is the writer's `mica.cardId` (per-card-instance UUID), set when the write went through `mica.files.write()`.
+
+To skip self-echoes use `mica.isSelfEcho(e)` — NOT `e.source !== mica.windowId`. windowId is per-tab, so the windowId check also suppresses writes from sibling cards in the same tab. `mica.isSelfEcho()` checks `cardSource` against this card's UUID.
 
 ## Raw HTTP endpoints (fallback only)
 
@@ -129,7 +133,7 @@ You should almost never need these — `mica.files.*` and `mica.cardClasses.list
 
 - `GET /api/files` — `[{ name, type: "file"|"directory", size, modifiedAt }]` (field is `name`, NOT `path`)
 - `GET /api/files/{encodedPath}` — raw bytes; use `.text()` or `.arrayBuffer()`, NEVER `.json()`
-- `PUT /api/files/{encodedPath}` — body `{ content, source: mica.windowId }`
+- `PUT /api/files/{encodedPath}` — body `{ content, source: mica.windowId, cardSource: mica.cardId }`
 - `DELETE /api/files/{encodedPath}`
 - `GET /api/card-classes` — `{ [name]: { builtIn, format } }`
 
@@ -149,7 +153,7 @@ Compare against what the helper returns. Common hallucinated fields that don't e
 
 1. **Dark theme only.** Backgrounds transparent or `rgba(255,255,255,0.03-0.06)`. Text `#ccc`/`#ddd`/`#e6edf3`. Borders `rgba(255,255,255,0.06-0.1)`. No `#fff`, no `#f0f0f0`.
 2. **Use IDs for dynamic elements** — never `:nth-child`, never positional selectors.
-3. **Writes: always include `source: mica.windowId`** to avoid the file-changed event bouncing back.
+3. **Prefer `mica.files.write()`** — auto-injects both `source` and `cardSource` so self-echoes can be filtered with `mica.isSelfEcho(e)`. Raw `fetch()` writes need both fields by hand.
 4. **Prefer CDN libraries** via `metadata.json.dependencies.scripts` over hand-coding: Chart.js, FullCalendar, Sortable.js, CodeMirror, Leaflet, Marked, Mermaid. Don't reinvent.
 5. **Never block the UI** during async work — update DOM progressively.
 6. **Instance files go in the canvas root** (usually `docs/`), not in `.mica/`.
@@ -188,7 +192,7 @@ btn.addEventListener('click', async () => {
 });
 
 const unsub = mica.on('file-changed', (e) => {
-  if (e.filename === mica.filename && e.source !== mica.windowId) {
+  if (e.filename === mica.filename && !mica.isSelfEcho(e)) {
     mica.refresh();
   }
 });
@@ -196,7 +200,7 @@ const unsub = mica.on('file-changed', (e) => {
 mica.onDestroy(() => { unsub(); });
 ```
 
-No class. No registration. No `this`. No `export`. Top-level async is fine (`await` works at the top). Use `mica.files.write()` — you don't need to remember URL encoding, `source: mica.windowId`, or the `application/json` header.
+No class. No registration. No `this`. No `export`. Top-level async is fine (`await` works at the top). Use `mica.files.write()` — you don't need to remember URL encoding, the `source`/`cardSource` fields, or the `application/json` header.
 
 ## Minimal working counter card
 
