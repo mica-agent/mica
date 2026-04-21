@@ -5,7 +5,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile, readCanvasConfig } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
@@ -47,6 +47,17 @@ const DANGEROUS_BASH_PATTERNS: Array<{ re: RegExp; reason: string }> = [
 ];
 
 /**
+ * Detects `cmd &` without stdio redirect — see micaAgent.ts for rationale.
+ */
+function isBackgroundWithoutRedirect(cmd: string): boolean {
+  const trimmed = cmd.trim();
+  if (!/(?<!&)&\s*$/.test(trimmed)) return false;
+  if (/>\s*\S|>&|&>/.test(trimmed)) return false;
+  if (/\b(nohup|setsid|disown)\b/.test(trimmed)) return false;
+  return true;
+}
+
+/**
  * Guards the agent's tool use. Blocks Bash commands that would kill Mica itself.
  * Everything else is auto-approved (yolo behavior preserved).
  */
@@ -62,6 +73,19 @@ async function guardTool(toolName: string, input: Record<string, unknown>): Prom
           message: `Refused: ${reason}. Command: ${cmd.slice(0, 120)}`,
         };
       }
+    }
+    if (isBackgroundWithoutRedirect(cmd)) {
+      console.warn(`[claude-agent] BLOCKED background-without-redirect: "${cmd.slice(0, 120)}"`);
+      return {
+        behavior: "deny" as const,
+        message:
+          "Backgrounded command (ends in `&`) has no stdout/stderr redirect. When this tool call returns, the shell exits and the process dies (SIGHUP / broken pipe). Pick one:\n" +
+          "  1. Redirect both streams to a file:\n" +
+          "     python -m http.server > /tmp/server.log 2>&1 &\n" +
+          "  2. Use nohup + redirect:\n" +
+          "     nohup python -m http.server > /tmp/server.log 2>&1 &\n" +
+          "  3. For long-running services you can also set `is_background: true` on the tool call and drop the trailing `&`.",
+      };
     }
   }
   return { behavior: "allow" as const, updatedInput: input };
@@ -119,13 +143,16 @@ export function getLastTurnAt(chatFilename: string): number | undefined {
   return lastTurnAt.get(chatFilename);
 }
 
-async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
+export async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
   const parts: string[] = [];
 
   // 0. Since your last turn — file changes between turns. Skipped on first turn.
+  // Scoped to canvas + pinned files: mirrors the file-watcher's scope, and
+  // keeps the prompt from ballooning past the CLI's E2BIG arg limit when the
+  // user has large unrelated trees in the project.
   if (since) {
     try {
-      const allFiles = await listFiles(project || undefined);
+      const allFiles = await listCanvasFiles(project || undefined);
       const changed = allFiles
         .filter((f) => {
           const m = f.modifiedAt ? new Date(f.modifiedAt).getTime() : 0;
@@ -179,27 +206,28 @@ async function buildContext(agentFilename: string, project: string | null, since
     if (canvasBack.trim()) parts.push(`## Project Context\n${canvasBack.trim()}`);
   } catch { /* no canvas-back */ }
 
-  // Project files — list all, read text content for context
+  // Project files — full content of every canvas-visible text file goes in.
+  // No truncation, no caps: the canvas IS the agent's direction. Oversize is
+  // flagged (see below), not silently clipped. Only hard skip: known-binary
+  // extensions and NUL-byte-detected binary content.
   try {
-    const files = await listFiles(project || undefined);
+    const files = await listCanvasFiles(project || undefined);
     if (files.length > 0) {
       parts.push(`## Project Files`);
-      const TEXT_EXTS = new Set([".md", ".txt", ".json", ".todo", ".chat", ".mmd", ".yaml", ".yml", ".toml", ".csv", ".html", ".css", ".js", ".ts", ".py", ".sh", ".rb", ".go", ".rs", ".java"]);
-      const MAX_PREVIEW = 1500;
-      const MAX_FILES_WITH_CONTENT = 20;
-      let filesWithContent = 0;
       for (const f of files) {
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
-        if (TEXT_EXTS.has(ext) && f.size < 50000 && filesWithContent < MAX_FILES_WITH_CONTENT) {
-          try {
-            const file = await readProjectFile(f.name, project || undefined);
-            const preview = file.content.slice(0, MAX_PREVIEW);
-            parts.push(`### ${f.name}\n${preview}`);
-            filesWithContent++;
-          } catch { parts.push(`### ${f.name} (${f.size} bytes)`); }
-        } else {
-          parts.push(`### ${f.name} (${f.size} bytes)`);
+        if (BINARY_EXTS.has(ext)) {
+          parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+          continue;
         }
+        try {
+          const file = await readProjectFile(f.name, project || undefined);
+          if (isLikelyBinary(f.name, file.content)) {
+            parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+          } else {
+            parts.push(`### ${f.name}\n${file.content}`);
+          }
+        } catch { parts.push(`### ${f.name} (${f.size} bytes, unreadable)`); }
       }
     }
   } catch { /* ignore */ }
@@ -257,7 +285,15 @@ When reacting to file changes:
 ## Skills
 This project's skills are bundled by its template and live under \`.claude/skills/<name>/SKILL.md\`. The Claude Code SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.`);
 
-  return parts.join("\n\n");
+  const assembled = parts.join("\n\n");
+  if (assembled.length > CONTEXT_SOFT_CAP_CHARS) {
+    console.warn(
+      `[claude-agent] OVERSIZED context: ${assembled.length} chars (cap ${CONTEXT_SOFT_CAP_CHARS}). ` +
+      `project=${project ?? "-"} chat=${agentFilename}. ` +
+      `Consider splitting large canvas cards; prompt still sent as-is.`,
+    );
+  }
+  return assembled;
 }
 
 // -- Tool use description --
@@ -302,9 +338,11 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 
 // -- Channel handler factory --
 
-const COALESCE_QUIET_MS = 3000; // Wait 3s of quiet before delivering file events
-// Long enough to swallow a save burst (format-on-save touching N files in <1s),
-// short enough that a single user edit feels reactive.
+const USER_IDLE_BEFORE_AGENT_MS = 15000; // Wait 15s of quiet before delivering file events to the agent.
+// Purpose: don't react to in-progress user edits. Each incoming file-change event
+// re-arms the timer, so continuous typing (and short thinking pauses within 15s)
+// never fires. Broadcast to other card clients is a separate path and is unaffected —
+// multi-screen live typing still works.
 
 export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
   // Single file-watcher listener shared across all agent sessions.
@@ -359,7 +397,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       state.coalesceTimer = setTimeout(() => {
         state.coalesceTimer = null;
         if (state.deliverFn) state.deliverFn();
-      }, COALESCE_QUIET_MS);
+      }, USER_IDLE_BEFORE_AGENT_MS);
     }
   });
 
@@ -544,22 +582,21 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
               options?: Array<{ label: string; description?: string }>;
               multiSelect?: boolean;
             }> | undefined) || [];
-            const formatted = questions.map((q) => {
-              let out = `**${q.question}**`;
-              if (q.options && q.options.length > 0) {
-                out += "\n";
-                for (const o of q.options) {
-                  out += `\n- ${o.label}${o.description ? ` — ${o.description}` : ""}`;
-                }
-              }
-              return out;
-            }).join("\n\n");
-            if (formatted) {
-              pendingQuestionText += (pendingQuestionText ? "\n\n" : "") + formatted;
+            // Broadcast IMMEDIATELY as a standalone `user_question` event
+            // (see micaAgent.ts for the rationale — local models misread
+            // the deny message and keep running tools, so accumulating for
+            // turn end doesn't work reliably).
+            const normalized = questions.map((q) => ({
+              question: q.question,
+              options: q.options,
+              multiSelect: q.multiSelect,
+            }));
+            if (normalized.length > 0) {
+              ctx.broadcast({ type: "user_question", questions: normalized });
             }
             return {
               behavior: "deny" as const,
-              message: "Question shown to user as a chat message. End your turn now and wait for their reply — their next message will be the answer. Do not call additional tools.",
+              message: "Question was shown to the user. Their next message will be the answer. End your turn now — do not call additional tools.",
             };
           }
 

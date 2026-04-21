@@ -39,6 +39,9 @@ import {
   writeCardSettings,
   readOpenRouterKey,
   writeOpenRouterKey,
+  BINARY_EXTS,
+  isLikelyBinary,
+  CONTEXT_SOFT_CAP_CHARS,
   type FileMeta,
   type CardSettings,
 } from "./files.js";
@@ -53,8 +56,8 @@ import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llamaServer.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
-import { createAgentHandler, setActiveProject as setAgentProject } from "./micaAgent.js";
-import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject } from "./claudeAgent.js";
+import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
+import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { fetchHandler } from "./plugins/micaFetch.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
@@ -564,6 +567,67 @@ app.post("/api/cards/:filename/ok", (_req, res) => {
 });
 
 // ── Project-scoped File Endpoints ───────────────────────────
+
+// Preview the system prompt that will be sent to the agent for a given chat
+// file. Calls the SAME buildContext() the agent uses at turn time — so the
+// ctx tooltip can't drift from what's actually sent. `since` is omitted so
+// the preview skips the "since your last turn" section (that's a per-turn
+// diff, computed when the turn starts).
+// Single-source-of-truth preview for the chat card's ctx tooltip.
+// Per file we report:
+//   - chars (what actually ends up in the prompt: content.length for text,
+//     0 for binary/unreadable)
+//   - binary/unreadable flags so the tooltip can mark them
+// Plus the total prompt size and the configured soft cap — the tooltip
+// warns (doesn't error) when the prompt exceeds the cap. No truncation.
+async function buildCtxPreview(
+  builder: (filename: string, project: string | null, since?: number) => Promise<string>,
+  proj: string | null,
+  filename: string,
+) {
+  const prompt = await builder(filename, proj, undefined);
+  const files = await listCanvasFiles(proj || undefined);
+  const fileInfos = await Promise.all(files.map(async (f) => {
+    const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
+    if (BINARY_EXTS.has(ext)) return { name: f.name, chars: 0, binary: true, size: f.size };
+    try {
+      const fc = await readProjectFile(f.name, proj || undefined);
+      if (isLikelyBinary(f.name, fc.content)) return { name: f.name, chars: 0, binary: true, size: f.size };
+      return { name: f.name, chars: fc.content.length, binary: false, size: f.size };
+    } catch {
+      return { name: f.name, chars: 0, binary: false, unreadable: true, size: f.size };
+    }
+  }));
+  return {
+    files: fileInfos,
+    promptSizeChars: prompt.length,
+    estimatedTokens: Math.round(prompt.length / 4),
+    softCapChars: CONTEXT_SOFT_CAP_CHARS,
+    oversized: prompt.length > CONTEXT_SOFT_CAP_CHARS,
+  };
+}
+
+app.get("/api/agent/context-preview", async (req, res) => {
+  try {
+    const proj = getRequestProject(req);
+    const filename = String(req.query.filename || "");
+    if (!filename) { res.status(400).json({ error: "filename required" }); return; }
+    res.json(await buildCtxPreview(buildMicaAgentContext, proj, filename));
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/claude-agent/context-preview", async (req, res) => {
+  try {
+    const proj = getRequestProject(req);
+    const filename = String(req.query.filename || "");
+    if (!filename) { res.status(400).json({ error: "filename required" }); return; }
+    res.json(await buildCtxPreview(buildClaudeAgentContext, proj, filename));
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
 
 // List files for active project (metadata only — no content)
 // ?canvas=true returns only canvas-visible files (direct children of canvasRoot + pinned)
@@ -1099,7 +1163,8 @@ wss.on("connection", (ws) => {
         if (prev) fileWatcher.releaseProject(prev);
         wsProjects.set(ws, proj);
         try {
-          await fileWatcher.addProject(proj, projectDir(proj));
+          const { canvasRoot, pinned } = await readCanvasConfig(proj);
+          await fileWatcher.addProject(proj, projectDir(proj), canvasRoot, pinned);
         } catch (err) {
           console.error(`[ws] subscribe-project ${proj} failed:`, (err as Error).message);
         }

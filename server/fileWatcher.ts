@@ -1,11 +1,18 @@
-// FileWatcher — multi-project, ref-counted directory watcher.
+// FileWatcher — multi-project, ref-counted directory watcher scoped to canvas.
 //
-// Each project is watched independently. addProject(p, dir) starts a watcher
-// for that project (idempotent; ref-counts subscribers). releaseProject(p)
-// drops one ref and tears down the watcher when the count hits zero.
+// Each project is watched independently. addProject(p, dir, canvasRoot, pinned)
+// registers inotify watches only for the canvas subtree (e.g. `docs/`) plus
+// any directories containing pinned files. Files outside that scope are
+// invisible to Mica — by design: the canvas is the unit of attention, and
+// watching the whole project root would register an inotify watch for every
+// subdirectory (including node_modules-style large trees the user happens to
+// have in the project dir), blowing the system-wide fs.inotify.max_user_watches
+// limit.
 //
 // File-change events carry the originating project so listeners can route
-// broadcasts to subscribed clients only.
+// broadcasts to subscribed clients only. Emitted filenames are always
+// project-relative (e.g. "docs/spec.md") regardless of which sub-watcher
+// fired them.
 
 import fs from "fs";
 import path from "path";
@@ -17,7 +24,7 @@ export interface FileChangeEvent {
   project: string;   // Project name the event belongs to
 }
 
-/** Directories to skip while watching. */
+/** Directories to skip while scanning. */
 const IGNORE_DIRS = new Set([
   ".mica", ".git", ".svn", ".hg",
   "node_modules", "__pycache__", ".venv", "venv",
@@ -27,9 +34,20 @@ const IGNORE_DIRS = new Set([
 
 const DEBOUNCE_MS = 300;
 
-interface ProjectWatch {
+interface SubWatch {
   watcher: fs.FSWatcher;
-  watchDir: string;
+  /** Directory this watcher is attached to (absolute path). */
+  dir: string;
+  /** Translate a filename reported by this watcher (relative to `dir`) into
+   *  a project-relative path, or null if the file should be ignored. */
+  translate: (reported: string) => string | null;
+}
+
+interface ProjectWatch {
+  projectDir: string;
+  canvasRoot: string;
+  pinned: string[];
+  subs: SubWatch[];
   knownFiles: Set<string>;
   debounceTimers: Map<string, ReturnType<typeof setTimeout>>;
   refCount: number;
@@ -38,8 +56,22 @@ interface ProjectWatch {
 export class FileWatcher extends EventEmitter {
   private projects: Map<string, ProjectWatch> = new Map();
 
-  /** Add a watcher for a project (idempotent). Increments ref count. */
-  async addProject(project: string, dir: string): Promise<void> {
+  /** Add a watcher for a project (idempotent). Increments ref count.
+   *
+   *  `canvasRoot` is the subdirectory that hosts the canvas (e.g. "docs").
+   *  An empty string or "." means "project root" — watches everything, which
+   *  is the old behavior and should be avoided for projects with lots of
+   *  unrelated files.
+   *
+   *  `pinned` is the list of project-relative paths to pinned files that
+   *  live outside canvasRoot. We watch their parent directories non-recursively
+   *  and filter events to just those files. */
+  async addProject(
+    project: string,
+    projectDir: string,
+    canvasRoot: string = "docs",
+    pinned: string[] = [],
+  ): Promise<void> {
     const existing = this.projects.get(project);
     if (existing) {
       existing.refCount++;
@@ -47,41 +79,117 @@ export class FileWatcher extends EventEmitter {
       return;
     }
 
-    await fs.promises.mkdir(dir, { recursive: true });
+    const normalizedRoot = canvasRoot === "." ? "" : canvasRoot.replace(/\/$/, "");
+    const canvasAbs = normalizedRoot === "" ? projectDir : path.join(projectDir, normalizedRoot);
+    await fs.promises.mkdir(canvasAbs, { recursive: true });
 
     const knownFiles = new Set<string>();
-    await this.scanDir(dir, dir, knownFiles);
-
     const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const subs: SubWatch[] = [];
 
-    const watcher = fs.watch(dir, { recursive: true }, (_eventType, filename) => {
-      if (!filename) return;
-
-      const normalized = filename.split(path.sep).join("/");
-      const parts = normalized.split("/");
-      const isCardClassPath = parts[0] === ".mica" && parts[1] === "card-classes" && parts.length >= 3;
-      if (!isCardClassPath && parts.some((p) => p.startsWith(".") || IGNORE_DIRS.has(p))) return;
-
-      const existingTimer = debounceTimers.get(normalized);
+    // Helper: schedule a debounced handleFileChange for a project-relative path.
+    const schedule = (projectRelative: string) => {
+      const existingTimer = debounceTimers.get(projectRelative);
       if (existingTimer) clearTimeout(existingTimer);
-
       debounceTimers.set(
-        normalized,
+        projectRelative,
         setTimeout(() => {
-          debounceTimers.delete(normalized);
-          this.handleFileChange(project, normalized).catch((err) => {
-            console.error(`[file-watcher] ${project}: error handling ${normalized}:`, (err as Error).message);
+          debounceTimers.delete(projectRelative);
+          this.handleFileChange(project, projectRelative).catch((err) => {
+            console.error(`[file-watcher] ${project}: error handling ${projectRelative}:`, (err as Error).message);
           });
         }, DEBOUNCE_MS),
       );
+    };
+
+    // Primary canvas-subtree watch (recursive).
+    await this.scanDir(canvasAbs, projectDir, knownFiles);
+    const canvasWatcher = fs.watch(canvasAbs, { recursive: true }, (_eventType, reported) => {
+      if (!reported) return;
+      const rel = reported.split(path.sep).join("/");
+      const parts = rel.split("/");
+      // Events inside card-classes survived the old filter; keep that. Otherwise
+      // reject hidden-prefix segments and ignored dirs.
+      const isCardClassPath = parts[0] === ".mica" && parts[1] === "card-classes";
+      if (!isCardClassPath && parts.some((p) => p.startsWith(".") || IGNORE_DIRS.has(p))) return;
+      const projectRelative = normalizedRoot === "" ? rel : `${normalizedRoot}/${rel}`;
+      schedule(projectRelative);
+    });
+    canvasWatcher.on("error", (err: Error) => {
+      console.warn(`[file-watcher] ${project}: watch error on canvas:`, err.message);
+    });
+    subs.push({
+      watcher: canvasWatcher,
+      dir: canvasAbs,
+      translate: (r) => r, // canvas watcher's translation is inlined in the callback
     });
 
-    watcher.on("error", (err: Error) => {
-      console.warn(`[file-watcher] ${project}: watch error:`, err.message);
-    });
+    // Pinned files outside canvasRoot: watch each parent directory non-recursively,
+    // and only fire for the specific pinned file (filter out siblings).
+    const pinnedParents = new Set<string>();
+    for (const pin of pinned) {
+      const pinNorm = pin.replace(/\\/g, "/").replace(/^\//, "");
+      if (normalizedRoot !== "" && (pinNorm === normalizedRoot || pinNorm.startsWith(`${normalizedRoot}/`))) {
+        // Inside canvasRoot — already covered.
+        continue;
+      }
+      const pinAbs = path.join(projectDir, pinNorm);
+      const pinParent = path.dirname(pinAbs);
+      if (pinnedParents.has(pinParent)) continue;
+      pinnedParents.add(pinParent);
 
-    this.projects.set(project, { watcher, watchDir: dir, knownFiles, debounceTimers, refCount: 1 });
-    console.log(`[file-watcher] addProject(${project}) ref=1 — watching ${dir} (${knownFiles.size} files)`);
+      try {
+        await fs.promises.mkdir(pinParent, { recursive: true });
+      } catch { /* best-effort */ }
+
+      // Pre-register known state for pinned file if it exists.
+      try {
+        await fs.promises.stat(pinAbs);
+        knownFiles.add(pinNorm);
+      } catch { /* doesn't exist yet */ }
+
+      // Compute the set of pinned files living in this parent dir so we only
+      // fire for those, ignoring siblings.
+      const pinsInDir = new Set(
+        pinned
+          .map((p) => p.replace(/\\/g, "/").replace(/^\//, ""))
+          .filter((p) => path.dirname(path.join(projectDir, p)) === pinParent),
+      );
+
+      const pinWatcher = fs.watch(pinParent, { recursive: false }, (_eventType, reported) => {
+        if (!reported) return;
+        const reportedRel = reported.split(path.sep).join("/");
+        const parentRelToProject = path.relative(projectDir, pinParent).split(path.sep).join("/");
+        const projectRelative = parentRelToProject === ""
+          ? reportedRel
+          : `${parentRelToProject}/${reportedRel}`;
+        if (!pinsInDir.has(projectRelative)) return;
+        schedule(projectRelative);
+      });
+      pinWatcher.on("error", (err: Error) => {
+        console.warn(`[file-watcher] ${project}: watch error on pinned dir ${pinParent}:`, err.message);
+      });
+      subs.push({
+        watcher: pinWatcher,
+        dir: pinParent,
+        translate: (_r) => null,
+      });
+    }
+
+    this.projects.set(project, {
+      projectDir,
+      canvasRoot: normalizedRoot,
+      pinned,
+      subs,
+      knownFiles,
+      debounceTimers,
+      refCount: 1,
+    });
+    console.log(
+      `[file-watcher] addProject(${project}) ref=1 — watching ` +
+      `canvas=${normalizedRoot || "(project-root)"} (${knownFiles.size} files)` +
+      (pinnedParents.size ? `, pinned-dirs=${pinnedParents.size}` : ""),
+    );
   }
 
   /** Decrement ref count for a project. Stops the watcher when count hits zero. */
@@ -93,7 +201,7 @@ export class FileWatcher extends EventEmitter {
       console.log(`[file-watcher] releaseProject(${project}) ref=${w.refCount}`);
       return;
     }
-    w.watcher.close();
+    for (const s of w.subs) s.watcher.close();
     for (const t of w.debounceTimers.values()) clearTimeout(t);
     w.debounceTimers.clear();
     w.knownFiles.clear();
@@ -111,13 +219,14 @@ export class FileWatcher extends EventEmitter {
     for (const project of Array.from(this.projects.keys())) {
       const w = this.projects.get(project)!;
       w.refCount = 0;
-      w.watcher.close();
+      for (const s of w.subs) s.watcher.close();
       for (const t of w.debounceTimers.values()) clearTimeout(t);
     }
     this.projects.clear();
   }
 
-  private async scanDir(rootDir: string, dir: string, knownFiles: Set<string>): Promise<void> {
+  /** Scan `dir` (absolute) and populate knownFiles with paths relative to `projectRoot`. */
+  private async scanDir(dir: string, projectRoot: string, knownFiles: Set<string>): Promise<void> {
     try {
       const entries = await fs.promises.readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
@@ -125,9 +234,9 @@ export class FileWatcher extends EventEmitter {
         if (IGNORE_DIRS.has(entry.name)) continue;
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
-          await this.scanDir(rootDir, fullPath, knownFiles);
+          await this.scanDir(fullPath, projectRoot, knownFiles);
         } else if (entry.isFile()) {
-          const relPath = path.relative(rootDir, fullPath).split(path.sep).join("/");
+          const relPath = path.relative(projectRoot, fullPath).split(path.sep).join("/");
           knownFiles.add(relPath);
         }
       }
@@ -139,7 +248,7 @@ export class FileWatcher extends EventEmitter {
   private async handleFileChange(project: string, filename: string): Promise<void> {
     const w = this.projects.get(project);
     if (!w) return;
-    const filePath = path.join(w.watchDir, filename);
+    const filePath = path.join(w.projectDir, filename);
     const eventName = filename.startsWith(".mica/card-classes/") ? "card-class-change" : "file-change";
 
     try {

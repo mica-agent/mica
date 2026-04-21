@@ -4,7 +4,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
@@ -52,6 +52,25 @@ const DANGEROUS_BASH_PATTERNS: Array<{ re: RegExp; reason: string }> = [
 ];
 
 /**
+ * Detects `cmd &` (background) without stdout/stderr redirect. Such a process
+ * inherits the tool-call shell's stdio; when the shell exits, the process
+ * loses its streams and dies (broken pipe / SIGHUP). Agents hit this when
+ * launching long-lived services like `python -m http.server &`. Force them
+ * to redirect or use is_background.
+ */
+function isBackgroundWithoutRedirect(cmd: string): boolean {
+  const trimmed = cmd.trim();
+  // End of command ends with a lone `&` (the last char) — not `&&` (logical AND).
+  // (?<!&) lookbehind prevents matching the second `&` of `&&`.
+  if (!/(?<!&)&\s*$/.test(trimmed)) return false;
+  // Any stdout/stderr redirect anywhere in the command is good enough — conservative.
+  if (/>\s*\S|>&|&>/.test(trimmed)) return false;
+  // Wrappers that detach stdio cleanly.
+  if (/\b(nohup|setsid|disown)\b/.test(trimmed)) return false;
+  return true;
+}
+
+/**
  * Guards the agent's tool use. Blocks Bash commands that would kill Mica itself.
  * Everything else is auto-approved (yolo behavior preserved).
  */
@@ -67,6 +86,19 @@ async function guardTool(toolName: string, input: Record<string, unknown>): Prom
           message: `Refused: ${reason}. Command: ${cmd.slice(0, 120)}`,
         };
       }
+    }
+    if (isBackgroundWithoutRedirect(cmd)) {
+      console.warn(`[mica-agent] BLOCKED background-without-redirect: "${cmd.slice(0, 120)}"`);
+      return {
+        behavior: "deny" as const,
+        message:
+          "Backgrounded command (ends in `&`) has no stdout/stderr redirect. When this tool call returns, the shell exits and the process dies (SIGHUP / broken pipe). Pick one:\n" +
+          "  1. Redirect both streams to a file:\n" +
+          "     python -m http.server > /tmp/server.log 2>&1 &\n" +
+          "  2. Use nohup + redirect:\n" +
+          "     nohup python -m http.server > /tmp/server.log 2>&1 &\n" +
+          "  3. Best for long-running services: set `is_background: true` on the run_shell_command tool and DROP the trailing `&` — the SDK manages the process lifecycle, stdio, and cleanup.",
+      };
     }
   }
   return { behavior: "allow" as const, updatedInput: input };
@@ -124,13 +156,16 @@ export function getLastTurnAt(chatFilename: string): number | undefined {
   return lastTurnAt.get(chatFilename);
 }
 
-async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
+export async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
   const parts: string[] = [];
 
   // 0. Since your last turn — file changes between turns. Skipped on first turn.
+  // Scoped to canvas + pinned files: mirrors the file-watcher's scope, and
+  // keeps the prompt from ballooning past the CLI's E2BIG arg limit when the
+  // user has large unrelated trees in the project (e.g. extracted SDKs).
   if (since) {
     try {
-      const allFiles = await listFiles(project || undefined);
+      const allFiles = await listCanvasFiles(project || undefined);
       const changed = allFiles
         .filter((f) => {
           const m = f.modifiedAt ? new Date(f.modifiedAt).getTime() : 0;
@@ -191,39 +226,29 @@ async function buildContext(agentFilename: string, project: string | null, since
   // to "<binary, N bytes>" if the file isn't decodable cleanly. Hardcoded BINARY_EXTS
   // for the common known-binary cases (images, archives, executables) avoid wasting
   // a read attempt.
+  // Project files — full content of every canvas-visible text file goes in.
+  // No truncation, no per-file cap, no file-count cap: the canvas IS the
+  // agent's direction. If the prompt gets too big, we flag it (see the size
+  // check below) but still send — the expectation is that the user splits
+  // oversized cards (divide-and-conquer), not that we silently clip.
   try {
-    const files = await listFiles(project || undefined);
+    const files = await listCanvasFiles(project || undefined);
     if (files.length > 0) {
       parts.push(`## Project Files`);
-      const BINARY_EXTS = new Set([
-        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg",
-        ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
-        ".mp3", ".mp4", ".m4a", ".wav", ".ogg", ".webm", ".mov", ".avi",
-        ".woff", ".woff2", ".ttf", ".otf", ".eot",
-        ".exe", ".dll", ".so", ".dylib", ".o", ".a",
-      ]);
-      const MAX_PREVIEW = 1500;
-      const MAX_FILES_WITH_CONTENT = 20;
-      let filesWithContent = 0;
       for (const f of files) {
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
-        const skipContent = BINARY_EXTS.has(ext) || f.size >= 50000 || filesWithContent >= MAX_FILES_WITH_CONTENT;
-        if (!skipContent) {
-          try {
-            const file = await readProjectFile(f.name, project || undefined);
-            // Cheap heuristic: a text file shouldn't have NUL bytes in the first 1KB.
-            const head = file.content.slice(0, 1024);
-            if (head.includes("\0")) {
-              parts.push(`### ${f.name} (${f.size} bytes, binary)`);
-            } else {
-              const preview = file.content.slice(0, MAX_PREVIEW);
-              parts.push(`### ${f.name}\n${preview}`);
-              filesWithContent++;
-            }
-          } catch { parts.push(`### ${f.name} (${f.size} bytes)`); }
-        } else {
-          parts.push(`### ${f.name} (${f.size} bytes)`);
+        if (BINARY_EXTS.has(ext)) {
+          parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+          continue;
         }
+        try {
+          const file = await readProjectFile(f.name, project || undefined);
+          if (isLikelyBinary(f.name, file.content)) {
+            parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+          } else {
+            parts.push(`### ${f.name}\n${file.content}`);
+          }
+        } catch { parts.push(`### ${f.name} (${f.size} bytes, unreadable)`); }
       }
     }
   } catch { /* ignore */ }
@@ -281,7 +306,15 @@ When reacting to file changes:
 ## Skills
 This project's skills are bundled by its template and live under \`.qwen/skills/<name>/SKILL.md\`. The Qwen SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.`);
 
-  return parts.join("\n\n");
+  const assembled = parts.join("\n\n");
+  if (assembled.length > CONTEXT_SOFT_CAP_CHARS) {
+    console.warn(
+      `[mica-agent] OVERSIZED context: ${assembled.length} chars (cap ${CONTEXT_SOFT_CAP_CHARS}). ` +
+      `project=${project ?? "-"} chat=${agentFilename}. ` +
+      `Consider splitting large canvas cards; prompt still sent as-is.`,
+    );
+  }
+  return assembled;
 }
 
 // -- Tool use description --
@@ -326,9 +359,11 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 
 // -- Channel handler factory --
 
-const COALESCE_QUIET_MS = 3000; // Wait 3s of quiet before delivering file events
-// Long enough to swallow a save burst (format-on-save touching N files in <1s),
-// short enough that a single user edit feels reactive.
+const USER_IDLE_BEFORE_AGENT_MS = 15000; // Wait 15s of quiet before delivering file events to the agent.
+// Purpose: don't react to in-progress user edits. Each incoming file-change event
+// re-arms the timer, so continuous typing (and short thinking pauses within 15s)
+// never fires. Broadcast to other card clients is a separate path and is unaffected —
+// multi-screen live typing still works.
 
 export function createAgentHandler(fileWatcher: FileWatcher) {
   // Single file-watcher listener shared across all agent sessions.
@@ -383,7 +418,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       state.coalesceTimer = setTimeout(() => {
         state.coalesceTimer = null;
         if (state.deliverFn) state.deliverFn();
-      }, COALESCE_QUIET_MS);
+      }, USER_IDLE_BEFORE_AGENT_MS);
     }
   });
 
@@ -469,6 +504,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // is per-turn rather than per-session (skills fall out of context as
       // history scrolls; safer to require a fresh read).
       const readFilesThisTurn = new Set<string>();
+
+      // Per-turn write cap. After this many files are written in a single turn,
+      // further write tool calls are denied with a structured hint telling the
+      // agent to stop, report, and continue next turn. Hard guard because:
+      //   - soft skill guidance ("single-file-edit", "decompose-task") is often
+      //     ignored by the local Qwen model on batch codegen asks
+      //   - each write_file tool call carries full file content as input,
+      //     which accumulates across tool rounds and blows the model's context
+      //     window (observed: 30+ writes in one turn → 215K tokens vs 65K cap
+      //     → llama-server rejects the request mid-turn)
+      //   - user explicitly wants divide-and-conquer: one step, report, then
+      //     continue on user cue
+      const MAX_WRITES_PER_TURN = 5;
+      let writesThisTurn = 0;
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -564,7 +613,6 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // structured form is also broadcast so the chat card can render answer
         // buttons next to the bubble.
         let pendingQuestionText = "";
-        const pendingQuestions: Array<{ question: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }> = [];
 
         async function canUseToolWithQuestionIntercept(toolName: string, input: Record<string, unknown>) {
           const safety = await guardTool(toolName, input);
@@ -583,27 +631,49 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           // A card class can ship a validate.js that flags malformed content
           // (e.g. mmd files wrapped in markdown fences). Preconditions enforce
           // ordering — e.g. don't write card class code without reading the skill.
-          if (["write_file", "write_to_file", "create_file"].includes(toolName)) {
-            const filePath = pathFromWriteInput(input);
-            const preReason = checkCardClassPrecondition(filePath, readFilesThisTurn);
-            if (preReason) return { behavior: "deny" as const, message: preReason };
-
-            const content = contentFromWriteInput(input);
-            if (content !== null) {
-              const metaReason = checkCardClassMetadataConsistency(filePath, content);
-              if (metaReason) return { behavior: "deny" as const, message: metaReason };
+          // Also enforces the per-turn write cap here (see MAX_WRITES_PER_TURN
+          // comment at turn-state init).
+          const WRITE_TOOLS = ["write_file", "write_to_file", "create_file", "edit", "edit_file", "multiedit", "patch", "patch_file", "str_replace", "str_replace_editor", "notebookedit"];
+          if (WRITE_TOOLS.includes(toolName.toLowerCase())) {
+            if (writesThisTurn >= MAX_WRITES_PER_TURN) {
+              return {
+                behavior: "deny" as const,
+                message:
+                  `You have already written to ${writesThisTurn} file${writesThisTurn === 1 ? "" : "s"} ` +
+                  `this turn (cap: ${MAX_WRITES_PER_TURN}). STOP now. ` +
+                  `Do NOT call any more tools. ` +
+                  `Your next response must be plain text: briefly list what you wrote and what remains, ` +
+                  `then end the turn. The user will reply with 'continue' or direction, and you'll ` +
+                  `pick up the next step on the following turn. This is the divide-and-conquer ` +
+                  `protocol — one small coherent step, report, resume next turn.`,
+              };
             }
 
-            const ext = extensionFromWriteInput(input);
-            if (ext && content !== null) {
-              const validator = await loadValidator(sessionProject, ext);
-              if (validator) {
-                const reason = await validator(content);
-                if (reason) {
-                  return { behavior: "deny" as const, message: reason };
+            if (["write_file", "write_to_file", "create_file"].includes(toolName)) {
+              const filePath = pathFromWriteInput(input);
+              const preReason = checkCardClassPrecondition(filePath, readFilesThisTurn);
+              if (preReason) return { behavior: "deny" as const, message: preReason };
+
+              const content = contentFromWriteInput(input);
+              if (content !== null) {
+                const metaReason = checkCardClassMetadataConsistency(filePath, content);
+                if (metaReason) return { behavior: "deny" as const, message: metaReason };
+              }
+
+              const ext = extensionFromWriteInput(input);
+              if (ext && content !== null) {
+                const validator = await loadValidator(sessionProject, ext);
+                if (validator) {
+                  const reason = await validator(content);
+                  if (reason) {
+                    return { behavior: "deny" as const, message: reason };
+                  }
                 }
               }
             }
+
+            // Count only AFTER all validators pass — a denied call didn't actually write.
+            writesThisTurn++;
           }
 
           if (toolName === "AskUserQuestion" || toolName === "ask_user_question") {
@@ -613,18 +683,25 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               options?: Array<{ label: string; description?: string }>;
               multiSelect?: boolean;
             }> | undefined) || [];
-            // Text version: just the question prompts (no bullet list of options) —
-            // the buttons render the choices, the bullets would duplicate them.
-            const formatted = questions.map((q) => `**${q.question}**`).join("\n\n");
-            if (formatted) {
-              pendingQuestionText += (pendingQuestionText ? "\n\n" : "") + formatted;
-            }
-            for (const q of questions) {
-              pendingQuestions.push({ question: q.question, options: q.options, multiSelect: q.multiSelect });
+            // Broadcast IMMEDIATELY as a standalone `user_question` event. The
+            // old path accumulated into `pendingQuestions` and shipped at turn
+            // end, but if the agent misread the deny message (common with
+            // local Qwen: "The user cancelled the question. Let me just
+            // proceed with a different approach.") it kept running tools and
+            // the turn-end broadcast never fired — questions never reached
+            // the chat card. Immediate broadcast decouples user-visible
+            // buttons from the agent's turn-end behavior.
+            const normalized = questions.map((q) => ({
+              question: q.question,
+              options: q.options,
+              multiSelect: q.multiSelect,
+            }));
+            if (normalized.length > 0) {
+              ctx.broadcast({ type: "user_question", questions: normalized });
             }
             return {
               behavior: "deny" as const,
-              message: "Question shown to user as a chat message. End your turn now and wait for their reply — their next message will be the answer. Do not call additional tools.",
+              message: "Question was shown to the user. Their next message will be the answer. End your turn now — do not call additional tools.",
             };
           }
 
@@ -749,7 +826,6 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           ...(usage ? { usage } : {}),
           ...(contextWindow > 0 ? { contextWindow } : {}),
           baselineTokens,
-          ...(pendingQuestions.length > 0 ? { questions: pendingQuestions } : {}),
         });
 
         const updatedHistory = await loadHistory(chatId, sessionProject);

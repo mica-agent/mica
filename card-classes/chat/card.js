@@ -410,6 +410,19 @@ ch.onData(function(data) {
     case "user":
       addMessage("user", data.content);
       break;
+    case "user_question": {
+      // Mid-turn structured question with clickable options. Renders an
+      // assistant-styled bubble with the question text + button row. Server
+      // broadcasts this immediately when the agent calls ask_user_question,
+      // decoupled from the turn-end assistant event — so the question
+      // surfaces even if the agent misinterprets the deny message and
+      // continues running tools. Click → fills input + sends as normal
+      // user reply.
+      const qs = data.questions || [];
+      const content = qs.map(function(q) { return "**" + (q.question || "") + "**"; }).join("\n\n");
+      addMessage("assistant", content, "Qwen", qs);
+      break;
+    }
     case "thinking":
       setBusy(true);
       // One queued message just started processing; decrement.
@@ -544,30 +557,34 @@ function formatK(n) {
 
 function loadContextInfo() {
   ctxLoaded = false;
-  fetch("/api/files", { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(files) {
-    const lines = [];
-    let totalChars = 0;
-    for (let i = 0; i < files.length; i++) {
-      const size = files[i].size || 0;
-      totalChars += size;
-      lines.push(files[i].name + "  " + formatSize(size));
+  // Single source of truth: /api/agent/context-preview uses the same
+  // buildContext() the agent uses at turn time. Per-file sizes are the
+  // actual chars injected into the prompt (not raw disk bytes). Binaries
+  // are flagged. Prompt-level soft cap is reported so we can warn when
+  // the canvas has grown past what the model can comfortably hold.
+  const url = "/api/agent/context-preview?filename=" + encodeURIComponent(mica.filename);
+  fetch(url, { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.error) {
+      ctxFiles.textContent = "Failed to load: " + data.error;
+      return;
     }
-    let canvasBackLine = "";
-    fetch("/api/canvas-back", { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(data) {
-      const cbSize = (data.content || "").length;
-      if (cbSize > 0) {
-        totalChars += cbSize;
-        canvasBackLine = "canvas-back.md  " + formatSize(cbSize) + "\n";
-      }
-      ctxFiles.innerHTML =
-        `<div style="color:#4ade80;margin-bottom:4px">${files.length} files, ~${formatSize(totalChars)} total (~${Math.round(totalChars / 4)} tokens)</div>` +
-        (canvasBackLine ? `<div>${canvasBackLine}</div>` : "") +
-        lines.map(function(l) { return `<div>${l}</div>`; }).join("");
-      ctxLoaded = true;
-    }).catch(function() {
-      ctxFiles.innerHTML = lines.map(function(l) { return `<div>${l}</div>`; }).join("");
-      ctxLoaded = true;
+    const files = data.files || [];
+    const promptSize = data.promptSizeChars || 0;
+    const tokens = data.estimatedTokens || Math.round(promptSize / 4);
+    const cap = data.softCapChars || 0;
+    const over = !!data.oversized;
+    const fileLines = files.map(function(f) {
+      if (f.binary) return f.name + '  <span style="color:#888">(binary, ' + (f.size || 0) + ' B)</span>';
+      if (f.unreadable) return f.name + '  <span style="color:#f87171">(unreadable)</span>';
+      return f.name + '  ' + formatSize(f.chars || 0);
     });
+    const header = '<div style="color:' + (over ? '#f59e0b' : '#4ade80') + ';margin-bottom:4px">'
+      + files.length + ' file' + (files.length === 1 ? '' : 's')
+      + ' · prompt ' + formatSize(promptSize) + ' (~' + tokens + ' tokens)'
+      + (over ? ' · <b>over ' + formatSize(cap) + ' cap — split large cards</b>' : '')
+      + '</div>';
+    ctxFiles.innerHTML = header + fileLines.map(function(l) { return '<div>' + l + '</div>'; }).join('');
+    ctxLoaded = true;
   }).catch(function() { ctxFiles.textContent = "Failed to load"; });
 }
 

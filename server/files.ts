@@ -10,6 +10,30 @@ import { existsSync } from "fs";
 /** The workspace root. Defaults to /project (Docker mount point). */
 export const WORKSPACE_DIR = process.env.PROJECT_DIR || "/project";
 
+/** Extensions that are known-binary; agent buildContext skips these. */
+export const BINARY_EXTS = new Set<string>([
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg",
+  ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+  ".mp3", ".mp4", ".m4a", ".wav", ".ogg", ".webm", ".mov", ".avi",
+  ".woff", ".woff2", ".ttf", ".otf", ".eot",
+  ".exe", ".dll", ".so", ".dylib", ".o", ".a",
+]);
+
+/** Cheap binary check: true if filename has a binary extension OR the first
+ *  1KB of content contains a NUL byte. Used by both the agent prompt builder
+ *  and the ctx tooltip to classify files consistently. */
+export function isLikelyBinary(filename: string, contentHead: string): boolean {
+  const ext = filename.substring(filename.lastIndexOf(".")).toLowerCase();
+  if (BINARY_EXTS.has(ext)) return true;
+  return contentHead.slice(0, 1024).includes("\0");
+}
+
+/** Soft cap on the agent prompt (chars). Not enforced by truncation — we
+ *  warn in the ctx tooltip and server log when the rendered prompt exceeds
+ *  this. The expectation is that the user splits large canvas cards (divide
+ *  and conquer) rather than having the prompt silently clipped. */
+export const CONTEXT_SOFT_CAP_CHARS = 100_000;
+
 // Backwards-compatible alias used by other modules
 export const PROJECT_DIR = WORKSPACE_DIR;
 
@@ -429,12 +453,21 @@ export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
     })
     .map((f) => pinnedSet.has(f.name) ? { ...f, pinned: true } : f);
 
+  // UUIDs are created ONLY for canvas-visible files, post-filter. This bounds
+  // the sidecar population to the canvas — previously we created IDs for every
+  // file in the project (including tens of thousands of SDK extract files), which
+  // filled .mica/cards/ and blew inotify limits.
   return Promise.all(filtered.map(async (f) => ({ ...f, id: await getOrCreateCardId(project, f.name) })));
 }
 
 /**
  * List all files in a project directory (recursive, metadata only).
- * Files (not directories) are decorated with their stable UUID (`id`).
+ *
+ * Files are NOT decorated with UUIDs here — listFiles is used for prompt
+ * context and bulk operations where we don't want the side effect of
+ * minting sidecars for every file. Callers that need IDs (listCanvasFiles,
+ * specific file lookups) should call getOrCreateCardId explicitly on the
+ * filtered set.
  */
 export async function listFiles(project?: string): Promise<FileMeta[]> {
   const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
@@ -442,10 +475,7 @@ export async function listFiles(project?: string): Promise<FileMeta[]> {
 
   const files: FileMeta[] = [];
   await scanDir(root, root, files);
-  return Promise.all(files.map(async (f) => {
-    if (f.type === "directory") return f;
-    return { ...f, id: await getOrCreateCardId(project, f.name) };
-  }));
+  return files;
 }
 
 async function scanDir(dir: string, root: string, files: FileMeta[]): Promise<void> {
@@ -724,11 +754,13 @@ export async function createProjectFromTemplate(projectName: string, templateNam
     }
   } catch { /* best-effort */ }
 
-  // Pre-warm UUIDs for every seeded file. Without this, the first /api/files
-  // call would lazy-backfill — fine, but eager assignment guarantees that
-  // when the user opens the project, the files already have stable IDs.
+  // Pre-warm UUIDs for canvas-visible files only. Seeding IDs for every file
+  // in the project would create sidecars for user data unrelated to the canvas
+  // (e.g. extracted SDKs, vendored tarballs, generated build output). The
+  // canvas is the unit of identity; non-canvas files get IDs lazily if/when
+  // they're promoted to pins.
   try {
-    const seeded = await listFiles(projectName);
+    const seeded = await listCanvasFiles(projectName);
     for (const f of seeded) {
       if (f.type === "file") await getOrCreateCardId(projectName, f.name);
     }

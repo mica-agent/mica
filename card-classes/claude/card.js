@@ -130,7 +130,7 @@ function renderMarkdown(text) {
   return text;
 }
 
-function addMessage(role, content, agent) {
+function addMessage(role, content, agent, questions) {
   if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === "center") {
     messagesEl.innerHTML = "";
   }
@@ -142,6 +142,39 @@ function addMessage(role, content, agent) {
     msg.style.cssText = "align-self:flex-start;background:rgba(255,255,255,0.05);border-radius:12px 12px 12px 4px;padding:8px 12px;max-width:90%;";
     const header = agent ? `<div style="color:${ACCENT};font-size:11px;font-weight:600;margin-bottom:4px;">${escapeHtml(agent)}</div>` : "";
     msg.innerHTML = `${header}<div class="chat-md" style="color:#e6edf3;font-size:13px;line-height:1.5;">${renderMarkdown(content)}</div>`;
+    if (questions && questions.length > 0) {
+      const buttonRows = window.document.createElement("div");
+      buttonRows.style.cssText = "display:flex;flex-direction:column;gap:8px;margin-top:10px;";
+      for (let qi = 0; qi < questions.length; qi++) {
+        const q = questions[qi];
+        if (!q.options || q.options.length === 0) continue;
+        const row = window.document.createElement("div");
+        row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;";
+        for (let oi = 0; oi < q.options.length; oi++) {
+          const opt = q.options[oi];
+          const btn = window.document.createElement("button");
+          btn.textContent = opt.label;
+          btn.title = opt.description || opt.label;
+          btn.style.cssText = "background:rgba(124,58,237,0.15);color:#e6edf3;border:1px solid rgba(124,58,237,0.4);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit;";
+          btn.addEventListener("mouseenter", function() { btn.style.background = "rgba(124,58,237,0.3)"; });
+          btn.addEventListener("mouseleave", function() { btn.style.background = "rgba(124,58,237,0.15)"; });
+          btn.addEventListener("click", function() {
+            const rowButtons = buttonRows.querySelectorAll("button");
+            for (let i = 0; i < rowButtons.length; i++) {
+              rowButtons[i].disabled = true;
+              rowButtons[i].style.opacity = "0.4";
+              rowButtons[i].style.cursor = "default";
+            }
+            btn.style.background = "rgba(124,58,237,0.5)";
+            inputEl.value = opt.label;
+            send();
+          });
+          row.appendChild(btn);
+        }
+        buttonRows.appendChild(row);
+      }
+      msg.appendChild(buttonRows);
+    }
   }
   messagesEl.appendChild(msg);
   scrollBottom();
@@ -212,6 +245,15 @@ ch.onData(function(data) {
     case "user":
       addMessage("user", data.content);
       break;
+    case "user_question": {
+      // Mid-turn structured question from the agent. Broadcast immediately
+      // by server when ask_user_question is intercepted so it surfaces even
+      // if the agent misinterprets the deny message and keeps running.
+      const qs = data.questions || [];
+      const content = qs.map(function(q) { return "**" + (q.question || "") + "**"; }).join("\n\n");
+      addMessage("assistant", content, "Claude", qs);
+      break;
+    }
     case "thinking":
       setBusy(true);
       // One queued message just started processing; decrement.
@@ -302,30 +344,29 @@ function formatSize(chars) {
 const _projectHeaders = { "X-Mica-Project": (typeof mica !== "undefined" && mica.project) || "" };
 
 function loadContextInfo() {
-  fetch("/api/files", { headers: _projectHeaders }).then(function(r) { return r.json(); }).then(function(files) {
-    const lines = [];
-    let totalChars = 0;
-    for (let i = 0; i < files.length; i++) {
-      const size = files[i].size || 0;
-      totalChars += size;
-      lines.push(files[i].name + "  " + formatSize(size));
+  const url = "/api/claude-agent/context-preview?filename=" + encodeURIComponent(mica.filename);
+  fetch(url, { headers: _projectHeaders }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.error) {
+      ctxFiles.textContent = "Failed to load: " + data.error;
+      return;
     }
-    let canvasBackLine = "";
-    fetch("/api/canvas-back", { headers: _projectHeaders }).then(function(r) { return r.json(); }).then(function(data) {
-      const cbSize = (data.content || "").length;
-      if (cbSize > 0) {
-        totalChars += cbSize;
-        canvasBackLine = "canvas-back.md  " + formatSize(cbSize) + "\n";
-      }
-      ctxFiles.innerHTML =
-        `<div style="color:#4ade80;margin-bottom:4px">${files.length} files, ~${formatSize(totalChars)} total (~${Math.round(totalChars / 4)} tokens)</div>` +
-        (canvasBackLine ? `<div>${canvasBackLine}</div>` : "") +
-        lines.map(function(l) { return `<div>${l}</div>`; }).join("");
-      ctxLoaded = true;
-    }).catch(function() {
-      ctxFiles.innerHTML = lines.map(function(l) { return `<div>${l}</div>`; }).join("");
-      ctxLoaded = true;
+    const files = data.files || [];
+    const promptSize = data.promptSizeChars || 0;
+    const tokens = data.estimatedTokens || Math.round(promptSize / 4);
+    const cap = data.softCapChars || 0;
+    const over = !!data.oversized;
+    const fileLines = files.map(function(f) {
+      if (f.binary) return f.name + '  <span style="color:#888">(binary, ' + (f.size || 0) + ' B)</span>';
+      if (f.unreadable) return f.name + '  <span style="color:#f87171">(unreadable)</span>';
+      return f.name + '  ' + formatSize(f.chars || 0);
     });
+    const header = '<div style="color:' + (over ? '#f59e0b' : '#4ade80') + ';margin-bottom:4px">'
+      + files.length + ' file' + (files.length === 1 ? '' : 's')
+      + ' · prompt ' + formatSize(promptSize) + ' (~' + tokens + ' tokens)'
+      + (over ? ' · <b>over ' + formatSize(cap) + ' cap — split large cards</b>' : '')
+      + '</div>';
+    ctxFiles.innerHTML = header + fileLines.map(function(l) { return '<div>' + l + '</div>'; }).join('');
+    ctxLoaded = true;
   }).catch(function() { ctxFiles.textContent = "Failed to load"; });
 }
 
