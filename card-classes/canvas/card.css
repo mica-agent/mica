@@ -33,6 +33,22 @@
     pointer-events: none;
 }
 
+/* Smooth layout transitions for tidy / expand / contract. Added as a
+   class by canvas/card.js just before changing left/top/width/height,
+   removed after the animation completes. Critical: this class must NOT
+   be present during drag — the transition would lag the cursor. Drag
+   removes it on pointerdown; all normal drag paths keep it off.
+   Back-out easing (cubic-bezier(0.34, 1.56, 0.64, 1)) overshoots
+   slightly then settles, giving cards a subtle "snap into place" feel
+   instead of a linear slide. */
+.wb-card--animating-layout {
+    transition:
+        left 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+        top 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+        width 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+        height 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 /* Meta sidebar — docks "how" cards (canvas-back, skills) on the right */
 .canvas-meta-sidebar {
     position: relative;

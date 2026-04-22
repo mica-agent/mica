@@ -114,6 +114,36 @@ let saveTimer = null;
 let topZ = 1;     // monotonic — bumped on every card pointerdown, seeded from saved z on load
 const SAVE_DELAY = 500;
 
+// -- Smooth layout transitions (tidy / expand / contract) ---
+// Cards jump discretely when style.left/top/width/height change; adding
+// this class briefly around the change turns the jump into a smooth
+// animation (see CSS .wb-card--animating-layout). Must be absent during
+// drag — the drag handler removes it on pointerdown so the card keeps
+// up with the cursor.
+const LAYOUT_ANIM_MS = 300;                 // matches the CSS transition duration
+const LAYOUT_STAGGER_MS = 40;               // per-card delay for tidy cascade
+const LAYOUT_STAGGER_MAX_INDEX = 12;        // clamp stagger so a huge canvas doesn't take forever
+
+function animateLayoutChange(cards, opts) {
+    const stagger = !!(opts && opts.stagger);
+    for (let i = 0; i < cards.length; i++) {
+        const c = cards[i];
+        c.classList.add('wb-card--animating-layout');
+        if (stagger) {
+            const delay = Math.min(i, LAYOUT_STAGGER_MAX_INDEX) * LAYOUT_STAGGER_MS;
+            c.style.transitionDelay = delay + 'ms';
+        }
+    }
+    const totalMs = LAYOUT_ANIM_MS +
+        (stagger ? LAYOUT_STAGGER_MAX_INDEX * LAYOUT_STAGGER_MS : 0) + 50;
+    setTimeout(() => {
+        for (let i = 0; i < cards.length; i++) {
+            cards[i].classList.remove('wb-card--animating-layout');
+            cards[i].style.transitionDelay = '';
+        }
+    }, totalMs);
+}
+
 // -- Canvas bounds ------------------------------------
 // The canvas has its OWN size independent of where cards happen to be.
 // A sizer div pins scrollWidth/scrollHeight to the bounds; cards move
@@ -375,6 +405,11 @@ freeform.addEventListener('pointerdown', (e) => {
     if (!card) return;
 
     e.preventDefault();
+    // Clear any active layout-transition so the drag follows the cursor
+    // without easing lag. Tidy/expand/contract may still be animating this
+    // card when the user grabs it.
+    card.classList.remove('wb-card--animating-layout');
+    card.style.transitionDelay = '';
     const startX = e.clientX;
     const startY = e.clientY;
     const origLeft = card.offsetLeft;
@@ -518,6 +553,9 @@ freeform.addEventListener('click', (e) => {
     if (!card) return;
     e.stopPropagation();
     const name = card.getAttribute('data-filename');
+    // Smooth-animate the position/size change. See animateLayoutChange
+    // for lifecycle; safely removed if the user grabs the card mid-animation.
+    animateLayoutChange([card]);
     if (card.classList.contains('wb-card--expanded')) {
         // Contract — restore to saved layout
         const saved = card.dataset.prevLayout;
@@ -757,6 +795,9 @@ function buildToolbar() {
             const bName = b.getAttribute('data-filename') || '';
             return aName.localeCompare(bName);
         });
+
+        // Cascade-animate cards into their new positions.
+        animateLayoutChange(cards, { stagger: true });
 
         const maxWidth = freeform.offsetWidth || 1200;
         const maxHeight = freeform.offsetHeight || 800;
