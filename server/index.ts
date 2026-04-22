@@ -411,6 +411,18 @@ app.get("/api/card-classes", async (req, res) => {
     } catch { /* no project card-classes */ }
   }
 
+  // Decorate with the `meta` flag from each class's metadata.json so the
+  // canvas toolbar can hide infrastructure cards (canvas-back, skills)
+  // without hard-coding their names. Client-side filtering only — this
+  // endpoint still returns the full list so CardRuntime / CardFrame can
+  // find the class for already-placed meta cards.
+  for (const name of Object.keys(classes)) {
+    try {
+      const m = await getCardClassMeta(`.${name}`, reqProject);
+      (classes[name] as Record<string, unknown>).meta = m.meta;
+    } catch { /* leave meta undefined */ }
+  }
+
   res.json(classes);
 });
 

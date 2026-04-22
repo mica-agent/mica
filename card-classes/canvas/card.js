@@ -530,8 +530,12 @@ function buildToolbar() {
     // Dynamically load card classes and create buttons
     fetch('/api/card-classes', { headers: projectHeaders() }).then(r => r.json()).then(classes => {
         if (myGen !== toolbarBuildGen) return;  // a newer build superseded us
-        // Skip canvas class (that is us)
-        const names = Object.keys(classes).filter(n => n !== 'canvas');
+        // Skip canvas (that is us) and meta cards (infrastructure shells
+        // like canvas-back and skills — seeded by template, not user-
+        // creatable). Server decorates each entry with `meta: boolean`
+        // from its metadata.json; read it here so future meta card types
+        // are auto-hidden without a code change.
+        const names = Object.keys(classes).filter(n => n !== 'canvas' && !classes[n].meta);
         names.sort();
 
         names.forEach(name => {

@@ -147,7 +147,11 @@ export default function CanvasCardRuntime({ project }: Props) {
         el.classList.remove(className);
         void el.offsetWidth;
         el.classList.add(className);
-        window.setTimeout(() => el.classList.remove(className), 5000);
+        // Must match the animation duration in whiteboard.css
+        // (.wb-card--agent-write / .wb-card--external-write — currently 10s).
+        // Class stays on for the full animation; then removed so a subsequent
+        // glow on the same card can retrigger the keyframe from 0%.
+        window.setTimeout(() => el.classList.remove(className), 10000);
       } else if (left > 0) {
         window.setTimeout(() => attempt(left - 1), 100);
       }

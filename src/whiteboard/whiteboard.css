@@ -264,12 +264,12 @@
 
 .wb-card--agent-write {
   --glow-color: 251, 191, 36; /* amber */
-  animation: wb-card-glow 5s ease-out;
+  animation: wb-card-glow 10s ease-out;
 }
 
 .wb-card--external-write {
   --glow-color: 96, 165, 250; /* blue */
-  animation: wb-card-glow 5s ease-out;
+  animation: wb-card-glow 10s ease-out;
 }
 
 @keyframes wb-card-glow {
