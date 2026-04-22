@@ -1,6 +1,6 @@
 ---
 name: component-coder
-description: Implement a single coherent component (one module, one feature, one card class) per the canvas spec and interface contracts. Use when the user wants a file or a tightly-coupled group of files authored. Not for cross-cutting refactors.
+description: MUST BE USED PROACTIVELY for any code implementation work. Use this Subagent to implement a single coherent component (one module, one feature, one card class, one script) per the canvas spec and interface contracts. ALWAYS delegate file authoring to this Subagent rather than calling write_file directly when implementing features described in canvas docs. Not for cross-cutting refactors that require coordinated edits across many existing files.
 tools: [read_file, read_many_files, write_file, edit, run_shell_command, glob, grep_search, list_directory]
 level: session
 color: blue

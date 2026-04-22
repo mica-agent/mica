@@ -284,30 +284,30 @@ export async function buildContext(agentFilename: string, project: string | null
     const agents = await loadProjectSubagents(project, "qwen");
     if (agents.length > 0) {
       const lines: string[] = [
-        `## Available Subagents (use the \`task\` tool to delegate)`,
+        `## Available Subagents`,
         ``,
-        `You have access to a \`task\` tool. Invoke it to hand a sub-job to a specialized subagent that runs with its own context window and returns a short summary. The parent conversation — this turn — only keeps the summary, NOT the subagent's tool I/O. Use this when a task would otherwise produce many large write_file / edit tool calls (each one inflates this turn's context).`,
+        `You have specialized Subagents available. Delegating to a Subagent is HOW you implement multi-file work without exhausting your context window — each Subagent runs in its own session, does the work, and returns a short summary. Your parent context (this turn) keeps only the summaries, not the subagent's tool I/O or written file content.`,
         ``,
-        `Available subagents:`,
+        `**To invoke a Subagent, write a request in your turn response using natural language naming the agent.** Example phrasings (these patterns trigger SDK routing):`,
+        `- "Have the component-coder Subagent implement \`src/email_monitor.py\` per docs/spec.md § Email Monitor."`,
+        `- "Let the component-coder Subagent build \`deploy.sh\`. Reference docs/spec.md § Deployment."`,
+        `- "Use the component-coder Subagent to write \`src/auth.py\` based on docs/interfaces.md § Auth."`,
+        ``,
+        `Available Subagents:`,
       ];
       for (const a of agents) {
         lines.push(`- **${a.name}**: ${a.description}`);
       }
       lines.push(
         ``,
-        `Invocation shape:`,
-        `\`\`\``,
-        `task({ agent: "<name>", prompt: "Implement <file>. See docs/spec.md § X and docs/interfaces.md § Y. Upstream: ... Downstream: ... Done when: ..." })`,
-        `\`\`\``,
+        `WHEN to delegate (these are not suggestions — the parent turn's context cap will reject direct writes after a small budget):`,
+        `- Your plan produces **>2 files of new code**: delegate each coherent unit to a Subagent. Do NOT write them directly from this turn.`,
+        `- A single component spans **>200 lines of new code**: delegate.`,
+        `- Independent components can run in parallel: name multiple Subagents in one response.`,
         ``,
-        `When to delegate:`,
-        `- Your plan will produce **>3 files of new code**: delegate each coherent unit to a subagent. Do NOT write them all directly from this turn.`,
-        `- A single component spans **>200 lines of new code**: delegate so this turn doesn't carry the full content forward.`,
-        `- You need parallel work across **independent** components.`,
+        `Concurrency is capped per-project (default 3 concurrent local, 4 OpenRouter).`,
         ``,
-        `Concurrency is capped per-project (default 3 concurrent). If you hit the cap, wait for one to finish before retrying.`,
-        ``,
-        `BEFORE delegating: write or update \`docs/interfaces.md\` with any shared types / function signatures / data shapes. Subagents have fresh context and cannot see each other's in-flight work — contracts MUST live on canvas.`,
+        `**BEFORE delegating**, write or update \`docs/interfaces.md\` with any shared types / function signatures / data shapes. Subagents have fresh context and cannot see each other's in-flight work — contracts MUST live on canvas first. Each delegation request should reference the relevant spec/interfaces section so the Subagent reads the right authoritative source.`,
       );
       parts.push(lines.join("\n"));
     }
@@ -746,12 +746,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 behavior: "deny" as const,
                 message:
                   `Direct-write cap hit (${writesThisTurn}/${MAX_WRITES_PER_TURN} this turn). ` +
-                  `Do NOT call write_file/edit again from this turn — those payloads stay in your context for the rest of the turn and will balloon it. ` +
+                  `Do NOT call write_file/edit again from this turn — those payloads stay in your context for the rest of the turn and will balloon it.` +
                   `\n\n` +
-                  `For each remaining file, use the \`task\` tool to delegate to component-coder. Each subagent call returns ONLY a short summary; the file content lives in the subagent's separate context, not yours. Example: ` +
+                  `For the remaining work, delegate to the component-coder Subagent using natural-language phrasing in your response. Example: ` +
+                  `\n` +
+                  `"Have the component-coder Subagent implement <path/to/file> per docs/spec.md § <section>." ` +
                   `\n\n` +
-                  `task({ agent: "component-coder", prompt: "Implement <path/to/file>. See docs/spec.md and docs/interfaces.md. Done when: file exists, passes a quick local verification." })` +
-                  `\n\n` +
+                  `Each delegation runs in a separate context and returns only a short summary, so this turn stays small. ` +
                   `If the remaining work is just a single tiny edit you genuinely cannot delegate, end this turn instead with a plain-text summary of what you wrote and what's next. The user will reply 'continue'.`,
               };
             }

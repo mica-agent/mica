@@ -257,28 +257,28 @@ export async function buildContext(agentFilename: string, project: string | null
     const agents = await loadProjectSubagents(project, "claude");
     if (agents.length > 0) {
       const lines: string[] = [
-        `## Available Subagents (use the \`Task\` tool to delegate)`,
+        `## Available Subagents`,
         ``,
-        `You have access to a \`Task\` tool. Invoke it to hand a sub-job to a specialized subagent that runs with its own context window and returns a short summary. The parent conversation — this turn — only keeps the summary, NOT the subagent's tool I/O.`,
+        `You have specialized Subagents. Delegating to one is HOW you implement multi-file work without exhausting your context window — each Subagent runs in its own session and returns only a short summary.`,
         ``,
-        `Available subagents:`,
+        `**Invoke via the \`Task\` tool.** Example:`,
+        `\`\`\``,
+        `Task({ subagent_type: "<name>", prompt: "Implement <file>. See docs/spec.md § X and docs/interfaces.md § Y. Upstream: ... Downstream: ... Done when: ..." })`,
+        `\`\`\``,
+        ``,
+        `Available Subagents:`,
       ];
       for (const a of agents) {
         lines.push(`- **${a.name}**: ${a.description}`);
       }
       lines.push(
         ``,
-        `Invocation shape:`,
-        `\`\`\``,
-        `Task({ subagent_type: "<name>", prompt: "Implement <file>. See docs/spec.md § X. Upstream: ... Downstream: ... Done when: ..." })`,
-        `\`\`\``,
-        ``,
-        `When to delegate:`,
-        `- Plan produces **>3 files of new code**: delegate each coherent unit.`,
-        `- A single component spans **>200 lines**: delegate so this turn doesn't carry the full content forward.`,
+        `WHEN to delegate:`,
+        `- Plan produces **>2 files of new code**: delegate each coherent unit.`,
+        `- A single component spans **>200 lines**: delegate.`,
         `- Independent components in parallel.`,
         ``,
-        `Concurrency is capped per-project. BEFORE delegating: write or update \`docs/interfaces.md\` with shared contracts — subagents have fresh context and cannot see each other's in-flight work.`,
+        `Concurrency is capped per-project. **BEFORE delegating**, write or update \`docs/interfaces.md\` with shared contracts — Subagents have fresh context and cannot see each other's in-flight work.`,
       );
       parts.push(lines.join("\n"));
     }
