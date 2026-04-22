@@ -40,13 +40,21 @@
    removes it on pointerdown; all normal drag paths keep it off.
    Back-out easing (cubic-bezier(0.34, 1.56, 0.64, 1)) overshoots
    slightly then settles, giving cards a subtle "snap into place" feel
-   instead of a linear slide. */
-.wb-card--animating-layout {
+   instead of a linear slide.
+
+   Specificity note: `.canvas-freeform > .wb-card` above sets
+   `transition: opacity 0.3s, box-shadow 0.2s` at 0,2,0. To override
+   that, the selector below must also be 0,2,0+ — plain
+   `.wb-card--animating-layout` (0,1,0) would lose the cascade and
+   silently do nothing. */
+.canvas-freeform > .wb-card.wb-card--animating-layout {
     transition:
         left 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
         top 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
         width 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
-        height 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+        height 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
+        opacity 0.3s ease,
+        box-shadow 0.2s;
 }
 
 /* Meta sidebar — docks "how" cards (canvas-back, skills) on the right */
