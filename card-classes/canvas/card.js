@@ -120,7 +120,7 @@ const SAVE_DELAY = 500;
 // animation (see CSS .wb-card--animating-layout). Must be absent during
 // drag — the drag handler removes it on pointerdown so the card keeps
 // up with the cursor.
-const LAYOUT_ANIM_MS = 500;                 // matches the CSS transition duration
+const LAYOUT_ANIM_MS = 300;                 // matches the CSS transition duration
 const LAYOUT_STAGGER_MS = 60;               // per-card delay for tidy cascade
 const LAYOUT_STAGGER_MAX_INDEX = 12;        // clamp stagger so a huge canvas doesn't take forever
 
