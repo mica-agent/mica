@@ -261,10 +261,12 @@ export async function buildContext(agentFilename: string, project: string | null
         ``,
         `You have specialized Subagents. Delegating to one is HOW you implement multi-file work without exhausting your context window — each Subagent runs in its own session and returns only a short summary.`,
         ``,
-        `**Invoke via the \`Task\` tool.** Example:`,
+        `**Invoke via the \`Agent\` tool** (also called \`Task\` in older docs — both names work). The input shape:`,
         `\`\`\``,
-        `Task({ subagent_type: "<name>", prompt: "Implement <file>. See docs/spec.md § X and docs/interfaces.md § Y. Upstream: ... Downstream: ... Done when: ..." })`,
+        `Agent({ subagent_type: "<name>", description: "<short label>", prompt: "Implement <file>. See docs/spec.md § X and docs/interfaces.md § Y. Upstream: ... Downstream: ... Done when: ..." })`,
         `\`\`\``,
+        ``,
+        `You can also explicitly request a Subagent by name in plain language inside your reply, e.g. "Use the component-coder agent to implement src/email_monitor.py per docs/spec.md § Email Monitor."`,
         ``,
         `Available Subagents:`,
       ];
@@ -589,13 +591,20 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         // server/builtin-agents/*.md as fallbacks. Convert our ParsedSubagent
         // to Claude SDK's AgentDefinition record-keyed shape (the Claude SDK
         // uses an object-keyed-by-name, not an array).
+        //
+        // We deliberately DO NOT forward `tools` from the agent file to the
+        // Claude AgentDefinition: the shared agent files (component-coder.md
+        // etc.) ship Qwen-style snake_case tool names (read_file, write_file)
+        // which Claude doesn't recognize. Passing them would silently strip
+        // the subagent's tool access. Omitting `tools` makes the Claude
+        // subagent inherit the parent's tool set, which is what we want for
+        // the heavy-lifter `component-coder` use case anyway.
         const parsedAgents: ParsedSubagent[] = await loadProjectSubagents(sessionProject, "claude");
         const agentsRecord: Record<string, { description: string; tools?: string[]; prompt: string; model?: string }> = {};
         for (const a of parsedAgents) {
           agentsRecord[a.name] = {
             description: a.description,
             prompt: a.systemPrompt,
-            ...(a.tools ? { tools: a.tools } : {}),
             ...(a.modelConfig?.model ? { model: a.modelConfig.model } : {}),
           };
         }
@@ -711,6 +720,21 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             // server/builtin-agents fallback). Parent delegates heavy single-
             // component work via the SDK's Agent tool.
             ...(Object.keys(agentsRecord).length > 0 ? { agents: agentsRecord } : {}),
+            // Per Claude Agent SDK docs: the Agent tool MUST be in allowedTools
+            // for subagent invocation to be available to the model. We set the
+            // full Claude Code default tool set explicitly so Agent is included.
+            // (Without allowedTools, behaviour is the SDK default — which
+            // doesn't appear to advertise Agent to the model in our setup.)
+            // "Task" is included for compat: Claude renamed Task → Agent in
+            // v2.1.63 but older SDKs / some surfaces still emit "Task".
+            allowedTools: [
+              "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
+              "Bash", "BashOutput", "KillBash",
+              "Glob", "Grep",
+              "WebFetch", "WebSearch",
+              "TodoWrite",
+              "Agent", "Task",
+            ],
             // Clear CLAUDECODE — if Mica is launched from inside a Claude Code shell
             // the SDK would otherwise refuse ("cannot launch inside another session").
             env: { ...process.env, CLAUDECODE: "" } as NodeJS.ProcessEnv,
