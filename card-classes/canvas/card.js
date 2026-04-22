@@ -344,6 +344,25 @@ freeform.addEventListener('pointerdown', (e) => {
     window.document.addEventListener('pointerup', onUp);
 });
 
+// -- Double-click on title bar = expand/contract shortcut ----------
+// Mirrors clicking the .wb-card-expand-btn — same logic, easier target.
+// Excludes clicks on action buttons / dropdowns inside the header so they
+// retain their own behavior. Drag tracks pointer movement; dblclick only
+// fires when the two clicks happen at the same spot (no drag), so the two
+// gestures don't conflict.
+freeform.addEventListener('dblclick', (e) => {
+    const header = e.target.closest('.wb-card-header');
+    if (!header) return;
+    if (e.target.closest('.wb-card-btn') || e.target.closest('.wb-card-actions')) return;
+    const card = header.closest('.wb-card');
+    if (!card) return;
+    const expandBtn = card.querySelector('.wb-card-expand-btn');
+    if (!expandBtn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    expandBtn.click();
+});
+
 // -- Expand/contract a card to 80% of viewport ----------
 // Click .wb-card-expand-btn → toggle .wb-card--expanded on the parent card.
 // Expand stashes the pre-expand layout in data-prev-layout (transient — lives
