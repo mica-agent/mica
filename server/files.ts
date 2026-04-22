@@ -433,31 +433,65 @@ export async function writeOpenRouterKey(project: string | undefined, key: strin
 /**
  * List canvas-visible files: direct children of canvasRoot + pinned files.
  * Excludes directories. Each file is decorated with its stable UUID (`id`).
+ *
+ * Implementation note: we read canvasRoot's immediate children directly
+ * instead of walking the entire project and filtering. Previously this
+ * called listFiles() (recursive over the whole project) and filtered to
+ * the canvas set — that was O(all-project-files) just to list the 8 files
+ * users actually care about. On a project containing a large unrelated
+ * tree (e.g. extracted google-cloud-sdk with ~27K files), /api/files took
+ * 2+ seconds. Now it's O(canvas-files + pinned-count).
  */
 export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
-  const allFiles = await listFiles(project);
   const { canvasRoot, pinned } = await readCanvasConfig(project);
-  const root = canvasRoot === "." ? "" : canvasRoot.replace(/\/$/, "") + "/";
-  const pinnedSet = new Set(pinned);
+  const projectRoot = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
+  const normalizedRoot = canvasRoot === "." || canvasRoot === "" ? "" : canvasRoot.replace(/\/$/, "");
+  const canvasAbs = normalizedRoot === "" ? projectRoot : join(projectRoot, normalizedRoot);
 
-  const filtered = allFiles
-    .filter((f) => {
-      if (f.type === "directory") return false;
-      if (root === "") {
-        if (!f.name.includes("/")) return true;
-      } else if (f.name.startsWith(root) && !f.name.slice(root.length).includes("/")) {
-        return true;
+  const out: FileMeta[] = [];
+  const seen = new Set<string>();
+
+  // 1. Direct children of canvasRoot (files only, one level deep).
+  try {
+    const entries = await readdir(canvasAbs, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      if (!entry.isFile()) continue;
+      const relName = normalizedRoot === "" ? entry.name : `${normalizedRoot}/${entry.name}`;
+      try {
+        const s = await stat(join(canvasAbs, entry.name));
+        out.push({ name: relName, type: "file", size: s.size, modifiedAt: s.mtime.toISOString() });
+        seen.add(relName);
+      } catch { /* file disappeared between readdir and stat */ }
+    }
+  } catch { /* canvasRoot doesn't exist yet — fine, empty canvas */ }
+
+  // 2. Pinned files (anywhere in the project). Skip pins that already fall
+  // inside canvasRoot (they were picked up in step 1).
+  const pinnedSet = new Set(pinned);
+  for (const pin of pinned) {
+    if (seen.has(pin)) {
+      // Already in the list; just flag as pinned.
+      const existing = out.find((f) => f.name === pin);
+      if (existing) existing.pinned = true;
+      continue;
+    }
+    const abs = join(projectRoot, pin);
+    try {
+      const s = await stat(abs);
+      if (s.isFile()) {
+        out.push({ name: pin, type: "file", size: s.size, modifiedAt: s.mtime.toISOString(), pinned: true });
+        seen.add(pin);
       }
-      if (pinnedSet.has(f.name)) return true;
-      return false;
-    })
-    .map((f) => pinnedSet.has(f.name) ? { ...f, pinned: true } : f);
+    } catch { /* pinned file doesn't exist — silently skip */ }
+  }
+  void pinnedSet;
 
   // UUIDs are created ONLY for canvas-visible files, post-filter. This bounds
   // the sidecar population to the canvas — previously we created IDs for every
   // file in the project (including tens of thousands of SDK extract files), which
   // filled .mica/cards/ and blew inotify limits.
-  return Promise.all(filtered.map(async (f) => ({ ...f, id: await getOrCreateCardId(project, f.name) })));
+  return Promise.all(out.map(async (f) => ({ ...f, id: await getOrCreateCardId(project, f.name) })));
 }
 
 /**
