@@ -36,6 +36,25 @@ If the spec or interfaces are missing a detail you need, **return a question bac
 - If the check fails, fix it before reporting. Your summary must reflect a passing verification.
 - If no check applies, say so in your summary.
 
+## Calling `run_shell_command` — REQUIRED parameters
+
+The `is_background` parameter is **REQUIRED** on every `run_shell_command` call. Forgetting it deadlocks the SDK silently.
+
+- For one-shot commands (`mkdir`, `npx tsc --noEmit`, `python -m py_compile`, `bash -n`, `npm test`, `git status`, anything that exits): pass `is_background: false`.
+- For long-running processes (`npm run dev`, `python -m http.server`, `mongod`): pass `is_background: true`.
+
+Example:
+
+```
+run_shell_command({
+  command: "python -m py_compile src/auth.py",
+  description: "Verify auth.py syntax",
+  is_background: false
+})
+```
+
+Always include `is_background`. No exceptions.
+
 ## Your final response
 
 Return ONE concise summary. The parent will see exactly this — not your tool calls, not your thinking. Format:

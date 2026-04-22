@@ -227,6 +227,12 @@ export async function buildSubagentCanvasContext(project: string | null): Promis
     `- The project root is your working directory. Use absolute or full project-relative paths in tool calls (e.g. \`podcast-automation/src/config.py\` not just \`src/config.py\`) so paths resolve unambiguously.\n` +
     `- NEVER write to \`.mica/\` — that directory is Mica-internal metadata.\n` +
     `\n` +
+    `## Calling \`run_shell_command\` — REQUIRED parameters\n` +
+    `The \`is_background\` parameter is **REQUIRED** on every \`run_shell_command\` call. Forgetting it deadlocks the SDK silently.\n` +
+    `- One-shot commands (\`mkdir\`, \`npx tsc --noEmit\`, \`python -m py_compile\`, \`bash -n\`, \`npm test\`, \`git status\`): pass \`is_background: false\`.\n` +
+    `- Long-running processes (\`npm run dev\`, \`python -m http.server\`, \`mongod\`): pass \`is_background: true\`. ALSO redirect stdout/stderr (\`>logs/server.log 2>&1\`) so the process doesn't die when its file descriptors close.\n` +
+    `Always include \`is_background\`. No exceptions.\n` +
+    `\n` +
     `## DANGER: You Run Inside The Mica Container\n` +
     `Do not touch processes on ports 5173 (vite), 3002 (Mica backend), 8012 / 8013 (vLLM). Do not kill anything matching \`vite\`, \`tsx server/index.ts\`, \`vllm\`, \`npm run dev\`, or under \`/workspaces/mica/\`. If you need to launch a test web app, use a different port (9000, 9090).`,
   );
@@ -397,6 +403,12 @@ export async function buildContext(agentFilename: string, project: string | null
 - Files OUTSIDE \`${canvasRoot}/\` are not on the canvas by default — the user can pin them via the filebrowser if they want them visible
 - NEVER write files to .mica/ — that directory is managed by Mica internally
 - The .mica/ directory contains metadata only (layout, config, AI context). Do not read or write it directly.
+
+## Calling \`run_shell_command\` — REQUIRED parameters
+The \`is_background\` parameter is **REQUIRED** on every \`run_shell_command\` call. Forgetting it deadlocks the SDK silently — the call hangs and no tool_result comes back.
+- One-shot commands (\`mkdir\`, \`npx tsc --noEmit\`, \`python -m py_compile\`, \`bash -n\`, \`npm test\`, \`git status\`): pass \`is_background: false\`.
+- Long-running processes (\`npm run dev\`, \`python -m http.server\`, \`mongod\`): pass \`is_background: true\`. ALSO redirect stdout/stderr (\`>logs/server.log 2>&1\`) so the process doesn't die when its file descriptors close.
+Always include \`is_background\`. No exceptions.
 
 ## DANGER: You Run Inside The Mica Container
 You execute shell commands inside the same container that runs Mica itself. These processes belong to Mica and must NOT be touched:
