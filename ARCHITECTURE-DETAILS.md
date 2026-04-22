@@ -162,27 +162,34 @@ mica.onDestroy(() => ch.close());
 // Next script execution gets it back via openChannel().
 ```
 
-### Card Class Stream Exports
+### Channel handlers
 
-Card classes implement channels by exporting `onConnect`, `onMessage`, and `onDisconnect` in their `render.js`. The generic module handler (`server/channelHandlers/module.ts`) bridges these exports to the ChannelHandler interface — card classes never interact with the ChannelManager directly.
+Each card class that uses a channel registers a handler at server
+startup (in `server/index.ts`). Handlers implement the
+`ChannelHandler` interface directly. Card `card.js` code does not
+contain server-side handler code — there is no `render.js` and no
+module-export model. The browser side and the server side are
+separate files, wired together by `mica.openChannel(fn, args)` on
+the browser and `channelManager.registerHandler(name, factory)`
+on the server.
 
-```javascript
-// render.js — server-side stream handlers
-export function onConnect(mica, args) { }    // session created
-export function onMessage(msg, mica) { }     // data from browser
-export function onDisconnect(mica) { }       // session destroyed
+Registration at startup looks like this:
+
+```typescript
+channelManager.registerHandler("chat",       createAgentHandler(fileWatcher));   // .chat  → Qwen agent
+channelManager.registerHandler("claude",     createClaudeAgentHandler(fileWatcher)); // .claude → Claude Code agent
+channelManager.registerHandler("terminal",   createPtyHandler());                 // .terminal → PTY
+channelManager.registerHandler("llm-chat",   createLlmChatHandler());             // .llm-chat → direct LLM chat
+channelManager.registerHandler("skills",     createSkillComposeHandler());        // .skills → collaborative SKILL.md authoring
+channelManager.registerHandler("canvas-back", createCanvasBackComposeHandler());  // .canvas-back → propose-then-apply editor
 ```
 
-The `mica` bridge provides:
-- `mica.send(data)` — broadcast to all connected browsers
-- `mica.reply(data)` — send to the client that triggered the current `onMessage`
-- `mica.read(filename)` / `mica.write(content)` — canvas file I/O
-- `mica.exec(command)` — shell in project container
-- `mica.project`, `mica.canvas`, `mica.filename` — context
+The key (`chat`, `claude`, `terminal`, etc.) is the card class
+name. When the browser calls `mica.openChannel(fn, args)` from a
+card of that class, ChannelManager routes the session to the
+registered handler.
 
-### Internal: ChannelHandler Interface
-
-The module handler implements this internally. Card classes don't use it directly.
+### ChannelHandler interface
 
 ```typescript
 interface ChannelHandler {
@@ -193,40 +200,69 @@ interface ChannelHandler {
 }
 ```
 
-The module handler maps these to card class exports:
-- `onAttach` → delivers synthetic `{ type: "attached" }` via `onMessage` (for reconnect replay)
-- `onData` → calls `onMessage(data, mica)` with `reply()` targeting the sender
-- `onDestroy` → calls `onDisconnect(mica)`
+Lifecycle semantics:
 
-### Handler Examples
+- `onAttach` fires when a client (browser tab) attaches to the
+  session. For reconnects, ChannelManager delivers a synthetic
+  `{ type: "attached" }` as the first `onData` call so handlers
+  can replay state (scrollback, history, current status).
+- `onDetach` fires when a client disconnects. Other clients on
+  the same session are unaffected.
+- `onData` fires on every browser-originated message. Handlers
+  read the message and decide what to push back via the
+  ctx-provided send/reply helpers.
+- `onDestroy` fires once, when the session ends (card file
+  deleted, or server shutdown).
 
-Each card type implements its backend semantics in `render.js`. The infrastructure doesn't know what "chat" or "terminal" means.
+### Handler examples
 
-**Chat** (`card-classes/claude-chat/render.js`):
-```
-onConnect:     load history from .chat-history.json, send to first client
-onMessage:     { type: "attached" } → replay history to reconnecting client
-               { message: text } → call Claude SDK, stream progress, broadcast response
-onDisconnect:  cleanup session state
-```
+Where each live channel handler lives today and what it does:
 
-**Terminal** (`card-classes/terminal/render.js`):
+**Claude agent** (`server/claudeAgent.ts`):
 ```
-onConnect:     spawn PTY (node-pty), pipe output through mica.send()
-onMessage:     { type: "attached" } → replay scrollback to reconnecting client
-               { input } → forward to PTY
-               { resize } → resize PTY
-               { ping } → respond with pong + ptyAlive status
-onDisconnect:  kill PTY
+onAttach:    load chat history, replay to attaching client
+onData:      { type: "user_message", text } → spawn Claude Code CLI subprocess,
+             stream tool calls and responses back, auto-commit agent writes.
+             Handles tool-use loop, write-source tracking, busy lock.
+onDetach:    no-op — session continues
+onDestroy:   cancel any in-flight turn, close streams
 ```
 
-**Agent** (`server/agentChannel.ts` — not yet migrated to render.js):
+**Qwen agent** (`server/micaAgent.ts`):
 ```
-onAttach:   replay current task status and plan
-onData:     handle "start task" or "respond to blocker" commands
-onDetach:   nothing (task continues running)
-onDestroy:  abort running task
+onAttach:    load chat history, replay to attaching client
+onData:      { type: "user_message", text } → tool loop against llama-server
+             at 127.0.0.1:8012. XML-fallback tool-call parsing.
+             Canvas-scope file-watcher integration (reactive turns on user idle).
+onDetach:    no-op — session continues
+onDestroy:   abort in-flight turn
 ```
+
+**Terminal** (`server/plugins/pty.ts`):
+```
+onAttach:    spawn node-pty, replay scrollback to attaching client
+onData:      { input } → forward to PTY stdin
+             { resize, cols, rows } → resize PTY
+             { ping } → respond with pong + ptyAlive status
+onDetach:    if last client, PTY continues running (handler policy)
+onDestroy:   kill PTY
+```
+
+**LLM chat** (`server/plugins/llmChat.ts`):
+```
+onData:      { message } → direct prompt to local LLM, no tools, stream response
+```
+
+**Skill compose** (`server/plugins/skillCompose.ts`):
+```
+onData:      collaborative SKILL.md editing loop — agent proposes, user reviews,
+             resulting file written to .claude/skills/<name>/ or .qwen/skills/<name>/
+```
+
+The ChannelManager itself does not know what any of these
+handlers do. It only knows sessions, clients, and lifecycle. The
+handler decides backend semantics — when to start a process,
+what "idle" means for this card type, how to handle errors.
 
 ### Transport Adapter Pattern
 
@@ -250,5 +286,5 @@ The adapter tracks which WebSocket connection owns which client IDs (`Map<WebSoc
 | #2 Infrastructure provides pipes, not policy | ChannelManager doesn't know chat/terminal/agent semantics |
 | #4 Lifecycle bound to user intent | Session created on card file create, destroyed on card file delete |
 | #5 One mechanism | Single ChannelManager replaces three separate managers |
-| #6 Card class = extension point | New handler = `onConnect`/`onMessage`/`onDisconnect` exports in `render.js`, no framework changes |
+| #6 Card class = extension point | New handler = a new file implementing ChannelHandler, registered in `server/index.ts`. Frontend side: a new card class opening `mica.openChannel()` in its `card.js`. No framework changes |
 | #7 Transport-agnostic | ChannelManager never imports WebSocket |

@@ -104,15 +104,56 @@ NEVER produce text that resembles the BAD example. If a request would lead there
 - No "## Description" / "## When to use" / "## How to apply" headings. The frontmatter \`description:\` replaces them — the body holds instructions.
 - No closing summary, no decorative emoji, no blockquote tips. Tight prose only.
 
-## Project tenets (from this repo's CLAUDE.md)
+## Architectural alignment (load-bearing)
+
+Before composing or revising a skill, orient yourself against the two
+places in this repo that define how Mica works. The skill's rules
+must not contradict them.
+
+- **Architectural tenets.** SPEC.md's "Consequences" section and
+  CLAUDE.md's "How we build" nine-point list. These are the tenets:
+  files are files; \`mica.*\` is pipes, not policy; AI generates the
+  UI; two sides of a card; designed for AI authorship (architecture
+  serves the generator, not human aesthetic preference); plain files
+  over databases; lifecycle bound to user intent, not transport
+  state. If a skill rule contradicts one of these, fix the skill.
+- **\`mica.*\` API reference.** The authoritative section in
+  ARCHITECTURE.md. Every \`mica.*\` method or event name a skill
+  mentions must match what ARCHITECTURE.md documents. If the skill
+  and ARCHITECTURE.md disagree, ARCHITECTURE.md wins and the skill
+  gets corrected.
+
+After you produce the new <doc>, run this check:
+
+1. Does any statement in the skill contradict a tenet? If so, fix
+   the skill. (If the tenet is wrong, that's a bigger conversation
+   than a skill edit — flag it in your <rationale> and do not
+   silently drift.)
+2. Does any API reference in the skill contradict ARCHITECTURE.md's
+   API section? If so, fix the skill.
+3. Does any rule the skill encodes make AI generation harder
+   rather than easier? The "designed for AI authorship" tenet is
+   the constraint. A skill is allowed to carry rules that are hard
+   for humans to remember — that is what skills are for. It is not
+   allowed to carry rules that only make sense if a human is
+   writing the code.
+
+Duplication is fine. A skill that repeats something already in
+ARCHITECTURE.md is doing its job — skills exist because models miss
+context, and repetition is how a skill compensates. Contradiction is
+not fine.
+
+## Hygiene tenets (also from CLAUDE.md)
+
+These are general coding tenets the Qwen agent should also follow.
+A good SKILL.md often encodes one or more of these for a specific
+recipe:
 
 - Don't add abstractions beyond what the task requires.
 - Don't add error handling for unreachable cases.
 - Read existing code before writing new code.
 - Test runtime behavior, not just type-check.
 - Commit messages: short, focused on *why*.
-
-A good SKILL.md often encodes one or more of these for a specific recipe.
 
 ## Rules
 

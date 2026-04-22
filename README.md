@@ -1,32 +1,118 @@
 # Mica
 
-**A shared surface where humans and AI agents collaborate to build products.**
+**A canvas where humans and agents compose context together. The
+context they compose is either the means to an end, or the end
+itself.**
 
-Today when you work with AI to build software, the guidance disappears. You chat with an agent, give it direction, it writes code. The code gets committed — but the briefs, the decisions, the "make onboarding feel like a conversation not a form" — that lives in ephemeral chat history. Next session, you start over.
+Today, when you work with an AI agent, the agent is where the
+context lives. You can see what the agent says but you cannot
+see what the agent knows. When the next session starts, all of
+that is gone.
 
-Mica fixes this. It's a persistent, extensible canvas where:
+Mica puts the context on the canvas. Humans and agents compose
+it together, iteratively, on the same surface. Any agent that
+shows up later can read what is there. The context is no longer
+private to one agent or to one session.
 
-- **Both sides contribute as peers.** You sketch an idea, the agent builds it out. The agent asks you to clarify requirements instead of guessing. Either side creates artifacts, asks questions, assigns work to the other.
-- **The work and the conversation live together.** Diagrams, wireframes, running apps, code — rendered natively on the canvas, not as text in a chat window.
-- **The recipe persists.** Briefs, goals, decisions, and context are captured in `.mica/` inside your project repo, versioned in git. Any agent or teammate picks up with full context.
-- **Projects stay sovereign.** Mica connects to your existing git repos via a `.mica/` directory. Remove it and the project is untouched. No lock-in.
-- **Multiple projects at once.** Manage a portfolio of projects from one surface — see which need attention, which are stuck, which are shipping.
-- **Run with any model.** Use Claude, or switch to a local LLM (llama-server) per project. No cloud dependency required — agent routing is a config toggle.
-- **Agents stay in sync.** Edit a file and your agent notices — it triages the impact and proposes updates to related artifacts, like a teammate who keeps derived work current.
-- **Everything is extensible.** The canvas is built from composable cards. New card classes add new capabilities, like Emacs packages.
+## What "means or end" looks like
 
-## Quick Start
+The same canvas, the same cards, without a mode switch between
+them.
+
+- **Means to an end.** You compose a canvas of briefs,
+  decisions, and diagrams. You point your coding agent (Claude
+  Code, Cline, Cursor) at the project, and it executes against
+  what is on the canvas. The canvas is the briefing. Mica holds
+  the thinking. Your coding agent does the coding.
+- **End in itself.** The canvas itself is the product. A
+  financial planner, a research workspace, or a campaign
+  dashboard built card by card, with agents writing the card
+  classes that did not exist before. Nothing downstream consumes
+  the canvas. The canvas is the thing.
+
+Most projects drift between the two. A planning canvas grows
+into a live dashboard. An end-in-itself canvas spawns a brief
+for another agent. The primitive does not care which use you
+are making of it.
+
+## How it is built
+
+Mica takes the Emacs posture, not the Notion one. Small
+orthogonal mechanisms compose into whatever workflow you need.
+The environment is modifiable from inside the environment. New
+card classes are user-writable files, promoted from project
+scope to built-in by copying a directory. There is no closed
+set of block types and no registry between you and writing a
+new card class.
+
+Three convictions shape every design decision.
+
+- **Designed for AI authorship.** The architecture is shaped so
+  that an LLM can generate new card classes, briefs, diagrams,
+  and project content from a natural-language request. Card
+  classes are `card.html + card.js + card.css + metadata.json`
+  because LLMs produce that cleanly in one pass. The `mica.*`
+  API stays small because large surfaces confuse generators.
+  Plain files over databases, because agents introspect by
+  listing and reading files. A design that is nicer for humans
+  but harder for agents to generate is wrong for Mica.
+- **Transparency.** Nothing is hidden. Any card can be flipped
+  to show the class that defines it. The `.mica/` directory
+  can be opened and read to see the layout, the chat history,
+  and the AI context files. No opaque memory, no hidden
+  prompts.
+- **Low friction.** Mica adapts to the user, not the other way
+  around. Point Mica at a directory. Keep whatever file
+  structure you already have. Delete `.mica/` and you are back
+  to plain files. Trying Mica costs almost nothing, and
+  leaving costs nothing.
+
+## Quick start
 
 ```bash
 npm install
-npm run dev
+npm run dev:all
 ```
 
-The dev server starts the Vite frontend and the Express backend (port 3001).
+Frontend runs on port 5173, backend on port 3002.
+
+`scripts/start.sh`, `scripts/stop.sh`, `scripts/restart.sh`, and
+`scripts/status.sh` manage the two processes together.
+
+## Cohabiting with your coding agent
+
+Mica sits alongside coding agents, not in place of them.
+Claude Code, Cline, and Cursor keep doing what they do. Mica is
+where the thinking that shapes their work lives: the briefs,
+decisions, specs, diagrams, research, constraints. Point your
+coding agent at the project and it sees the canvas in the
+`.mica/` directory and in the project files themselves.
 
 ## Documentation
 
-- **[SPEC.md](SPEC.md)** — Product definition, the card model, collaboration model, signal system
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Project-first model, `.mica/` directory, git integration, container isolation
-- **[TEST_PLAN.md](TEST_PLAN.md)** — Verification checklist for project infrastructure
-- **[old_thoughts/](old_thoughts/)** — Archived reference material from earlier design phases
+- [SPEC.md](SPEC.md) — what Mica is: the card model, the
+  canvas, the `mica.*` overview, the design principles.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how it is built:
+  server, host, CARD_SHIM, ChannelManager, reactivity,
+  authoritative `mica.*` API reference.
+- [ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md) —
+  ChannelManager state machines, channel handler contract.
+- [DESIGN-DECISIONS.md](DESIGN-DECISIONS.md) — working
+  decisions that shaped Mica-Lite and what they displaced.
+- [TESTING.md](TESTING.md) — manual verification pass.
+- [CLAUDE.md](CLAUDE.md) — development guide for Claude Code
+  and other agents working on the Mica codebase itself.
+
+For card-class authoring, the canonical reference is the
+`create-card-class` skill that ships with each project template:
+
+- `templates/cloud-claude/.claude/skills/create-card-class/SKILL.md`
+  for Claude Code projects.
+- `templates/cloud-claude/.qwen/skills/create-card-class/SKILL.md`
+  for the Qwen variant of the same template.
+- `templates/dgx-spark-local/.qwen/skills/create-card-class/SKILL.md`
+  for local-model projects.
+
+Sibling skills in the same directories cover related authoring
+tasks (`grow-canvas`, `decompose-task`, `doc-consistency`, and
+others).

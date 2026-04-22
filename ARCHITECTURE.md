@@ -1,681 +1,544 @@
-# Mica Architecture: Project-First Model
+# ARCHITECTURE
 
-## Core Principle
+This document describes how the Mica-Lite codebase is organized, how
+a request flows through it, and what the `mica.*` bridge actually
+exposes. It is the present-tense reference. For design intent that
+lives beyond what is implemented, see `internal/VISION.md`.
 
-**Projects are sovereign.** They exist as independent git repos that work fine without Mica. Mica *connects* to projects and adds value — card-based views, AI agents, extensible canvas — without creating lock-in. Remove `.mica/` and the project is untouched.
+If something in this doc conflicts with the code, the code wins and
+this doc is wrong. Flag it and fix it.
 
-This is analogous to `.vscode/` or `.github/` — a lightweight footprint that enhances but doesn't own. See [SPEC.md](SPEC.md) for the product definition and card model.
+## Posture
 
-## Key Design Tenets
+Nine engineering convictions shape every decision in this codebase.
+They are mirrored verbatim in CLAUDE.md so agents and humans see
+the same list.
 
-These principles guide all architectural decisions in Mica.
+1. **Optimize every choice for AI generation.** This is the product
+   tenet "designed for AI authorship" applied to implementation.
+   When we pick a file format, an API shape, a state location, or a
+   folder convention, the test is: can an LLM produce correct code
+   against this from a natural-language prompt? Card classes are
+   `card.html + card.js + card.css + metadata.json` because LLMs
+   write those one-shot. `mica.*` stays small because large APIs
+   confuse generators. No custom DSL, no framework-in-framework, no
+   bytecode. If a design is nicer for humans but harder for agents,
+   the design is wrong and gets reversed.
+2. **Plain files over databases.** Humans, agents, and git all read
+   the same bytes. No ORM. No migrations. `.mica/` is a directory,
+   not a schema.
+3. **Pipes, not policy.** Server and host do not know what "chat"
+   or "terminal" or "mermaid" is. `if (extension === ".terminal")`
+   in a pipe means we failed.
+4. **One mechanism.** One ChannelManager for all bidirectional
+   channels. One card-class contract for all cards. When we are
+   forking, we extract a primitive instead.
+5. **User intent, not transport.** Sessions start on file create
+   and end on file delete. Not on WebSocket close, not on tab
+   close. Transport is ephemeral; intent is durable.
+6. **Small orthogonal primitives.** The Emacs instinct. Before
+   adding a field to a central config or a method to a central
+   API, check whether a smaller composition gets there.
+7. **Root cause, not symptoms.** No bandaids. If the mental model
+   is right, the fix is obvious. If it is not, stop and redraw.
+8. **Runtime tests are the bar.** Compile is necessary, not
+   sufficient. Type checks prove code compiles. They do not prove
+   a channel survives a re-render.
+9. **Read before writing.** Especially the card class you are
+   about to change. Rewriting without reading drops details that
+   were debugged in.
 
-**1. Understand root cause before coding.** Read the docs. Trace the lifecycle. Draw the state diagram. Don't guess at fixes — diagnose. If we're playing whack-a-mole, the mental model is wrong.
+## The pipes
 
-**2. Infrastructure provides pipes, not policy.** The framework doesn't define what "chat" or "terminal" means. It provides connections, state management, and lifecycle events. Card code implements the semantics of its own backend. Adding a new card type should never require changes to framework code.
+Mica-Lite runs as an Express server (backend, port 3002) and a
+Vite frontend (port 5173) on the same host, connected by a
+WebSocket. A single Mica instance serves multiple projects. The
+browser identifies which project a request is for via an
+`X-Mica-Project` header on every `/api/*` call.
 
-**3. Don't constrain the user's tools.** Let Claude Code, plugins, and user settings work as designed. The container is a blast radius boundary — it limits what things can touch, not what features are available. Don't second-guess the security models of integrated tools.
+### Server files
 
-**4. Lifecycle bound to explicit user intent.** Sessions start when a user creates a card file and end when a user deletes it. Don't infer teardown from transport state (connection count hitting zero, WebSocket disconnects). These are transient events, not user intent.
+All paths relative to `/workspaces/mica/server/`.
 
-**5. One mechanism, not per-type special cases.** Prefer a single unified model (one ChannelManager, one expansion mechanism, one card class system) over growing if/else chains with type-specific logic. When a pattern emerges across card types, extract it into infrastructure.
+| File | What it does |
+|---|---|
+| `index.ts` | Express app, route wiring, WebSocket adapter, file-watcher listener, startup lifecycle |
+| `files.ts` | File I/O scoped to project, card-class metadata cache, template management, context assembly for agents |
+| `channelManager.ts` | Unified transport-agnostic session manager for bidirectional channels |
+| `fileWatcher.ts` | Per-project, ref-counted fs watchers scoped to canvas subtree plus pinned files |
+| `writeSource.ts` | Tracks who initiated a write (windowId, "agent", "external") so the next file-changed broadcast carries that source |
+| `llamaServer.ts` | Singleton llama.cpp subprocess lifecycle (start, health check, graceful shutdown) |
+| `claudeAgent.ts` | Channel handler for `.claude` cards. Spawns the Claude Code CLI via `@anthropic-ai/claude-agent-sdk` |
+| `micaAgent.ts` | Channel handler for `.chat` cards. Speaks OpenAI-compatible HTTP to llama-server |
+| `micaChat.ts` | Thin wrapper around the Qwen chat path |
+| `subagents.ts` | Subagent concurrency control and task delegation |
+| `cardValidators.ts` | Card-class preconditions and metadata consistency checks applied to agent-initiated writes |
+| `vllmServer.ts` | vLLM lifecycle for VLM (Gemma 4, separate process from llama-server) |
+| `plugins/exec.ts` | Shell command execution handler (`mica.exec`) |
+| `plugins/pty.ts` | PTY terminal channel handler for `.terminal` cards |
+| `plugins/llmChat.ts` | Direct LLM chat channel handler for `.llm-chat` cards |
+| `plugins/micaFetch.ts` | Server-proxied HTTP with SSRF protection, rate limit, size cap (`mica.fetch`) |
+| `plugins/skillCompose.ts` | Collaborative SKILL.md authoring for `.skills` cards |
+| `plugins/canvasBackCompose.ts` | Collaborative canvas-back.md authoring for `.canvas-back` cards |
 
-**6. Card class is the unit of extension.** Adding a new AI agent, visualization, or interactive widget should be a new `render.js` file — not new TypeScript modules, not new server routes, not new React components. The card class system is the extension point.
+### Host files
 
-**7. Transport-agnostic infrastructure.** The ChannelManager doesn't know about WebSockets. The card class system doesn't know about React. Each layer can evolve independently. See [ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md) for deep dives on subsystem design.
+All paths relative to `/workspaces/mica/src/`.
 
----
+| File | What it does |
+|---|---|
+| `App.tsx` | Router. Project list or project view |
+| `ProjectList.tsx` | Project management UI (list, create, clone, rename, delete) |
+| `whiteboard/CardRuntime.tsx` | Card host. Loads dependencies, injects HTML, wraps `card.js` in CARD_SHIM, provides the `mica` bridge |
+| `whiteboard/CardFrame.tsx` | Card chrome (header, body, footer, flip/back). Lazy-loads content from the API |
+| `whiteboard/CanvasCardRuntime.tsx` | Canvas host. Mounts the canvas card class's HTML and portals child cards into `#canvas-freeform` |
+| `whiteboard/FileEditor.tsx` | Text file editor, fallback for unmapped extensions |
+| `api/canvasFiles.ts` | File CRUD, project management API client |
+| `api/micaSocket.ts` | WebSocket bridge, channel registry, session persistence |
 
-## How It Works
+## Per-request project scoping
 
-### 1. Connecting a Project
+A single Mica instance serves multiple projects. Every HTTP and
+WebSocket request must identify which project it is for. The
+mechanism is the `X-Mica-Project` header (with `?project=` as a
+fallback for URL contexts that cannot set headers, such as
+`<img src>`, `window.open`, or download links).
 
-Any directory (ideally a git repo) can be connected to Mica:
+Threading:
 
-```
-POST /api/projects/connect  { "path": "/home/user/repos/my-app" }
-```
+1. `App.tsx` knows the active project and passes it down.
+2. `CardFrame` renders each card with a `project` prop.
+3. `CardRuntime` passes `project` to its `mica` bridge.
+4. The bridge's `fetch` helpers auto-inject `X-Mica-Project` on
+   every `/api/*` call.
+5. The server's `getRequestProject(req)` reads the header (or
+   query) on each route handler.
+6. Responses set `Vary: X-Mica-Project` so browser cache does not
+   confuse bodies across projects.
 
-This does three things:
-1. Creates a `.mica/` directory inside the project (if not already present)
-2. Initializes git if the directory isn't already a repo
-3. Registers the project in `workspaces.json` (Mica's side)
+No module-level globals hold the active project. Every request
+reads the header. This is load-bearing: without it, a stale
+project reference would route one tab's actions into another
+project's state.
 
-### 2. Project Layout
+## The host
 
-```
-my-project/
-├── .git/
-├── .mica/                  ← infrastructure (config, chat history, layout, card classes)
-│   ├── .config.json        # Project manifest (agent provider, reactive settings)
-│   ├── .chat-history.json  # Chat persistence
-│   ├──                     # (layout state lives in project.project/layout.json)
-│   └── .card-classes/      # Project-specific card class definitions
-│       └── my-widget/
-│           └── render.js
-│
-├── project.project         ← root canvas card (what you see when you open the project)
-├── goal.goal               ← seed cards (created on project setup)
-├── todo.todo
-├── brief.md                ← agent identity (markdown)
-├── log.md                  ← activity log (markdown)
-├── welcome.md              ← user/agent-created cards
-├── architecture.mmd
-└── research/               ← nested canvas (a card that contains cards)
-    ├── project.project
-    ├── hypotheses.md
-    └── findings.md
-```
+### CardRuntime and CARD_SHIM
 
-**Card files live at the project root** — they are the work, not metadata. System cards, user-created cards, and nested canvases (subdirectories) are all visible and first-class in the project directory.
+`CardRuntime.tsx` hosts a single card. Given `html`, `exports`,
+`dependencies`, `project`, `canvas`, and `filename`:
 
-**`.mica/` holds infrastructure only** — agent config, chat history, and custom card class definitions. This is the machinery, not the work. (Layout state lives in the canvas card's directory — see §7.9.)
+1. Preloads declared CDN `dependencies.scripts` and
+   `dependencies.styles` once (deduped across cards).
+2. Injects `html` into the card's `container` element.
+3. Finds each `<script>` in the injected HTML, wraps it with the
+   **CARD_SHIM** prelude, and evaluates it.
 
-For nested canvases, the canvas directory is at the project root (`research/`) and its infrastructure is at `.mica/research/` (for `.chat-history.json`, `.layout.json`, etc.).
+The CARD_SHIM prelude provides the illusion a card author works
+against:
 
-#### Three-tier file naming convention
+- **Scoped globals.** `container` (the card's DOM element) and
+  `mica` (the bridge) are injected as closed-over locals. A
+  Proxy shadow hides the real `document` from the card's
+  `querySelector` / `getElementById` calls, so a card cannot
+  reach another card's DOM.
+- **Window resize.** `window.addEventListener('resize', fn)` is
+  redirected to a ResizeObserver on the card's container, so a
+  card that wants to react to size changes gets its own card's
+  size, not the window's.
+- **Auto-cleanup.** `setTimeout`, `setInterval`,
+  `requestAnimationFrame`, and `addEventListener` calls from
+  card code are tracked and cleaned up on card unmount or
+  re-render. A card cannot leak a timer across a re-render.
+- **Scoped fetch.** `fetch(url)` to `/api/*` auto-injects
+  `X-Mica-Project: ${mica.project}` if the card did not set it
+  explicitly.
+- **Error reporting.** Uncaught exceptions from card code POST
+  to `/api/projects/:project/canvases/:canvas/cards/:file/error`
+  so they surface in the server log.
 
-Card files follow a three-tier naming convention:
+The practical effect: a card author writes top-level code and it
+just works. No class wrapper, no `export`, no registration call,
+no manual cleanup. The exact shim code lives in
+`src/whiteboard/CardRuntime.tsx` (lines 28-77 at the time of
+writing).
 
-| Prefix | Meaning | Visible to agents? | Examples |
-|--------|---------|-------------------|----------|
-| `.` (dot) | Internal data — not cards | No | `.config.json`, `.chat-history.json`, `.layout.json` |
-| (none) | Card — system-seeded or user-created | Yes | `goal.goal`, `todo.todo`, `brief.md`, `notes.md`, `tasks.todo` |
+### CanvasCardRuntime
 
-#### Extension-as-class convention
+A canvas is a card like any other — it has `card.html`,
+`card.js`, `metadata.json`. What makes it a canvas is that its
+HTML produces a `#canvas-freeform` element into which child
+cards are mounted.
 
-The file extension determines the card class. Standard file formats keep standard extensions; Mica-native types use the class name as extension:
+`CanvasCardRuntime.tsx` is the thin host. It:
 
-| Class | Extension | Content format | Standard? |
-|-------|-----------|---------------|-----------|
-| `markdown` | `.md` | Markdown | Yes |
-| `mermaid` | `.mmd` | Mermaid syntax | Yes |
-| `text` | `.txt` | Plain text | Yes |
-| `html` | `.html` | HTML | Yes |
-| `goal` | `.goal` | Markdown | Mica-native |
-| `todo` | `.todo` | Markdown | Mica-native |
-| `chat` | `.chat` | Managed | Mica-native |
-| `agent` | `.agent` | Managed | Mica-native |
-| `canvas` | `.canvas` | Managed | Mica-native |
-| `simple-project` | `.project` | Markdown | Mica-native |
-| `terminal` | `.terminal` | Managed | Mica-native |
+1. Renders the canvas card class's HTML using a CardRuntime.
+2. Polls for `#canvas-freeform` in the rendered DOM (child
+   effects run before parent effects, so it is usually already
+   there on the first tick).
+3. Creates an isolated child container inside `#canvas-freeform`
+   for each file on the canvas.
+4. Mounts a separate CardRuntime inside each child container.
 
-The content format is independent of the extension. A `.todo` file contains markdown internally — the `todo` card class renders it with interactive checkboxes. The extension determines *behavior*, not format.
+The canvas card class owns layout, drag, resize, and the
+toolbar. The React host does not. Different canvas card classes
+can ship different layouts (kanban, timeline) using the same
+mechanism.
 
-Multiple cards of the same class are natural: `backend.todo` and `frontend.todo` are both rendered by the `todo` class.
+## Card class loading
 
-Note that `brief` and `log` are plain `.md` files rendered by the `markdown` card class. They were originally Mica-native extensions but graduated to standard markdown — their semantics come from their filename and content, not a custom renderer.
-
-### 3. Workspace Registry
-
-`workspaces.json` lives in Mica's own directory (not inside any project):
-
-```json
-{
-  "projects": [
-    {
-      "id": "my-app",
-      "name": "My App",
-      "path": "/home/user/repos/my-app",
-      "canvases": ["workspace"],
-      "connectedAt": "2026-03-26T..."
-    }
-  ]
-}
-```
-
-A workspace is simply a collection of connected projects. Projects can join and leave freely.
-
-### 4. Per-Project Git Integration
-
-Each project has its own `.git/`. Mica wraps standard git operations per-project:
-
-| Endpoint | Operation |
-|----------|-----------|
-| `GET /api/projects/:id/git/status` | Working tree status |
-| `POST /api/projects/:id/git/commit` | Stage all + commit |
-| `GET /api/projects/:id/git/log` | Commit history |
-| `GET /api/projects/:id/git/diff` | Diff output |
-| `GET /api/projects/:id/git/branches` | List branches + current |
-| `POST /api/projects/:id/git/checkout` | Switch/create branch |
-
-A per-project mutex prevents concurrent git operations on the same repo.
-
-After an agent makes changes, Mica auto-commits: `mica: {canvas} agent update`.
-
-### 5. Per-Project Container Isolation
-
-Each project runs in its own Docker container. The container is a **blast radius boundary** — filesystem scoping and resource limits, not a full sandbox. Card classes run as Node.js modules on the host (see §7.8). Agents run inside the container with full network access.
-
-| Endpoint | Operation |
-|----------|-----------|
-| `POST /api/projects/:id/container/start` | Start container, allocate port, run |
-| `POST /api/projects/:id/container/stop` | Stop + remove |
-| `GET /api/projects/:id/container/status` | Running state, ports, uptime |
-| `GET /api/projects/:id/container/logs` | Recent stdout/stderr |
-
-Container setup:
-- **Image**: `mica-sandbox:base` (built from `docker/agent-sandbox/`)
-- **User**: `sandbox` (UID 1000, non-root)
-- **HOME**: `/home/sandbox`
-- **Ports**: Dynamic allocation from 9000–9099 range
-- **Limits**: 1GB memory, 2 CPUs default
-- **Network**: Containers keep network access (agents need it for API calls, tool use, etc.)
-- **No special capabilities**: No `SYS_ADMIN`, no two-phase runtime, no Python dependency install phase
-
-#### Container volume mounts
-
-All mounts are defined in `server/dockerSpawn.ts` (`getProjectMounts()`):
-
-| Host path | Container path | Mode | Purpose |
-|-----------|---------------|------|---------|
-| `~/.claude/` | `/home/sandbox/.claude/` | rw | Claude Code state — credentials, settings, sessions, plugins, memory |
-| `{project-path}/` | `{project-path}/` | rw | Project repo (1:1 path mapping so agent file paths match host) |
-| `card-classes/` | `card-classes/` | ro | Built-in card class definitions |
-| `server/mica_bridge/` | `/opt/mica/mica_bridge/` | ro | Mica bridge API (mica.js) for V8 isolates |
-| `node_modules/` | `node_modules/` | ro | Node packages (Claude Agent SDK CLI available inside container) |
-
-The `~/.claude/` mount gives the Claude Code CLI subprocess full access to the user's Claude environment:
-- **Authentication**: `.credentials.json` (rw — OAuth tokens need refresh)
-- **User settings**: `settings.json` (plugins, preferences, permissions)
-- **Plugin blocklist**: `plugins/blocklist.json`
-- **Session persistence**: `projects/<sanitized-cwd>/` (conversation transcripts for `resume`)
-- **Auto-memory**: `projects/<sanitized-cwd>/memory/` (learned project context)
-
-The container is the blast radius boundary — not the settings filter. Claude Code works exactly as designed; the container limits *what files and network it can reach*, not what SDK features are available.
-
-#### Container environment
-
-| Variable | Value | Purpose |
-|----------|-------|---------|
-| `HOME` | `/home/sandbox` | Points Claude Code to mounted `~/.claude/` |
-| `PATH` | Standard Linux paths | Shell command resolution |
-| `TERM` | `xterm-256color` | Terminal rendering |
-| Auth tokens | Forwarded from host | SDK env vars (filtered: `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` are blocked) |
-
-### 6. Disconnecting
+Card classes are directories with a fixed contract. Resolution
+checks project scope first, then built-in:
 
 ```
-POST /api/projects/:id/disconnect
+.mica/card-classes/<name>/    project-scoped
+card-classes/<name>/          built-in (ships with Mica)
 ```
 
-Removes the project from `workspaces.json`. The `.mica/` directory is **left intact** so the project can reconnect later with all its history preserved.
+The directory name must equal the instance file extension
+without the dot. A class at `.mica/card-classes/kanban/` handles
+`.kanban` files. The `metadata.json`'s `extension` field is
+documentation. The **directory name** is the actual lookup key.
+A mismatch silently falls through to the text renderer.
 
-### 7. Card Class Runtime
+### metadata.json fields
 
-Card classes are Node.js ES module `render.js` files that produce interactive HTML. They can `import` any npm package. They use named exports:
+| Field | Required | Meaning |
+|---|---|---|
+| `extension` | yes | File extension this class handles (must match directory name without dot) |
+| `badge` | yes | Short label shown on the card header |
+| `defaultTitle` | no | Display title for new instances |
+| `primaryFile` | no | For classes whose instance is a directory, the file inside that holds the state |
+| `dependencies.scripts` | no | CDN URLs to preload before `card.js` runs |
+| `dependencies.styles` | no | CDN CSS URLs to preload |
 
-| Export | Purpose |
-|--------|---------|
-| `export default function render(content, config)` | Returns HTML string |
-| `export async function myExport(content, args, mica)` | Exposes a server-side function callable from the browser |
-| `export function onConnect(mica, args)` | Called when a bidirectional channel session starts |
-| `export function onMessage(msg, mica)` | Called when the browser sends data through a channel |
-| `export function onDisconnect(mica)` | Called when the channel session is destroyed |
+### Dependency preloading
 
-**Resolution order**: YAML frontmatter `card: name` → extension lookup via metadata (`.goal` → goal, `.md` → markdown) → fallback to `text`.
+The first time a card class is rendered in a page, its declared
+`dependencies.scripts` and `.styles` are hoisted to `<head>` and
+loaded once. Subsequent cards of the same class reuse the
+already-loaded copies — the browser's module cache handles
+deduplication.
 
-Card classes are **self-describing**: each `render.js` exports a `metadata` object that declares its extension, badge, and other properties. The system scans `card-classes/` directories on startup, loads `render.js` from each, and reads the `metadata` export. There is no separate manifest file — the card class itself is the source of truth for its extension mapping.
+## WebSocket communication
 
-See `card-classes/AUTHORING_CARD_CLASSES.md` for the full API reference for writing card classes.
-
-#### 7.1 Card Types
-
-Two types of cards, both using the same card class system:
-
-- **Simple card** — renders content, no children. Examples: markdown, chat, todo, goal, a Three.js visualization, an xterm terminal.
-- **Canvas card** — has children and layout logic. Renders a layout shell with slots; the runtime fills slots with individually isolated child cards. Examples: the project card, the portfolio card, component-canvas cards for complex projects.
-
-The distinction is structural: a canvas card declares `data-slot` elements in its HTML where children are mounted. A simple card does not.
-
-#### 7.2 Card Isolation Model
-
-Each card runs in its own isolated sandbox. This is how a Three.js card, an xterm terminal card, and a mermaid diagram card coexist on the same canvas without interfering with each other. Adding or removing a card cannot break other cards.
-
-**Isolation guarantees:**
-
-- **Own container div** — all DOM queries use `container.querySelector()`, never `document.querySelector()`. A card cannot see or modify another card's DOM.
-- **Own script scope** — inline `<script>` blocks execute in IIFEs with `mica` and `container` injected as arguments. No globals leak between cards.
-- **Own mica bridge** — each card gets a bridge instance scoped to its `(project, canvas, filename)`. Calls and events are per-card.
-- **Own CSS strategy** — use inline `style` attributes for widget layout (not `<style>` rules that bleed across cards). Third-party library CSS should be inlined in `<style>` tags within the card.
-- **External resources deduplicated** — `<script src>` and `<link rel="stylesheet">` tags are hoisted to `<head>`, loaded once, and cached globally. Multiple cards using the same CDN library share the download.
-
-#### 7.3 Canvas Card Composition
-
-A canvas card's `render.js` produces an HTML layout shell with slot markers. The frontend fills those slots with individually isolated child cards.
-
-**Server side** — the canvas card's `render()` returns layout HTML:
-
-```html
-<div class="project-header">
-  <h1>My Project</h1>
-  <div class="toolbar">...</div>
-</div>
-<div data-slot="system-cards"></div>
-<div data-slot="content-cards"></div>
-```
-
-The `config` dict includes child metadata (filenames, card classes, titles, badges) but **not** child HTML. The parent card decides layout and chrome; it never touches children's content.
-
-**Frontend** — the `CanvasCardRuntime` component:
-
-1. Renders the parent card's HTML into a container (with its own WidgetRuntime for the parent's scripts/bridge)
-2. Finds `data-slot` elements in the parent's DOM
-3. For each child card, creates an isolated child container inside the appropriate slot
-4. Mounts a separate WidgetRuntime per child — own bridge, own scripts, own container
-
-This preserves full card isolation while giving the parent control over arrangement.
-
-#### 7.4 Inter-Card Communication
-
-Two mechanisms cover all coordination needs between cards:
-
-**File system (persistent state changes):**
-
-When any card writes a file (`mica.write()`, `mica.write_file()`), the file watcher detects the change and broadcasts `file-changed`, `file-created`, or `file-deleted` events to all connected cards via WebSocket. Cards subscribe with `mica.on('file-changed', cb)`.
-
-Examples: an agent creates a document → the canvas card updates to show the new child; a todo item is written → the log card refreshes.
-
-**Broadcast (ephemeral UI events):**
-
-- `mica.broadcast(event, data)` — browser-side, one card signals all others
-- `mica.on(event, cb)` — subscribe to broadcasts from other cards
-- `mica.emit(event, data)` — Server-side, server pushes to all browser cards
-
-Examples: selection sync between a list card and a detail card; hover highlighting across a diagram and a data table; navigation events when entering/leaving a canvas card.
-
-Broadcasts are scoped to the current browser session. They are not persisted and not visible to other users.
-
-#### 7.5 Card Class Scoping and Promotion
-
-Card classes live at three scopes. Resolution checks most specific first:
-
-```
-Project .mica/.card-classes/  →  Workspace ~/.mica/card-classes/  →  Built-in card-classes/
-```
-
-| Scope | Location | Travels via | Use case |
-|-------|----------|-------------|----------|
-| **Project** | `.mica/.card-classes/{name}/` | git (shared with team) | Cards specific to this project |
-| **Workspace** | `~/.mica/card-classes/{name}/` | local to this machine | Cards shared across your projects |
-| **Built-in** | `card-classes/{name}/` | ships with Mica | Standard cards (markdown, chat, todo, etc.) |
-
-**Promotion is copying a directory.** A card class is just a folder with a `render.js`. No package manager, no registry, no install step.
-
-- Project → Workspace: `cp -r .mica/.card-classes/my-widget ~/.mica/card-classes/my-widget`
-- Workspace → Built-in: contribute upstream to Mica
-
-**Top-level cards** at each scope are canvas cards:
-
-| Scope | Top-level card | Card class | What it shows |
-|-------|---------------|------------|---------------|
-| **Project** | `project.project` (project root) | `simple-project` | Project's child cards in a grid |
-| **Workspace** | `~/.mica/_portfolio.md` | `portfolio` | Connected projects as child cards |
-| **User** | (future) | (future) | Cross-workspace, identity-level |
-
-#### 7.6 Navigation Model
-
-Navigation is entering and leaving canvas cards:
-
-- **Enter**: click into a canvas card → see its children
-- **Leave**: ascend → return to parent canvas card
-
-The hierarchy emerges naturally from card nesting:
-
-```
-Portfolio card (workspace scope)
-  └── Project card (project scope)
-        ├── goal.goal (simple card)
-        ├── todo.todo (simple card)
-        ├── design.md (simple card)
-        ├── tasks.todo (simple card — second todo instance)
-        └── Component A (canvas card)
-              ├── goal.goal
-              └── api-spec.mmd
-```
-
-A simple project uses a single project card with flat children. A complex project nests canvas cards for sub-components. There is no separate navigation system — it falls out from the card tree.
-
-#### 7.7 WebSocket Communication
-
-Rendered cards get a `mica` bridge object with five communication patterns:
+The Mica WebSocket carries five patterns. Cards use the high-level
+`mica.*` methods rather than framing messages directly, but the
+patterns are visible in the API:
 
 | Pattern | Browser API | Use case |
-|---------|-------------|----------|
-| Request/response | `mica.call(fn, args)` → Promise | Toggle a checkbox, submit a form |
-| Fire-and-forget | `mica.send(fn, args)` | Log an event, no response needed |
-| Server push | `mica.on(event, cb)` | React to file changes (metadata only), agent updates |
-| Bidirectional channel | `mica.openChannel(fn, args)` | Terminal PTY, streaming data |
-| Widget broadcast | `mica.broadcast(event, data)` | Cross-card coordination |
+|---|---|---|
+| Request/response | `mica.call(fn, args)` | Invoke a server export, await a result |
+| Fire-and-forget | `mica.send(fn, args)` | Invoke a server export, no response needed |
+| Server push | `mica.on(event, cb)` | React to file changes, layout changes, agent status |
+| Bidirectional channel | `mica.openChannel(fn, args)` | Terminal PTY, agent chat, any long-lived stream |
+| Cross-card broadcast | `mica.broadcast(event, data)` | Ephemeral signals between cards in the same tab |
 
-Server-side export and stream handlers receive a `mica` bridge with minimal infrastructure: `mica.send(data)`, `mica.reply(data)`, `mica.read(filename)`, `mica.write(content)`, `mica.exec(command)`, `mica.log(message)`. Card classes import anything else they need directly (agent SDKs, node-pty, etc.).
+Broadcasts include a `source` field that identifies the
+originating window (see "File watcher and source attribution").
+Cards use `mica.isSelfEcho(event)` to skip echoes of their own
+writes.
 
-File-change events (`file-changed`, `file-created`, `file-deleted`) carry metadata only (filename, event type) — no rendered HTML. The server does not re-render cards on file changes. Card scripts subscribe via `mica.on('file-changed', cb)` and decide whether to update by calling `mica.refresh()`, which fetches fresh HTML from the server and re-injects the card.
+## ChannelManager
 
-**Event source attribution:** Broadcast events (e.g., `layout-changed`, `file-changed`) include a `source` field containing the originating window ID. This lets the window that triggered a change ignore its own broadcast and avoid redundant updates. This is the general pattern for cross-window coordination — no timing hacks or debounce workarounds.
+All bidirectional streams (chat, claude, terminal, llm-chat,
+skills, canvas-back) go through one ChannelManager. It is
+transport-agnostic and does not know what a "chat" or "terminal"
+is. Card-type-specific behavior lives in registered handlers.
 
-#### 7.8 ModuleLoader
+A session is bound to a card file on disk. It starts on file
+create, it ends on file delete. Transport connections attach and
+detach during the session's life without destroying the session.
 
-Card classes run as standard Node.js ES modules loaded via dynamic `import()`. They have full access to `require()`, `import`, `fs`, `process`, and all Node.js APIs. Card classes can import any npm package directly (e.g., `node-pty` for terminal PTY, `marked` for markdown parsing, `@anthropic-ai/claude-agent-sdk` for agent calls).
+For the state machines, the transport adapter pattern, and
+handler contract examples, see
+[ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md).
 
-**Runtime model:**
-- Card classes are the unit of extension — all behavior lives in `render.js`, including server-side stream handlers
-- `render()` runs once for initial HTML. The server does not re-render on file changes. Card scripts own their update lifecycle: they subscribe to `mica.on('file-changed')` events and call `mica.refresh()` to fetch fresh HTML when needed
-- The `mica` bridge provides minimal infrastructure (file I/O, channel messaging, exec, logging) — card classes import everything else they need directly
-- Blast radius is the Docker container (per-project isolation), not runtime sandboxing
+## Agents
 
-**Lifecycle:**
-- Modules are loaded on first render and cached by class name
-- When a `render.js` file changes, the cached module is invalidated and re-imported on next render (cache-bust via timestamp)
-- Stream handlers (`onConnect`/`onMessage`/`onDisconnect`) are auto-detected and registered with the ChannelManager
+Two agent card classes ship today. Both are regular card classes
+whose `card.js` opens a `mica.openChannel` to a server handler,
+and the handler wraps a model.
 
-**Stream handler pattern** (mirrors WebSocket semantics):
-- `onConnect(mica, args)` — session created, first client attached
-- `onMessage(msg, mica)` — data received from any connected browser
-- `onDisconnect(mica)` — session destroyed (card file deleted or server shutdown)
-- `mica.send(data)` pushes to all connected browsers; `mica.reply(data)` targets the sender
-- Sessions persist across browser reconnects — the ChannelManager delivers a synthetic `{ type: "attached" }` message to `onMessage` so card classes can replay state (scrollback, history)
+### Claude (`.claude`)
 
-#### 7.9 Creating Card Classes
+`server/claudeAgent.ts` is the channel handler. It uses
+`@anthropic-ai/claude-agent-sdk`. For each turn it spawns the
+Claude Code CLI as a subprocess with `cwd` set to the project
+path. The CLI reads authentication from the host's
+`~/.claude/.credentials.json`. Output streams back through the
+channel.
 
-Agents and users can create new card classes at runtime:
+### Qwen (`.chat`)
 
-1. Write a `render.js` file to `.mica/.card-classes/{name}/` in the project
-2. Export a `metadata` object from `render.js` declaring extension, badge, and other properties
-3. Add seed files prefixed with `_` — these are copied into new card instances on creation (prefix stripped)
-4. The file watcher picks up the new class and it's available immediately
+`server/micaAgent.ts` is the channel handler. It calls
+llama-server's OpenAI-compatible HTTP API at `127.0.0.1:8012`.
+Tool loop, history trimming (system prompt + last N messages),
+XML-fallback tool-call parsing for models that do not populate
+`tool_calls` cleanly, and truncation-detection are handled here.
 
-**Self-describing metadata:** Each card class declares its own metadata as a named export in `render.js`. There is no separate manifest file — the card class is the single source of truth.
+### Subagent delegation
 
-```javascript
-export const metadata = {
-  extension: ".my-widget",    // required — file extension that maps to this class
-  badge: "WIDGET",            // required — short label on card header
-  primaryFile: "data.json",   // optional — the main file in the card directory
-  defaultTitle: "My Widget",  // optional — display title for new instances
-  seed: true                  // optional — if true, seeded on project creation
-};
-```
+`server/subagents.ts` provides concurrency control when an agent
+spawns child agents. Parent context is passed to the child, and
+child work runs to completion before the parent turn continues.
 
-The system scans card class directories on startup, imports each `render.js`, and reads the `metadata` export to build the extension-to-class mapping dynamically.
+### Write-source tracking
 
-**Card class directory structure:**
+When an agent writes a file, `writeSource.ts` marks the write as
+`source: "agent"`. The file-watcher listener reads that marker
+when it broadcasts the resulting `file-changed` event, so cards
+subscribing to file changes can tell an agent write apart from
+a human edit.
 
-```
-card-classes/claude-chat/
-├── render.js              ← card class code + metadata export (required)
-├── _brief.md              ← seed: copied into new instances as brief.md
-├── _conversation.json     ← seed: copied as conversation.json
-└── README.md              ← documentation (not a seed, not copied)
-```
+## File watcher and source attribution
 
-Files prefixed with `_` inside the card class directory are **seed files**. They define the initial contents of new card instances.
+`server/fileWatcher.ts` is a multi-project, ref-counted directory
+watcher.
 
-**Creating card instances:** `mica.createCard('my-agent.claude-chat')`. The system creates the card directory, copies seed files from the card class (stripping the `_` prefix), and the card appears on the canvas. One call, fully formed card. The agent doesn't need to know about seeds or directory structure.
+### Scope
 
-Canvas card classes use the same mechanism. The `simple-project` class has seed directories for `goal.goal`, `todo.todo`, `brief.md`, and `log.md` — all created automatically when a new project is set up.
+For each project, inotify watches are registered only for:
 
-**Layout is canvas card state:** Layout positions are stored in `project.project/layout.json` — inside the canvas card's own directory, not in `.mica/`. This follows the principle that card state belongs to the card. Cross-window layout sync uses `layout-changed` broadcasts with source attribution (see §7.7).
+- The canvas subtree (default `docs/`).
+- Parent directories of explicitly pinned files.
 
-After creation, seed files are regular files — editable, deletable, no special treatment.
+Files outside that scope are invisible. The rationale is
+practical: `.mica/` watches cover the infrastructure we care
+about, and watching the whole project root would consume
+inotify watch slots for every large subdirectory the user
+happens to have in the project (node_modules, venv, dist, etc.).
+The `IGNORE_DIRS` list makes the default exclusions explicit.
 
-See `card-classes/AUTHORING_CARD_CLASSES.md` for the full API reference.
+### Event shape
 
-#### 7.10 Agent Context Model
+Events emit with type `"changed"`, `"created"`, or `"deleted"`,
+a project-relative filename, and the project name. Debounced at
+300ms per file.
 
-Agents in Mica operate within a three-part context model:
+### Source attribution on broadcast
 
-**Brief = agent identity.** Each agent card has a `brief.md` file in its card directory that defines who the agent is — its role, personality, constraints, and instructions. The brief is the agent's identity document. Brief templates ship with the card class (e.g., `card-classes/claude-chat/brief.md`) and are copied into the card instance directory on creation. Users and other agents can edit the brief to reshape the agent's behavior.
+The file watcher itself does not know who wrote a file. Before
+broadcasting to browsers, `server/index.ts` consumes the write
+source from `writeSource.ts`:
 
-**Card class = SDK adapter.** The card class (`claude-chat`, `pi-chat`, etc.) is the "back of the card" — it handles the mechanics of connecting to an LLM provider, managing conversation state, and translating between the Mica bridge protocol and the provider's API. The front of the card is the instance (the user's conversation, the agent's brief, the accumulated context). Two sides of the same card: the class defines *how* it works, the instance defines *who* it is and *what* it knows.
+| Source value | Meaning |
+|---|---|
+| `<windowId>` | A browser tab (set via `mica.files.write()`, or via raw `/api/files` PUT with a `source` field) |
+| `"agent"` | An agent handler wrote the file |
+| `"external"` | No source was marked — fallback for outside-Mica writes (git pull, manual edit, etc.) |
 
-**Canvas = shared context.** Agents read the same cards that humans see. The canvas is the shared work surface — goal, todo, brief, markdown documents, diagrams, code files. When an agent needs context, it reads the canvas. When it produces work, it writes to the canvas. There is no separate "agent memory" or "agent context window" — the canvas *is* the context, shared between humans and agents.
+Writes via `mica.files.write()` also attach a `cardSource` field,
+which is the per-card-instance UUID. This lets sibling cards in
+the same tab tell each other's writes apart. Use
+`mica.isSelfEcho(event)` to check against it.
 
-#### 7.11 Cards as Tools
+Event payloads delivered over WebSocket:
 
-Cards can invoke other cards programmatically via `mica.callCard(cardName, fn, args)`. This turns any card with exported functions into a reusable tool that other cards (including agent cards) can call.
+| Event | Payload |
+|---|---|
+| `file-created` | `{ type, filename, source, cardSource? }` |
+| `file-changed` | `{ type, filename, source, cardSource? }` |
+| `file-deleted` | `{ type, filename }` (no source on deletions) |
+| `layout-changed` | `{ type, source, device }` |
+| `card-class-changed` | `{ type, filename, change }` (fires when a file in `.mica/card-classes/` changes) |
 
-```javascript
-// From an agent card's server-side code:
-const result = await mica.callCard('research.claude-chat', 'summarize', { topic: 'authentication' });
-```
+## Reactivity
 
-This enables composition: an orchestrator agent can delegate work to specialist agent cards, a dashboard card can pull data from multiple source cards, and card classes can be designed as reusable services.
+The agent reacts to file changes inside its canvas scope without
+being prompted. The mechanism lives inside the agent handlers
+(`micaAgent.ts` and `claudeAgent.ts`), not in a separate service.
 
-#### 7.12 Local LLM Agent
+How it works:
 
-Mica can run agents against a local LLM instead of Claude, enabling fully offline operation.
+- Each active agent session registers a listener on
+  `fileWatcher`.
+- Incoming file-change events are filtered by canvas scope
+  (inside `canvasRoot`, or in the session's pinned set).
+- Events are also filtered by write source: if the file was
+  written by this agent session itself, skip (prevents
+  feedback loops).
+- Events are coalesced into a per-session buffer with a 15-second
+  idle gate (`USER_IDLE_BEFORE_AGENT_MS`). Each new event
+  re-arms the timer, so continuous typing does not trigger a
+  reaction mid-edit.
+- When the idle window fires, if no other turn is in progress
+  (per-session busy lock), the buffered events are delivered
+  to the agent as a synthetic "the user edited these files"
+  turn.
 
-**llama-server lifecycle** (`server/llamaServer.ts`):
-- Singleton process managed by Mica — starts on first agent request, stays running until shutdown
-- Exposes OpenAI-compatible API at `http://127.0.0.1:8012`
-- Default model: Qwen3-Coder-Next 80B MXFP4 (configurable via `MODEL_PATH`)
-- Launch flags: 32K context, flash-attn, GPU offloading (`--n-gpu-layers 999`), 2 parallel slots
-- Health check polling (500ms intervals, 120s timeout) before marking ready
-- Graceful shutdown: SIGTERM → 5s grace → SIGKILL
+Broadcasts to other card clients are a separate path and are
+unaffected by the idle gate — multi-tab live typing still
+updates instantly. Only the agent gets held back until idle.
 
-**Local agent** (`server/localAgent.ts`):
-- Mirrors `chatWithAgent()` from `agents.ts` but calls llama-server's HTTP API
-- Tool loop (max 5 turns): `list_files`, `read_file`, `write_file`, `delete_file`
-- Per-canvas conversation memory with history trimming (system prompt + last 20 messages)
-- Text-embedded tool call parsing: XML fallback (`<tool_call><function=name>...`) for models that don't populate the `tool_calls` array
-- Mermaid syntax sanitization: auto-quotes special characters in node labels
-- Truncation detection: if `finish_reason === "length"` mid-tool-call, discards broken tool JSON and retries
-- Final turn forces a text response (no tools) to guarantee a reply
+## llama-server lifecycle
 
-**Agent routing** (`server/index.ts`):
-- `routedChat()` reads `agentProvider` from `.mica/.config.json`
-- `"local"` → `chatWithLocalAgent()`, `"claude"` (default) → `chatWithAgent()`
-- UI toggle in `ProjectNav.tsx` sets `agentProvider` at project creation
+`server/llamaServer.ts` manages a singleton llama.cpp subprocess
+that serves an OpenAI-compatible API at `127.0.0.1:8012`. Qwen
+agent requests go here.
 
-#### 7.13 Reactive Behavior
+| Property | Value |
+|---|---|
+| Default model | Qwen3.6-35B-A3B, quantized as `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` from `unsloth/Qwen3.6-35B-A3B-GGUF` |
+| Override | `LLAMA_HF_REPO` + `LLAMA_HF_FILE` env vars, or `MODEL_PATH` for a local file |
+| Context window | 65K per slot |
+| Parallel slots | 3 |
+| Sampling defaults | `temp=0.6`, `top-p=0.95` (Qwen3.6 "precise coding" recommendations) |
+| GPU offload | `--n-gpu-layers 999` |
+| Health check | 500ms poll until ready (120s timeout) |
+| Shutdown | SIGTERM, 5s grace, then SIGKILL |
 
-Agents can react to human file edits and propose updates to related artifacts. This is implemented as a reactive layer (`server/reactiveAgent.ts`) that triggers the project's configured agent.
+The server starts on first agent request, stays running until
+Mica shuts down, and shuts down gracefully on process exit.
 
-**Two-phase pipeline:**
+## The mica.* API
 
-| Phase | Model | Purpose |
-|-------|-------|---------|
-| **Triage** | Claude Haiku | Cheap check: does this change affect other files? Returns `{shouldReact, reason, affectedFiles}` |
-| **Reaction** | Project's configured agent | Full tool-using agent call to read affected files and make/propose updates |
+This is the authoritative reference. The bridge lives at
+`src/api/micaSocket.ts` (`createBridge`) and
+`src/whiteboard/CardRuntime.tsx` (CARD_SHIM wrapper and
+high-level helpers). If this doc and the code disagree, the code
+wins.
 
-**Feedback loop prevention:**
-- Agent-originated writes are tracked via `markAgentWrite()` — the file watcher suppresses reactions to those files
-- Entries auto-expire after 5s as a safety net
+### Identity
 
-**Rate limiting:**
-- Per-canvas cooldown: 60s default (configurable via `config.reactive.cooldownMs`)
-- Per-canvas busy lock: skips events while an agent is already working on the canvas
-- Ignored files: dot-prefixed files (`.chat-history.json`, `.config.json`, etc.) are skipped by naming convention; `log.md` is explicitly skipped to avoid feedback loops
-- Deletes are skipped (triage only makes sense for content changes)
+| Property | Type | Meaning |
+|---|---|---|
+| `mica.project` | `string` | Current project name |
+| `mica.canvas` | `string` | Canvas identifier (currently always `"__canvas__"` for the root canvas) |
+| `mica.filename` | `string` | This card's instance filename, project-relative |
+| `mica.windowId` | `string` | Per-browser-tab ID, stable across renders |
+| `mica.cardId` | `string` | Per-card-instance UUID, stable across reloads. Sidecar at `.mica/cards/<sanitized>.id.json` |
 
-**Configuration** (`.mica/.config.json`):
-```json
+### Content
+
+| Method | Signature | Notes |
+|---|---|---|
+| `mica.getContent()` | `() => string \| Promise<string>` | Returns cached string after the initial fetch resolves; returns the Promise before that. Use with `await` for reliable access |
+| `mica.refresh()` | `() => Promise<void>` | Re-fetches HTML from the server and re-renders. Used to opt in to updates after a `file-changed` event |
+
+### Files
+
+All methods take project-relative paths. `mica.files.write()`
+auto-injects both `source` (windowId) and `cardSource`
+(cardId) so `mica.isSelfEcho(event)` filters correctly.
+
+| Method | Signature | Returns |
+|---|---|---|
+| `mica.files.list()` | `() => Promise<Array<FileEntry>>` | `[{ path, isFile, isFolder, size, modifiedAt }]` |
+| `mica.files.read(path)` | `(path: string) => Promise<string>` | Text contents |
+| `mica.files.readBinary(path)` | `(path: string) => Promise<ArrayBuffer>` | Binary contents |
+| `mica.files.write(path, content)` | `(path: string, content: string \| ArrayBuffer \| ArrayBufferView \| Blob) => Promise<void>` | Text is PUT as JSON. Binary streams to a separate upload endpoint. Parents auto-created |
+| `mica.files.delete(path)` | `(path: string) => Promise<void>` | Silently succeeds on 404 |
+| `mica.files.url(path)` | `(path: string) => string` | Returns `/api/files/<encoded>?project=<encoded>` for `<img>`, `<embed>`, `window.open` |
+
+### Cards
+
+| Method | Signature | Returns |
+|---|---|---|
+| `mica.cardClasses.list()` | `() => Promise<Array<{ name, builtIn, format }>>` | Installed classes, project-scoped first |
+| `mica.isSelfEcho(event)` | `(event: { cardSource?: string }) => boolean` | True if `event.cardSource === mica.cardId` |
+
+### Events
+
+| Method | Signature | Notes |
+|---|---|---|
+| `mica.on(event, cb)` | `(event: string, cb: (data) => void) => () => void` | Returns an unsubscribe function. Events: `file-changed`, `file-created`, `file-deleted`, `layout-changed`, `card-class-changed` |
+| `mica.onDestroy(cb)` | `(cb: () => void) => void` | Runs on card unmount and re-render. Use for explicit cleanup |
+| `mica.broadcast(event, data)` | `(event: string, data?: object) => void` | Browser-side signal to all cards in this tab (and other tabs on the same project via server relay) |
+
+### Server calls
+
+| Method | Signature | Notes |
+|---|---|---|
+| `mica.call(fn, args)` | `(fn: string, args?: object) => Promise<unknown>` | Request/response to a server export. Returns whatever the export resolves |
+| `mica.send(fn, args)` | `(fn: string, args?: object) => void` | Fire-and-forget |
+| `mica.openChannel(fn, args)` | `(fn: string, args?: object) => Channel` | Returns a handle with `onData`, `onClose`, `send`, `close`, `destroy`. See [ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md) for semantics |
+| `mica.fetch(url, opts)` | See below | Server-proxied HTTP with SSRF guard, rate limit, size cap |
+
+### mica.fetch contract
+
+Always resolves. Never throws on upstream or our-side failure.
+
+Options:
+
+| Field | Type | Default |
+|---|---|---|
+| `method` | `"GET" \| "POST" \| "PUT" \| "DELETE" \| "HEAD" \| "PATCH"` | `"GET"` |
+| `headers` | `Record<string, string>` | `{}` |
+| `body` | `string` | none |
+| `timeout` | `number` (ms) | server default, clamped to `[1, 60000]` |
+
+Return shape:
+
+```ts
 {
-  "reactive": {
-    "enabled": true,
-    "cooldownMs": 60000
-  }
+  status: number;              // upstream HTTP status; 0 on our-side failure
+  headers: Record<string, string>;   // lowercased upstream headers; empty on our-side failure
+  body: string;                // response body; empty on our-side failure
+  truncated?: boolean;         // true if body was capped at the response-size limit
+  durationMs: number;          // DNS + connect + read
+  error?: string;              // human-readable message, present only on our-side failure
+  errorCode?: string;          // stable code, present only on our-side failure
+  retryAfterMs?: number;       // present only when errorCode === "rate_limited"
 }
 ```
 
-Reaction results appear in chat history tagged with `reactive: true` and `trigger: filename`.
+`errorCode` values (all are our-side; upstream HTTP errors come
+back as `status >= 400`):
 
-#### 7.14 Sandbox Lifecycle Hardening
+| Code | Meaning |
+|---|---|
+| `url_invalid` | Unparseable URL or unsupported scheme |
+| `ssrf_blocked` | Resolved to a private, loopback, link-local, or cloud-metadata IP |
+| `dns_error` | DNS resolution failed |
+| `connect_error` | TCP connect or TLS handshake failed |
+| `timeout` | Exceeded `opts.timeout` |
+| `rate_limited` | Per-project rate limit hit; see `retryAfterMs` |
+| `response_error` | Body decode or streaming failure |
+| `internal_error` | Transport failure between card and Mica server |
 
-Per-project container management (`server/projectSandbox.ts`) includes several reliability guarantees:
+The SSRF check resolves DNS before connecting and rejects any
+address in a private or metadata range. Cards cannot reach
+`localhost` or cloud-metadata endpoints through `mica.fetch`.
+For calls to Mica's own `/api/*`, use `mica.files.*` and the
+other high-level helpers, or raw `fetch('/api/...')` (which
+CARD_SHIM auto-scopes to the project).
 
-| Guarantee | Mechanism |
-|-----------|-----------|
-| **Stale cleanup** | On first `getPool()` call, removes all `mica-project-*` containers from previous server runs |
-| **Liveness check** | Before dispatching work, verifies container is running via `docker inspect` |
-| **Auto-recreate** | If a container is found dead, tears down the sandbox and starts a fresh one |
-| **Startup backoff** | Exponential backoff on container start failures: 5s, 10s, 20s, 40s, 60s cap. Tracks per-project failure count. Clears on success |
+### What is NOT in the browser mica.*
 
-Containers are simple blast radius boundaries — filesystem scoping and resource limits. No two-phase runtime, no network toggling.
+`mica.read`, `mica.write`, and `mica.exec` appear as names on
+the bridge but are **server-side methods used by export
+handlers**. In the browser they return a structured error and
+point the card author at `mica.call()` to invoke a server
+export instead. Do not try to call them from `card.js`.
 
----
+## Security model
 
-## File Map
+Mica-Lite today runs all of its moving parts on the host. The
+trust boundaries are:
 
-### New files (project-first infrastructure)
+| Boundary | What it protects |
+|---|---|
+| CARD_SHIM | Browser-side DOM isolation between cards; auto-cleanup of card-owned timers and listeners. Not a sandbox — a hostile card can in principle do anything in-browser JS can do |
+| Project path scoping | Every `/api/*` request is scoped by `X-Mica-Project`. Card code cannot reach into another project's files via the normal helpers |
+| `mica.fetch` SSRF guard | Proxied HTTP resolves DNS first, rejects private/loopback/metadata ranges, enforces per-project rate limit and response cap |
+| Agent subprocess sandbox | Claude Code runs in its own container with its own sandboxing and tool policies. Qwen agent runs inside the Mica server but its tool surface is restricted to the same file I/O boundaries as card code |
 
-| File | Purpose |
-|------|---------|
-| `server/projectConnection.ts` | Connect/disconnect projects, `.mica/` lifecycle, workspace registry, migration |
-| `server/projectGit.ts` | Per-project git operations with mutex locking |
-| `server/projectContainer.ts` | Per-project Docker container lifecycle |
-| `server/projectSandbox.ts` | Per-project Docker sandbox with liveness checks, backoff, stale cleanup |
-| `server/llamaServer.ts` | llama-server singleton lifecycle (start, health check, stop) |
-| `server/localAgent.ts` | Local LLM agent with tool loop, XML fallback parsing, mermaid sanitization |
-| `server/reactiveAgent.ts` | Two-phase reactive agent (triage → reaction) with cooldowns |
-| `server/cardManager.ts` | Card rendering orchestration via ModuleLoader, cache management |
-| `server/moduleLoader.ts` | Loads card classes as Node.js ES modules, exposes render/callExport/getStreamHandlers |
-| `server/channelHandlers/module.ts` | Generic handler factory bridging card class stream exports to ChannelManager |
-| `server/channelManager.ts` | Unified, transport-agnostic session manager for bidirectional channels |
-| `src/api/projectGit.ts` | Frontend git API client |
-| `src/api/projectContainer.ts` | Frontend container API client |
+No per-project Mica container. No V8 isolate card sandbox. Both
+are design candidates described in `internal/VISION.md`.
 
-### Modified files
+## What is not here
 
-| File | Changes |
-|------|---------|
-| `server/canvasFiles.ts` | Path resolution via `getProjectPath()` instead of `canvases/` |
-| `server/seedCanvases.ts` | `seedNewProject()` accepts `agentProvider`, writes to config |
-| `server/index.ts` | Agent routing (`routedChat`), reactive agent integration, llama-server shutdown hook |
-| `server/agents.ts` | Read from repo root + `.mica/`, exported shared prompts for local agent reuse |
-| `server/workerPool.ts` | Legacy worker pool (retained for sandbox manager compatibility, scheduled for removal) |
-| `server/fileWatcher.ts` | Watch project root + `.mica/`, skip `.git/` |
-| `server/dockerSpawn.ts` | Export `parseDependencies` and `getOrBuildImage` for reuse |
-| `src/ProjectNav.tsx` | Agent provider toggle (Claude / Local) in project creation UI |
+Topics that earlier drafts of this doc described as present are
+in fact not implemented. They live in `internal/VISION.md` as
+design intent, not in the current system:
 
----
+- Portfolio / workspace-level card.
+- V8 isolate card sandbox (the `isolated-vm` dependency is in
+  `package.json` but not wired up).
+- Per-project Mica container isolation.
+- Cross-workspace card class promotion (`~/.mica/card-classes/`).
+- Multi-agent direct messaging via `mica.callCard`.
 
-## Migration from Legacy `canvases/`
-
-Existing projects in `canvases/{project}/` can be migrated via `migrateLegacyProjects()`:
-
-1. For each project in `canvases/_projects.json`:
-   - Create a new directory (default: `~/mica-projects/{id}/`)
-   - Copy canvas metadata files into `.mica/{canvas}/`
-   - Copy `.card-classes/` if present
-   - Write `.mica/.config.json`
-   - `git init` the new directory
-   - Register in `workspaces.json`
-2. Original `canvases/` directory preserved as fallback
-
----
-
-## Design Decisions
-
-**Why card files at the project root?** Cards are the work, not metadata. They should be visible, navigable, and first-class — not hidden inside a dot-directory. `.mica/` holds infrastructure (config, chat history, layout, card class definitions). Card files live alongside everything else in the project.
-
-**Why `workspaces.json` outside projects?** The workspace is a local concern — which projects *this* Mica instance is connected to. Different machines can have different workspace compositions. This is the "workspace" persistence tier. Cross-project cards (like the portfolio view) live here.
-
-**Why per-project containers?** Containers are blast radius boundaries. An errant agent in Project A shouldn't touch Project B's files or consume all system resources. The container scopes filesystem access and enforces resource limits — it doesn't sandbox card code (V8 isolates handle that).
-
-**Why raw HTML, not a widget framework?** Card classes return plain HTML strings. This means any library works — Three.js, D3, Leaflet, xterm.js — without framework wrappers or compatibility layers. It's also the most natural output for AI code generation: LLMs produce HTML fluently, and there's no abstraction layer to hallucinate wrong.
-
-**Why per-project git?** Projects have their own commit history, branches, and workflow. Mica doesn't impose a shared repo or monorepo structure. Each project's version control is self-contained.
-
-**What about `.gitignore`?** Recommend adding `.mica/.chat-history.json` and `.mica/*/.chat-history.json` to the project's `.gitignore`. Card files (at project root) and `.mica/` infrastructure (`.config.json`, `.layout.json`, `.card-classes/`) should be committed — it's valuable shared project context. `.chat-history.json` is the exception since it's ephemeral conversation state.
-
-## Security Model
-
-Card classes are code — they run as Node.js modules on the server and as inline scripts in the browser. The security model uses two layers of defense.
-
-### Two-layer model
-
-```
-┌─────────────────────────────────────────────────┐
-│  Mica Server (host, trusted)                    │
-│    ├── Network policy + proxy                   │
-│    ├── /proxy/cdn/*  (allowlisted CDN fetch)    │
-│    ├── /api/agent/chat (proxies Claude API)     │
-│    │                                            │
-│    ├── ModuleLoader (card class runtime)        │
-│    │    ├── Card class A  (Node.js module)      │
-│    │    └── Card class B  (Node.js module)      │
-│    │                                            │
-│    ├──→ Project A Container (blast radius)      │
-│    │      ├── Agent Bash sessions               │
-│    │      └── Project app                       │
-│    │                                            │
-│    └──→ Project B Container (blast radius)      │
-└─────────────────────────────────────────────────┘
-```
-
-| Layer | What it protects | Mechanism |
-|-------|-----------------|-----------|
-| **Container** | Blast radius — filesystem scoping + resource limits | Docker: project dir (rw), `~/.claude/` (rw for agent functionality), no `~/.ssh`/`~/.aws`/other projects. 1GB mem, 2 CPU default |
-| **Mica server** | Network policy + proxy | Per-card network permissions, CDN allowlist proxy, agent API proxy |
-
-### Card class trust model
-
-Card classes run as Node.js modules with full access to the runtime — `import`, `fs`, `process`, `child_process`, and all Node.js APIs. There is no runtime sandboxing of card code. Security relies on:
-
-- **Trusted source**: Built-in card classes ship with Mica. Project-level classes (`.mica/.card-classes/`) are committed to the project repo and reviewed like any other code.
-- **Container blast radius**: Agent-spawned processes (including any card-initiated `mica.exec()` calls) run inside the per-project Docker container with filesystem and resource limits.
-- **Browser-side CSP**: Content Security Policy blocks browser-side card scripts from reaching external origins (see below).
-
-### Per-card network permissions
-
-Card classes declare network access in their manifest:
-
-```json
-{
-  "my-widget": {
-    "extension": ".my-widget",
-    "badge": "WIDGET",
-    "network": true
-  }
-}
-```
-
-- **Default: deny all.** Cards with no `network` field (or `network: false`) have no network-gated features surfaced
-- Cards with `network: true` are surfaced in the UI so users know which cards may reach the internet
-- Card classes can use Node.js `fetch` or any HTTP library directly (they have full Node.js access)
-
-### Agent trust model
-
-Agents (Claude, local LLM) run inside the per-project container with full power — same trust model as Claude Code. They can read/write files, run shell commands, and make network requests within the container's blast radius. The container limits *what they can touch*, not *what they can do*.
-
-### Claude Code integration and `~/.claude/`
-
-The Claude Agent SDK spawns a **Claude Code CLI** subprocess for each agent call. The CLI reads from `~/.claude/` on every startup for authentication, settings, and session state. Mica mounts the host's `~/.claude/` into the container so Claude Code works identically to running on the host.
-
-**What `~/.claude/` contains and why it's mounted:**
-
-| Data | Path | Why the agent needs it |
-|------|------|----------------------|
-| OAuth credentials | `.credentials.json` | Authentication with Claude API (rw — tokens refresh) |
-| User settings | `settings.json` | Plugins, preferences, permissions, model config |
-| Plugin blocklist | `plugins/blocklist.json` | Safety blocklist fetched from Anthropic |
-| Marketplace cache | `cache/` | Cached marketplace manifests for plugins |
-| Session transcripts | `projects/<key>/*.jsonl` | Conversation history for `resume` (multi-turn continuity) |
-| Auto-memory | `projects/<key>/memory/` | Learned project context across conversations |
-| Feature flags | `statsig/` | A/B test flags for Claude Code features |
-
-**What is NOT mounted:**
-
-| Data | Why excluded |
-|------|-------------|
-| `~/.ssh/` | No SSH key access — agents use HTTPS for git |
-| `~/.aws/`, `~/.config/gcloud/` | No cloud credentials beyond Claude API |
-| Other project dirs | Each container sees only its own project |
-| Host system files | Container runs as non-root `sandbox` user |
-
-**Design rationale:** The SDK's own documentation suggests `persistSession: false` and `settingSources: []` for ephemeral container deployments. Mica takes a different approach: mount `~/.claude/` so the user's full Claude Code environment is available — plugins, settings, session resume, auto-memory. The container enforces the blast radius (filesystem + resource limits), not the settings filter. This follows Mica's principle: *don't constrain the user's tools, protect them if things go awry.*
-
-**Session isolation by project:** The SDK keys session storage by `cwd`. Each project's agent runs with `cwd` set to the project path, so sessions are stored at `~/.claude/projects/<sanitized-project-path>/`. Different projects have separate session directories automatically.
-
-### Browser-side defense (CSP)
-
-Content Security Policy blocks `fetch()` to external origins from card JavaScript:
-- `connect-src 'self'` — cards can only talk to the Mica server
-- `script-src` / `style-src` allowlist trusted CDNs only
-- Defense in depth: even if isolate sandboxing were bypassed, browser-side exfiltration is blocked
-
-### Portfolio and workspace scope
-
-Built-in card classes (portfolio, project chrome) run on the host — they're trusted code that ships with Mica. They only read project metadata, never execute project-scoped card classes. Per-project isolation doesn't affect the portfolio view.
+Reactivity, which earlier drafts described as not implemented,
+is implemented — see the "Reactivity" section above.

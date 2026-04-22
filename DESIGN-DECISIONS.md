@@ -1,162 +1,279 @@
-# Mica — Design Decisions (April 2026)
+# Mica — Design Decisions
 
-Working decisions from architecture exploration sessions. These inform the next phase of implementation.
+Working decisions that shape Mica-Lite. Each entry captures the
+choice, why it was made, and what it displaces. This is not a
+spec. For the present-tense reference, see ARCHITECTURE.md. For
+design intent that has not yet shipped, see `internal/VISION.md`.
+
+## Files are files, not directories
+
+Mica-Lite does not use a card-as-directory model. A card is a
+plain file at the project root. The file extension selects the
+card class. The canvas arranges cards by layout, not by
+directory hierarchy.
+
+This is the biggest departure from earlier Mica drafts. Old
+drafts had cards as directories (`project.project/`, `research/`)
+with child cards as nested directories. The current model is
+flat: files at the root, `.mica/` for operational metadata, no
+containment in the file system.
+
+Reasons for the change:
+
+- Files LLMs already know how to produce (the "designed for AI
+  authorship" tenet).
+- Plain text editing works out of the box.
+- Git behavior matches user expectations — no hidden moves when
+  "reorganizing" cards.
+- The canvas layout is separate state, and different canvas
+  card classes can arrange the same files differently.
+
+Card arrangement ("containment" in the old vocabulary) lives in
+`.mica/layout.json`, keyed by device class. Different canvas
+card classes read and write the same file, choosing how to
+display the same set of files.
+
+## Multi-project, single-host, per-request scoping
+
+A single Mica instance serves multiple projects. There is no
+per-project Mica process and no per-project container.
+
+Requests identify their project via an `X-Mica-Project` header
+(with `?project=` as a query fallback for URL contexts that
+cannot set headers, such as `<img src>` or `window.open`). The
+card runtime auto-injects the header on every `/api/*` fetch.
+The server reads it via `getRequestProject(req)`.
+
+No module-level globals hold the "current project." Every
+request reads the header. Responses set `Vary: X-Mica-Project`
+so browser cache does not mix project state.
+
+Reason: no surprising tab-level bleeding. Two tabs on different
+projects interact with different state at every request. No
+context swap to track.
+
+Per-project container isolation as a blast radius is under
+consideration (see `internal/VISION.md`) but is not the current
+reality.
 
 ## Storage model — work lives outside `.mica/`
 
-`.mica/` was holding both infrastructure and work. As the canvas becomes the primary work surface, the work should be first-class in the project directory.
-
 ```
 my-project/
-├── .mica/                      ← infrastructure
-│   ├── .config.json            ← agent config, provider settings
-│   ├── .chat-history.json      ← sidebar conversation
-│   ├──                         ← (layout state lives in project.project/layout.json)
-│   └── card-classes/           ← custom card type definitions
-│
-├── project.project             ← root canvas card
-├── goal.goal                   ← work cards — visible, first-class
-├── todo.todo
-├── brief.md                    ← agent identity (markdown)
-├── log.md                      ← activity log (markdown)
-├── roadmap.md
+├── .mica/                      ← infrastructure only
+│   ├── config.json             ← project config
+│   ├── layout.json             ← canvas layout, keyed by device class
+│   ├── canvas-back.md          ← project-level AI context
+│   ├── chats/                  ← chat history per agent card
+│   ├── cards/                  ← per-card state and AI context sidecars
+│   └── card-classes/           ← project-scoped card class definitions
+├── brief.md                    ← work files at project root
+├── spec.md
+├── tasks.todo
 ├── architecture.mmd
-├── auth-module.agent
-└── research/                   ← nested canvas
-    ├── project.project
-    └── hypotheses.md
+├── agent.claude                ← agent cards are just files too
+├── .claude/skills/             ← skills copied from the template
+├── .qwen/skills/               ← skills from the template
+└── .git/
 ```
 
-Cards are the work, not metadata. Card classes (the vocabulary) are infrastructure and stay in `.mica/`.
+Cards are the work. `.mica/` is the machinery. Delete `.mica/`
+and the project is back to plain files.
 
-Mica projects are standalone for now. Overlaying on existing codebases is deferred.
+Card classes (the vocabulary) are infrastructure and stay in
+`.mica/card-classes/` (project scope) or `card-classes/` (built-
+in in the Mica repo).
 
 ## Card classes are project-wide
 
-Card classes live in `.mica/card-classes/` and are available to all cards at any nesting level. Resolution: project > workspace > built-in.
+Card classes live at two scopes. The resolver checks project
+first:
 
-## Agent architecture — accept duplication, extract later
-
-Multiple agent types (orchestrator, card-builder, external coordinator) share plumbing (status, plan steps, blocker UI, channel protocol) but differ in rendering and backend behavior.
-
-Approaches considered and set aside:
-- Runtime-provided plumbing — risk of runtime bloating
-- Delegation between card classes — burdens the providing card
-- Templates — works for creation, breaks for maintenance
-- Shared library — right idea, premature before patterns emerge
-
-**Decision:** Let agents create card classes with the current system. Accept duplication. When patterns emerge, a maintenance agent extracts common code into shared primitives. If those stabilize, consider runtime integration.
-
-Agents have the same maintenance problems as humans (copies drift) but a different strength (they read an entire codebase instantly). The shared library is the maintenance solution — but we build it from observed patterns, not upfront guessing.
-
-## Orchestrator is the sidebar agent, evolved
-
-The sidebar chat agent has full context and all tools. The orchestrator extension adds: `spawn_agent`, `check_agent`, `message_agent`. Specialist agents are agent cards with role-specific prompt augmentation, not a separate abstraction.
-
-## Agent context — brief as identity, canvas as context
-
-An agent's identity is its `brief.md` file — a markdown document in the agent card's directory that defines role, personality, constraints, and instructions. The brief has two parts: agent-specific instructions (how the SDK works, what tools are available) that come from the card class template, and role-specific instructions (what the agent does) that the user customizes after creation.
-
-Brief templates ship with the card class:
 ```
-card-classes/claude-chat/brief-template.md   ← Claude-specific tool instructions
-card-classes/pi-chat/brief-template.md       ← Pi-specific tool instructions
+.mica/card-classes/<name>/    project-scoped
+card-classes/<name>/          built-in
 ```
 
-On instance creation, the template is copied into the card directory as `brief.md`. The user or an orchestrator edits it to specialize the agent. Swapping the card class (Claude → Pi) requires a different template because the SDK capabilities differ, but the role-specific part of the brief is agent-agnostic.
+Project-scoped classes travel with the project in git. Built-in
+classes ship with Mica. A workspace tier at
+`~/.mica/card-classes/` is a horizon item (see VISION); it is
+not implemented today.
 
-The agent's context is the canvas itself. Agents read the same cards humans see: goal, todo, documents, diagrams. There is no separate "agent memory" — the canvas is the shared context.
+## Agent architecture — two built-in classes, set will change
+
+Today two agent card classes ship. `.chat` is backed by local
+Qwen through llama-server. `.claude` is backed by the Claude
+Code SDK via a spawned CLI subprocess. Both are regular card
+classes whose `card.js` opens a `mica.openChannel` to a server
+handler.
+
+The set will change — new agents, different models, specialist
+roles. What stays constant is the contract: an agent is a card
+class that owns a brief, opens a channel to a server handler,
+and reads the canvas for context. Multi-agent coordination via
+direct agent-to-agent messaging is a horizon item.
+
+Philosophically: multiple agent types will share plumbing
+(status, plan steps, blocker UI, channel protocol) while
+differing in rendering and backend behavior. The decision is
+to accept duplication across card classes until patterns
+emerge clearly. Extracting a shared library upfront tends to
+be premature. When the pattern is clear, a maintenance pass
+extracts primitives. Agents have the same maintenance problem
+humans do (copies drift), but a different strength (they can
+read an entire codebase instantly to apply a fix everywhere).
+
+## Agent context — brief as identity, canvas as shared context
+
+An agent's identity is its `brief.md`-equivalent content in the
+agent card's instance file or directory. The brief defines
+role, personality, constraints, and instructions. Part of the
+brief is model-specific (tool format, SDK capabilities) and
+comes from the card class. Part is role-specific and the user
+customizes it.
+
+The agent's context is the canvas itself. Agents read the same
+files humans see: briefs, specs, todos, diagrams. There is no
+separate "agent memory" and no hidden key-value store. The
+canvas is the shared context.
 
 ## Card class as back of the card
 
-A card has two sides. The **front** is the instance — the user's conversation, the agent's brief, the accumulated state. The **back** is the card class — the `render.js` that defines how the card works, what SDK it connects to, how it renders. The class is the machinery; the instance is the work.
+A card has two sides. The **front** is the instance — the
+user's file, its content, the accumulated state. The **back**
+is the card class: `card.html`, `card.js`, `card.css`, and
+`metadata.json`, plus the AI context (`context.md` at class
+level and `<card>.context.md` at instance level).
 
-This maps cleanly to the file system: the card class lives in `card-classes/{name}/render.js` (or `.mica/.card-classes/{name}/render.js` for project-specific classes), and the card instance is a directory at the project root.
+The class is the machinery. The instance is the work. A
+user-facing flip UI (see VISION) is the natural way to expose
+this.
 
-## Seed cards — `_` prefix convention in card class directories
+## Skeleton-copy-first for new card classes
 
-Seed cards are initial cards created when a new card instance is set up. They're defined by the card class using a simple convention: files prefixed with `_` inside the card class directory are seeds.
+New card classes are created by copying
+`templates/_card-class-skeleton/` to
+`.mica/card-classes/<name>/`, then editing the four files in
+place. The skeleton has the correct shape for CARD_SHIM, the
+`mica.*` bridge, and the metadata format.
 
-```
-card-classes/claude-chat/
-├── render.js              ← card class code (not a seed)
-├── _brief.md              ← seed: copied into new instances
-├── _conversation.json     ← seed: initial empty history
-└── README.md              ← documentation (not a seed)
-```
+Reason: writing `card.js` from an empty page repeatedly invites
+class-wrappers, ES-module syntax, and invented base-class APIs
+that CARD_SHIM does not support. Starting from the skeleton
+keeps the generated code on the correct shape. The
+`create-card-class` skill leads with this rule.
 
-Cards are created via `mica.createCard('my-agent.claude-chat')`. The system creates the directory and copies seed files automatically:
+## Self-describing card classes — metadata.json
 
-```
-my-agent.claude-chat/
-├── brief.md               ← copied from _brief.md
-├── conversation.json      ← copied from _conversation.json
-```
+Each card class declares its own metadata in `metadata.json`:
 
-The agent doesn't need to know about seeds, directory structure, or primary files. One call, fully formed card. After creation, seed files are regular files — editable, deletable, no special treatment. The `_` convention exists only inside card class directories to tell the system what to copy.
-
-Canvas card classes use the same mechanism. A `simple-project` card class has seeds that define the initial project canvas:
-
-```
-card-classes/simple-project/
-├── render.js
-├── _goal.goal/goals.md        ← seeds a goal.goal card
-├── _todo.todo/tasks.md        ← seeds a todo.todo card
-├── _brief.md/document.md      ← seeds a brief.md card
-├── _log.md/document.md        ← seeds a log.md card
-```
-
-Different canvas types seed different cards. A hypothetical `sprint.canvas` class would seed `backlog.todo`, `sprint-goal.goal`, `retro.md`. No hardcoded names in the server — the card class owns its seeds.
-
-## Cards as tools — mica.callCard()
-
-Any card with exported functions can be called by other cards via `mica.callCard(cardName, fn, args)`. This turns cards into composable tools: an orchestrator agent delegates to specialist agents, a dashboard pulls from data cards, a workflow chains card operations.
-
-Cards don't need to declare they are callable. Any named export in `render.js` is automatically callable. The render result includes the export list (`exports: ["screenshot", "summarize"]`). An agent discovers callable cards by listing the canvas and checking which cards have exports. No separate registration needed.
-
-## Card classes are arbitrary Node programs
-
-A card class's `render.js` runs inside the project's Docker container as a Node.js module. It can import anything — an AI SDK, a database driver, a web scraper, a machine learning library. It can spawn child processes, open network connections, and use any system package installed in the container.
-
-A card class can wrap any Node program: a Jupyter kernel, a language server, a game engine, a media transcoder. The `render.js` is the adapter between the Mica bridge protocol and whatever the program needs. The container provides the sandbox — filesystem scoping, resource limits, network policy. The card class has full freedom within those boundaries.
-
-## Self-describing card classes — metadata in render.js
-
-Card classes used to require a separate `_manifest.json` file that mapped class names to extensions and UI metadata. This was a coordination problem: two files had to agree, and forgetting the manifest entry was a common failure mode.
-
-**Decision:** Card classes export `metadata` directly from `render.js`. The system scans card class directories on startup, imports each `render.js`, and reads the `metadata` export. No separate manifest file exists. The card class is the single source of truth for its extension, badge, primary file, and other properties.
-
-```javascript
-export const metadata = { extension: ".todo", badge: "TODO", primaryFile: "tasks.md", seed: true, defaultTitle: "To Do" };
+```json
+{
+  "extension": ".todo",
+  "badge": "TODO",
+  "defaultTitle": "To Do",
+  "primaryFile": "tasks.md",
+  "dependencies": { "scripts": [], "styles": [] }
+}
 ```
 
-This simplifies creation (one file instead of two), eliminates desync bugs, and makes card classes truly self-contained.
+The system reads `metadata.json` from each card class directory
+on startup. No central registry, no manifest file outside the
+class itself.
 
-## Event source attribution — windowId in broadcasts
+Load-bearing constraint: the directory name must equal the
+extension without the dot. A class at
+`.mica/card-classes/kanban/` handles `.kanban` files. The
+`extension` field in `metadata.json` is documentation. The
+directory name is the actual lookup key. A mismatch silently
+falls through to the text renderer.
 
-Cross-window coordination (e.g., layout sync) initially had race conditions: a window would save state, broadcast the change, and then receive its own broadcast back, causing redundant refreshes or flicker. Timing hacks (debounce, ignore-next-event flags) were fragile.
+## Event source attribution — source and cardSource
 
-**Decision:** All broadcast events include a `source` field containing the originating window's ID. Each window checks `source` and ignores events it originated. This is a general pattern — any cross-window broadcast should include `source` so the originator can skip its own echo. No timing hacks needed.
+Cross-window and cross-card coordination needs a way to skip
+self-echoes. Early drafts tried timing hacks (debounce,
+ignore-next-event flags). Fragile.
+
+**Decision:** broadcasts include a `source` field identifying
+the origin. `source` is either a `windowId` (per browser tab),
+`"agent"` (a server-side agent handler wrote it), or
+`"external"` (no source was marked — git pull, manual edit,
+process outside Mica).
+
+File writes through `mica.files.write()` additionally carry a
+`cardSource` field containing the writing card's `cardId`
+(per-card-instance UUID). This lets sibling cards in the same
+tab tell each other's writes apart.
+
+Cards use `mica.isSelfEcho(event)` to filter. This is the
+general pattern — any cross-card broadcast should include
+these fields so originators can skip their own echoes.
 
 ## Layout is canvas card state
 
-Layout positions were originally stored in `.mica/.layout.json` — an infrastructure file. But layout is the canvas card's state, not infrastructure. The canvas card decides how children are arranged, and different canvas types would have different layout formats.
+Layout positions live in `.mica/layout.json`, keyed by device
+class (phone, tablet, desktop, display). The canvas card class
+reads and writes this file. Different canvas card classes can
+persist layout under different keys or formats.
 
-**Decision:** Layout state moved to `project.project/layout.json` — inside the canvas card's own directory. This follows the principle that card state belongs to the card. Cross-window layout sync uses `layout-changed` broadcasts with source attribution (see above).
+Earlier drafts placed layout at `project.project/layout.json`
+inside the canvas card's directory, following a
+"layout-belongs-to-the-card" principle. That placement is
+superseded by the files-are-files decision above: the canvas
+is a card file, not a directory, so layout moved to
+`.mica/layout.json`.
+
+Cross-window sync uses `layout-changed` broadcasts with
+`source` attribution (see above).
+
+## Cards as tools (not implemented)
+
+Earlier design sketches proposed `mica.callCard(cardName, fn,
+args)` so any card with named server-side exports could be
+called by other cards. An orchestrator agent delegates to a
+specialist agent card; a dashboard pulls from data cards.
+
+**Status: not implemented.** The runtime bridge does not expose
+`mica.callCard`. This is an internal-VISION item, not a
+present-tense design decision. Documenting it here to prevent
+agents or humans from assuming it works.
+
+## Implemented (formerly deferred)
+
+The following items appeared as "Deferred" in earlier versions
+of this doc and are now built:
+
+- **Canvas card owns the toolbar.** The canvas card class
+  renders the toolbar. `CanvasCardRuntime` does not own it.
+- **Canvas card owns layout and arrangement.** The canvas card
+  decides how children are mounted inside `#canvas-freeform`.
+- **`CanvasCardRuntime` is a thin host.** It renders the canvas
+  card's HTML and portals child cards into `#canvas-freeform`.
+  It does not own layout, drag, or toolbar.
+- **Reactivity.** The agent watches the file watcher, filters
+  events to its canvas scope, coalesces with a 15-second idle
+  gate, skips its own writes via write-source tracking, and
+  delivers coalesced events as a synthetic turn.
 
 ## Deferred
 
-- **"Flip the card" UI** — a button on the card header that shows the card class definition (render.js, seed files) instead of the instance content. "Customize" copies built-in to project level for editing. Purely frontend — no backend changes needed.
-
-- **Move toolbar into canvas card class** — Currently the toolbar (add card, layout toggle, etc.) is hardcoded in CanvasCardRuntime.tsx (React). Target: the canvas card class's `render.js` renders toolbar HTML and inline scripts handle button clicks. Different canvas types would have different toolbars.
-
-- **Move card partitioning into canvas card class** — Currently CanvasCardRuntime.tsx decides how to partition children (seed cards at top, diagrams full-width, content in grid). Target: the canvas card class receives child metadata in `config` and decides arrangement. Different canvas types would partition differently (kanban: by lane, timeline: by date).
-
-- **CanvasCardRuntime becomes thin host** — After toolbar and partitioning move into the card class, CanvasCardRuntime.tsx becomes a thin mount host: it renders the canvas card class's HTML and mounts child cards into `data-slot` elements. All layout logic, toolbar, and partitioning are owned by the card class.
+- **"Flip the card" UI.** A button on the card header that
+  shows the card class definition (`card.html`, `card.js`,
+  `card.css`, `metadata.json`) and the AI context files
+  instead of the instance content. A "Customize" action
+  copies a built-in class to `.mica/card-classes/` for local
+  editing. Purely frontend. No backend changes needed. The
+  data model is in place; the UI layer is pending.
 
 ## Open questions
-- "Add to any project" model when cards live outside `.mica/`
-- When to build the shared primitives library
-- Card class versioning and breaking changes
-- Container idle timeout and lifecycle management
-- Card class system dependency declaration (`systemDeps` in metadata)
+
+- Workspace-tier card classes at `~/.mica/card-classes/`:
+  when, and with what cross-project promotion UX.
+- Card class versioning and breaking changes as the surface
+  evolves.
+- Per-project container isolation as a blast radius: whether
+  Mica needs it in addition to what the agent systems already
+  provide.
+- Card class system-dependency declaration
+  (`systemDeps` in metadata) for classes that need
+  non-JavaScript binaries available on the host.
