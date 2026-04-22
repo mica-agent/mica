@@ -164,6 +164,76 @@ export function getLastTurnAt(chatFilename: string): number | undefined {
   return lastTurnAt.get(chatFilename);
 }
 
+/** Canvas baseline injected into every subagent's systemPrompt so the
+ *  subagent starts with the same project awareness as the parent (canvas-back,
+ *  spec/design files, file locations, container danger notes). Without this,
+ *  subagents only see their own role description + the parent's task prompt
+ *  string — they don't know what the project IS, what files are on canvas,
+ *  what the canvas root is, or where to write files. Path confusion and
+ *  missing-context wandering are common symptoms.
+ *
+ *  Excluded vs the parent's full buildContext: per-card behavior instructions,
+ *  since-last-turn diffs (subagents have no last turn), available-subagents
+ *  guidance (subagents can't delegate further), chat history. */
+export async function buildSubagentCanvasContext(project: string | null): Promise<string> {
+  const parts: string[] = [];
+
+  // Project context (canvas-back)
+  try {
+    const canvasBack = await readFile(join(getMicaDir(project), "canvas-back.md"), "utf-8");
+    if (canvasBack.trim()) parts.push(`## Project Context\n${canvasBack.trim()}`);
+  } catch { /* no canvas-back */ }
+
+  // Project files (canvas-visible, with full content)
+  try {
+    const files = await listCanvasFiles(project || undefined);
+    if (files.length > 0) {
+      const emitted: string[] = [];
+      for (const f of files) {
+        const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
+        const meta = await getCardClassMeta(ext, project);
+        if (meta.meta) continue;
+        if (BINARY_EXTS.has(ext)) {
+          emitted.push(`### ${f.name} (${f.size} bytes, binary)`);
+          continue;
+        }
+        try {
+          const file = await readProjectFile(f.name, project || undefined);
+          if (isLikelyBinary(f.name, file.content)) {
+            emitted.push(`### ${f.name} (${f.size} bytes, binary)`);
+          } else if (file.content.length === 0) {
+            emitted.push(`### ${f.name} (empty — intentional shell or placeholder)`);
+          } else {
+            emitted.push(`### ${f.name}\n${file.content}`);
+          }
+        } catch { emitted.push(`### ${f.name} (${f.size} bytes, unreadable)`); }
+      }
+      if (emitted.length > 0) {
+        parts.push(`## Project Files`);
+        for (const e of emitted) parts.push(e);
+      }
+    }
+  } catch { /* ignore */ }
+
+  // File location rules
+  let canvasRoot = "docs";
+  try {
+    const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
+    canvasRoot = cfg.canvasRoot || cfg.docsDir || "docs";
+  } catch { /* use default */ }
+  parts.push(
+    `## File Locations\n` +
+    `- The canvas directory is \`${canvasRoot}/\` — canvas-visible cards live here.\n` +
+    `- The project root is your working directory. Use absolute or full project-relative paths in tool calls (e.g. \`podcast-automation/src/config.py\` not just \`src/config.py\`) so paths resolve unambiguously.\n` +
+    `- NEVER write to \`.mica/\` — that directory is Mica-internal metadata.\n` +
+    `\n` +
+    `## DANGER: You Run Inside The Mica Container\n` +
+    `Do not touch processes on ports 5173 (vite), 3002 (Mica backend), 8012 / 8013 (vLLM). Do not kill anything matching \`vite\`, \`tsx server/index.ts\`, \`vllm\`, \`npm run dev\`, or under \`/workspaces/mica/\`. If you need to launch a test web app, use a different port (9000, 9090).`,
+  );
+
+  return parts.join("\n\n");
+}
+
 export async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
   const parts: string[] = [];
 
@@ -632,10 +702,25 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // Load subagent definitions from the project (.qwen/agents/*.md) with
         // server/builtin-agents/*.md as fallbacks. Loaded fresh each turn so the
         // user can edit an agent file without restarting Mica.
-        const subagents = await loadProjectSubagents(sessionProject, "qwen");
+        //
+        // Prepend the canvas baseline (canvas-back + project files + file
+        // location rules) to each subagent's systemPrompt. Without this,
+        // subagents start with only their role description + the parent's
+        // task prompt — they don't know what the project IS or what files
+        // exist on canvas, leading to path confusion and wandering reads.
+        const subagentsRaw = await loadProjectSubagents(sessionProject, "qwen");
+        const subagentBaseline = subagentsRaw.length > 0
+          ? await buildSubagentCanvasContext(sessionProject)
+          : "";
+        const subagents = subagentsRaw.map((a) => ({
+          ...a,
+          systemPrompt: subagentBaseline
+            ? `${a.systemPrompt}\n\n---\n\n# Canvas baseline (shared with parent agent)\n\n${subagentBaseline}`
+            : a.systemPrompt,
+        }));
         if (subagents.length > 0) {
           const names = subagents.map((s) => s.name).join(", ");
-          console.log(`[mica-agent] subagents: ${names}`);
+          console.log(`[mica-agent] subagents: ${names} (canvas baseline: ${subagentBaseline.length} chars)`);
         }
 
         // Inject recent chat history into the prompt so the agent has conversational
@@ -693,6 +778,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         let pendingQuestionText = "";
 
         async function canUseToolWithQuestionIntercept(toolName: string, input: Record<string, unknown>) {
+          const t0 = Date.now();
+          const debugTag = `[canUseTool:${toolName}]`;
+          console.log(`${debugTag} ENTRY input.file_path=${(input.file_path as string) || "-"} writes=${writesThisTurn}/${MAX_WRITES_PER_TURN}`);
+          try {
+            const r = await canUseToolInner(toolName, input);
+            console.log(`${debugTag} EXIT ${r.behavior} elapsed=${Date.now() - t0}ms${"message" in r ? ` msg=${r.message.slice(0, 80)}` : ""}`);
+            return r;
+          } catch (err) {
+            console.error(`${debugTag} THREW elapsed=${Date.now() - t0}ms err=${(err as Error).message}`);
+            throw err;
+          }
+        }
+
+        async function canUseToolInner(toolName: string, input: Record<string, unknown>) {
           const safety = await guardTool(toolName, input);
           if (safety.behavior === "deny") return safety;
 

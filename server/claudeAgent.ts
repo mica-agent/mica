@@ -6,6 +6,7 @@
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta } from "./files.js";
+import { buildSubagentCanvasContext } from "./micaAgent.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
@@ -600,16 +601,25 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         // subagent inherit the parent's tool set, which is what we want for
         // the heavy-lifter `component-coder` use case anyway.
         const parsedAgents: ParsedSubagent[] = await loadProjectSubagents(sessionProject, "claude");
+        // Prepend canvas baseline to each subagent's prompt so the subagent
+        // starts with the same project awareness as the parent. See
+        // micaAgent.ts:buildSubagentCanvasContext for rationale.
+        const subagentBaseline = parsedAgents.length > 0
+          ? await buildSubagentCanvasContext(sessionProject)
+          : "";
         const agentsRecord: Record<string, { description: string; tools?: string[]; prompt: string; model?: string }> = {};
         for (const a of parsedAgents) {
+          const fullPrompt = subagentBaseline
+            ? `${a.systemPrompt}\n\n---\n\n# Canvas baseline (shared with parent agent)\n\n${subagentBaseline}`
+            : a.systemPrompt;
           agentsRecord[a.name] = {
             description: a.description,
-            prompt: a.systemPrompt,
+            prompt: fullPrompt,
             ...(a.modelConfig?.model ? { model: a.modelConfig.model } : {}),
           };
         }
         if (parsedAgents.length > 0) {
-          console.log(`[claude-agent] subagents: ${parsedAgents.map((a) => a.name).join(", ")}`);
+          console.log(`[claude-agent] subagents: ${parsedAgents.map((a) => a.name).join(", ")} (canvas baseline: ${subagentBaseline.length} chars)`);
         }
 
         const queryFn = await getQuery();
