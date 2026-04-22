@@ -351,6 +351,7 @@ function loadContextInfo() {
       return;
     }
     const files = data.files || [];
+    const extras = data.extras || [];
     const promptSize = data.promptSizeChars || 0;
     const tokens = data.estimatedTokens || Math.round(promptSize / 4);
     const cap = data.softCapChars || 0;
@@ -360,12 +361,18 @@ function loadContextInfo() {
       if (f.unreadable) return f.name + '  <span style="color:#f87171">(unreadable)</span>';
       return f.name + '  ' + formatSize(f.chars || 0);
     });
+    const extraLines = extras.map(function(e) {
+      return e.name + '  ' + formatSize(e.chars || 0) + '  <span style="color:#888">(' + (e.kind || 'context') + ')</span>';
+    });
     const header = '<div style="color:' + (over ? '#f59e0b' : '#4ade80') + ';margin-bottom:4px">'
       + files.length + ' file' + (files.length === 1 ? '' : 's')
+      + (extras.length ? ' + ' + extras.length + ' context source' + (extras.length === 1 ? '' : 's') : '')
       + ' · prompt ' + formatSize(promptSize) + ' (~' + tokens + ' tokens)'
       + (over ? ' · <b>over ' + formatSize(cap) + ' cap — split large cards</b>' : '')
       + '</div>';
-    ctxFiles.innerHTML = header + fileLines.map(function(l) { return '<div>' + l + '</div>'; }).join('');
+    ctxFiles.innerHTML = header
+      + extraLines.map(function(l) { return '<div>' + l + '</div>'; }).join('')
+      + fileLines.map(function(l) { return '<div>' + l + '</div>'; }).join('');
     ctxLoaded = true;
   }).catch(function() { ctxFiles.textContent = "Failed to load"; });
 }

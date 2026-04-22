@@ -34,6 +34,49 @@ export function isLikelyBinary(filename: string, contentHead: string): boolean {
  *  and conquer) rather than having the prompt silently clipped. */
 export const CONTEXT_SOFT_CAP_CHARS = 100_000;
 
+// ── Card class metadata lookup (shared across agents + ctx preview) ──────
+//
+// Reads each card class's metadata.json once and caches. `meta: true` marks
+// "infrastructure" cards (canvas-back, skills) whose on-disk file is a shell
+// — their content lives elsewhere and shouldn't be dumped into the agent's
+// "Project Files" section.
+
+interface ClassMeta { badge: string; meta: boolean }
+const classMetaCache = new Map<string, ClassMeta>();
+
+export async function getCardClassMeta(ext: string, project: string | null | undefined): Promise<ClassMeta> {
+  const className = ext.startsWith(".") ? ext.slice(1) : ext;
+  const cacheKey = `${project ?? ""}|${className}`;
+  const cached = classMetaCache.get(cacheKey);
+  if (cached) return cached;
+
+  const candidates: string[] = [];
+  if (project) candidates.push(join(WORKSPACE_DIR, project, ".mica", "card-classes", className));
+  candidates.push(join(process.cwd(), "card-classes", className));
+
+  for (const dir of candidates) {
+    try {
+      const raw = await readFile(join(dir, "metadata.json"), "utf-8");
+      const m = JSON.parse(raw) as { badge?: unknown; meta?: unknown };
+      const out: ClassMeta = {
+        badge: typeof m.badge === "string" ? m.badge : "",
+        meta: m.meta === true,
+      };
+      classMetaCache.set(cacheKey, out);
+      return out;
+    } catch { /* try next candidate */ }
+  }
+  const empty: ClassMeta = { badge: "", meta: false };
+  classMetaCache.set(cacheKey, empty);
+  return empty;
+}
+
+/** Clear the card-class metadata cache. Call after a card class file changes
+ *  so fresh reads pick up edited metadata.json without a server restart. */
+export function clearCardClassMetaCache(): void {
+  classMetaCache.clear();
+}
+
 // Backwards-compatible alias used by other modules
 export const PROJECT_DIR = WORKSPACE_DIR;
 

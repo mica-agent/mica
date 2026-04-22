@@ -42,6 +42,7 @@ import {
   BINARY_EXTS,
   isLikelyBinary,
   CONTEXT_SOFT_CAP_CHARS,
+  getCardClassMeta,
   type FileMeta,
   type CardSettings,
 } from "./files.js";
@@ -587,7 +588,16 @@ async function buildCtxPreview(
 ) {
   const prompt = await builder(filename, proj, undefined);
   const files = await listCanvasFiles(proj || undefined);
-  const fileInfos = await Promise.all(files.map(async (f) => {
+  // Filter meta cards (canvas-back, skills) — their on-disk file is a shell
+  // and their real content is surfaced through the separate "canvas-back"
+  // entry below. Dropping them here matches what buildContext emits.
+  const filesForListing: typeof files = [];
+  for (const f of files) {
+    const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
+    const meta = await getCardClassMeta(ext, proj);
+    if (!meta.meta) filesForListing.push(f);
+  }
+  const fileInfos = await Promise.all(filesForListing.map(async (f) => {
     const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
     if (BINARY_EXTS.has(ext)) return { name: f.name, chars: 0, binary: true, size: f.size };
     try {
@@ -598,8 +608,22 @@ async function buildCtxPreview(
       return { name: f.name, chars: 0, binary: false, unreadable: true, size: f.size };
     }
   }));
+
+  // Project-level context that buildContext injects beyond the canvas-files
+  // listing. Surfacing them as distinct entries makes the tooltip match what
+  // the prompt actually carries — canvas-back.md is already in the prompt as
+  // "## Project Context", it just wasn't visible in the tooltip.
+  const extras: Array<{ name: string; chars: number; binary?: false; unreadable?: false; size: number; kind: string }> = [];
+  try {
+    const cb = await readProjectFile(".mica/canvas-back.md", proj || undefined);
+    if (cb.content.length > 0) {
+      extras.push({ name: ".mica/canvas-back.md", chars: cb.content.length, size: cb.content.length, kind: "project context" });
+    }
+  } catch { /* no canvas-back */ }
+
   return {
     files: fileInfos,
+    extras,
     promptSizeChars: prompt.length,
     estimatedTokens: Math.round(prompt.length / 4),
     softCapChars: CONTEXT_SOFT_CAP_CHARS,

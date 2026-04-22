@@ -4,7 +4,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
@@ -242,29 +242,34 @@ export async function buildContext(agentFilename: string, project: string | null
   try {
     const files = await listCanvasFiles(project || undefined);
     if (files.length > 0) {
-      parts.push(`## Project Files`);
+      const emitted: string[] = [];
       for (const f of files) {
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
+        // Skip meta cards (canvas-back, skills, etc.). Their on-disk file is
+        // a shell; their real content is surfaced through other sections of
+        // this prompt (e.g. canvas-back.md is already emitted as "## Project
+        // Context" above). Listing their empty shells here just confuses the
+        // agent into investigating "missing" content.
+        const meta = await getCardClassMeta(ext, project);
+        if (meta.meta) continue;
         if (BINARY_EXTS.has(ext)) {
-          parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+          emitted.push(`### ${f.name} (${f.size} bytes, binary)`);
           continue;
         }
         try {
           const file = await readProjectFile(f.name, project || undefined);
           if (isLikelyBinary(f.name, file.content)) {
-            parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+            emitted.push(`### ${f.name} (${f.size} bytes, binary)`);
           } else if (file.content.length === 0) {
-            // Zero-byte marker. Emitting an empty body reads to the agent as
-            // "this file is missing content" and triggers over-eager
-            // exploration (e.g. docs/canvas-back.canvas-back is a card shell
-            // whose real content lives in .mica/canvas-back.md; an empty
-            // body there made the agent investigate the project on every
-            // first turn). Explicit marker stops that.
-            parts.push(`### ${f.name} (empty — intentional shell or placeholder)`);
+            emitted.push(`### ${f.name} (empty — intentional shell or placeholder)`);
           } else {
-            parts.push(`### ${f.name}\n${file.content}`);
+            emitted.push(`### ${f.name}\n${file.content}`);
           }
-        } catch { parts.push(`### ${f.name} (${f.size} bytes, unreadable)`); }
+        } catch { emitted.push(`### ${f.name} (${f.size} bytes, unreadable)`); }
+      }
+      if (emitted.length > 0) {
+        parts.push(`## Project Files`);
+        for (const e of emitted) parts.push(e);
       }
     }
   } catch { /* ignore */ }
