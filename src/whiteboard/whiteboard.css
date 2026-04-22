@@ -167,6 +167,13 @@
   display: flex;
   flex-direction: column;
   position: relative;
+  /* Force a fresh stacking context per card so descendants can't leak above
+     other cards via their own transform/position tricks. Concretely: Toast UI
+     Editor (md card) uses internal transforms that created stacking contexts
+     and made its text render above sibling cards even after a click-to-front
+     reordered the .wb-card itself. `isolation: isolate` walls each card off:
+     descendant z-indices stay within the card. No layout side effects. */
+  isolation: isolate;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
