@@ -942,16 +942,21 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // openai-compatible provider is selected via authType, not via prefix.
             model: provider === "local" ? `openai:${modelName}` : modelName,
             authType: "openai" as const,
-            // "auto-edit" auto-approves edit/write tools without going through
-            // canUseTool — observed under "default" that the SDK never invokes
-            // canUseTool for write_file, leaving subagent writes deadlocked
-            // mid-stream. canUseTool is still consulted for other tools (shell,
-            // ask_user_question, agent invocation), so our concurrency + Bash
-            // safety nets still fire. Per-turn write cap moves to a softer
-            // place: skill text + nudges, since canUseTool can no longer gate
-            // it for actual writes (acceptable trade — subagent delegation
-            // makes the cap less critical anyway).
-            permissionMode: "auto-edit" as const,
+            // "yolo" auto-approves ALL tools. Observed: canUseTool callback
+            // is never invoked in our programmatic setup regardless of mode —
+            // "default" hung on writes, "auto-edit" unblocked writes but still
+            // hung on run_shell_command (SDK was apparently awaiting an
+            // interactive confirmation that never comes in a headless SDK
+            // host). Grep of the backend log for [canUseTool: ENTRY shows
+            // zero invocations across every permissionMode we tried.
+            //
+            // With yolo, tool execution proceeds without any canUseTool gate.
+            // What we give up: Bash background-process guard, ask_user_question
+            // intercept, subagent concurrency cap (all previously routed
+            // through canUseTool — dead code in practice but at least
+            // intentional). Relocate those to the event-loop layer below where
+            // we observe tool_use blocks directly.
+            permissionMode: "yolo" as const,
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
