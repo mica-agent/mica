@@ -344,18 +344,29 @@ freeform.addEventListener('pointerdown', (e) => {
     window.document.addEventListener('pointerup', onUp);
 });
 
-// -- Double-click on title bar = expand/contract shortcut ----------
+// -- Double-click in card chrome = expand/contract shortcut ----------
 // Mirrors clicking the .wb-card-expand-btn — same logic, easier target.
-// Excludes clicks on action buttons / dropdowns inside the header so they
-// retain their own behavior. Drag tracks pointer movement; dblclick only
-// fires when the two clicks happen at the same spot (no drag), so the two
-// gestures don't conflict.
+// Fires anywhere in a .wb-card EXCEPT on interactive descendants where
+// double-click is the user's intended browser action (selecting a word in
+// text, focusing an input, opening a link, etc.). Excluded:
+//   - .wb-card-btn, .wb-card-actions: existing card chrome buttons
+//   - input, textarea, select: form controls
+//   - [contenteditable]: Toast UI editor body, etc.
+//   - a (link), iframe (sandboxed card content like html/llm-chat)
+//   - .ProseMirror, .xterm-screen: known editor / terminal surfaces
+// Drag tracks pointer movement; dblclick only fires when the two clicks
+// happen at the same spot (no drag), so the two gestures don't conflict.
+const DBLCLICK_INTERACTIVE_SEL = [
+    '.wb-card-btn',
+    '.wb-card-actions',
+    'input', 'textarea', 'select', 'a', 'iframe',
+    '[contenteditable=""]', '[contenteditable="true"]',
+    '.ProseMirror', '.xterm-screen', '.toastui-editor-contents',
+].join(',');
 freeform.addEventListener('dblclick', (e) => {
-    const header = e.target.closest('.wb-card-header');
-    if (!header) return;
-    if (e.target.closest('.wb-card-btn') || e.target.closest('.wb-card-actions')) return;
-    const card = header.closest('.wb-card');
+    const card = e.target.closest('.wb-card');
     if (!card) return;
+    if (e.target.closest(DBLCLICK_INTERACTIVE_SEL)) return;
     const expandBtn = card.querySelector('.wb-card-expand-btn');
     if (!expandBtn) return;
     e.preventDefault();
