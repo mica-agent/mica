@@ -114,11 +114,70 @@ let saveTimer = null;
 let topZ = 1;     // monotonic — bumped on every card pointerdown, seeded from saved z on load
 const SAVE_DELAY = 500;
 
+// -- Canvas bounds ------------------------------------
+// The canvas has its OWN size independent of where cards happen to be.
+// A sizer div pins scrollWidth/scrollHeight to the bounds; cards move
+// freely inside. Bounds grow when cards are placed / dragged / resized
+// past the current edge. Bounds only SHRINK via Tidy (explicit reset).
+// Without this, scrollHeight tracked the farthest card edge and auto-
+// clamped scroll position when a card was moved inward, causing drag-
+// cursor drift. See plan: /home/vscode/.claude/plans/joyful-honking-hinton.md
+let bounds = { w: 0, h: 0 };
+const BOUNDS_PAD = 200;
+const sizer = window.document.createElement('div');
+sizer.className = 'canvas-freeform-sizer';
+sizer.setAttribute('aria-hidden', 'true');
+sizer.style.cssText = 'position:absolute;left:0;top:0;width:1px;height:1px;pointer-events:none;';
+freeform.appendChild(sizer);
+
+function applyBounds() {
+    sizer.style.width = bounds.w + 'px';
+    sizer.style.height = bounds.h + 'px';
+}
+
+function growBounds(rect) {
+    const newW = Math.max(bounds.w, rect.x + rect.w + BOUNDS_PAD);
+    const newH = Math.max(bounds.h, rect.y + rect.h + BOUNDS_PAD);
+    if (newW !== bounds.w || newH !== bounds.h) {
+        bounds = { w: newW, h: newH };
+        applyBounds();
+        return true;
+    }
+    return false;
+}
+
+function seedBoundsFromCards() {
+    let maxR = 0, maxB = 0;
+    for (const name of Object.keys(layout)) {
+        const c = layout[name];
+        if (!c) continue;
+        const right = (c.x || 0) + (c.w || CARD_W);
+        const bottom = (c.y || 0) + (c.h || CARD_H);
+        if (right > maxR) maxR = right;
+        if (bottom > maxB) maxB = bottom;
+    }
+    const fallbackW = freeform.clientWidth || 1200;
+    const fallbackH = freeform.clientHeight || 800;
+    return {
+        w: Math.max(maxR + BOUNDS_PAD, fallbackW),
+        h: Math.max(maxB + BOUNDS_PAD, fallbackH),
+    };
+}
+
 // -- Layout persistence -------------------------------
 function loadLayout() {
     return fetch('/api/layout', { headers: projectHeaders() })
         .then(r => r.ok ? r.json() : {})
-        .then(data => { if (data.cards) layout = data.cards; layoutLoaded = true; })
+        .then(data => {
+            if (data.cards) layout = data.cards;
+            if (data.bounds && typeof data.bounds.w === 'number' && typeof data.bounds.h === 'number') {
+                bounds = { w: data.bounds.w, h: data.bounds.h };
+            } else {
+                bounds = seedBoundsFromCards();
+            }
+            applyBounds();
+            layoutLoaded = true;
+        })
         .catch(() => { layoutLoaded = true; });
 }
 
@@ -128,7 +187,7 @@ function persistLayout() {
         fetch('/api/layout', {
             method: 'PUT',
             headers: projectHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ cards: layout, source: mica.windowId || '' }),
+            body: JSON.stringify({ cards: layout, bounds, source: mica.windowId || '' }),
         }).catch(() => {});
     }, SAVE_DELAY);
 }
@@ -144,7 +203,7 @@ function persistZSilent() {
         fetch('/api/layout', {
             method: 'PUT',
             headers: projectHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ cards: layout, source: mica.windowId || '', silent: true }),
+            body: JSON.stringify({ cards: layout, bounds, source: mica.windowId || '', silent: true }),
         }).catch(() => {});
     }, SAVE_DELAY);
 }
@@ -169,6 +228,7 @@ function positionCard(card) {
             if (pos.z > topZ) topZ = pos.z;
         }
         card.classList.add('wb-card--resized');
+        if (growBounds({ x: pos.x, y: pos.y, w: pos.w || CARD_W, h: pos.h || CARD_H })) persistLayout();
     } else {
         // Auto-position: scan grid slots row-major and pick the FIRST one
         // that doesn't overlap any existing card. The naive "next index"
@@ -217,6 +277,7 @@ function positionCard(card) {
         card.style.zIndex = String(z);
         card.classList.add('wb-card--resized');
         layout[name] = { x, y, w: CARD_W, h: CARD_H, z };
+        growBounds({ x, y, w: CARD_W, h: CARD_H });
         persistLayout();
     }
     // Reveal card with fade-in after positioning
@@ -257,6 +318,52 @@ freeform.addEventListener('pointerdown', (e) => {
     }
 }, true);
 
+// -- Edge-scroll driver (shared by drag + resize) ------
+// When a drag is active and the cursor is within EDGE_SCROLL_THRESHOLD of
+// a viewport edge, the canvas auto-scrolls in that direction. Combined
+// with real-time bounds growth, this lets a user drag a card to arbitrary
+// far positions without losing cursor alignment or running off-screen.
+const EDGE_SCROLL_THRESHOLD_PX = 40;
+const EDGE_SCROLL_MAX_SPEED_PX = 30;
+let edgeScrollRaf = 0;
+let edgeScrollPointer = null;   // latest pointer event during the active gesture
+
+function edgeScrollDelta(pos, size) {
+    if (pos < EDGE_SCROLL_THRESHOLD_PX) {
+        const t = 1 - (pos / EDGE_SCROLL_THRESHOLD_PX);
+        return -Math.round(t * EDGE_SCROLL_MAX_SPEED_PX);
+    }
+    if (pos > size - EDGE_SCROLL_THRESHOLD_PX) {
+        const t = 1 - ((size - pos) / EDGE_SCROLL_THRESHOLD_PX);
+        return Math.round(t * EDGE_SCROLL_MAX_SPEED_PX);
+    }
+    return 0;
+}
+
+function edgeScrollTick() {
+    if (!edgeScrollPointer) { edgeScrollRaf = 0; return; }
+    const rect = freeform.getBoundingClientRect();
+    const dx = edgeScrollDelta(edgeScrollPointer.clientX - rect.left, rect.width);
+    const dy = edgeScrollDelta(edgeScrollPointer.clientY - rect.top, rect.height);
+    if (dx !== 0 || dy !== 0) {
+        freeform.scrollLeft += dx;
+        freeform.scrollTop += dy;
+    }
+    edgeScrollRaf = requestAnimationFrame(edgeScrollTick);
+}
+
+function startEdgeScroll() {
+    if (!edgeScrollRaf) edgeScrollRaf = requestAnimationFrame(edgeScrollTick);
+}
+
+function stopEdgeScroll() {
+    edgeScrollPointer = null;
+    if (edgeScrollRaf) {
+        cancelAnimationFrame(edgeScrollRaf);
+        edgeScrollRaf = 0;
+    }
+}
+
 // -- Drag via event delegation (disabled on phone) ------
 freeform.addEventListener('pointerdown', (e) => {
     if (isPhone) return;
@@ -272,29 +379,50 @@ freeform.addEventListener('pointerdown', (e) => {
     const startY = e.clientY;
     const origLeft = card.offsetLeft;
     const origTop = card.offsetTop;
+    // Capture scroll at drag start. If auto-scroll or user-initiated scroll
+    // changes freeform.scrollLeft/scrollTop mid-drag, the card's
+    // freeform-relative position must be adjusted by the scroll delta so
+    // the card stays glued to the cursor.
+    const startScrollX = freeform.scrollLeft;
+    const startScrollY = freeform.scrollTop;
     card.classList.add('wb-card--dragging');
     let moved = false;
+    edgeScrollPointer = e;
+    startEdgeScroll();
+
+    function computeNewPos(ev) {
+        const scrollDx = freeform.scrollLeft - startScrollX;
+        const scrollDy = freeform.scrollTop - startScrollY;
+        return {
+            x: Math.max(0, origLeft + (ev.clientX - startX) + scrollDx),
+            y: Math.max(0, origTop + (ev.clientY - startY) + scrollDy),
+        };
+    }
 
     function onMove(ev) {
         moved = true;
-        card.style.left = `${Math.max(0, origLeft + ev.clientX - startX)}px`;
-        card.style.top = `${Math.max(0, origTop + ev.clientY - startY)}px`;
+        edgeScrollPointer = ev;
+        const { x, y } = computeNewPos(ev);
+        card.style.left = `${x}px`;
+        card.style.top = `${y}px`;
+        growBounds({ x, y, w: card.offsetWidth, h: card.offsetHeight });
     }
 
     function onUp(ev) {
         window.document.removeEventListener('pointermove', onMove);
         window.document.removeEventListener('pointerup', onUp);
+        stopEdgeScroll();
         card.classList.remove('wb-card--dragging');
         if (!moved) return;
         // Suppress click-to-expand after drag
         card.dataset.justDragged = '1';
         setTimeout(() => { delete card.dataset.justDragged; }, 0);
-        const x = Math.max(0, origLeft + ev.clientX - startX);
-        const y = Math.max(0, origTop + ev.clientY - startY);
+        const { x, y } = computeNewPos(ev);
         const name = card.getAttribute('data-filename');
         if (name) {
             const existing = layout[name] || { x: 0, y: 0, w: CARD_W, h: CARD_H };
             layout[name] = { x, y, w: existing.w, h: existing.h };
+            growBounds({ x, y, w: existing.w, h: existing.h });
             persistLayout();
         }
     }
@@ -325,6 +453,7 @@ freeform.addEventListener('pointerdown', (e) => {
         card.style.width = `${w}px`;
         card.style.height = `${h}px`;
         card.classList.add('wb-card--resized');
+        growBounds({ x: card.offsetLeft, y: card.offsetTop, w, h });
     }
 
     function onUp(ev) {
@@ -336,6 +465,7 @@ freeform.addEventListener('pointerdown', (e) => {
         if (name) {
             const existing = layout[name] || { x: card.offsetLeft, y: card.offsetTop, w: CARD_W, h: CARD_H };
             layout[name] = { x: existing.x, y: existing.y, w, h };
+            growBounds({ x: existing.x, y: existing.y, w, h });
             persistLayout();
         }
     }
@@ -677,6 +807,23 @@ function buildToolbar() {
                 x += w + GAP;
             });
         }
+        // Tidy is the ONLY place that shrinks canvas bounds — it's the
+        // explicit "clean up" gesture. Recompute from the newly-placed
+        // cards + padding so scrollbars match the tidied content.
+        let maxR = 0, maxB = 0;
+        for (const name of Object.keys(layout)) {
+            const c = layout[name];
+            if (!c) continue;
+            const right = c.x + c.w;
+            const bottom = c.y + c.h;
+            if (right > maxR) maxR = right;
+            if (bottom > maxB) maxB = bottom;
+        }
+        bounds = {
+            w: Math.max(maxR + BOUNDS_PAD, freeform.clientWidth || 1200),
+            h: Math.max(maxB + BOUNDS_PAD, freeform.clientHeight || 800),
+        };
+        applyBounds();
         persistLayout();
     });
     toolbar.appendChild(tidyBtn);

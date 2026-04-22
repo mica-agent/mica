@@ -23,6 +23,16 @@
     position: relative; flex: 1; min-height: 200px; overflow: auto;
 }
 
+/* Invisible sizer div inserted by canvas/card.js. Width/height set
+   inline from the canvas bounds state. Pins scrollWidth/scrollHeight
+   so they don't track child card positions — canvas stays stable
+   during drags regardless of where cards move. */
+.canvas-freeform-sizer {
+    position: absolute;
+    left: 0; top: 0;
+    pointer-events: none;
+}
+
 /* Meta sidebar — docks "how" cards (canvas-back, skills) on the right */
 .canvas-meta-sidebar {
     position: relative;
