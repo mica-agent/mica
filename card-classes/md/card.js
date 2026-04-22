@@ -131,13 +131,12 @@ function snapshotScrollers() {
 
 async function applyExternalChange() {
   try {
-    // Don't gate on focus: a user can click into the editor to read without
-    // typing, and skipping sync while focused made external writes invisible
-    // until refresh. Active typing is already protected by the `justSaved`
-    // flag (set for 1s after every autosave), and scroll position is
-    // restored across setMarkdown, so a non-typing focused reader sees the
-    // update without losing their place.
-    const newContent = await mica.getContent();
+    // Use mica.files.read() — NOT mica.getContent(). getContent caches the
+    // content at card mount time and never re-fetches; calling it here
+    // returns stale data and applyExternalChange silently no-ops with
+    // "body matches lastSyncedBody". files.read does a fresh GET and
+    // bypasses the mount-time cache.
+    const newContent = await mica.files.read(mica.filename);
     const fmMatchNew = newContent.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
     frontmatter = fmMatchNew ? fmMatchNew[0] : '';
     const newBody = fmMatchNew ? newContent.slice(fmMatchNew[0].length) : newContent;
