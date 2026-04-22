@@ -16,12 +16,17 @@ const DEFAULT_PORT = 8012;
 const HF_REPO = process.env.LLAMA_HF_REPO || "unsloth/Qwen3.6-35B-A3B-GGUF";
 const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf";
 const MODEL_PATH = process.env.MODEL_PATH || "";
-const CTX_SIZE = process.env.LLAMA_CTX_SIZE || "65536";
+// Per-slot context size. llama.cpp divides `--ctx-size` across slots, so to
+// give EACH slot this many tokens we pass -np × CTX_SIZE_PER_SLOT below.
+// Override with LLAMA_CTX_SIZE for tighter budgets.
+const CTX_SIZE_PER_SLOT = process.env.LLAMA_CTX_SIZE || "65536";
 // Default 3 parallel slots so the chat agent can fan out subagent tasks on
 // the local llama-server without queueing. KV-cache cost for Qwen3.6's
 // hybrid Linear+Gated Delta Net architecture is small (~100-500 MiB/slot),
 // cheap on DGX Spark. Override via LLAMA_N_PARALLEL for tighter GPU budgets.
 const N_PARALLEL = process.env.LLAMA_N_PARALLEL || "3";
+// Total context across all slots. llama-server's --ctx-size is shared.
+const CTX_SIZE_TOTAL = String(parseInt(CTX_SIZE_PER_SLOT, 10) * parseInt(N_PARALLEL, 10));
 
 let serverProcess: ChildProcess | null = null;
 let serverPort: number = DEFAULT_PORT;
@@ -96,7 +101,7 @@ async function startServer(): Promise<string> {
     "--n-gpu-layers", "999",
     "--jinja",
     "--flash-attn", "on",
-    "--ctx-size", CTX_SIZE,
+    "--ctx-size", CTX_SIZE_TOTAL,
     "-np", N_PARALLEL,
     "--reasoning-format", "deepseek",
     // Default thinking OFF for ALL requests, regardless of caller.
