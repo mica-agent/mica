@@ -714,7 +714,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           // result arrives. If an error breaks that loop, the counter drifts
           // up and future starts are blocked until something clears it — that
           // fails safe rather than fails loud.
-          if (toolName === "task" && sessionProject) {
+          // The Qwen SDK names the subagent-invocation tool "agent" (lowercase
+          // singular). Older docs said "task" — accept both for forward/back
+          // compat. Confirmed in production via:
+          //   [mica-agent] tool_use: agent input={"description":"...","prompt":"..."}
+          if ((toolName === "agent" || toolName === "task") && sessionProject) {
             if (!canStartSubagentTask(sessionProject)) {
               const status = getConcurrencyStatus(sessionProject);
               return {
@@ -879,8 +883,10 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                   });
                   // Track outstanding subagent tasks so the concurrency counter
                   // decrements when they finish. SDK tags each tool_use with an
-                  // `id` we'll match against the tool_result.
-                  if (block.name === "task") {
+                  // `id` we'll match against the tool_result. Qwen's tool name
+                  // is "agent" (confirmed at runtime); "task" kept for
+                  // forward/back compat with older SDK builds.
+                  if (block.name === "agent" || block.name === "task") {
                     const taskId = String((block as { id?: unknown }).id || "");
                     if (taskId) outstandingSubagentTasks.add(taskId);
                   }
