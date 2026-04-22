@@ -565,18 +565,19 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // history scrolls; safer to require a fresh read).
       const readFilesThisTurn = new Set<string>();
 
-      // Per-turn write cap. After this many files are written in a single turn,
-      // further write tool calls are denied with a structured hint telling the
-      // agent to stop, report, and continue next turn. Hard guard because:
-      //   - soft skill guidance ("single-file-edit", "decompose-task") is often
-      //     ignored by the local Qwen model on batch codegen asks
-      //   - each write_file tool call carries full file content as input,
-      //     which accumulates across tool rounds and blows the model's context
-      //     window (observed: 30+ writes in one turn → 215K tokens vs 65K cap
-      //     → llama-server rejects the request mid-turn)
-      //   - user explicitly wants divide-and-conquer: one step, report, then
-      //     continue on user cue
-      const MAX_WRITES_PER_TURN = 5;
+      // Per-turn direct-write cap. After this many direct file writes, further
+      // write attempts are denied with a hint that REDIRECTS the agent to the
+      // `task` tool (delegation). This is the hard enforcement layer behind
+      // the soft "## Available Subagents" guidance in buildContext.
+      //
+      // Cap is intentionally low (2) so the agent can't quietly bypass
+      // delegation by directly writing a half-dozen files before the cap
+      // bites. Two free writes accommodates small bootstrapping (e.g. interfaces.md
+      // + a tiny stub) before everything else routes through subagents.
+      //
+      // Subagent-originated writes do NOT count against this cap (they run in
+      // a separate session and don't re-enter the parent's canUseTool).
+      const MAX_WRITES_PER_TURN = 2;
       let writesThisTurn = 0;
 
       // Send user message to browser
@@ -744,13 +745,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               return {
                 behavior: "deny" as const,
                 message:
-                  `You have already written to ${writesThisTurn} file${writesThisTurn === 1 ? "" : "s"} ` +
-                  `this turn (cap: ${MAX_WRITES_PER_TURN}). STOP now. ` +
-                  `Do NOT call any more tools. ` +
-                  `Your next response must be plain text: briefly list what you wrote and what remains, ` +
-                  `then end the turn. The user will reply with 'continue' or direction, and you'll ` +
-                  `pick up the next step on the following turn. This is the divide-and-conquer ` +
-                  `protocol — one small coherent step, report, resume next turn.`,
+                  `Direct-write cap hit (${writesThisTurn}/${MAX_WRITES_PER_TURN} this turn). ` +
+                  `Do NOT call write_file/edit again from this turn — those payloads stay in your context for the rest of the turn and will balloon it. ` +
+                  `\n\n` +
+                  `For each remaining file, use the \`task\` tool to delegate to component-coder. Each subagent call returns ONLY a short summary; the file content lives in the subagent's separate context, not yours. Example: ` +
+                  `\n\n` +
+                  `task({ agent: "component-coder", prompt: "Implement <path/to/file>. See docs/spec.md and docs/interfaces.md. Done when: file exists, passes a quick local verification." })` +
+                  `\n\n` +
+                  `If the remaining work is just a single tiny edit you genuinely cannot delegate, end this turn instead with a plain-text summary of what you wrote and what's next. The user will reply 'continue'.`,
               };
             }
 
