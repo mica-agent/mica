@@ -253,6 +253,14 @@ export async function buildContext(agentFilename: string, project: string | null
           const file = await readProjectFile(f.name, project || undefined);
           if (isLikelyBinary(f.name, file.content)) {
             parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+          } else if (file.content.length === 0) {
+            // Zero-byte marker. Emitting an empty body reads to the agent as
+            // "this file is missing content" and triggers over-eager
+            // exploration (e.g. docs/canvas-back.canvas-back is a card shell
+            // whose real content lives in .mica/canvas-back.md; an empty
+            // body there made the agent investigate the project on every
+            // first turn). Explicit marker stops that.
+            parts.push(`### ${f.name} (empty — intentional shell or placeholder)`);
           } else {
             parts.push(`### ${f.name}\n${file.content}`);
           }

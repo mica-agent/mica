@@ -233,6 +233,8 @@ export async function buildContext(agentFilename: string, project: string | null
           const file = await readProjectFile(f.name, project || undefined);
           if (isLikelyBinary(f.name, file.content)) {
             parts.push(`### ${f.name} (${f.size} bytes, binary)`);
+          } else if (file.content.length === 0) {
+            parts.push(`### ${f.name} (empty — intentional shell or placeholder)`);
           } else {
             parts.push(`### ${f.name}\n${file.content}`);
           }
