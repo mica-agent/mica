@@ -31,6 +31,7 @@ export interface ParsedSubagent {
   systemPrompt: string;
   level: "session";
   color?: string;
+  permissionMode?: "default" | "plan" | "auto-edit" | "yolo";
   modelConfig?: {
     model?: string;
     temp?: number;
@@ -142,7 +143,12 @@ async function parseAgentFile(filePath: string): Promise<ParsedSubagent | null> 
     max_turns: typeof runFm.max_turns === "number" ? runFm.max_turns : undefined,
   } : undefined;
 
-  return { name, description, tools, systemPrompt: body, level, color, modelConfig, runConfig };
+  const permissionMode = (typeof fm.permissionMode === "string" &&
+    ["default", "plan", "auto-edit", "yolo"].includes(fm.permissionMode))
+    ? fm.permissionMode as "default" | "plan" | "auto-edit" | "yolo"
+    : undefined;
+
+  return { name, description, tools, systemPrompt: body, level, color, permissionMode, modelConfig, runConfig };
 }
 
 /** List agents from a directory. Silent no-op if the dir doesn't exist. */

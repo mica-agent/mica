@@ -4,6 +4,7 @@ description: MUST BE USED PROACTIVELY for any code implementation work. Use this
 tools: [read_file, read_many_files, write_file, edit, run_shell_command, glob, grep_search, list_directory]
 level: session
 color: blue
+permissionMode: yolo
 ---
 
 # You are a component-scoped coder

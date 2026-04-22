@@ -930,8 +930,16 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // openai-compatible provider is selected via authType, not via prefix.
             model: provider === "local" ? `openai:${modelName}` : modelName,
             authType: "openai" as const,
-            // "default" + canUseTool gives us auto-approve with guards
-            permissionMode: "default" as const,
+            // "auto-edit" auto-approves edit/write tools without going through
+            // canUseTool — observed under "default" that the SDK never invokes
+            // canUseTool for write_file, leaving subagent writes deadlocked
+            // mid-stream. canUseTool is still consulted for other tools (shell,
+            // ask_user_question, agent invocation), so our concurrency + Bash
+            // safety nets still fire. Per-turn write cap moves to a softer
+            // place: skill text + nudges, since canUseTool can no longer gate
+            // it for actual writes (acceptable trade — subagent delegation
+            // makes the cap less critical anyway).
+            permissionMode: "auto-edit" as const,
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
@@ -962,8 +970,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // turns.
         const outstandingSubagentTasks = new Set<string>();
 
+        let _evtSeq = 0;
+        let _lastEvtAt = Date.now();
         for await (const evt of q) {
           const evtType = evt.type as string;
+          _evtSeq++;
+          const now = Date.now();
+          const gap = now - _lastEvtAt;
+          _lastEvtAt = now;
+          // Compact event trace: type, parent_tool_use_id (so we can see when
+          // a subagent is the source), gap from previous event. Helps narrow
+          // down where the SDK loop stalls when nothing reaches us for a long
+          // time after a tool call. Hidden from broadcast — server log only.
+          const ptid = (evt as { parent_tool_use_id?: string | null }).parent_tool_use_id || "";
+          console.log(`[mica-agent:evt#${_evtSeq}] ${evtType}${ptid ? ` parent=${ptid.slice(0, 8)}` : ""} +${gap}ms`);
 
           if (evtType === "assistant" && evt.message) {
             const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; thinking?: string; input?: Record<string, unknown> }> };
