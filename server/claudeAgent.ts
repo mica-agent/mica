@@ -250,6 +250,40 @@ export async function buildContext(agentFilename: string, project: string | null
     }
   } catch { /* ignore */ }
 
+  // Available subagents — see micaAgent.ts for rationale. Claude SDK names
+  // the delegation tool "Task" (per the AgentInfo type docstring); the
+  // input shape is { subagent_type: "<name>", prompt: "..." }.
+  try {
+    const agents = await loadProjectSubagents(project, "claude");
+    if (agents.length > 0) {
+      const lines: string[] = [
+        `## Available Subagents (use the \`Task\` tool to delegate)`,
+        ``,
+        `You have access to a \`Task\` tool. Invoke it to hand a sub-job to a specialized subagent that runs with its own context window and returns a short summary. The parent conversation — this turn — only keeps the summary, NOT the subagent's tool I/O.`,
+        ``,
+        `Available subagents:`,
+      ];
+      for (const a of agents) {
+        lines.push(`- **${a.name}**: ${a.description}`);
+      }
+      lines.push(
+        ``,
+        `Invocation shape:`,
+        `\`\`\``,
+        `Task({ subagent_type: "<name>", prompt: "Implement <file>. See docs/spec.md § X. Upstream: ... Downstream: ... Done when: ..." })`,
+        `\`\`\``,
+        ``,
+        `When to delegate:`,
+        `- Plan produces **>3 files of new code**: delegate each coherent unit.`,
+        `- A single component spans **>200 lines**: delegate so this turn doesn't carry the full content forward.`,
+        `- Independent components in parallel.`,
+        ``,
+        `Concurrency is capped per-project. BEFORE delegating: write or update \`docs/interfaces.md\` with shared contracts — subagents have fresh context and cannot see each other's in-flight work.`,
+      );
+      parts.push(lines.join("\n"));
+    }
+  } catch { /* ignore */ }
+
   // Project structure guidance
   let canvasRoot = "docs";
   try {
@@ -593,9 +627,10 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             for (const p of paths) if (p) readFilesThisTurn.add(p);
           }
 
-          // Subagent concurrency for Claude. Claude SDK uses the "Agent" tool
-          // (capitalized) rather than Qwen's "task". Same semaphore semantics.
-          if (toolName === "Agent" && sessionProject) {
+          // Subagent concurrency for Claude. SDK type docs reference both
+          // "Task" (AgentInfo doc) and "Agent" (AgentDefinition doc) as the
+          // delegation tool name; accept either to be robust to SDK version.
+          if ((toolName === "Task" || toolName === "Agent") && sessionProject) {
             if (!canStartSubagentTask(sessionProject)) {
               const status = getConcurrencyStatus(sessionProject);
               return {
@@ -705,7 +740,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
               for (const block of msg.content) {
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[claude-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
-                  if (block.name === "Agent" && block.id) {
+                  if ((block.name === "Task" || block.name === "Agent") && block.id) {
                     outstandingSubagentTasks.add(block.id);
                   }
                   ctx.broadcast({

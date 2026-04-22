@@ -274,6 +274,45 @@ export async function buildContext(agentFilename: string, project: string | null
     }
   } catch { /* ignore */ }
 
+  // Available subagents — delegation cheat sheet injected every turn.
+  // Skills (including decompose-task) only fire when the user's message
+  // pattern-matches their description, which local Qwen often misses. This
+  // section gives the agent unconditional awareness of its delegation options
+  // so heavy implementation turns route through the `task` tool instead of
+  // filling the parent's context with 30+ write_file payloads.
+  try {
+    const agents = await loadProjectSubagents(project, "qwen");
+    if (agents.length > 0) {
+      const lines: string[] = [
+        `## Available Subagents (use the \`task\` tool to delegate)`,
+        ``,
+        `You have access to a \`task\` tool. Invoke it to hand a sub-job to a specialized subagent that runs with its own context window and returns a short summary. The parent conversation — this turn — only keeps the summary, NOT the subagent's tool I/O. Use this when a task would otherwise produce many large write_file / edit tool calls (each one inflates this turn's context).`,
+        ``,
+        `Available subagents:`,
+      ];
+      for (const a of agents) {
+        lines.push(`- **${a.name}**: ${a.description}`);
+      }
+      lines.push(
+        ``,
+        `Invocation shape:`,
+        `\`\`\``,
+        `task({ agent: "<name>", prompt: "Implement <file>. See docs/spec.md § X and docs/interfaces.md § Y. Upstream: ... Downstream: ... Done when: ..." })`,
+        `\`\`\``,
+        ``,
+        `When to delegate:`,
+        `- Your plan will produce **>3 files of new code**: delegate each coherent unit to a subagent. Do NOT write them all directly from this turn.`,
+        `- A single component spans **>200 lines of new code**: delegate so this turn doesn't carry the full content forward.`,
+        `- You need parallel work across **independent** components.`,
+        ``,
+        `Concurrency is capped per-project (default 3 concurrent). If you hit the cap, wait for one to finish before retrying.`,
+        ``,
+        `BEFORE delegating: write or update \`docs/interfaces.md\` with any shared types / function signatures / data shapes. Subagents have fresh context and cannot see each other's in-flight work — contracts MUST live on canvas.`,
+      );
+      parts.push(lines.join("\n"));
+    }
+  } catch { /* no subagents available — skip section */ }
+
   // Project structure guidance
   let canvasRoot = "docs";
   try {
