@@ -43,6 +43,8 @@ import {
   archiveChat,
   listArchivedChats,
   readArchivedChat,
+  DEFAULT_CANVAS_ROOT,
+  DEFAULT_CANVAS_CLASS,
   BINARY_EXTS,
   isLikelyBinary,
   CONTEXT_SOFT_CAP_CHARS,
@@ -209,7 +211,7 @@ app.post("/api/projects", async (req, res) => {
     if (template) {
       await createProjectFromTemplate(name, template);
     } else {
-      await createProject(name, docsDir || "canvas");
+      await createProject(name, docsDir || DEFAULT_CANVAS_ROOT);
     }
     res.json({ success: true, name, template: template || null });
   } catch (err) {
@@ -296,7 +298,7 @@ app.post("/api/projects/:project/open", async (req, res) => {
     // Initialize .mica if not present
     if (!existsSync(join(dir, ".mica"))) {
       const { docsDir } = req.body as { docsDir?: string };
-      await initProject(name, docsDir || "canvas");
+      await initProject(name, docsDir || DEFAULT_CANVAS_ROOT);
     }
     const tAfterInit = Date.now();
     switchProject(name);
@@ -423,7 +425,7 @@ app.get("/api/canvas-card", async (req, res) => {
   const t0 = Date.now();
   try {
     const reqProject = getRequestProject(req);
-    let canvasClass = "canvas";
+    let canvasClass = DEFAULT_CANVAS_CLASS;
     if (reqProject) {
       try {
         const cfg = JSON.parse(await readFile(join(micaDir(reqProject), "config.json"), "utf-8"));

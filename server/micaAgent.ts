@@ -4,7 +4,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
@@ -215,13 +215,13 @@ export async function buildSubagentCanvasContext(project: string | null): Promis
     }
   } catch { /* ignore */ }
 
-  // File location rules. Default matches initProject (`"canvas"`) — a
-  // missing / unreadable config falls back to the new default, not the
+  // File location rules. Default matches initProject's DEFAULT_CANVAS_ROOT
+  // — a missing / unreadable config falls back to the new default, not the
   // legacy "docs" name.
-  let canvasRoot = "canvas";
+  let canvasRoot = DEFAULT_CANVAS_ROOT;
   try {
     const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
-    canvasRoot = cfg.canvasRoot || cfg.docsDir || "canvas";
+    canvasRoot = cfg.canvasRoot || cfg.docsDir || DEFAULT_CANVAS_ROOT;
   } catch { /* use default */ }
   parts.push(
     `## File Locations\n` +
@@ -353,13 +353,13 @@ export async function buildContext(agentFilename: string, project: string | null
   } catch { /* ignore */ }
 
   // Resolve canvasRoot once — both the delegation cheat sheet and the
-  // "File Locations" block below need it. Default matches initProject
-  // (`"canvas"`) so a missing config doesn't dump stale "docs" references
-  // into the agent's prompt.
-  let canvasRoot = "canvas";
+  // "File Locations" block below need it. Default matches initProject's
+  // DEFAULT_CANVAS_ROOT so a missing config doesn't dump stale "docs"
+  // references into the agent's prompt.
+  let canvasRoot = DEFAULT_CANVAS_ROOT;
   try {
     const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
-    canvasRoot = cfg.canvasRoot || cfg.docsDir || "canvas";
+    canvasRoot = cfg.canvasRoot || cfg.docsDir || DEFAULT_CANVAS_ROOT;
   } catch { /* use default */ }
 
   // Available subagents — delegation cheat sheet injected every turn.

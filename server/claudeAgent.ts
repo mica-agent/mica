@@ -5,7 +5,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT } from "./files.js";
 import { buildSubagentCanvasContext } from "./micaAgent.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
@@ -256,12 +256,12 @@ export async function buildContext(agentFilename: string, project: string | null
   // input shape is { subagent_type: "<name>", prompt: "..." }.
   //
   // Resolve canvasRoot once — used both in the delegation cheat sheet
-  // and the "File Locations" block below. Default matches initProject
-  // (`"canvas"`).
-  let canvasRoot = "canvas";
+  // and the "File Locations" block below. Default matches initProject's
+  // DEFAULT_CANVAS_ROOT.
+  let canvasRoot = DEFAULT_CANVAS_ROOT;
   try {
     const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
-    canvasRoot = cfg.canvasRoot || cfg.docsDir || "canvas";
+    canvasRoot = cfg.canvasRoot || cfg.docsDir || DEFAULT_CANVAS_ROOT;
   } catch { /* use default */ }
 
   try {

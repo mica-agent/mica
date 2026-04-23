@@ -220,6 +220,9 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
 
 function CreateForm({ template, onSubmit, onCancel }: { template: string | null; onSubmit: (name: string, docsDir: string, template: string | null) => void; onCancel: () => void }) {
   const [name, setName] = useState('');
+  // UI prefill only — the server's DEFAULT_CANVAS_ROOT is authoritative
+  // when the field is left blank. Keeping a matching visible default is
+  // UX polish so users can see what they'll get without typing.
   const [docsDir, setDocsDir] = useState('canvas');
 
   return (
@@ -250,7 +253,7 @@ function CreateForm({ template, onSubmit, onCancel }: { template: string | null;
         </label>
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button onClick={() => name.trim() && onSubmit(name.trim(), docsDir.trim() || 'canvas', template)} style={btnStyle} disabled={!name.trim()}>
+        <button onClick={() => name.trim() && onSubmit(name.trim(), docsDir.trim(), template)} style={btnStyle} disabled={!name.trim()}>
           Create
         </button>
         <button onClick={onCancel} style={{ ...btnStyle, background: 'transparent' }}>
@@ -274,7 +277,9 @@ function CloneForm({
   const [name, setName] = useState('');
   // Default to `canvas` for cloned repos — most repos have their own `docs/`,
   // and putting Mica's canvas there would mix seed cards with the repo's
-  // documentation. `canvas/` keeps them separate.
+  // documentation. `canvas/` keeps them separate. This is a UI prefill;
+  // the server's DEFAULT_CANVAS_ROOT is authoritative when the field is
+  // left blank.
   const [docsDir, setDocsDir] = useState('canvas');
   // Default to the first template (usually cloud-claude) so a cloned repo gets
   // skills + agents out of the box. User can switch to "None" for a bare clone.
@@ -334,7 +339,7 @@ function CloneForm({
           onClick={() => {
             if (!url.trim()) return;
             setCloning(true);
-            onSubmit(url.trim(), name.trim(), docsDir.trim() || 'canvas', template);
+            onSubmit(url.trim(), name.trim(), docsDir.trim(), template);
           }}
           style={btnStyle}
           disabled={!url.trim() || cloning}

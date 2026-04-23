@@ -66,7 +66,9 @@ export async function fetchProjects(): Promise<ProjectInfo[]> {
 export async function createProjectApi(name: string, docsDir?: string, template?: string): Promise<{ success: boolean; name: string; template: string | null }> {
   const body: Record<string, string> = { name };
   if (template) body.template = template;
-  else body.docsDir = docsDir || "canvas";
+  // Omit docsDir when empty; server falls back to its DEFAULT_CANVAS_ROOT
+  // (see server/files.ts). Avoids duplicating the canonical default here.
+  else if (docsDir && docsDir.trim()) body.docsDir = docsDir.trim();
   const res = await fetch(`${API_BASE}/api/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -96,15 +98,15 @@ export async function cloneProjectApi(
   docsDir?: string,
   template?: string,
 ): Promise<{ success: boolean; name: string; template: string | null }> {
+  // Omit docsDir when empty; server falls back to DEFAULT_CANVAS_ROOT.
+  const body: Record<string, string> = { url };
+  if (name) body.name = name;
+  if (docsDir && docsDir.trim()) body.docsDir = docsDir.trim();
+  if (template) body.template = template;
   const res = await fetch(`${API_BASE}/api/projects/clone`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      url,
-      name,
-      docsDir: docsDir || "canvas",
-      template: template || undefined,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json();

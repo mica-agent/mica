@@ -87,6 +87,23 @@ export const PROJECT_DIR = WORKSPACE_DIR;
 /** Project templates — copied to <workspace>/<projectName>/ on creation. */
 export const TEMPLATES_DIR = join(process.cwd(), "templates");
 
+/** The default canvas-root directory name. Lives in config.json as
+ *  `canvasRoot`, selects where canvas-visible cards live in the project
+ *  tree. Used as the fallback anywhere the value is missing from config,
+ *  and as the convention templates are expected to follow for their seed
+ *  files (every template under `templates/` keeps its seeds in
+ *  `<template>/canvas/`). Change this and every default new project
+ *  picks up the new name; existing projects with an explicit canvasRoot
+ *  keep theirs. */
+export const DEFAULT_CANVAS_ROOT = "canvas";
+
+/** The default card class that renders the canvas. Stored in config.json
+ *  as `canvasClass`. The card class itself lives at
+ *  `card-classes/canvas/` — same name by convention. Projects can
+ *  override this in config to use an alternative canvas class if one
+ *  gets authored. */
+export const DEFAULT_CANVAS_CLASS = "canvas";
+
 /** Directories and patterns to skip when listing files recursively. */
 const IGNORE_DIRS = new Set([
   ".mica", ".git", ".svn", ".hg",
@@ -193,14 +210,14 @@ export async function initProject(projectName: string, canvasRoot?: string): Pro
   await mkdir(join(dir, "cards"), { recursive: true });
   await mkdir(join(dir, "chats"), { recursive: true });
 
-  const root = canvasRoot || "canvas";
+  const root = canvasRoot || DEFAULT_CANVAS_ROOT;
 
   // Create config.json if it doesn't exist
   const configPath = join(dir, "config.json");
   if (!existsSync(configPath)) {
     const config: Record<string, unknown> = {
       name: projectName,
-      canvasClass: "canvas",
+      canvasClass: DEFAULT_CANVAS_CLASS,
       canvasRoot: root,
       pinned: [],
     };
@@ -415,10 +432,11 @@ export interface FileInfo {
 
 /** Read canvas config (canvasRoot, pinned) from .mica/config.json. */
 export async function readCanvasConfig(project?: string): Promise<{ canvasRoot: string; pinned: string[] }> {
-  // Default matches initProject's default (`"canvas"`). Older projects whose
-  // config explicitly carries `canvasRoot: "docs"` still work — this fallback
-  // only kicks in for configs that omit the field entirely.
-  const defaults = { canvasRoot: "canvas", pinned: [] as string[] };
+  // Default matches initProject's default (DEFAULT_CANVAS_ROOT). Older
+  // projects whose config explicitly carries `canvasRoot: "docs"` still
+  // work — this fallback only kicks in for configs that omit the field
+  // entirely.
+  const defaults = { canvasRoot: DEFAULT_CANVAS_ROOT, pinned: [] as string[] };
   try {
     const configPath = project
       ? join(WORKSPACE_DIR, project, ".mica", "config.json")
@@ -817,10 +835,10 @@ export async function overlayTemplate(
   if (!existsSync(src)) throw new Error(`Template not found: ${templateName}`);
   if (!existsSync(dst)) throw new Error(`Project directory does not exist: ${projectName}`);
 
-  // Templates store their seed canvas files in `canvas/` by convention (matches
-  // the new-project default). Read from there; remap to the project's canvas
-  // root if the caller chose a different name.
-  const templateCanvasRoot = "canvas";
+  // Templates store their seed canvas files in `<DEFAULT_CANVAS_ROOT>/`
+  // by convention. Read from there; remap to the project's canvas root
+  // if the caller chose a different name.
+  const templateCanvasRoot = DEFAULT_CANVAS_ROOT;
   const targetCanvasRoot = options.canvasRoot || templateCanvasRoot;
 
   // Copy every top-level entry from the template except the template's canvas
@@ -857,7 +875,7 @@ export async function overlayTemplate(
     // caller specified). `targetCanvasRoot` is already the right value
     // whether or not options.canvasRoot was passed.
     config.canvasRoot = targetCanvasRoot;
-    if (!config.canvasClass) config.canvasClass = "canvas";
+    if (!config.canvasClass) config.canvasClass = DEFAULT_CANVAS_CLASS;
     if (!config.template) config.template = templateName;
     if (!Array.isArray(config.pinned)) config.pinned = [];
     await mkdir(dirname(configPath), { recursive: true });

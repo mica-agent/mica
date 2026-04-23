@@ -17,6 +17,7 @@
 import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
+import { DEFAULT_CANVAS_ROOT } from "./files.js";
 
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
@@ -69,7 +70,7 @@ export class FileWatcher extends EventEmitter {
   async addProject(
     project: string,
     projectDir: string,
-    canvasRoot: string = "canvas",
+    canvasRoot: string = DEFAULT_CANVAS_ROOT,
     pinned: string[] = [],
   ): Promise<void> {
     const existing = this.projects.get(project);
