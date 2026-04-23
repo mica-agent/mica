@@ -512,29 +512,21 @@ freeform.addEventListener('pointerdown', (e) => {
     window.document.addEventListener('pointerup', onUp);
 });
 
-// -- Double-click in card chrome = expand/contract shortcut ----------
-// Mirrors clicking the .wb-card-expand-btn — same logic, easier target.
-// Fires anywhere in a .wb-card EXCEPT on interactive descendants where
-// double-click is the user's intended browser action (selecting a word in
-// text, focusing an input, opening a link, etc.). Excluded:
-//   - .wb-card-btn, .wb-card-actions: existing card chrome buttons
-//   - input, textarea, select: form controls
-//   - [contenteditable]: Toast UI editor body, etc.
-//   - a (link), iframe (sandboxed card content like html/llm-chat)
-//   - .ProseMirror, .xterm-screen: known editor / terminal surfaces
+// -- Double-click on card header = expand/contract shortcut ----------
+// Mirrors clicking the .wb-card-expand-btn. Scoped to .wb-card-header only
+// so a double-click inside the card body (selecting a word in a markdown
+// bubble, dragging a chart, etc.) stays the user's intended action and does
+// not resize the card. Buttons inside the header chrome still opt out so
+// double-clicking e.g. the expand button itself doesn't fire twice.
 // Drag tracks pointer movement; dblclick only fires when the two clicks
-// happen at the same spot (no drag), so the two gestures don't conflict.
-const DBLCLICK_INTERACTIVE_SEL = [
-    '.wb-card-btn',
-    '.wb-card-actions',
-    'input', 'textarea', 'select', 'a', 'iframe',
-    '[contenteditable=""]', '[contenteditable="true"]',
-    '.ProseMirror', '.xterm-screen', '.toastui-editor-contents',
-].join(',');
+// happen at the same spot (no drag), so header drag and header dblclick
+// don't conflict.
 freeform.addEventListener('dblclick', (e) => {
-    const card = e.target.closest('.wb-card');
+    const header = e.target.closest('.wb-card-header');
+    if (!header) return;
+    if (e.target.closest('.wb-card-btn, .wb-card-actions')) return;
+    const card = header.closest('.wb-card');
     if (!card) return;
-    if (e.target.closest(DBLCLICK_INTERACTIVE_SEL)) return;
     const expandBtn = card.querySelector('.wb-card-expand-btn');
     if (!expandBtn) return;
     e.preventDefault();
