@@ -686,9 +686,31 @@ function toggleCardCollapse(filename, forceValue) {
     const nowCollapsed = typeof forceValue === 'boolean'
         ? forceValue
         : !card.classList.contains('wb-card--collapsed');
+
+    // Expanded → Collapsed is a compound: contract first (restoring the
+    // stashed pre-expand layout) and then apply the collapsed class in
+    // one user click. A card shouldn't be simultaneously at 80% viewport
+    // AND header-only; that's a nonsensical state. The contract path
+    // synthesizes a click on the existing expand button, which is the
+    // canonical home of the contract logic (dataset.prevLayout restore,
+    // class removal, animation). Keeps one implementation of contract
+    // instead of duplicating its quirks here.
+    if (nowCollapsed && card.classList.contains('wb-card--expanded')) {
+        const expandBtn = card.querySelector('.wb-card-expand-btn');
+        if (expandBtn) expandBtn.click();
+    }
+
     card.classList.toggle('wb-card--collapsed', nowCollapsed);
     const existing = layout[filename] || { x: card.offsetLeft, y: card.offsetTop, w: card.offsetWidth, h: card.offsetHeight };
-    layout[filename] = { ...existing, collapsed: nowCollapsed };
+    // After a contract, offsetLeft/Top/Width/Height reflect the restored
+    // (pre-expand) layout — that's what we persist, matching the user's
+    // authored size.
+    layout[filename] = {
+        ...existing,
+        x: card.offsetLeft, y: card.offsetTop,
+        w: card.offsetWidth, h: card.offsetHeight,
+        collapsed: nowCollapsed,
+    };
     persistLayout();
 }
 const _onToggleCollapse = (ev) => {

@@ -418,6 +418,14 @@
 }
 /* The resize handle is meaningless when the body is hidden. */
 .wb-card--collapsed .wb-card-resize-handle { display: none !important; }
+/* Expand/contract button (wb-card-expand-btn) operates on the card's body
+   area — taking a collapsed card to 80% viewport would produce a giant
+   header strip with no content, which is meaningless. Hide it in the
+   collapsed state so the three card-size states stay mutually exclusive:
+     Collapsed  → [+]              (uncollapse only)
+     Normal     → [-] [⤡]         (collapse, or expand)
+     Expanded   → [-] [⤢]         (collapse, or contract)  */
+.wb-card--collapsed .wb-card-expand-btn { display: none !important; }
 
 /* ── Card body ───────────────────────────────────── */
 
