@@ -184,34 +184,28 @@ export async function buildSubagentCanvasContext(project: string | null): Promis
     if (canvasBack.trim()) parts.push(`## Project Context\n${canvasBack.trim()}`);
   } catch { /* no canvas-back */ }
 
-  // Project files (canvas-visible, with full content)
+  // Files on canvas — listing only, no content. The parent's task prompt
+  // names the specific files the subagent should read; anything else is
+  // discoverable via this list + `read_file`. Broadcasting full content
+  // here duplicates the parent's canvas baseline into EVERY subagent's
+  // systemPrompt, blowing past slot limits in multi-tool-call turns
+  // (observed: 49K chars × N subagents = ~25K tokens of redundancy per
+  // request). The subagent's role spec (component-coder.md et al.)
+  // tells it to read on demand.
   try {
     const files = await listCanvasFiles(project || undefined);
     if (files.length > 0) {
-      const emitted: string[] = [];
+      const lines: string[] = [`## Files on canvas`];
+      lines.push(`Use \`read_file\` to pull content for the files you need — they are NOT pre-loaded below. Your task prompt should name the relevant ones.`);
+      lines.push(``);
       for (const f of files) {
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
         const meta = await getCardClassMeta(ext, project);
         if (meta.meta) continue;
-        if (BINARY_EXTS.has(ext)) {
-          emitted.push(`### ${f.name} (${f.size} bytes, binary)`);
-          continue;
-        }
-        try {
-          const file = await readProjectFile(f.name, project || undefined);
-          if (isLikelyBinary(f.name, file.content)) {
-            emitted.push(`### ${f.name} (${f.size} bytes, binary)`);
-          } else if (file.content.length === 0) {
-            emitted.push(`### ${f.name} (empty — intentional shell or placeholder)`);
-          } else {
-            emitted.push(`### ${f.name}\n${file.content}`);
-          }
-        } catch { emitted.push(`### ${f.name} (${f.size} bytes, unreadable)`); }
+        const suffix = BINARY_EXTS.has(ext) ? " (binary)" : "";
+        lines.push(`- \`${f.name}\` (${f.size} bytes${suffix})`);
       }
-      if (emitted.length > 0) {
-        parts.push(`## Project Files`);
-        for (const e of emitted) parts.push(e);
-      }
+      if (lines.length > 3) parts.push(lines.join("\n"));
     }
   } catch { /* ignore */ }
 
