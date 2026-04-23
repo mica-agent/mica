@@ -5,7 +5,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor } from "./files.js";
 import { buildSubagentCanvasContext } from "./micaAgent.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
@@ -338,7 +338,13 @@ When reacting to file changes:
 - If you have questions, add them to your chat response AND create a todo item assigned to @human
 
 ## Skills
-This project's skills are bundled by its template and live under \`.claude/skills/<name>/SKILL.md\`. The Claude Code SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.`);
+This project's skills are bundled by its template and live under \`.claude/skills/<name>/SKILL.md\`. The Claude Code SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.
+
+## Arc completion marker
+When a coherent arc of work ends — the user's task is done, or the conversation has reached a natural stopping point where starting fresh would not lose anything important — emit the literal marker \`<thread-state>arc-complete</thread-state>\` as the last line of your response. This is Mica's signal that the chat can reset its context cursor. Use it sparingly and only at genuine breaks (task finished, question answered, plan ratified). Do NOT emit it mid-task, after tool errors, or when the user is still iterating.
+
+## Keep chat cards topic-scoped
+Each chat card on the canvas is meant to hold one ongoing conversation about one topic. When the user opens a distinctly different topic in an existing card, acknowledge briefly but suggest spawning a new chat card scoped to the new topic. One sentence is enough — do not pressure. This keeps each card focused and prevents context-overflow on long-running cards.`);
 
   const assembled = parts.join("\n\n");
   if (assembled.length > CONTEXT_SOFT_CAP_CHARS) {
@@ -553,7 +559,12 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         // (12 messages), capped at ~6K chars total so the system prompt + history
         // comfortably fit in ctx=65536. Skip the most recent entry (it's the user
         // message we just pushed above and will send as the actual prompt).
-        const priorHistory = history.slice(0, -1);
+        //
+        // Cursor-aware: messages before `cursor` belong to an earlier arc the
+        // agent has been released from (via arc-complete + capacity trigger or
+        // an explicit Clear). The user still sees full scroll in the UI.
+        const cursor = await readChatCursor(chatId, sessionProject);
+        const priorHistory = history.slice(cursor, -1);
         const HISTORY_MSG_CAP = 12;
         const HISTORY_CHAR_CAP = 6000;
         const MSG_CHAR_CAP = 1200;
@@ -855,12 +866,51 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           resultText = (resultText.trim() && resultText.trim() !== "Done.") ? `${resultText}\n\n${pendingQuestionText}` : pendingQuestionText;
         }
 
-        console.log(`[claude-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
-        ctx.broadcast({ type: "assistant", content: resultText, agent: "Claude", filesChanged, ...(usage ? { usage } : {}) });
+        // Detect the arc-complete marker and advance the cursor at natural
+        // breaks when capacity is tight. Claude's default models run with very
+        // large context windows (200K+) so the capacity trigger rarely fires
+        // here — arc-complete stays meaningful mainly as a user-visible horizon
+        // marker and a signal for explicit "Clear the card" actions. The
+        // threshold (0.80) matches micaAgent for consistency.
+        const ARC_COMPLETE_RE = /<thread-state>\s*arc-complete\s*<\/thread-state>/i;
+        const arcComplete = ARC_COMPLETE_RE.test(resultText);
+        if (arcComplete) resultText = resultText.replace(ARC_COMPLETE_RE, "").trim();
+
+        // Claude SDK usage reports input_tokens for the turn; we don't have a
+        // per-model context window surfaced here, so use a conservative cap.
+        const CLAUDE_CTX_WINDOW = 200000;
+        const inputTokens = (usage && typeof (usage as { input_tokens?: unknown }).input_tokens === "number")
+          ? (usage as { input_tokens: number }).input_tokens
+          : 0;
+        const capacity = inputTokens / CLAUDE_CTX_WINDOW;
+        let cursorAdvanced = false;
+        let newCursor = cursor;
 
         const updatedHistory = await loadHistory(chatId, sessionProject);
         updatedHistory.push({ role: "assistant", content: resultText, agent: "Claude" });
         await saveHistory(chatId, updatedHistory, sessionProject);
+
+        if (arcComplete && capacity > 0.80) {
+          newCursor = updatedHistory.length;
+          await writeChatCursor(chatId, sessionProject, newCursor, updatedHistory.length);
+          cursorAdvanced = true;
+          console.log(`[claude-agent] cursor advanced to ${newCursor} (capacity ${Math.round(capacity * 100)}%, arc-complete)`);
+        }
+
+        console.log(`[claude-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
+        ctx.broadcast({
+          type: "assistant",
+          content: resultText,
+          agent: "Claude",
+          filesChanged,
+          ...(usage ? { usage } : {}),
+          contextWindow: CLAUDE_CTX_WINDOW,
+          baselineTokens: inputTokens,
+          arcComplete,
+          capacity,
+          cursor: newCursor,
+          cursorAdvanced,
+        });
 
       } catch (err) {
         activeAbort = null;
@@ -903,9 +953,12 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
     return {
       onAttach(clientId, _args) {
-        // Send history to newly attached client
-        loadHistory(chatId, sessionProject).then((messages) => {
-          ctx.sendTo(clientId, { type: "history", messages });
+        // Send history (plus cursor) to newly attached client.
+        Promise.all([
+          loadHistory(chatId, sessionProject),
+          readChatCursor(chatId, sessionProject),
+        ]).then(([messages, cursor]) => {
+          ctx.sendTo(clientId, { type: "history", messages, cursor });
 
           // On first attach with no history, trigger initial project scan
           if (!initialScanDone && messages.length === 0) {

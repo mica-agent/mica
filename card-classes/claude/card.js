@@ -12,10 +12,36 @@ const statusLabel = container.querySelector("#chat-status-label");
 const statusMeta = container.querySelector("#chat-status-meta");
 const statusToggle = container.querySelector("#chat-status-toggle");
 const statusDetail = container.querySelector("#chat-status-detail");
+// Context meter + Clear/Spawn/Archive header actions (see chat card for rationale).
+const ctxMeterEl = container.querySelector("#chat-ctx-meter");
+const ctxMeterFill = container.querySelector("#chat-ctx-meter-fill");
+const ctxMeterLabel = container.querySelector("#chat-ctx-meter-label");
+const clearBtn = container.querySelector("#chat-clear-btn");
+const spawnBtn = container.querySelector("#chat-spawn-btn");
+const archiveBtn = container.querySelector("#chat-archive-btn");
+const archivePanel = container.querySelector("#chat-archive-panel");
+const archiveListEl = container.querySelector("#chat-archive-list");
 
 let detailExpanded = false;
 const ACCENT = "#7c3aed";
 let busy = false;
+// Context cursor — see chat card for details.
+let contextCursor = 0;
+let messageIndex = 0;
+let lastCapacity = 0;
+
+function projectHeaders(extra) {
+  const h = { "X-Mica-Project": (typeof mica !== "undefined" && mica.project) || "" };
+  if (extra) for (const k in extra) h[k] = extra[k];
+  return h;
+}
+
+function formatK(n) {
+  if (!n) return "0";
+  if (n < 1000) return String(n);
+  if (n < 10000) return (n / 1000).toFixed(1) + "K";
+  return Math.round(n / 1000) + "K";
+}
 
 // Toggle the busy flag AND a .wb-card--busy class on the outer card wrapper.
 // Drives the breathing halo defined in whiteboard.css (same one the qwen
@@ -130,11 +156,30 @@ function renderMarkdown(text) {
   return text;
 }
 
+function maybeRenderHorizon() {
+  if (contextCursor > 0 && messageIndex === contextCursor) {
+    const horizon = window.document.createElement("div");
+    horizon.className = "chat-horizon";
+    horizon.style.cssText =
+      "align-self:stretch;display:flex;align-items:center;gap:8px;color:#6e7681;" +
+      "font-size:10px;font-family:monospace;margin:6px 0;opacity:0.7;";
+    horizon.innerHTML =
+      '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>' +
+      '<span style="flex-shrink:0;">↑ earlier conversation (not in agent context)</span>' +
+      '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>';
+    messagesEl.appendChild(horizon);
+  }
+}
+
 function addMessage(role, content, agent, questions) {
   if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === "center") {
     messagesEl.innerHTML = "";
   }
+  maybeRenderHorizon();
   const msg = window.document.createElement("div");
+  const aboveHorizon = messageIndex < contextCursor;
+  if (aboveHorizon) msg.style.opacity = "0.55";
+  messageIndex++;
   if (role === "user") {
     msg.style.cssText = "align-self:flex-end;background:rgba(124,58,237,0.18);border-radius:12px 12px 4px 12px;padding:8px 12px;max-width:85%;";
     msg.innerHTML = `<div style="color:#e6edf3;font-size:13px;line-height:1.5;">${escapeHtml(content)}</div>`;
@@ -228,11 +273,72 @@ function playChime() {
   } catch (_) { /* audio unavailable */ }
 }
 
+function updateCtxMeter(baselineTokens, contextWindow) {
+  if (!baselineTokens || !contextWindow || contextWindow <= 0) {
+    ctxMeterEl.style.display = "none";
+    return;
+  }
+  ctxMeterEl.style.display = "inline-flex";
+  const pct = Math.max(0, Math.min(100, Math.round((baselineTokens / contextWindow) * 100)));
+  ctxMeterFill.style.width = pct + "%";
+  let color = "#4ade80";
+  if (pct >= 85) color = "#f87171";
+  else if (pct >= 50) color = "#fbbf24";
+  ctxMeterFill.style.background = color;
+  ctxMeterLabel.textContent = pct + "%";
+  ctxMeterLabel.title =
+    "This turn's input: " + formatK(baselineTokens) + " / " + formatK(contextWindow) +
+    " (" + pct + "% of context window)";
+}
+
+function addContextSuggestion(text, opts) {
+  opts = opts || {};
+  const wrap = window.document.createElement("div");
+  wrap.className = "chat-suggestion";
+  wrap.style.cssText =
+    "align-self:stretch;background:rgba(124,58,237,0.08);border:1px solid rgba(124,58,237,0.35);" +
+    "border-radius:8px;padding:10px 12px;font-size:12px;color:#cdd6f4;";
+  const msg = window.document.createElement("div");
+  msg.style.cssText = "margin-bottom:8px;line-height:1.4;";
+  msg.textContent = text;
+  wrap.appendChild(msg);
+  const row = window.document.createElement("div");
+  row.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
+  const mkBtn = function(label, primary, onClick) {
+    const b = window.document.createElement("button");
+    b.textContent = label;
+    b.style.cssText =
+      "background:" + (primary ? "#7c3aed" : "transparent") + ";color:#fff;" +
+      "border:1px solid " + (primary ? "#7c3aed" : "#30363d") + ";" +
+      "border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit;";
+    b.addEventListener("click", function() {
+      const siblings = row.querySelectorAll("button");
+      for (let i = 0; i < siblings.length; i++) {
+        siblings[i].disabled = true;
+        siblings[i].style.opacity = "0.4";
+        siblings[i].style.cursor = "default";
+      }
+      onClick();
+    });
+    return b;
+  };
+  row.appendChild(mkBtn("Clear this card", true, function() { clearCard({ fromSuggestion: true }); }));
+  row.appendChild(mkBtn("Spawn new card", false, function() { spawnSiblingCard(); }));
+  if (!opts.forceChoice) {
+    row.appendChild(mkBtn("Keep going", false, function() { /* dismissed */ }));
+  }
+  wrap.appendChild(row);
+  messagesEl.appendChild(wrap);
+  scrollBottom();
+}
+
 // Handle channel data from server
 ch.onData(function(data) {
   switch (data.type) {
     case "history":
       messagesEl.innerHTML = "";
+      contextCursor = typeof data.cursor === "number" ? data.cursor : 0;
+      messageIndex = 0;
       if (data.messages && data.messages.length > 0) {
         for (let i = 0; i < data.messages.length; i++) {
           addMessage(data.messages[i].role, data.messages[i].content, data.messages[i].agent);
@@ -280,10 +386,26 @@ ch.onData(function(data) {
       setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+      if (typeof data.cursor === "number") contextCursor = data.cursor;
+      updateCtxMeter(data.baselineTokens || 0, data.contextWindow || 0);
+      lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(`${doneMsg} (${elapsedSec}s, ${stepCount} steps)`, "#3fb950", false);
       addDetailLine(`Completed in ${elapsedSec}s with ${stepCount} steps`);
       addMessage("assistant", data.content, data.agent || "Claude");
+      if (data.arcComplete && lastCapacity >= 0.80) {
+        addContextSuggestion(
+          "Arc complete. This conversation is at " + Math.round(lastCapacity * 100) +
+          "% of the context window. Clearing or spawning a new card keeps the agent sharp.",
+          { forceChoice: false }
+        );
+      } else if (!data.arcComplete && lastCapacity >= 0.95) {
+        addContextSuggestion(
+          "Context is almost full (" + Math.round(lastCapacity * 100) +
+          "% of the window). Clear this card or spawn a new one before continuing.",
+          { forceChoice: true }
+        );
+      }
       break;
     case "error":
       setBusy(false);
@@ -394,6 +516,158 @@ ctxBtn.addEventListener("mouseenter", function() {
 ctxBtn.addEventListener("mouseleave", function() {
   if (!ctxVisible) ctxTooltip.style.display = "none";
 });
+
+// ── Clear / Spawn / Archive browser ────────────────────────
+
+function clearCard(opts) {
+  opts = opts || {};
+  if (!opts.fromSuggestion) {
+    const ok = window.confirm(
+      "Archive this card's conversation and start fresh? The previous messages " +
+      "will still be browsable from the clock icon."
+    );
+    if (!ok) return;
+  }
+  fetch("/api/chats/" + encodeURIComponent(mica.cardId) + "/clear", {
+    method: "POST",
+    headers: projectHeaders({ "Content-Type": "application/json" }),
+  }).then(function(r) { return r.json(); }).then(function() {
+    messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Conversation cleared. Send a message to start a new one.</div>';
+    contextCursor = 0;
+    messageIndex = 0;
+    ctxMeterEl.style.display = "none";
+    lastCapacity = 0;
+  }).catch(function(err) { console.error("[claude] clear failed:", err); });
+}
+
+function spawnSiblingCard() {
+  const match = (mica.filename || "").match(/\.([^./]+)$/);
+  const ext = match ? match[1] : "claude";
+  const base = (mica.filename || "").replace(/\.[^./]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "-");
+  const prompt = window.prompt(
+    "Name for the new " + ext + " card (without ." + ext + " extension):",
+    base ? (base + "-next") : "new-" + ext
+  );
+  if (!prompt) return;
+  const name = prompt.trim().replace(new RegExp("\\." + ext + "$", "i"), "");
+  if (!name) return;
+  const parts = mica.filename.split("/");
+  parts.pop();
+  const dir = parts.join("/");
+  const target = (dir ? dir + "/" : "") + name + "." + ext;
+  mica.files.write(target, "").catch(function(err) {
+    window.alert("Could not create " + target + ": " + (err && err.message ? err.message : "unknown"));
+  });
+}
+
+function loadArchiveList() {
+  archiveListEl.innerHTML = "Loading...";
+  fetch("/api/chats/" + encodeURIComponent(mica.cardId) + "/archived", {
+    headers: projectHeaders(),
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    const entries = data.entries || [];
+    if (entries.length === 0) {
+      archiveListEl.innerHTML = '<div style="color:#6e7681;font-style:italic;">No previous conversations.</div>';
+      return;
+    }
+    archiveListEl.innerHTML = "";
+    entries.forEach(function(e) {
+      const row = window.document.createElement("div");
+      row.style.cssText = "padding:6px 8px;border-radius:4px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;";
+      row.addEventListener("mouseenter", function() { row.style.background = "rgba(255,255,255,0.05)"; });
+      row.addEventListener("mouseleave", function() { row.style.background = ""; });
+      const when = new Date(e.archivedAt);
+      const left = window.document.createElement("span");
+      left.textContent = when.toLocaleString();
+      const right = window.document.createElement("span");
+      right.style.cssText = "color:#6e7681;font-size:10px;";
+      right.textContent = e.messageCount + (e.messageCount === 1 ? " msg" : " msgs");
+      row.appendChild(left);
+      row.appendChild(right);
+      row.addEventListener("click", function() { openArchiveViewer(e.filename); });
+      archiveListEl.appendChild(row);
+    });
+  }).catch(function(err) {
+    archiveListEl.innerHTML = '<div style="color:#f87171;">Failed to load: ' + escapeHtml(err.message || "") + '</div>';
+  });
+}
+
+function openArchiveViewer(archiveName) {
+  fetch(
+    "/api/chats/" + encodeURIComponent(mica.cardId) + "/archived/" + encodeURIComponent(archiveName),
+    { headers: projectHeaders() }
+  ).then(function(r) { return r.json(); }).then(function(data) {
+    const modal = window.document.createElement("div");
+    modal.style.cssText = "position:absolute;inset:0;background:rgba(13,17,23,0.96);backdrop-filter:blur(2px);z-index:25;display:flex;flex-direction:column;padding:12px 16px;font-size:12px;color:#e6edf3;";
+    const header = window.document.createElement("div");
+    header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;";
+    const title = window.document.createElement("div");
+    title.style.cssText = "font-weight:600;";
+    title.textContent = "Archived: " + archiveName.replace(/\.json$/, "");
+    const closeBtn = window.document.createElement("span");
+    closeBtn.style.cssText = "cursor:pointer;color:#8b949e;font-size:18px;padding:0 4px;";
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", function() { modal.remove(); });
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    modal.appendChild(header);
+    const scroller = window.document.createElement("div");
+    scroller.style.cssText = "flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;";
+    const msgs = data.messages || [];
+    if (msgs.length === 0) {
+      const empty = window.document.createElement("div");
+      empty.style.cssText = "color:#6e7681;font-style:italic;text-align:center;padding:24px 0;";
+      empty.textContent = "(empty)";
+      scroller.appendChild(empty);
+    } else {
+      msgs.forEach(function(m) {
+        const bubble = window.document.createElement("div");
+        const isUser = m.role === "user";
+        bubble.style.cssText = isUser
+          ? "align-self:flex-end;background:rgba(124,58,237,0.18);border-radius:12px 12px 4px 12px;padding:8px 12px;max-width:85%;"
+          : "align-self:flex-start;background:rgba(255,255,255,0.05);border-radius:12px 12px 12px 4px;padding:8px 12px;max-width:90%;";
+        if (isUser) {
+          bubble.innerHTML = '<div style="color:#e6edf3;line-height:1.5;">' + escapeHtml(m.content || "") + '</div>';
+        } else {
+          const agentHdr = m.agent
+            ? '<div style="color:' + ACCENT + ';font-size:11px;font-weight:600;margin-bottom:4px;">' + escapeHtml(m.agent) + '</div>'
+            : "";
+          bubble.innerHTML = agentHdr + '<div class="chat-md" style="color:#e6edf3;line-height:1.5;">' + renderMarkdown(m.content || "") + '</div>';
+        }
+        scroller.appendChild(bubble);
+      });
+    }
+    modal.appendChild(scroller);
+    container.appendChild(modal);
+  }).catch(function(err) { console.error("[claude] archive viewer failed:", err); });
+}
+
+clearBtn.addEventListener("click", function() { clearCard(); });
+spawnBtn.addEventListener("click", function() { spawnSiblingCard(); });
+
+let archiveOpen = false;
+archiveBtn.addEventListener("click", function(e) {
+  e.stopPropagation();
+  archiveOpen = !archiveOpen;
+  archivePanel.style.display = archiveOpen ? "block" : "none";
+  if (archiveOpen) loadArchiveList();
+});
+window.addEventListener("click", function(e) {
+  if (!archiveOpen) return;
+  if (archivePanel.contains(e.target) || archiveBtn.contains(e.target)) return;
+  archiveOpen = false;
+  archivePanel.style.display = "none";
+});
+
+const _unsubChatCleared = mica.on("chat-cleared", function(ev) {
+  if (!ev || ev.chatId !== mica.cardId) return;
+  messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Conversation cleared.</div>';
+  contextCursor = 0;
+  messageIndex = 0;
+  ctxMeterEl.style.display = "none";
+  lastCapacity = 0;
+});
+mica.onDestroy(_unsubChatCleared);
 
 mica.onDestroy(function() {
   ch.close();

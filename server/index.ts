@@ -40,6 +40,9 @@ import {
   writeCardSettings,
   readOpenRouterKey,
   writeOpenRouterKey,
+  archiveChat,
+  listArchivedChats,
+  readArchivedChat,
   BINARY_EXTS,
   isLikelyBinary,
   CONTEXT_SOFT_CAP_CHARS,
@@ -566,6 +569,63 @@ app.post("/api/cards/:filename/error", (req, res) => {
 
 app.post("/api/cards/:filename/ok", (_req, res) => {
   res.json({ ok: true });
+});
+
+// ── Chat lifecycle (clear / archive browser) ────────────────
+//
+// `:chatId` is the file's UUID (the per-card sidecar id — same identifier
+// the agent uses as ctx.sessionId and as the basename of
+// `.mica/chats/<id>.json`). Clients obtain it from the file's `id` field
+// in /api/files.
+
+app.post("/api/chats/:chatId/clear", async (req, res) => {
+  const { chatId } = req.params;
+  if (!chatId || chatId.includes("/") || chatId.includes("..")) {
+    res.status(400).json({ error: "invalid chatId" });
+    return;
+  }
+  const proj = getRequestProject(req);
+  try {
+    const archived = await archiveChat(chatId, proj);
+    // Broadcast the cleared state to every client attached to this session.
+    // Each chat card listens for `chat-cleared` and resets its scroll.
+    if (proj) {
+      broadcastToProject(proj, { type: "chat-cleared", chatId });
+    }
+    res.json({ ok: true, archived });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/chats/:chatId/archived", async (req, res) => {
+  const { chatId } = req.params;
+  if (!chatId || chatId.includes("/") || chatId.includes("..")) {
+    res.status(400).json({ error: "invalid chatId" });
+    return;
+  }
+  const proj = getRequestProject(req);
+  try {
+    const entries = await listArchivedChats(chatId, proj);
+    res.json({ entries });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/chats/:chatId/archived/:name", async (req, res) => {
+  const { chatId, name } = req.params;
+  if (!chatId || chatId.includes("/") || chatId.includes("..")) {
+    res.status(400).json({ error: "invalid chatId" });
+    return;
+  }
+  const proj = getRequestProject(req);
+  try {
+    const messages = await readArchivedChat(chatId, proj, name);
+    res.json({ messages });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
 });
 
 // ── Project-scoped File Endpoints ───────────────────────────

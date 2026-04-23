@@ -4,7 +4,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
@@ -448,7 +448,13 @@ When reacting to file changes:
 ## Skills
 This project's skills are bundled by its template and live under \`.qwen/skills/<name>/SKILL.md\`. The Qwen SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.
 
-**Skills are mandatory when they match, not optional.** If a skill's description matches the user's request, you MUST invoke it via the \`skill\` tool BEFORE taking any other action — before \`read_file\`, before \`list_directory\`, before anything. Do not "think the skill would apply" and then proceed without it. Do not summarize what the skill would do instead of running it. The skill body contains load-bearing procedural steps; noticing the skill is relevant and then free-forming the work anyway defeats the purpose. Match → invoke → follow.`);
+**Skills are mandatory when they match, not optional.** If a skill's description matches the user's request, you MUST invoke it via the \`skill\` tool BEFORE taking any other action — before \`read_file\`, before \`list_directory\`, before anything. Do not "think the skill would apply" and then proceed without it. Do not summarize what the skill would do instead of running it. The skill body contains load-bearing procedural steps; noticing the skill is relevant and then free-forming the work anyway defeats the purpose. Match → invoke → follow.
+
+## Arc completion marker
+When a coherent arc of work ends — the user's task is done, or the conversation has reached a natural stopping point where starting fresh would not lose anything important — emit the literal marker \`<thread-state>arc-complete</thread-state>\` as the last line of your response. This is Mica's signal that the chat can reset its context cursor. Use it sparingly and only at genuine breaks (task finished, question answered, plan ratified). Do NOT emit it mid-task, after tool errors, or when the user is still iterating.
+
+## Keep chat cards topic-scoped
+Each chat card on the canvas is meant to hold one ongoing conversation about one topic. When the user opens a distinctly different topic in an existing card, acknowledge briefly but suggest spawning a new chat card scoped to the new topic. One sentence is enough — do not pressure. This keeps each card focused and prevents context-overflow on long-running cards.`);
 
   const assembled = parts.join("\n\n");
   if (assembled.length > CONTEXT_SOFT_CAP_CHARS) {
@@ -743,7 +749,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // (12 messages), capped at ~6K chars total so the system prompt + history
         // comfortably fit in ctx=65536. Skip the most recent entry (it's the user
         // message we just pushed above and will send as the actual prompt).
-        const priorHistory = history.slice(0, -1);
+        //
+        // Cursor-aware: messages before `cursor` belong to an earlier arc the
+        // agent has been released from. Only slice from cursor onward. The user
+        // still sees full scroll in the UI; the agent's view is bounded.
+        const cursor = await readChatCursor(chatId, sessionProject);
+        const priorHistory = history.slice(cursor, -1);
         const HISTORY_MSG_CAP = 12;
         const HISTORY_CHAR_CAP = 6000;
         const MSG_CHAR_CAP = 1200;
@@ -1114,6 +1125,33 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           resultText = (resultText.trim() && resultText.trim() !== "Done.") ? `${resultText}\n\n${pendingQuestionText}` : pendingQuestionText;
         }
 
+        // Detect the arc-complete marker emitted by the agent at natural
+        // stopping points. Strip it from the user-visible text so chat
+        // bubbles stay clean; keep the signal for cursor-advance below.
+        const ARC_COMPLETE_RE = /<thread-state>\s*arc-complete\s*<\/thread-state>/i;
+        const arcComplete = ARC_COMPLETE_RE.test(resultText);
+        if (arcComplete) resultText = resultText.replace(ARC_COMPLETE_RE, "").trim();
+
+        // Decide whether to advance the cursor. We advance only at genuine arc
+        // breaks AND when capacity is tight enough (>80%) that the next turn
+        // would benefit. Below 80% the cache-invalidation cost of advancing
+        // isn't justified. Mid-arc advances never happen silently — those
+        // surface as Clear/Spawn prompts in the UI at >95%.
+        const capacity = contextWindow > 0 ? baselineTokens / contextWindow : 0;
+        let cursorAdvanced = false;
+        let newCursor = cursor;
+
+        const updatedHistory = await loadHistory(chatId, sessionProject);
+        updatedHistory.push({ role: "assistant", content: resultText, agent: "Qwen" });
+        await saveHistory(chatId, updatedHistory, sessionProject);
+
+        if (arcComplete && capacity > 0.80) {
+          newCursor = updatedHistory.length;
+          await writeChatCursor(chatId, sessionProject, newCursor, updatedHistory.length);
+          cursorAdvanced = true;
+          console.log(`[mica-agent] cursor advanced to ${newCursor} (capacity ${Math.round(capacity * 100)}%, arc-complete)`);
+        }
+
         console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
         ctx.broadcast({
           type: "assistant",
@@ -1123,11 +1161,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           ...(usage ? { usage } : {}),
           ...(contextWindow > 0 ? { contextWindow } : {}),
           baselineTokens,
+          arcComplete,
+          capacity,
+          cursor: newCursor,
+          cursorAdvanced,
         });
-
-        const updatedHistory = await loadHistory(chatId, sessionProject);
-        updatedHistory.push({ role: "assistant", content: resultText, agent: "Qwen" });
-        await saveHistory(chatId, updatedHistory, sessionProject);
 
       } catch (err) {
         activeAbort = null;
@@ -1167,9 +1205,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
     return {
       onAttach(clientId, _args) {
-        // Send history to newly attached client
-        loadHistory(chatId, sessionProject).then((messages) => {
-          ctx.sendTo(clientId, { type: "history", messages });
+        // Send history (plus cursor) to newly attached client.
+        Promise.all([
+          loadHistory(chatId, sessionProject),
+          readChatCursor(chatId, sessionProject),
+        ]).then(([messages, cursor]) => {
+          ctx.sendTo(clientId, { type: "history", messages, cursor });
 
           // On first attach with no history, trigger initial project scan
           if (!initialScanDone && messages.length === 0) {

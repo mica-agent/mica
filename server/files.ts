@@ -896,6 +896,146 @@ export async function createProjectFromTemplate(projectName: string, templateNam
   await overlayTemplate(projectName, templateName);
 }
 
+// ── Chat history lifecycle (live thread + per-card archives + cursor) ─────
+//
+// Each chat card persists its live conversation at
+// `.mica/chats/<cardId>.json` (a plain array of {role, content, agent}).
+// When a user "Clears" the card, the file is moved to
+// `.mica/chats/archived/<cardId>/<iso>.json` and a fresh empty array replaces it.
+// The card stays on canvas; only its transcript resets.
+//
+// The "context cursor" is an index into the live messages array. Messages
+// before the cursor are history the USER can still scroll through but the
+// agent does NOT see on its next turn. It advances forward only — at a
+// natural arc break (detected by an `<thread-state>arc-complete</thread-state>`
+// marker from the agent AND capacity > 80%) or on Clear. Persisted at
+// `.mica/chats/<cardId>.cursor.json`.
+
+function chatHistoryPath(chatId: string, project: string | null | undefined): string {
+  return join(micaDir(project ?? undefined), "chats", `${chatId}.json`);
+}
+
+function chatCursorPath(chatId: string, project: string | null | undefined): string {
+  return join(micaDir(project ?? undefined), "chats", `${chatId}.cursor.json`);
+}
+
+function chatArchiveDir(chatId: string, project: string | null | undefined): string {
+  return join(micaDir(project ?? undefined), "chats", "archived", chatId);
+}
+
+/** Read the cursor (count of messages the agent should skip). Returns 0 if
+ *  no cursor file exists. */
+export async function readChatCursor(chatId: string, project: string | null | undefined): Promise<number> {
+  try {
+    const raw = await readFile(chatCursorPath(chatId, project), "utf-8");
+    const parsed = JSON.parse(raw) as { cursor?: unknown };
+    return typeof parsed.cursor === "number" && parsed.cursor >= 0 ? Math.floor(parsed.cursor) : 0;
+  } catch { return 0; }
+}
+
+/** Write the cursor. Caps at `historyLen` so a stale cursor can't point
+ *  past the end of the messages array. */
+export async function writeChatCursor(
+  chatId: string,
+  project: string | null | undefined,
+  cursor: number,
+  historyLen?: number,
+): Promise<void> {
+  const safe = Math.max(0, Math.floor(cursor));
+  const clamped = typeof historyLen === "number" ? Math.min(safe, historyLen) : safe;
+  const path = chatCursorPath(chatId, project);
+  await mkdir(dirname(path), { recursive: true });
+  await atomicWriteJson(path, { cursor: clamped });
+}
+
+export interface ArchivedChatEntry {
+  timestamp: string;       // ISO-ish stem of the archive filename (what was written)
+  filename: string;        // raw filename (<timestamp>.json)
+  size: number;            // bytes on disk
+  messageCount: number;    // approx count — read+parse the file
+  archivedAt: string;      // ISO mtime from the FS
+}
+
+/** Move the current live chat history to an archive file and leave the live
+ *  file replaced with an empty array. Also resets the cursor to 0. Returns
+ *  the archive filename (or null if there was nothing to archive). */
+export async function archiveChat(
+  chatId: string,
+  project: string | null | undefined,
+): Promise<string | null> {
+  const livePath = chatHistoryPath(chatId, project);
+  const cursorPath = chatCursorPath(chatId, project);
+  const archiveDir = chatArchiveDir(chatId, project);
+
+  // If there's nothing on disk, we still succeed — the card is already empty.
+  let raw: string | null = null;
+  try { raw = await readFile(livePath, "utf-8"); } catch { /* no live history */ }
+  if (!raw || raw.trim() === "" || raw.trim() === "[]") {
+    // Clear cursor even when no archive is written, so resets are idempotent.
+    try { await unlink(cursorPath); } catch { /* ignore */ }
+    return null;
+  }
+
+  await mkdir(archiveDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const archiveName = `${stamp}.json`;
+  await writeFile(join(archiveDir, archiveName), raw, "utf-8");
+  await writeFile(livePath, "[]", "utf-8");
+  try { await unlink(cursorPath); } catch { /* ignore */ }
+  return archiveName;
+}
+
+/** List archived conversations for one chat card, most recent first. */
+export async function listArchivedChats(
+  chatId: string,
+  project: string | null | undefined,
+): Promise<ArchivedChatEntry[]> {
+  const dir = chatArchiveDir(chatId, project);
+  if (!existsSync(dir)) return [];
+  const names = await readdir(dir);
+  const out: ArchivedChatEntry[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const p = join(dir, name);
+    try {
+      const s = await stat(p);
+      let messageCount = 0;
+      try {
+        const raw = await readFile(p, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) messageCount = parsed.length;
+      } catch { /* best-effort */ }
+      out.push({
+        timestamp: name.replace(/\.json$/, ""),
+        filename: name,
+        size: s.size,
+        messageCount,
+        archivedAt: s.mtime.toISOString(),
+      });
+    } catch { /* skip unreadable */ }
+  }
+  out.sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+  return out;
+}
+
+/** Read one archived chat's messages array. Returns [] if missing/unparseable. */
+export async function readArchivedChat(
+  chatId: string,
+  project: string | null | undefined,
+  archiveName: string,
+): Promise<unknown[]> {
+  // Defense against traversal; archive names are generated, but validate anyway.
+  if (!archiveName || archiveName.includes("/") || archiveName.includes("..")) {
+    throw new Error(`Invalid archive name: ${archiveName}`);
+  }
+  const p = join(chatArchiveDir(chatId, project), archiveName);
+  try {
+    const raw = await readFile(p, "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
 /** Clone a git repo into a new project directory and optionally overlay a
  *  template on top (for skills, agents, canvas-back, and seed cards). The
  *  cloned repo's files are never overwritten — the template fills gaps
