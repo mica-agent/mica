@@ -20,7 +20,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 type Mode = "default" | "auto-edit" | "plan" | "yolo";
-type TestKind = "write" | "shell";
+type TestKind = "write" | "shell" | "subagent-write" | "subagent-shell";
 
 const mode = (process.argv[2] || "default") as Mode;
 const kind = (process.argv[3] || "write") as TestKind;
@@ -29,7 +29,7 @@ if (!["default", "auto-edit", "plan", "yolo"].includes(mode)) {
   console.error(`Invalid mode: ${mode}`);
   process.exit(2);
 }
-if (!["write", "shell"].includes(kind)) {
+if (!["write", "shell", "subagent-write", "subagent-shell"].includes(kind)) {
   console.error(`Invalid kind: ${kind}`);
   process.exit(2);
 }
@@ -54,9 +54,26 @@ const timeout = setTimeout(() => {
   abort.abort();
 }, HARD_TIMEOUT_MS);
 
-const prompt = kind === "write"
-  ? `Write the single word "hello" to the file ${probeFile}. Do it immediately via your write_file tool. No discussion, no follow-ups.`
-  : `Run the shell command \`echo hello-from-probe > ${probeFile}\`. Do it immediately. No discussion, no follow-ups.`;
+// Prompts per scenario. Subagent tests ask the parent to DELEGATE to a
+// "writer" subagent that performs the work. The question we're trying to
+// answer is whether canUseTool fires for the subagent's tool calls (or
+// hangs, as the old in-code comment claimed).
+const prompt =
+  kind === "write" ? `Write the single word "hello" to the file ${probeFile}. Do it immediately via your write_file tool. No discussion, no follow-ups.` :
+  kind === "shell" ? `Run the shell command \`echo hello-from-probe > ${probeFile}\`. Do it immediately. No discussion, no follow-ups.` :
+  kind === "subagent-write" ? `Use the writer subagent to create the file ${probeFile} containing the single word "hello". Invoke it with the agent tool. Do not write the file yourself.` :
+  /* subagent-shell */           `Use the writer subagent to run \`echo hello-from-probe > ${probeFile}\`. Invoke it with the agent tool. Do not run the shell yourself.`;
+
+// Subagent definition for the subagent-* test kinds. Only included when the
+// kind is subagent-*; otherwise the SDK sees no subagents at all, matching
+// the parent-only tests above.
+const agents = kind.startsWith("subagent-")
+  ? [{
+      name: "writer",
+      description: "Creates a file or runs a single shell command exactly as instructed by the parent. No discussion; one tool call and return.",
+      systemPrompt: "You are invoked to perform exactly one file or shell operation as specified in the task prompt. Do it with the appropriate tool, then return a one-line summary. Do NOT ask follow-up questions.",
+    }]
+  : undefined;
 
 async function main() {
   console.log(`[${ts()}ms] probe start: mode=${mode} kind=${kind}`);
@@ -71,6 +88,12 @@ async function main() {
       authType: "openai" as const,
       permissionMode: mode,
       abortController: abort,
+      ...(agents ? { agents } : {}),
+      // Include the subagent-launch tools in allowedTools so the parent's
+      // `agent`/`task` call bypasses canUseTool. In default mode, trying
+      // to gate the agent tool via canUseTool hangs — the callback never
+      // gets invoked but the SDK still waits for it.
+      allowedTools: ["agent", "task"],
       canUseTool: async (toolName: string, input: Record<string, unknown>, _opts: unknown) => {
         canUseToolCalls++;
         if (firstCanUseAt === null) firstCanUseAt = Date.now() - stampStart;
@@ -87,15 +110,17 @@ async function main() {
   try {
     for await (const evt of q) {
       const type = evt.type as string;
+      const parent = (evt as { parent_tool_use_id?: string | null }).parent_tool_use_id || "";
+      const parentTag = parent ? ` (from subagent parent=${parent.slice(0, 8)})` : "";
       if (type === "assistant" && (evt as { message?: { content?: unknown[] } }).message?.content) {
         for (const block of (evt as { message: { content: Array<Record<string, unknown>> } }).message.content) {
           if (block.type === "tool_use" && typeof block.name === "string") {
             if (firstToolUseAt === null) firstToolUseAt = Date.now() - stampStart;
             toolUseSeen.push(block.name);
-            console.log(`[${ts()}ms] tool_use observed: ${block.name}`);
+            console.log(`[${ts()}ms] tool_use observed: ${block.name}${parentTag}`);
           }
           if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
-            console.log(`[${ts()}ms] text: ${String(block.text).slice(0, 120)}`);
+            console.log(`[${ts()}ms] text: ${String(block.text).slice(0, 120)}${parentTag}`);
           }
         }
       }

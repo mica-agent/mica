@@ -960,32 +960,32 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // openai-compatible provider is selected via authType, not via prefix.
             model: provider === "local" ? `openai:${modelName}` : modelName,
             authType: "openai" as const,
-            // "default" permission mode: canUseTool IS invoked for every
-            // write and shell tool not in allowedTools. Read-only tools
-            // auto-execute. This makes guardTool, checkCardClassMetadataConsistency,
-            // checkCardClassPrecondition, per-extension validators, the
-            // direct-write cap, the subagent-concurrency gate, and the
-            // AskUserQuestion intercept all actually functional again.
+            // "yolo" auto-approves ALL tools. canUseTool is never invoked.
             //
-            // A previous comment here claimed non-yolo modes hung the SDK.
-            // Verified against the current @qwen-code/sdk 0.1.6 via
-            // `scripts/probe-canusetool.ts default {write,shell}` — both
-            // canUseTool calls fired within ~40ms of the tool_use event.
-            // The historical hang was either an older SDK version or our
-            // own wiring bug that got fixed incidentally. If it recurs,
-            // the probe is the regression test.
+            // Why not "default" (where canUseTool would actually fire):
+            // subagent-initiated tool calls hang the SDK under every non-
+            // yolo mode. Verified against @qwen-code/sdk 0.1.6 with
+            // `scripts/probe-canusetool.ts`:
+            //   - default + parent write/shell: canUseTool fires in ~40ms ✓
+            //   - default + subagent write: tool_use observed, canUseTool
+            //     never fires, SDK waits forever (60s+ timeout)
+            //   - auto-edit + subagent shell: same hang
+            //   - yolo: works everywhere (no gating)
+            // The SDK has a canUseTool-in-subagent-session bug (tracked
+            // upstream as anthropic/claude-code#27203 for Claude; same
+            // pattern in the Qwen SDK). Until fixed upstream, non-yolo
+            // modes are unusable for any session that delegates.
             //
-            // allowedTools skips canUseTool for read-only tools (saves a
-            // callback roundtrip per read). Our canUseTool contains no
-            // logic specific to reads; read-file tracking for the
-            // create-card-class precondition moved to the tool_use event
-            // observer below.
-            permissionMode: "default" as const,
-            allowedTools: [
-              "read_file", "read_many_files", "list_directory",
-              "glob", "grep_search",
-              "web_search", "web_fetch", "google_web_search",
-            ],
+            // Consequence: everything in canUseToolInner below is dead
+            // code. The guard moves elsewhere:
+            //   - metadata consistency: enforced post-write in index.ts
+            //     via enforceCardClassMetadata (self-heals missing
+            //     extension, surfaces mismatches as card-error).
+            //   - shell safety, write caps, precondition checks, etc.:
+            //     still todo; relocate to the tool_use event observer
+            //     below (can detect + abort the turn via activeAbort,
+            //     though can't prevent the in-flight tool call).
+            permissionMode: "yolo" as const,
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
@@ -1046,18 +1046,6 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     tool: block.name,
                     description: describeToolUse(block.name, block.input || {}),
                   });
-                  // Track read-file calls here because read tools are in
-                  // allowedTools under permissionMode "default" and bypass
-                  // canUseTool. checkCardClassPrecondition consults this
-                  // set when a write is attempted, so an unpopulated set
-                  // would falsely block every card-class write.
-                  if (block.name === "read_file" || block.name === "Read") {
-                    const p = pathFromReadInput(block.input || {});
-                    if (p) readFilesThisTurn.add(p);
-                  } else if (block.name === "read_many_files") {
-                    const paths = ((block.input || {}) as { paths?: unknown }).paths;
-                    if (Array.isArray(paths)) for (const p of paths) if (typeof p === "string" && p) readFilesThisTurn.add(p);
-                  }
                   // Track outstanding subagent tasks so the concurrency counter
                   // decrements when they finish. SDK tags each tool_use with an
                   // `id` we'll match against the tool_result. Qwen's tool name
