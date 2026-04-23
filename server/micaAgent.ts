@@ -215,11 +215,13 @@ export async function buildSubagentCanvasContext(project: string | null): Promis
     }
   } catch { /* ignore */ }
 
-  // File location rules
-  let canvasRoot = "docs";
+  // File location rules. Default matches initProject (`"canvas"`) — a
+  // missing / unreadable config falls back to the new default, not the
+  // legacy "docs" name.
+  let canvasRoot = "canvas";
   try {
     const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
-    canvasRoot = cfg.canvasRoot || cfg.docsDir || "docs";
+    canvasRoot = cfg.canvasRoot || cfg.docsDir || "canvas";
   } catch { /* use default */ }
   parts.push(
     `## File Locations\n` +
@@ -350,6 +352,16 @@ export async function buildContext(agentFilename: string, project: string | null
     }
   } catch { /* ignore */ }
 
+  // Resolve canvasRoot once — both the delegation cheat sheet and the
+  // "File Locations" block below need it. Default matches initProject
+  // (`"canvas"`) so a missing config doesn't dump stale "docs" references
+  // into the agent's prompt.
+  let canvasRoot = "canvas";
+  try {
+    const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
+    canvasRoot = cfg.canvasRoot || cfg.docsDir || "canvas";
+  } catch { /* use default */ }
+
   // Available subagents — delegation cheat sheet injected every turn.
   // Skills (including decompose-task) only fire when the user's message
   // pattern-matches their description, which local Qwen often misses. This
@@ -365,9 +377,9 @@ export async function buildContext(agentFilename: string, project: string | null
         `You have specialized Subagents available. Delegating to a Subagent is HOW you implement multi-file work without exhausting your context window — each Subagent runs in its own session, does the work, and returns a short summary. Your parent context (this turn) keeps only the summaries, not the subagent's tool I/O or written file content.`,
         ``,
         `**To invoke a Subagent, write a request in your turn response using natural language naming the agent.** Example phrasings (these patterns trigger SDK routing):`,
-        `- "Have the component-coder Subagent implement \`src/email_monitor.py\` per docs/spec.md § Email Monitor."`,
-        `- "Let the component-coder Subagent build \`deploy.sh\`. Reference docs/spec.md § Deployment."`,
-        `- "Use the component-coder Subagent to write \`src/auth.py\` based on docs/interfaces.md § Auth."`,
+        `- "Have the component-coder Subagent implement \`src/email_monitor.py\` per ${canvasRoot}/spec.md § Email Monitor."`,
+        `- "Let the component-coder Subagent build \`deploy.sh\`. Reference ${canvasRoot}/spec.md § Deployment."`,
+        `- "Use the component-coder Subagent to write \`src/auth.py\` based on ${canvasRoot}/interfaces.md § Auth."`,
         ``,
         `Available Subagents:`,
       ];
@@ -383,18 +395,11 @@ export async function buildContext(agentFilename: string, project: string | null
         ``,
         `Concurrency is capped per-project (default 3 concurrent local, 4 OpenRouter).`,
         ``,
-        `**BEFORE delegating**, write or update \`docs/interfaces.md\` with any shared types / function signatures / data shapes. Subagents have fresh context and cannot see each other's in-flight work — contracts MUST live on canvas first. Each delegation request should reference the relevant spec/interfaces section so the Subagent reads the right authoritative source.`,
+        `**BEFORE delegating**, write or update \`${canvasRoot}/interfaces.md\` with any shared types / function signatures / data shapes. Subagents have fresh context and cannot see each other's in-flight work — contracts MUST live on canvas first. Each delegation request should reference the relevant spec/interfaces section so the Subagent reads the right authoritative source.`,
       );
       parts.push(lines.join("\n"));
     }
   } catch { /* no subagents available — skip section */ }
-
-  // Project structure guidance
-  let canvasRoot = "docs";
-  try {
-    const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
-    canvasRoot = cfg.canvasRoot || cfg.docsDir || "docs";
-  } catch { /* use default */ }
 
   parts.push(`## File Locations
 - The canvas directory is \`${canvasRoot}/\` — this is where everything visible on the canvas lives
@@ -525,7 +530,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     coalesceBuffer: Map<string, { type: "created" | "changed" | "deleted"; count: number }>;
     coalesceTimer: ReturnType<typeof setTimeout> | null;
     deliverFn: (() => void) | null;
-    canvasRoot: string;        // e.g. "docs" — files outside this (and not pinned) don't trigger reactive turns
+    canvasRoot: string;        // e.g. "canvas" — files outside this (and not pinned) don't trigger reactive turns
     pinnedFiles: Set<string>;  // files explicitly pinned to the canvas regardless of folder
   }>();
 

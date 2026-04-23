@@ -58,7 +58,7 @@ export class FileWatcher extends EventEmitter {
 
   /** Add a watcher for a project (idempotent). Increments ref count.
    *
-   *  `canvasRoot` is the subdirectory that hosts the canvas (e.g. "docs").
+   *  `canvasRoot` is the subdirectory that hosts the canvas (e.g. "canvas").
    *  An empty string or "." means "project root" — watches everything, which
    *  is the old behavior and should be avoided for projects with lots of
    *  unrelated files.
@@ -69,7 +69,7 @@ export class FileWatcher extends EventEmitter {
   async addProject(
     project: string,
     projectDir: string,
-    canvasRoot: string = "docs",
+    canvasRoot: string = "canvas",
     pinned: string[] = [],
   ): Promise<void> {
     const existing = this.projects.get(project);

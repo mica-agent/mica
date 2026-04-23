@@ -254,6 +254,16 @@ export async function buildContext(agentFilename: string, project: string | null
   // Available subagents — see micaAgent.ts for rationale. Claude SDK names
   // the delegation tool "Task" (per the AgentInfo type docstring); the
   // input shape is { subagent_type: "<name>", prompt: "..." }.
+  //
+  // Resolve canvasRoot once — used both in the delegation cheat sheet
+  // and the "File Locations" block below. Default matches initProject
+  // (`"canvas"`).
+  let canvasRoot = "canvas";
+  try {
+    const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
+    canvasRoot = cfg.canvasRoot || cfg.docsDir || "canvas";
+  } catch { /* use default */ }
+
   try {
     const agents = await loadProjectSubagents(project, "claude");
     if (agents.length > 0) {
@@ -264,10 +274,10 @@ export async function buildContext(agentFilename: string, project: string | null
         ``,
         `**Invoke via the \`Agent\` tool** (also called \`Task\` in older docs — both names work). The input shape:`,
         `\`\`\``,
-        `Agent({ subagent_type: "<name>", description: "<short label>", prompt: "Implement <file>. See docs/spec.md § X and docs/interfaces.md § Y. Upstream: ... Downstream: ... Done when: ..." })`,
+        `Agent({ subagent_type: "<name>", description: "<short label>", prompt: "Implement <file>. See ${canvasRoot}/spec.md § X and ${canvasRoot}/interfaces.md § Y. Upstream: ... Downstream: ... Done when: ..." })`,
         `\`\`\``,
         ``,
-        `You can also explicitly request a Subagent by name in plain language inside your reply, e.g. "Use the component-coder agent to implement src/email_monitor.py per docs/spec.md § Email Monitor."`,
+        `You can also explicitly request a Subagent by name in plain language inside your reply, e.g. "Use the component-coder agent to implement src/email_monitor.py per ${canvasRoot}/spec.md § Email Monitor."`,
         ``,
         `Available Subagents:`,
       ];
@@ -281,18 +291,11 @@ export async function buildContext(agentFilename: string, project: string | null
         `- A single component spans **>200 lines**: delegate.`,
         `- Independent components in parallel.`,
         ``,
-        `Concurrency is capped per-project. **BEFORE delegating**, write or update \`docs/interfaces.md\` with shared contracts — Subagents have fresh context and cannot see each other's in-flight work.`,
+        `Concurrency is capped per-project. **BEFORE delegating**, write or update \`${canvasRoot}/interfaces.md\` with shared contracts — Subagents have fresh context and cannot see each other's in-flight work.`,
       );
       parts.push(lines.join("\n"));
     }
   } catch { /* ignore */ }
-
-  // Project structure guidance
-  let canvasRoot = "docs";
-  try {
-    const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
-    canvasRoot = cfg.canvasRoot || cfg.docsDir || "docs";
-  } catch { /* use default */ }
 
   parts.push(`## File Locations
 - The canvas directory is \`${canvasRoot}/\` — this is where everything visible on the canvas lives

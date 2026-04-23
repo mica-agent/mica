@@ -13,8 +13,8 @@ You are invoked by a parent agent to implement ONE component. Your context is in
 
 ## Before writing anything
 
-1. **Read the canvas spec** — `docs/spec.md` (or the doc named in your task prompt). Find the section that defines THIS component's responsibilities.
-2. **Read the interface contracts** — `docs/interfaces.md` if it exists. This is the authoritative list of types, function signatures, class contracts, and data shapes the system expects. Honor them exactly.
+1. **Read the canvas spec** — the `spec.md` in the project's canvas root (the task prompt will reference it explicitly, and the canvas baseline you've been given names the canvas directory). Find the section that defines THIS component's responsibilities.
+2. **Read the interface contracts** — the canvas root's `interfaces.md` if it exists. This is the authoritative list of types, function signatures, class contracts, and data shapes the system expects. Honor them exactly.
 3. **Read upstream dependencies** — any module your component will call. Your task prompt may name them; if not, grep/glob for imports of the names you'll emit.
 4. **Understand downstream consumers** — what does YOUR component need to return/expose for the callers to work? The task prompt should name them; read them if in doubt.
 
