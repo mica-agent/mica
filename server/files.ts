@@ -888,12 +888,13 @@ export async function createProjectFromTemplate(projectName: string, templateNam
   const dst = join(WORKSPACE_DIR, projectName);
   if (existsSync(dst)) throw new Error(`Project already exists: ${projectName}`);
   await mkdir(dst, { recursive: true });
-  // Fill defaults first so initProject doesn't need template-aware logic
-  // (config.json, canvas-back.md, canvas root dir).
-  await initProject(projectName);
-  // Overlay template content. `force: false` inside preserves initProject's
-  // output where it would collide.
+  // Overlay the template FIRST so its canvas-back.md / config.json / skills /
+  // seed cards land on a blank slate. `overlayTemplate` uses `cp` with
+  // `force: false` so running it before initProject means nothing yet exists
+  // to block the copy. Then `initProject` fills whatever the template didn't
+  // ship (its own existsSync guards keep it from stomping on template files).
   await overlayTemplate(projectName, templateName);
+  await initProject(projectName);
 }
 
 // ── Chat history lifecycle (live thread + per-card archives + cursor) ─────
@@ -1055,9 +1056,14 @@ export async function cloneProjectFromRepo(
     maxBuffer: 10 * 1024 * 1024,
   });
 
-  await initProject(projectName, options.canvasRoot);
-
+  // Overlay the template BEFORE initProject. `overlayTemplate` uses
+  // `cp` with `force: false`, so running it before initProject lets the
+  // template's canvas-back.md / config fields land cleanly. `initProject`
+  // afterwards fills any gaps (its own existsSync guards keep it from
+  // replacing template content). See createProjectFromTemplate for the
+  // same ordering rationale.
   if (options.templateName) {
     await overlayTemplate(projectName, options.templateName, { canvasRoot: options.canvasRoot });
   }
+  await initProject(projectName, options.canvasRoot);
 }
