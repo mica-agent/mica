@@ -72,6 +72,7 @@ import { createLlmChatHandler } from "./plugins/llmChat.js";
 import { createSkillComposeHandler } from "./plugins/skillCompose.js";
 import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
+import { enforceCardClassMetadata } from "./cardValidators.js";
 
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
@@ -1408,6 +1409,37 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
 fileWatcher.on("card-class-change", (event: { type: string; filename: string; project: string }) => {
   console.log(`[file-watcher:${event.project}] card-class ${event.type}: ${event.filename}`);
   broadcastToProject(event.project, { type: "card-class-changed", filename: event.filename, change: event.type });
+
+  // Post-write integrity check: the agent's canUseTool gate is dead under
+  // permissionMode: "yolo", so `checkCardClassMetadataConsistency` can't
+  // stop a bad metadata.json at write time. Enforce it here instead, on
+  // the observation side — works regardless of how the write happened.
+  // Missing `extension` is auto-repaired (dir name is authoritative);
+  // mismatches and malformed JSON surface as card-error broadcasts which
+  // the chat card renders with a "Send to agent" button.
+  if (event.type !== "deleted" && event.filename.endsWith("/metadata.json")) {
+    const absPath = join(projectDir(event.project), event.filename);
+    enforceCardClassMetadata(absPath, {
+      onAutoFix: (reason) => {
+        console.log(`[card-class-enforce:${event.project}] ${reason}`);
+        broadcastToProject(event.project, {
+          type: "card-error",
+          filename: event.filename,
+          error: reason,
+        });
+      },
+      onError: (reason) => {
+        console.warn(`[card-class-enforce:${event.project}] ${reason}`);
+        broadcastToProject(event.project, {
+          type: "card-error",
+          filename: event.filename,
+          error: reason,
+        });
+      },
+    }).catch((err) => {
+      console.error(`[card-class-enforce:${event.project}] failed:`, err);
+    });
+  }
 });
 
 // ── Startup ──────────────────────────────────────────────────

@@ -172,6 +172,83 @@ export function checkCardClassMetadataConsistency(
   return null;
 }
 
+/** Auto-fix + error-surface a card-class metadata.json after the fact.
+ *
+ *  Why this exists: the SDK's `canUseTool` hook never fires under
+ *  permissionMode: "yolo" (other modes hang on writes/shell in headless SDK
+ *  setups), so `checkCardClassMetadataConsistency` above is dead code when
+ *  the agent actually writes. This function gets called from the file
+ *  watcher — it runs regardless of how the write happened (SDK write_file,
+ *  bash `cat >`, an external editor, anything).
+ *
+ *  Behaviour:
+ *  - File missing or unparseable: emit a card-error (agent will see it in chat).
+ *  - `extension` field missing: auto-inject `".<dirName>"`. The directory
+ *    name is the invariant — the Mica resolver maps file extensions directly
+ *    to directory names, so the correct value is always knowable. Log a
+ *    warning so the agent still gets feedback it skipped a field; don't
+ *    spam the user with an error.
+ *  - `extension` field mismatched: can't safely auto-fix (which side is
+ *    wrong?). Emit a card-error with the exact reason. */
+export async function enforceCardClassMetadata(
+  absolutePath: string,
+  opts: {
+    onAutoFix?: (reason: string) => void;
+    onError?: (reason: string) => void;
+  } = {},
+): Promise<void> {
+  const m = absolutePath.match(/\.mica\/card-classes\/([^/]+)\/metadata\.json$/);
+  if (!m) return;
+  const dirName = m[1];
+
+  const { readFile, writeFile, stat } = await import("fs/promises");
+  let raw: string;
+  try {
+    const s = await stat(absolutePath);
+    if (!s.isFile()) return;
+    raw = await readFile(absolutePath, "utf-8");
+  } catch {
+    return; // deleted / unreadable — nothing to enforce
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    opts.onError?.(
+      `\`${dirName}/metadata.json\` is not valid JSON. Fix the syntax and re-save.`,
+    );
+    return;
+  }
+
+  const ext = typeof parsed.extension === "string" ? parsed.extension : "";
+  const bare = ext.replace(/^\./, "");
+
+  if (!bare) {
+    // Missing or empty — auto-inject. We reconstruct the JSON with the new
+    // field at a predictable position so the file stays diff-readable.
+    parsed.extension = `.${dirName}`;
+    const out = JSON.stringify(parsed, null, 2) + "\n";
+    try {
+      await writeFile(absolutePath, out, "utf-8");
+      opts.onAutoFix?.(
+        `\`${dirName}/metadata.json\` was missing its \`extension\` field. Injected \`.${dirName}\` automatically — the directory name is authoritative. Future card classes: include \`"extension": ".<dirName>"\` when creating metadata.json.`,
+      );
+    } catch (err) {
+      opts.onError?.(`Failed to auto-fix metadata.json: ${(err as Error).message}`);
+    }
+    return;
+  }
+
+  if (bare !== dirName) {
+    // Mismatched — can't guess which side is wrong. Surface as card-error
+    // so the agent can decide: rename the dir or change the extension field.
+    opts.onError?.(
+      `\`${dirName}/metadata.json\` declares \`extension: ".${bare}"\` but the parent directory is \`${dirName}\`. The Mica resolver maps a file extension directly to a directory name — they must match. Either rename the directory to \`.mica/card-classes/${bare}/\` or change the extension field to \`".${dirName}"\`.`,
+    );
+  }
+}
+
 /** Extract the post-write content from a write tool's input, if available.
  *  Returns null for partial-edit tools (edit_file with old_string/new_string)
  *  where we can't see the resulting file content cheaply — those are skipped. */
