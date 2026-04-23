@@ -871,97 +871,19 @@ function buildToolbar() {
     }).catch(err => { console.error('[canvas] Failed to load card classes:', err); });
 }
 
-// -- Gear menu ------------------------------------------
-// Registry of menu items. Two kinds:
-//   - action: `{ kind: 'action', label, onClick }` — runs on click, closes menu.
-//   - toggle: `{ kind: 'toggle', label, get, set }` — checkbox; menu stays open.
-// Adding a new entry is a one-liner; the renderer handles both kinds.
-const gearItems = [
-    {
-        kind: 'action',
-        id: 'meta-open',
-        label: 'Meta panel',
-        onClick: () => openMetaOverlay(),
-    },
-    // Future items: theme, debug overlays, card filters, etc.
-];
-
-let gearMenuEl = null;
-let gearMenuOutsideHandler = null;
-
-function closeGearMenu() {
-    if (gearMenuEl) { gearMenuEl.remove(); gearMenuEl = null; }
-    if (gearMenuOutsideHandler) {
-        window.removeEventListener('click', gearMenuOutsideHandler);
-        gearMenuOutsideHandler = null;
-    }
-}
-
-function openGearMenu(anchorBtn) {
-    closeGearMenu();
-    const menu = window.document.createElement('div');
-    menu.className = 'canvas-gear-menu';
-    gearItems.forEach((item, i) => {
-        const row = window.document.createElement('label');
-        row.className = 'canvas-gear-item';
-        if (item.kind === 'toggle') {
-            const cb = window.document.createElement('input');
-            cb.type = 'checkbox';
-            cb.checked = !!item.get();
-            cb.addEventListener('change', () => { item.set(cb.checked); });
-            row.appendChild(cb);
-            const span = window.document.createElement('span');
-            span.textContent = item.label;
-            row.appendChild(span);
-        } else {
-            // action — clicking the row runs the handler and closes the menu
-            row.style.cursor = 'pointer';
-            const span = window.document.createElement('span');
-            span.textContent = item.label;
-            row.appendChild(span);
-            row.addEventListener('click', () => {
-                closeGearMenu();
-                try { item.onClick(); } catch (err) { console.error('[canvas] gear action failed:', err); }
-            });
-        }
-        menu.appendChild(row);
-        if (i < gearItems.length - 1) {
-            const div = window.document.createElement('div');
-            div.className = 'canvas-gear-divider';
-            menu.appendChild(div);
-        }
-    });
-
-    // Anchor top-right of the gear button, offset by a few px so it
-    // doesn't clip the button. Position relative to .canvas-root so it
-    // layers correctly inside the card.
-    const root = container.querySelector('.canvas-root');
-    root.appendChild(menu);
-    const rootRect = root.getBoundingClientRect();
-    const btnRect = anchorBtn.getBoundingClientRect();
-    menu.style.top = (btnRect.bottom - rootRect.top + 4) + 'px';
-    menu.style.right = (rootRect.right - btnRect.right) + 'px';
-    gearMenuEl = menu;
-
-    // Close on outside click. Defer one tick so this very click (which
-    // opened the menu) doesn't immediately close it.
-    gearMenuOutsideHandler = (ev) => {
-        if (!gearMenuEl) return;
-        if (gearMenuEl.contains(ev.target) || anchorBtn.contains(ev.target)) return;
-        closeGearMenu();
-    };
-    setTimeout(() => { window.addEventListener('click', gearMenuOutsideHandler); }, 0);
-}
-
+// -- Toolbar meta button (direct, no menu) --------------
+// Single click opens the meta overlay. When there's only one thing to
+// do, a menu is ceremony. If future settings accrue, they'll live IN the
+// meta overlay itself (a settings panel) rather than fragmenting the
+// toolbar into tiny icons.
 function appendGearButton() {
     const btn = window.document.createElement('button');
     btn.className = 'toolbar-btn canvas-gear-btn';
-    btn.textContent = '⚙';   // ⚙
-    btn.title = 'Canvas settings';
+    btn.textContent = '⚙';
+    btn.title = 'Open canvas settings (canvas-back, skills)';
     btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (gearMenuEl) closeGearMenu();
-        else openGearMenu(btn);
+        openMetaOverlay();
     });
     toolbar.appendChild(btn);
 }
