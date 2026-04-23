@@ -1,16 +1,30 @@
 ---
 name: analyze-repo
-description: Analyze, understand, survey, explore, or map out an external repository (local path). Use whenever a user asks about a repo they cloned locally and want on-canvas orientation for future work (planning, asking questions, editing). Produces two or three durable canvas cards plus per-module detail in `.mica/repo-analysis/<repo>/`. Do NOT use for analyzing the current Mica project itself — use for external repos the user points you at.
+description: CODEBASE ANALYSIS. When the user asks to analyze, explore, understand, survey, read through, or map out any codebase, source directory, `src/`, repo, or repository — INVOKE THIS SKILL FIRST, before any `read_file` or `list_directory` calls. Applies to the current project's own source, any sub-directory inside it, or an external cloned repo. Produces bounded canvas cards plus `.mica/repo-analysis/<repo>/` detail. NEVER reads codebases inline — always delegates per-module to subagents. Triggers on phrases like "analyze the code", "analyze the src directory", "understand this codebase", "map out the repo", "explore the source".
 ---
 
-# Analyze an external repository
+# Analyze a codebase
 
-The user cloned a repo locally and wants to understand it. You are the
-**orchestrator**. Do not try to analyze everything inline — large
-repos will exhaust your context. Instead, run three explicit phases
-with subagent delegation and file-backed handoffs.
+**STOP before reading any more files.** If you are starting this skill
+mid-turn after already reading a few files, that's fine — just do not
+read any MORE. From here you run three explicit phases with subagent
+delegation and file-backed handoffs. You do not analyze the codebase
+inline. If you try to, you will overflow your context window within
+10–15 files. The whole point of this skill is to prevent that.
 
-## STEP 0 — Confirm scope
+The user wants to understand a codebase. You are the **orchestrator**.
+
+This skill applies whether the code is:
+- An external repository the user cloned into a scratch location
+- A directory inside the current Mica project (like `src/`, `app/`,
+  `packages/`)
+- The whole current project's source tree
+
+The output paths live in the current Mica project's `canvas/` and
+`.mica/repo-analysis/<repo>/` regardless — they don't collide with
+the analyzed code.
+
+## STEP 0 — Confirm scope and read project config
 
 Before starting, confirm the user has given you:
 
@@ -23,6 +37,13 @@ Before starting, confirm the user has given you:
 
 Do a quick `ls <repo>` and `read_file <repo>/README.md` to sanity-check
 the path. If the path isn't a repo or doesn't exist, stop.
+
+**Read the project's canvas root.** Read `.mica/config.json` in the
+current Mica project and note the `canvasRoot` field (e.g., `"docs"`,
+`"canvas"`, or sometimes empty). All canvas cards you write in Phase
+3 must go to `<canvasRoot>/...`. The skill uses `<canvasRoot>` as a
+placeholder throughout — substitute the real value. If `canvasRoot`
+is absent or empty, default to `docs`.
 
 ## Phase 1 — ENUMERATE (you, no subagents)
 
@@ -124,7 +145,7 @@ typically fits in your context without issue.
 Write exactly these canvas cards. Stop if a card would be
 redundant; do not write more than three.
 
-### `docs/<repoName>-overview.md` (always)
+### `<canvasRoot>/<repoName>-overview.md` (always)
 
 1–2 pages in plain markdown. Target under 1500 words. Contents:
 
@@ -157,7 +178,7 @@ analyses actually say, not guessed.>
 detail is in the module files.>
 ```
 
-### `docs/<repoName>-modules.md` (always)
+### `<canvasRoot>/<repoName>-modules.md` (always)
 
 A routing table, nothing more. Target under 500 words.
 
@@ -174,7 +195,7 @@ A routing table, nothing more. Target under 500 words.
 reason. Omit this section if none failed.>
 ```
 
-### `docs/<repoName>-glossary.md` (only if warranted)
+### `<canvasRoot>/<repoName>-glossary.md` (only if warranted)
 
 Write this card ONLY if the per-module analyses surfaced genuinely
 repo-specific jargon — terms the repo uses in a non-standard way.
@@ -205,16 +226,20 @@ re-scan the repo.
 
 1. **Local paths only.** If the user gives a URL, ask them to
    clone first.
-2. **Never analyze the current Mica project with this skill.** The
-   output paths would collide with the project being analyzed.
-3. **Bounded canvas output: 2 or 3 cards.** Never more.
-4. **Detail store always in `.mica/repo-analysis/<repoName>/`.**
-   Never in `docs/`. Never in the external repo.
-5. **Pause after Phase 1 for user confirmation of the module
+2. **Bounded canvas output: 2 or 3 cards.** Never more.
+3. **Detail store always in `.mica/repo-analysis/<repoName>/`.**
+   Never in the project's canvasRoot. Never inside the analyzed
+   code directory.
+4. **Pause after Phase 1 for user confirmation of the module
    plan.** Do not silently dispatch.
-6. **Batch subagent invocations into one message** so the
+5. **Batch subagent invocations into one message** so the
    concurrency cap (not sequential wait) determines throughput.
-7. **Stop after Phase 3.** Do not plan, edit, or refactor.
+6. **Stop after Phase 3.** Do not plan, edit, or refactor.
+7. **Never read the whole codebase inline.** If you find yourself
+   reading more than 3–4 files in Phase 1 orientation, stop. That
+   is a sign you're doing Phase 2's work inline. Phase 1 is
+   `README.md` + one manifest file + top-level `ls`, period.
+   Everything else goes to subagents.
 
 ## Do NOT
 

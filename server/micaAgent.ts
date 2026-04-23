@@ -446,7 +446,9 @@ When reacting to file changes:
 - If you have questions, add them to your chat response AND create a todo item assigned to @human
 
 ## Skills
-This project's skills are bundled by its template and live under \`.qwen/skills/<name>/SKILL.md\`. The Qwen SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.`);
+This project's skills are bundled by its template and live under \`.qwen/skills/<name>/SKILL.md\`. The Qwen SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.
+
+**Skills are mandatory when they match, not optional.** If a skill's description matches the user's request, you MUST invoke it via the \`skill\` tool BEFORE taking any other action — before \`read_file\`, before \`list_directory\`, before anything. Do not "think the skill would apply" and then proceed without it. Do not summarize what the skill would do instead of running it. The skill body contains load-bearing procedural steps; noticing the skill is relevant and then free-forming the work anyway defeats the purpose. Match → invoke → follow.`);
 
   const assembled = parts.join("\n\n");
   if (assembled.length > CONTEXT_SOFT_CAP_CHARS) {

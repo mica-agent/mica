@@ -17,6 +17,7 @@ import {
   renameProject,
   deleteProject,
   initProject,
+  cloneProjectFromRepo,
   listFiles,
   listCanvasFiles,
   readCanvasConfig,
@@ -205,7 +206,7 @@ app.post("/api/projects", async (req, res) => {
     if (template) {
       await createProjectFromTemplate(name, template);
     } else {
-      await createProject(name, docsDir || "docs");
+      await createProject(name, docsDir || "canvas");
     }
     res.json({ success: true, name, template: template || null });
   } catch (err) {
@@ -213,32 +214,24 @@ app.post("/api/projects", async (req, res) => {
   }
 });
 
-// Clone a git repo as a new project
+// Clone a git repo as a new project. Optionally overlay a template on top
+// (for skills, agents, canvas-back, seed cards) — the clone's own files are
+// preserved; the template fills gaps around them.
 app.post("/api/projects/clone", async (req, res) => {
-  const { url, name, docsDir } = req.body as { url?: string; name?: string; docsDir?: string };
+  const { url, name, docsDir, template } = req.body as {
+    url?: string; name?: string; docsDir?: string; template?: string;
+  };
   if (!url) {
     res.status(400).json({ error: "url required" });
     return;
   }
   try {
-    // Derive project name from URL if not provided
     const projectName = name || url.split("/").pop()?.replace(/\.git$/, "") || "project";
-    const destDir = join(WORKSPACE_DIR, projectName);
-    if (existsSync(destDir)) {
-      res.status(400).json({ error: `Project already exists: ${projectName}` });
-      return;
-    }
-
-    console.log(`[mica] Cloning ${url} -> ${destDir}`);
-    await execAsync(`git clone ${JSON.stringify(url)} ${JSON.stringify(destDir)}`, {
-      timeout: 120000,
-      maxBuffer: 10 * 1024 * 1024,
+    await cloneProjectFromRepo(projectName, url, {
+      templateName: template || undefined,
+      canvasRoot: docsDir || undefined,
     });
-
-    // Initialize .mica directory
-    await initProject(projectName, docsDir || "docs");
-
-    res.json({ success: true, name: projectName });
+    res.json({ success: true, name: projectName, template: template || null });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -300,7 +293,7 @@ app.post("/api/projects/:project/open", async (req, res) => {
     // Initialize .mica if not present
     if (!existsSync(join(dir, ".mica"))) {
       const { docsDir } = req.body as { docsDir?: string };
-      await initProject(name, docsDir || "docs");
+      await initProject(name, docsDir || "canvas");
     }
     const tAfterInit = Date.now();
     switchProject(name);

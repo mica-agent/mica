@@ -66,7 +66,7 @@ export async function fetchProjects(): Promise<ProjectInfo[]> {
 export async function createProjectApi(name: string, docsDir?: string, template?: string): Promise<{ success: boolean; name: string; template: string | null }> {
   const body: Record<string, string> = { name };
   if (template) body.template = template;
-  else body.docsDir = docsDir || "docs";
+  else body.docsDir = docsDir || "canvas";
   const res = await fetch(`${API_BASE}/api/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -90,11 +90,21 @@ export async function fetchTemplates(): Promise<TemplateInfo[]> {
   return res.json();
 }
 
-export async function cloneProjectApi(url: string, name?: string, docsDir?: string): Promise<{ success: boolean; name: string }> {
+export async function cloneProjectApi(
+  url: string,
+  name?: string,
+  docsDir?: string,
+  template?: string,
+): Promise<{ success: boolean; name: string; template: string | null }> {
   const res = await fetch(`${API_BASE}/api/projects/clone`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, name, docsDir: docsDir || "docs" }),
+    body: JSON.stringify({
+      url,
+      name,
+      docsDir: docsDir || "canvas",
+      template: template || undefined,
+    }),
   });
   if (!res.ok) {
     const err = await res.json();

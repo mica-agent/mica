@@ -51,10 +51,10 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
     }
   }, [onOpenProject]);
 
-  const handleClone = useCallback(async (url: string, name: string, docsDir: string) => {
+  const handleClone = useCallback(async (url: string, name: string, docsDir: string, template: string | null) => {
     setError(null);
     try {
-      const result = await cloneProjectApi(url, name || undefined, docsDir);
+      const result = await cloneProjectApi(url, name || undefined, docsDir, template || undefined);
       setShowClone(false);
       onOpenProject({ name: result.name, path: "" });
     } catch (err) {
@@ -151,6 +151,7 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
       {/* Clone form */}
       {showClone && (
         <CloneForm
+          templates={templates}
           onSubmit={handleClone}
           onCancel={() => setShowClone(false)}
         />
@@ -219,7 +220,7 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
 
 function CreateForm({ template, onSubmit, onCancel }: { template: string | null; onSubmit: (name: string, docsDir: string, template: string | null) => void; onCancel: () => void }) {
   const [name, setName] = useState('');
-  const [docsDir, setDocsDir] = useState('docs');
+  const [docsDir, setDocsDir] = useState('canvas');
 
   return (
     <div style={formStyle}>
@@ -238,18 +239,18 @@ function CreateForm({ template, onSubmit, onCancel }: { template: string | null;
       </label>
       {!template && (
         <label style={labelStyle}>
-          Planning docs directory
+          Canvas directory
           <input
             value={docsDir}
             onChange={(e) => setDocsDir(e.target.value)}
-            placeholder="docs"
+            placeholder="canvas"
             style={inputStyle}
           />
-          <span style={{ fontSize: 11, color: '#666' }}>Where Mica places new planning files (spec, todo, etc.)</span>
+          <span style={{ fontSize: 11, color: '#666' }}>Where Mica places canvas cards (spec, todo, etc.)</span>
         </label>
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button onClick={() => name.trim() && onSubmit(name.trim(), docsDir.trim() || 'docs', template)} style={btnStyle} disabled={!name.trim()}>
+        <button onClick={() => name.trim() && onSubmit(name.trim(), docsDir.trim() || 'canvas', template)} style={btnStyle} disabled={!name.trim()}>
           Create
         </button>
         <button onClick={onCancel} style={{ ...btnStyle, background: 'transparent' }}>
@@ -260,10 +261,24 @@ function CreateForm({ template, onSubmit, onCancel }: { template: string | null;
   );
 }
 
-function CloneForm({ onSubmit, onCancel }: { onSubmit: (url: string, name: string, docsDir: string) => void; onCancel: () => void }) {
+function CloneForm({
+  templates,
+  onSubmit,
+  onCancel,
+}: {
+  templates: TemplateInfo[];
+  onSubmit: (url: string, name: string, docsDir: string, template: string | null) => void;
+  onCancel: () => void;
+}) {
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
-  const [docsDir, setDocsDir] = useState('docs');
+  // Default to `canvas` for cloned repos — most repos have their own `docs/`,
+  // and putting Mica's canvas there would mix seed cards with the repo's
+  // documentation. `canvas/` keeps them separate.
+  const [docsDir, setDocsDir] = useState('canvas');
+  // Default to the first template (usually cloud-claude) so a cloned repo gets
+  // skills + agents out of the box. User can switch to "None" for a bare clone.
+  const [template, setTemplate] = useState<string | null>(templates[0]?.name ?? null);
   const [cloning, setCloning] = useState(false);
 
   return (
@@ -289,20 +304,37 @@ function CloneForm({ onSubmit, onCancel }: { onSubmit: (url: string, name: strin
         />
       </label>
       <label style={labelStyle}>
-        Planning docs directory
+        Canvas directory
         <input
           value={docsDir}
           onChange={(e) => setDocsDir(e.target.value)}
-          placeholder="docs"
+          placeholder="canvas"
           style={inputStyle}
         />
+        <span style={{ fontSize: 11, color: '#666' }}>Where Mica places canvas cards (kept separate from the repo&apos;s own files)</span>
       </label>
+      {templates.length > 0 && (
+        <label style={labelStyle}>
+          Overlay template
+          <select
+            value={template ?? ''}
+            onChange={(e) => setTemplate(e.target.value || null)}
+            style={{ ...inputStyle, appearance: 'auto' }}
+          >
+            <option value="">None (bare clone, no skills)</option>
+            {templates.map((t) => (
+              <option key={t.name} value={t.name}>{t.name}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: 11, color: '#666' }}>Adds skills, agents, and seed cards alongside the cloned repo</span>
+        </label>
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
         <button
           onClick={() => {
             if (!url.trim()) return;
             setCloning(true);
-            onSubmit(url.trim(), name.trim(), docsDir.trim() || 'docs');
+            onSubmit(url.trim(), name.trim(), docsDir.trim() || 'canvas', template);
           }}
           style={btnStyle}
           disabled={!url.trim() || cloning}

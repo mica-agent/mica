@@ -6,6 +6,10 @@
 import { readFile, writeFile, unlink, readdir, stat, mkdir, rename, rm, cp, symlink } from "fs/promises";
 import { join, relative, dirname, basename, sep } from "path";
 import { existsSync } from "fs";
+import { exec as execCb } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(execCb);
 
 /** The workspace root. Defaults to /project (Docker mount point). */
 export const WORKSPACE_DIR = process.env.PROJECT_DIR || "/project";
@@ -189,7 +193,7 @@ export async function initProject(projectName: string, canvasRoot?: string): Pro
   await mkdir(join(dir, "cards"), { recursive: true });
   await mkdir(join(dir, "chats"), { recursive: true });
 
-  const root = canvasRoot || "docs";
+  const root = canvasRoot || "canvas";
 
   // Create config.json if it doesn't exist
   const configPath = join(dir, "config.json");
@@ -786,37 +790,72 @@ export async function listTemplates(): Promise<TemplateMeta[]> {
 
 /** Create a new project by recursively copying a template directory.
  *  Then runs initProject() to fill any missing .mica defaults. */
-export async function createProjectFromTemplate(projectName: string, templateName: string): Promise<void> {
-  validateProjectName(projectName);
+/** Overlay template content onto an existing project directory. Used by both
+ *  `createProjectFromTemplate` (project dir is fresh) and `cloneProjectFromRepo`
+ *  (project dir contains a git clone and should NOT be clobbered).
+ *
+ *  `cp` runs with `force: false` throughout so files already present in the
+ *  target (from a clone, or seeded earlier) are never overwritten. Patches
+ *  config.json with the project name, canvas root, and template lineage.
+ *  Handles the case where the template's canvas root (e.g. `docs/`) differs
+ *  from the caller's chosen canvas root (e.g. `canvas/`) by copying template
+ *  canvas-root contents into whichever directory the project actually uses.
+ */
+export async function overlayTemplate(
+  projectName: string,
+  templateName: string,
+  options: { canvasRoot?: string } = {},
+): Promise<void> {
   if (!templateName || templateName.includes("/") || templateName.includes("..") || templateName.startsWith(".")) {
     throw new Error(`Invalid template name: ${templateName}`);
   }
   const src = join(TEMPLATES_DIR, templateName);
   const dst = join(WORKSPACE_DIR, projectName);
   if (!existsSync(src)) throw new Error(`Template not found: ${templateName}`);
-  if (existsSync(dst)) throw new Error(`Project already exists: ${projectName}`);
-  await cp(src, dst, { recursive: true, force: false });
-  // Patch config.json's name field if the template included one
-  try {
-    const configPath = join(dst, ".mica", "config.json");
-    const raw = await readFile(configPath, "utf-8");
-    const config = JSON.parse(raw);
-    config.name = projectName;
-    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
-  } catch { /* template didn't include config; initProject will create it */ }
-  // Fill any missing defaults (config.json, canvas-back.md, canvas root dir)
-  await initProject(projectName);
+  if (!existsSync(dst)) throw new Error(`Project directory does not exist: ${projectName}`);
 
-  // Record the template lineage so "Reset canvas-back to template default"
-  // knows which template to read from. Idempotent — only writes if not set.
+  // Templates store their seed canvas files in `canvas/` by convention (matches
+  // the new-project default). Read from there; remap to the project's canvas
+  // root if the caller chose a different name.
+  const templateCanvasRoot = "canvas";
+  const targetCanvasRoot = options.canvasRoot || templateCanvasRoot;
+
+  // Copy every top-level entry from the template except the template's canvas
+  // root, which we may need to remap.
+  const entries = await readdir(src, { withFileTypes: true });
+  for (const e of entries) {
+    if (e.name === templateCanvasRoot) continue;
+    const srcPath = join(src, e.name);
+    const dstPath = join(dst, e.name);
+    await cp(srcPath, dstPath, { recursive: true, force: false, errorOnExist: false });
+  }
+
+  // Copy template's canvas-root seed files into the project's canvas root
+  // (which may or may not be the same name).
+  const srcRoot = join(src, templateCanvasRoot);
+  if (existsSync(srcRoot)) {
+    const dstRoot = join(dst, targetCanvasRoot);
+    await mkdir(dstRoot, { recursive: true });
+    await cp(srcRoot, dstRoot, { recursive: true, force: false, errorOnExist: false });
+  }
+
+  // Patch config.json: set name, canvasRoot override, template lineage. Keeps
+  // any other fields the template or initProject already wrote.
   try {
     const configPath = join(dst, ".mica", "config.json");
-    const cfg = JSON.parse(await readFile(configPath, "utf-8"));
-    if (!cfg.template) {
-      cfg.template = templateName;
-      await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf-8");
+    let config: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try { config = JSON.parse(await readFile(configPath, "utf-8")); } catch { /* ignore parse errors */ }
     }
+    config.name = projectName;
+    if (options.canvasRoot) config.canvasRoot = options.canvasRoot;
+    if (!config.canvasClass) config.canvasClass = "canvas";
+    if (!config.template) config.template = templateName;
+    if (!Array.isArray(config.pinned)) config.pinned = [];
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
   } catch { /* best-effort */ }
+
   // Make skills visible to the Claude Code SDK too — it reads from .claude/skills/
   // while Qwen reads from .qwen/skills/. Symlink `.claude/skills → ../.qwen/skills`
   // so both SDKs see the same SKILL.md files. Skip silently if the template has no
@@ -842,4 +881,43 @@ export async function createProjectFromTemplate(projectName: string, templateNam
       if (f.type === "file") await getOrCreateCardId(projectName, f.name);
     }
   } catch { /* best-effort */ }
+}
+
+export async function createProjectFromTemplate(projectName: string, templateName: string): Promise<void> {
+  validateProjectName(projectName);
+  const dst = join(WORKSPACE_DIR, projectName);
+  if (existsSync(dst)) throw new Error(`Project already exists: ${projectName}`);
+  await mkdir(dst, { recursive: true });
+  // Fill defaults first so initProject doesn't need template-aware logic
+  // (config.json, canvas-back.md, canvas root dir).
+  await initProject(projectName);
+  // Overlay template content. `force: false` inside preserves initProject's
+  // output where it would collide.
+  await overlayTemplate(projectName, templateName);
+}
+
+/** Clone a git repo into a new project directory and optionally overlay a
+ *  template on top (for skills, agents, canvas-back, and seed cards). The
+ *  cloned repo's files are never overwritten — the template fills gaps
+ *  around them. */
+export async function cloneProjectFromRepo(
+  projectName: string,
+  url: string,
+  options: { templateName?: string; canvasRoot?: string } = {},
+): Promise<void> {
+  validateProjectName(projectName);
+  const dst = join(WORKSPACE_DIR, projectName);
+  if (existsSync(dst)) throw new Error(`Project already exists: ${projectName}`);
+
+  console.log(`[mica] Cloning ${url} -> ${dst}`);
+  await execAsync(`git clone ${JSON.stringify(url)} ${JSON.stringify(dst)}`, {
+    timeout: 120000,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+
+  await initProject(projectName, options.canvasRoot);
+
+  if (options.templateName) {
+    await overlayTemplate(projectName, options.templateName, { canvasRoot: options.canvasRoot });
+  }
 }
