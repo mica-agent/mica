@@ -396,6 +396,29 @@
   color: #f87171;
 }
 
+/* Minimize button — icon switches based on parent card's collapsed state.
+   Button has no text content in the JSX; CSS pseudo-element provides the
+   glyph. "−" (minus) when expanded; "+" (plus) when collapsed. Matches the
+   existing meta-card collapse button's pattern so the two paths look
+   identical to users. */
+.wb-card-btn-collapse::after { content: "−"; font-size: 1.1rem; line-height: 1; }
+.wb-card--collapsed .wb-card-btn-collapse::after { content: "+"; }
+
+/* Collapsed state — card shrinks to just its header row. Body and footer
+   are hidden; the header stays full-width and keeps all its buttons (so
+   minimize, flip, edit, delete still work on a collapsed card). The card's
+   height is driven by the header's intrinsic size. */
+.wb-card--collapsed .wb-card-body,
+.wb-card--collapsed .wb-card-footer {
+  display: none !important;
+}
+.wb-card--collapsed {
+  height: auto !important;
+  min-height: 0 !important;
+}
+/* The resize handle is meaningless when the body is hidden. */
+.wb-card--collapsed .wb-card-resize-handle { display: none !important; }
+
 /* ── Card body ───────────────────────────────────── */
 
 .wb-card-body {

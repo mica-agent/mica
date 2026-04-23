@@ -189,13 +189,31 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
               {collapsed ? "+" : "\u2212"}
             </button>
           ) : (
-            <button
-              onClick={(e) => { e.stopPropagation(); setFlipped(!flipped); setBackLoaded(false); }}
-              title={flipped ? "Show content" : "Card info"}
-              className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}
-            >
-              &#8645;
-            </button>
+            <>
+              {/* Minimize — collapses this card to its header only. State
+                  lives in canvas card.js (persisted in layout.json
+                  alongside x/y/w/h), NOT in React: the click dispatches a
+                  custom event, canvas.js toggles .wb-card--collapsed on
+                  this element, and CSS handles both the body-hide and the
+                  button's minus/plus icon swap. */}
+              <button
+                className="wb-card-btn wb-card-btn-collapse"
+                title="Minimize to header (click again to restore)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.dispatchEvent(new CustomEvent("mica-toggle-collapse", {
+                    detail: { filename: file.name },
+                  }));
+                }}
+              />
+              <button
+                onClick={(e) => { e.stopPropagation(); setFlipped(!flipped); setBackLoaded(false); }}
+                title={flipped ? "Show content" : "Card info"}
+                className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}
+              >
+                &#8645;
+              </button>
+            </>
           )}
           {(() => { const e = file.name.split(".").pop()?.toLowerCase(); return e === "html" || e === "htm"; })() && (
             <button

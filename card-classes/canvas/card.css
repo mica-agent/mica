@@ -105,6 +105,17 @@
     color: #8b949e;
 }
 .canvas-meta-overlay-title { flex: 1; font-weight: 600; color: #e6edf3; }
+.canvas-meta-overlay-btn {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 5px;
+    padding: 4px 10px;
+    color: #ccc;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.canvas-meta-overlay-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
 .canvas-meta-overlay-close {
     background: none;
     border: none;
@@ -139,14 +150,9 @@
 .canvas-meta-list .wb-card-header { cursor: default; }
 .canvas-meta-list .wb-card-resize-handle { display: none; }
 
-/* Collapsed meta card in the overlay: only the header is visible. */
-.canvas-meta-list > .wb-card.wb-card--collapsed {
-    min-height: 0;
-}
-.canvas-meta-list > .wb-card.wb-card--collapsed .wb-card-body,
-.canvas-meta-list > .wb-card.wb-card--collapsed .wb-card-footer {
-    display: none;
-}
+/* Collapsed state for meta cards in the overlay inherits the canvas-wide
+   rules from whiteboard.css (.wb-card--collapsed). No local override
+   needed; the meta overlay's flex-column layout handles the stacking. */
 .canvas-freeform > .wb-card {
     position: absolute; width: 320px;
     opacity: 0; transition: opacity 0.3s ease, box-shadow 0.2s;

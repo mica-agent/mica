@@ -24,6 +24,8 @@ const emptyEl = container.querySelector('.project-empty');
 const metaOverlay = container.querySelector('#canvas-meta-overlay');
 const metaOverlayBackdrop = container.querySelector('.canvas-meta-overlay-backdrop');
 const metaOverlayClose = container.querySelector('#canvas-meta-overlay-close');
+const bulkCollapseBtn = container.querySelector('#canvas-bulk-collapse');
+const bulkExpandBtn = container.querySelector('#canvas-bulk-expand');
 
 function openMetaOverlay() {
     metaOverlay.style.display = 'flex';
@@ -36,6 +38,21 @@ metaOverlayClose.addEventListener('click', closeMetaOverlay);
 window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && metaOverlay.style.display !== 'none') closeMetaOverlay();
 });
+
+// Bulk collapse / expand — apply the new state to every card in the
+// freeform area. Persists via the same toggleCardCollapse() path the
+// individual minimize button uses, so there's a single source of truth
+// for layout.json updates.
+bulkCollapseBtn.addEventListener('click', () => applyBulkCollapse(true));
+bulkExpandBtn.addEventListener('click', () => applyBulkCollapse(false));
+function applyBulkCollapse(collapsed) {
+    const all = Array.from(freeform.querySelectorAll('.wb-card'));
+    all.forEach((card) => {
+        const name = card.getAttribute('data-filename');
+        if (!name) return;
+        toggleCardCollapse(name, collapsed);
+    });
+}
 
 // Scope /api/* calls to this card's project. Canvas layout, canvas-root, and
 // project-scoped card-classes all live per-project — two tabs on different
@@ -231,6 +248,10 @@ function positionCard(card) {
             if (pos.z > topZ) topZ = pos.z;
         }
         card.classList.add('wb-card--resized');
+        // Restore collapsed state from layout. CSS applies height:auto so
+        // the card shrinks to its header; the stored w/h is retained so
+        // expanding later returns to the user's previous size.
+        card.classList.toggle('wb-card--collapsed', !!pos.collapsed);
         if (growBounds({ x: pos.x, y: pos.y, w: pos.w || CARD_W, h: pos.h || CARD_H })) persistLayout();
     } else {
         // Auto-position: scan grid slots row-major and pick the FIRST one
@@ -654,6 +675,29 @@ const unsubDeleted = mica.on('file-deleted', (msg) => {
 });
 mica.onDestroy(unsubDeleted);
 
+// -- Collapse / expand individual cards -----------------
+// CardFrame's minimize button dispatches `mica-toggle-collapse` with
+// `{ filename }`. The state lives here (in layout[filename].collapsed),
+// not in React: toggling the CSS class is what drives the visual change
+// and CardFrame reads no state from us — it just sends the signal.
+function toggleCardCollapse(filename, forceValue) {
+    const card = freeform.querySelector(`.wb-card[data-filename="${CSS.escape(filename)}"]`);
+    if (!card) return;
+    const nowCollapsed = typeof forceValue === 'boolean'
+        ? forceValue
+        : !card.classList.contains('wb-card--collapsed');
+    card.classList.toggle('wb-card--collapsed', nowCollapsed);
+    const existing = layout[filename] || { x: card.offsetLeft, y: card.offsetTop, w: card.offsetWidth, h: card.offsetHeight };
+    layout[filename] = { ...existing, collapsed: nowCollapsed };
+    persistLayout();
+}
+const _onToggleCollapse = (ev) => {
+    const name = ev && ev.detail && ev.detail.filename;
+    if (typeof name === 'string' && name) toggleCardCollapse(name);
+};
+window.addEventListener('mica-toggle-collapse', _onToggleCollapse);
+mica.onDestroy(() => window.removeEventListener('mica-toggle-collapse', _onToggleCollapse));
+
 // Coalesce bursts of card-class events (the agent typically copies card.html +
 // card.js + card.css + metadata.json in quick succession; without coalescing,
 // each fires its own buildToolbar and overlapping async fetches duplicate the
@@ -773,30 +817,55 @@ function buildToolbar() {
                 card.style.height = `${cardH}px`;
                 card.classList.add('wb-card--resized');
                 const name = card.getAttribute('data-filename');
-                if (name) layout[name] = { x, y, w: cardW, h: cardH };
+                if (name) layout[name] = { x, y, w: cardW, h: cardH,
+                    collapsed: card.classList.contains('wb-card--collapsed') };
             });
         } else {
-            // Normal tidy: pack in sort order (position-based above) into
-            // rows, keeping each card's current size. The sort order already
-            // reflects the cards' visual rows, so re-packing this way mostly
-            // aligns gaps to EDGE_PAD/GAP without yanking anything far.
+            // Normal tidy: partition by collapse state. Expanded cards pack
+            // into the top region; collapsed cards pack into a compact strip
+            // below them. Position-preserving sort applies within each group
+            // so cards keep their relative left-to-right order. When no
+            // cards are collapsed the second pass is a no-op and this is
+            // identical to the prior behavior.
+            const expanded = cards.filter((c) => !c.classList.contains('wb-card--collapsed'));
+            const collapsedCards = cards.filter((c) => c.classList.contains('wb-card--collapsed'));
+
             layout = {};
             let x = EDGE_PAD, y = EDGE_PAD, rowMaxH = 0;
-            cards.forEach(card => {
-                const w = card.offsetWidth || CARD_W;
-                const h = card.offsetHeight || CARD_H;
-                if (x > EDGE_PAD && x + w > maxWidth - EDGE_PAD) {
-                    y += rowMaxH + GAP;
-                    x = EDGE_PAD;
-                    rowMaxH = 0;
-                }
-                card.style.left = `${x}px`;
-                card.style.top = `${y}px`;
-                if (h > rowMaxH) rowMaxH = h;
-                const name = card.getAttribute('data-filename');
-                if (name) layout[name] = { x, y, w, h };
-                x += w + GAP;
-            });
+
+            const packGroup = (group) => {
+                group.forEach(card => {
+                    const w = card.offsetWidth || CARD_W;
+                    // A collapsed card's offsetHeight is the header row only
+                    // (height:auto in CSS), so it packs tighter automatically.
+                    const h = card.offsetHeight || CARD_H;
+                    if (x > EDGE_PAD && x + w > maxWidth - EDGE_PAD) {
+                        y += rowMaxH + GAP;
+                        x = EDGE_PAD;
+                        rowMaxH = 0;
+                    }
+                    card.style.left = `${x}px`;
+                    card.style.top = `${y}px`;
+                    if (h > rowMaxH) rowMaxH = h;
+                    const name = card.getAttribute('data-filename');
+                    if (name) {
+                        const prior = layout[name] || {};
+                        layout[name] = { ...prior, x, y, w, h,
+                            collapsed: card.classList.contains('wb-card--collapsed') };
+                    }
+                    x += w + GAP;
+                });
+            };
+
+            packGroup(expanded);
+            // Divider gap between the expanded region and the collapsed
+            // strip so users can see the two groups at a glance.
+            if (expanded.length > 0 && collapsedCards.length > 0) {
+                y += rowMaxH + GAP * 2;
+                x = EDGE_PAD;
+                rowMaxH = 0;
+            }
+            packGroup(collapsedCards);
         }
         // Tidy is the ONLY place that shrinks canvas bounds — it's the
         // explicit "clean up" gesture. Recompute from the newly-placed
