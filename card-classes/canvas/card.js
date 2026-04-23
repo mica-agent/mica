@@ -503,27 +503,62 @@ freeform.addEventListener('pointerdown', (e) => {
     window.document.addEventListener('pointerup', onUp);
 });
 
-// -- Double-click on card header = expand/contract shortcut ----------
-// Mirrors clicking the .wb-card-expand-btn. Scoped to .wb-card-header only
-// so a double-click inside the card body (selecting a word in a markdown
-// bubble, dragging a chart, etc.) stays the user's intended action and does
-// not resize the card. Buttons inside the header chrome still opt out so
-// double-clicking e.g. the expand button itself doesn't fire twice.
-// Drag tracks pointer movement; dblclick only fires when the two clicks
-// happen at the same spot (no drag), so header drag and header dblclick
-// don't conflict.
+// -- Double-click on card header = three-state size cycle -------------
+// Cycle: collapsed → normal → expanded → normal → collapsed → …
+// Endpoint states (collapsed, expanded) always step back to normal.
+// From normal, direction decides: `sizeDir` stored per-card on the DOM
+// (data-size-dir). Flip happens at endpoints so the next double-click
+// continues the zigzag. Single-button clicks update sizeDir too so the
+// cycle stays coherent when users mix buttons with double-clicks.
+//
+// Scoped to .wb-card-header only so double-click inside a card's body
+// (selecting a word, dragging a chart) stays the user's intended action.
+// Buttons inside the header chrome still opt out. Header-drag tracks
+// pointer movement; dblclick only fires when the two clicks land at the
+// same spot (no drag), so the two gestures don't conflict.
 freeform.addEventListener('dblclick', (e) => {
     const header = e.target.closest('.wb-card-header');
     if (!header) return;
     if (e.target.closest('.wb-card-btn, .wb-card-actions')) return;
     const card = header.closest('.wb-card');
     if (!card) return;
-    const expandBtn = card.querySelector('.wb-card-expand-btn');
-    if (!expandBtn) return;
     e.preventDefault();
     e.stopPropagation();
-    expandBtn.click();
+    cycleCardSize(card);
 });
+
+function cycleCardSize(card) {
+    const filename = card.getAttribute('data-filename');
+    if (!filename) return;
+    const isCollapsed = card.classList.contains('wb-card--collapsed');
+    const isExpanded = card.classList.contains('wb-card--expanded');
+    const expandBtn = card.querySelector('.wb-card-expand-btn');
+
+    if (isCollapsed) {
+        // Endpoint — step back to normal. Next cycle step from normal
+        // should continue upward (toward expanded).
+        toggleCardCollapse(filename, false);
+        card.dataset.sizeDir = 'up';
+        return;
+    }
+    if (isExpanded) {
+        // Endpoint — contract to normal via the existing expand-btn
+        // click handler (owns the prevLayout restore). Next step from
+        // normal should continue downward (toward collapsed).
+        if (expandBtn) expandBtn.click();
+        card.dataset.sizeDir = 'down';
+        return;
+    }
+    // Normal state — step in the stored direction. Default 'up' means
+    // a fresh card's first double-click takes it to Expanded, matching
+    // users' "zoom in" expectation.
+    const dir = card.dataset.sizeDir || 'up';
+    if (dir === 'up') {
+        if (expandBtn) expandBtn.click();
+    } else {
+        toggleCardCollapse(filename, true);
+    }
+}
 
 // -- Expand/contract a card to 80% of viewport ----------
 // Click .wb-card-expand-btn → toggle .wb-card--expanded on the parent card.
@@ -542,6 +577,12 @@ freeform.addEventListener('click', (e) => {
     // Smooth-animate the position/size change. See animateLayoutChange
     // for lifecycle; safely removed if the user grabs the card mid-animation.
     animateLayoutChange([card]);
+    const wasExpanded = card.classList.contains('wb-card--expanded');
+    // Record the cycle direction BEFORE we flip the class so the double-
+    // click loop reads a coherent value regardless of where the user
+    // clicked from: pressing the button at Expanded is a contract (down);
+    // pressing it at Normal is an expand (up).
+    card.dataset.sizeDir = wasExpanded ? 'down' : 'up';
     if (card.classList.contains('wb-card--expanded')) {
         // Contract — restore to saved layout
         const saved = card.dataset.prevLayout;
@@ -712,6 +753,12 @@ function toggleCardCollapse(filename, forceValue) {
         collapsed: nowCollapsed,
     };
     persistLayout();
+    // Keep the double-click cycle direction coherent with button actions.
+    // sizeDir records the DIRECTION JUST TAKEN. A collapse (any→Collapsed)
+    // is downward; an uncollapse (Collapsed→Normal) is upward. Reading
+    // sizeDir at a later double-click from Normal decides whether to
+    // continue up (to Expanded) or down (back to Collapsed).
+    card.dataset.sizeDir = nowCollapsed ? 'down' : 'up';
 }
 const _onToggleCollapse = (ev) => {
     const name = ev && ev.detail && ev.detail.filename;
