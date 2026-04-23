@@ -51,22 +51,31 @@ function _reportError(e){
     {method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({error:e.message||String(e)})}).catch(function(){});
 }
+// _runCb: run a callback, reporting BOTH synchronous throws AND async
+// rejections (when the callback is async and returns a Promise). Card
+// authors routinely write `async () => { await mica.fetch(...); }` for
+// timers and event handlers — a sync try/catch would only see the pre-
+// await part of those. This wrapper also chains a .catch on the returned
+// Promise so post-await errors are reported too. Scoped to this card's
+// shim (no window-level unhandledrejection listener needed, no cross-
+// card fanout).
+function _runCb(fn){return function(){try{var r=fn.apply(this,arguments);if(r&&typeof r.catch==='function')r.catch(_reportError);return r;}catch(e){_reportError(e)}}}
 var _si=window.setInterval.bind(window),_st=window.setTimeout.bind(window);
 var _ci=window.clearInterval.bind(window),_ct=window.clearTimeout.bind(window);
-function setInterval(fn,ms){var w=function(){try{fn()}catch(e){_reportError(e)}};var id=_si(w,ms);_cleanups.push(function(){_ci(id)});return id}
-function setTimeout(fn,ms){var w=function(){try{fn()}catch(e){_reportError(e)}};var id=_st(w,ms);_cleanups.push(function(){_ct(id)});return id}
+function setInterval(fn,ms){var id=_si(_runCb(fn),ms);_cleanups.push(function(){_ci(id)});return id}
+function setTimeout(fn,ms){var id=_st(_runCb(fn),ms);_cleanups.push(function(){_ct(id)});return id}
 function clearInterval(id){_ci(id)}
 function clearTimeout(id){_ct(id)}
 var _raf=window.requestAnimationFrame.bind(window),_caf=window.cancelAnimationFrame.bind(window);
 var _lastRaf=0;
-function requestAnimationFrame(fn){_lastRaf=_raf(function(){try{fn()}catch(e){_reportError(e)}});return _lastRaf}
+function requestAnimationFrame(fn){_lastRaf=_raf(_runCb(fn));return _lastRaf}
 function cancelAnimationFrame(id){_caf(id)}
 _cleanups.push(function(){_caf(_lastRaf)});
 var _resizeCbs=[];
 var _origAEL=window.addEventListener.bind(window);
 var _origREL=window.removeEventListener.bind(window);
 window.addEventListener=function(t,fn,o){
-  var w=function(ev){try{fn(ev)}catch(e){_reportError(e)}};
+  var w=_runCb(fn);
   if(t==='resize'){_resizeCbs.push(w);return}
   _origAEL(t,w,o);_cleanups.push(function(){_origREL(t,w,o)});
 };
@@ -274,12 +283,21 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           scripts.forEach((oldScript) => {
             if (oldScript.getAttribute("src")) { oldScript.remove(); return; }
             const newScript = document.createElement("script");
+            // Refresh path (mica.refresh() re-runs). Same error contract
+            // as the initial script: chain reporting off the async
+            // IIFE's promise so post-await rejections reach the server.
             newScript.textContent =
               `(function(){` +
               `const _m=document.currentScript.__mica;` +
-              `try{(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
-              `_m,document.currentScript.parentElement);` +
-              `}catch(e){console.error("[card-runtime] Script error in ${filename}:",e);}` +
+              `const _ph={'X-Mica-Project':_m.project||''};` +
+              `(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
+              `_m,document.currentScript.parentElement)` +
+              `.catch(function(e){` +
+              `console.error("[card-runtime] Script error in ${filename}:",e);` +
+              `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/error',` +
+              `{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_ph),` +
+              `body:JSON.stringify({error:(e&&e.message)||String(e)})}).catch(()=>{});` +
+              `});` +
               `})()`;
             oldScript.remove();
             (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
@@ -505,25 +523,36 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           Array.from(oldScript.attributes).forEach((attr) => {
             newScript.setAttribute(attr.name, attr.value);
           });
-          // Wrap in try-catch so a single card's script failure doesn't crash the page.
-          // On error (sync or async), report back to server so agents can auto-fix.
-          // The /ok and /error fetches here run OUTSIDE CARD_SHIM's closure,
-          // so they use window.fetch directly (the shim's fetch-override is
-          // scoped to the async IIFE above). We explicitly pass X-Mica-Project
-          // so the server broadcasts card-error events to the right project.
+          // Run the async IIFE and chain /ok or /error off its RESULT
+          // promise. Previously a sync try/catch guarded the invocation
+          // and fired /ok immediately after — which meant post-await
+          // errors in the card script became unreported dangling
+          // rejections, and /ok could fire even when the script would
+          // ultimately fail. .then/.catch on the returned promise
+          // reports sync errors, initial-chain async errors, and gates
+          // the /ok fetch on actual success.
+          //
+          // The /ok and /error fetches run OUTSIDE CARD_SHIM's closure,
+          // so they use window.fetch directly (the shim's fetch-override
+          // is scoped to the async IIFE). We explicitly pass
+          // X-Mica-Project so the server broadcasts card-error events
+          // to the right project.
           newScript.textContent =
             `(function(){` +
             `const _m=document.currentScript.__mica;` +
             `const _ph={'X-Mica-Project':_m.project||''};` +
-            `try{(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
-            `_m,document.currentScript.parentElement);` +
+            `(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
+            `_m,document.currentScript.parentElement)` +
+            `.then(function(){` +
             `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/ok',{method:'POST',headers:_ph}).catch(function(){});` +
-            `}catch(e){` +
+            `})` +
+            `.catch(function(e){` +
             `console.error("[card-runtime] Script error in ${filename}:",e);` +
             `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/error',` +
             `{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_ph),` +
-            `body:JSON.stringify({error:e.message||String(e)})}).catch(()=>{});` +
-            `}})()`;
+            `body:JSON.stringify({error:(e&&e.message)||String(e)})}).catch(()=>{});` +
+            `});` +
+            `})()`;
           oldScript.remove();
           (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
           el.appendChild(newScript);
