@@ -1,0 +1,6 @@
+{
+  "extension": ".gitrepo",
+  "badge": "GIT",
+  "defaultTitle": "Git",
+  "dependencies": { "scripts": [], "styles": [] }
+}

@@ -71,6 +71,7 @@ import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/p
 import { createLlmChatHandler } from "./plugins/llmChat.js";
 import { createSkillComposeHandler } from "./plugins/skillCompose.js";
 import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
+import { registerGitEndpoints } from "./plugins/git.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata } from "./cardValidators.js";
 
@@ -821,6 +822,11 @@ app.put("/api/canvas/config", async (req, res) => {
     res.status(500).json({ error: (err as Error).message });
   }
 });
+
+// Git endpoints (status / stage / unstage / commit / push / pull / init)
+// consumed by the .gitrepo card class. Implementation in plugins/git.ts
+// so this file stays focused on routing and session wiring.
+registerGitEndpoints(app, { getRequestProject });
 
 // LLM server status — for chat cards to show loading state
 app.get("/api/llm/status", (_req, res) => {

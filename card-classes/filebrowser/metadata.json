@@ -1,0 +1,6 @@
+{
+  "extension": ".filebrowser",
+  "badge": "DIR",
+  "defaultTitle": "Files",
+  "dependencies": { "scripts": [], "styles": [] }
+}

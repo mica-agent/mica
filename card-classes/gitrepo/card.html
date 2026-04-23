@@ -1,0 +1,47 @@
+<div id="gr-root" class="gr-root">
+  <div id="gr-header" class="gr-header">
+    <span id="gr-branch" class="gr-branch">…</span>
+    <span id="gr-counters" class="gr-counters"></span>
+    <span class="gr-spacer"></span>
+    <button id="gr-refresh" class="gr-btn" title="Refresh status">&#8634;</button>
+    <button id="gr-pull" class="gr-btn" title="Pull (fast-forward only)">Pull</button>
+    <button id="gr-push" class="gr-btn gr-btn--primary" title="Push to origin">Push</button>
+  </div>
+
+  <div id="gr-notgit" class="gr-notgit" style="display:none;">
+    <div class="gr-notgit-title">Not a git repository</div>
+    <div class="gr-notgit-body">This project has no <code>.git</code> directory yet. You can start tracking it here.</div>
+    <button id="gr-init" class="gr-btn gr-btn--primary">git init</button>
+  </div>
+
+  <div id="gr-panels" class="gr-panels">
+    <section class="gr-section" data-bucket="staged">
+      <header class="gr-section-head">
+        <span class="gr-section-title">Staged</span>
+        <span class="gr-section-count" data-count></span>
+      </header>
+      <ul class="gr-list" data-list></ul>
+    </section>
+    <section class="gr-section" data-bucket="unstaged">
+      <header class="gr-section-head">
+        <span class="gr-section-title">Modified</span>
+        <span class="gr-section-count" data-count></span>
+      </header>
+      <ul class="gr-list" data-list></ul>
+    </section>
+    <section class="gr-section" data-bucket="untracked">
+      <header class="gr-section-head">
+        <span class="gr-section-title">Untracked</span>
+        <span class="gr-section-count" data-count></span>
+      </header>
+      <ul class="gr-list" data-list></ul>
+    </section>
+  </div>
+
+  <div id="gr-commitbox" class="gr-commitbox">
+    <textarea id="gr-commit-msg" class="gr-commit-msg" placeholder="Commit message" rows="2"></textarea>
+    <button id="gr-commit" class="gr-btn gr-btn--primary" disabled>Commit</button>
+  </div>
+
+  <div id="gr-toast" class="gr-toast" style="display:none;"></div>
+</div>
