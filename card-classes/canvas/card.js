@@ -20,11 +20,34 @@ const metaList = container.querySelector('#canvas-meta-list');
 const metaToggle = container.querySelector('#canvas-meta-toggle');
 const metaResize = container.querySelector('#canvas-meta-resize');
 
-// -- Meta sidebar (collapsible + drag-to-resize). State + width persist per
-//    device class via localStorage so phone vs desktop can have independent layouts.
+// -- Meta sidebar (hidden vs collapsed vs expanded; drag-to-resize).
+//    Three independent states per device class, all persisted via
+//    localStorage (no server round trips for a presentation-only choice):
+//      hidden    → display:none via canvas-meta-sidebar--hidden (set by gear)
+//      collapsed → 36px bar with toggle button (set by in-sidebar toggle)
+//      expanded  → 360px default, user-resizable (set by in-sidebar toggle)
 const _devSuffix = window.innerWidth < 768 ? 'phone' : window.innerWidth < 1200 ? 'tablet' : 'desktop';
 const META_KEY = 'mica-meta-sidebar-' + _devSuffix;
 const META_W_KEY = META_KEY + '-width';
+const META_HIDDEN_KEY = META_KEY + '-hidden';
+
+// Device-class defaults for the hidden flag: small screens default to
+// hidden (meta takes too much of limited viewport), wide screens default
+// to visible (room to spare, users see it immediately). User's explicit
+// toggle wins from then on.
+function metaHiddenDefault() {
+    return _devSuffix === 'phone' || _devSuffix === 'tablet';
+}
+function isMetaHidden() {
+    const v = localStorage.getItem(META_HIDDEN_KEY);
+    if (v === '1') return true;
+    if (v === '0') return false;
+    return metaHiddenDefault();
+}
+function setMetaHidden(hide) {
+    localStorage.setItem(META_HIDDEN_KEY, hide ? '1' : '0');
+    metaSidebar.classList.toggle('canvas-meta-sidebar--hidden', hide);
+}
 
 function applyMetaState(expanded) {
     metaSidebar.classList.toggle('canvas-meta-sidebar--expanded', expanded);
@@ -37,6 +60,7 @@ function applyMetaState(expanded) {
     }
 }
 applyMetaState(localStorage.getItem(META_KEY) === '1');
+metaSidebar.classList.toggle('canvas-meta-sidebar--hidden', isMetaHidden());
 metaToggle.addEventListener('click', function(e) {
     e.stopPropagation();
     const willExpand = metaSidebar.classList.contains('canvas-meta-sidebar--collapsed');
@@ -892,7 +916,94 @@ function buildToolbar() {
             });
             toolbar.appendChild(btn);
         });
+
+        // Gear button — rightmost. Appending AFTER the + creation buttons
+        // so the DOM order is [Tidy][spacer][+ buttons][gear]; the spacer
+        // pushes creation buttons + gear to the right together, and within
+        // that group the gear lands at the far right edge.
+        if (myGen === toolbarBuildGen) appendGearButton();
     }).catch(err => { console.error('[canvas] Failed to load card classes:', err); });
+}
+
+// -- Gear menu ------------------------------------------
+// Registry of toggle items. Each entry drives one menu row. Adding a new
+// toggle is one new object — the menu render is generic.
+const gearItems = [
+    {
+        id: 'meta-visible',
+        label: 'Meta panel',
+        get: () => !isMetaHidden(),
+        set: (v) => setMetaHidden(!v),
+    },
+    // Future items: theme, debug overlays, card filters, etc.
+];
+
+let gearMenuEl = null;
+let gearMenuOutsideHandler = null;
+
+function closeGearMenu() {
+    if (gearMenuEl) { gearMenuEl.remove(); gearMenuEl = null; }
+    if (gearMenuOutsideHandler) {
+        window.removeEventListener('click', gearMenuOutsideHandler);
+        gearMenuOutsideHandler = null;
+    }
+}
+
+function openGearMenu(anchorBtn) {
+    closeGearMenu();
+    const menu = window.document.createElement('div');
+    menu.className = 'canvas-gear-menu';
+    gearItems.forEach((item, i) => {
+        const row = window.document.createElement('label');
+        row.className = 'canvas-gear-item';
+        const cb = window.document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!item.get();
+        cb.addEventListener('change', () => { item.set(cb.checked); });
+        const span = window.document.createElement('span');
+        span.textContent = item.label;
+        row.appendChild(cb);
+        row.appendChild(span);
+        menu.appendChild(row);
+        if (i < gearItems.length - 1) {
+            const div = window.document.createElement('div');
+            div.className = 'canvas-gear-divider';
+            menu.appendChild(div);
+        }
+    });
+
+    // Anchor top-right of the gear button, offset by a few px so it
+    // doesn't clip the button. Position relative to .canvas-root so it
+    // layers correctly inside the card.
+    const root = container.querySelector('.canvas-root');
+    root.appendChild(menu);
+    const rootRect = root.getBoundingClientRect();
+    const btnRect = anchorBtn.getBoundingClientRect();
+    menu.style.top = (btnRect.bottom - rootRect.top + 4) + 'px';
+    menu.style.right = (rootRect.right - btnRect.right) + 'px';
+    gearMenuEl = menu;
+
+    // Close on outside click. Defer one tick so this very click (which
+    // opened the menu) doesn't immediately close it.
+    gearMenuOutsideHandler = (ev) => {
+        if (!gearMenuEl) return;
+        if (gearMenuEl.contains(ev.target) || anchorBtn.contains(ev.target)) return;
+        closeGearMenu();
+    };
+    setTimeout(() => { window.addEventListener('click', gearMenuOutsideHandler); }, 0);
+}
+
+function appendGearButton() {
+    const btn = window.document.createElement('button');
+    btn.className = 'toolbar-btn canvas-gear-btn';
+    btn.textContent = '⚙';   // ⚙
+    btn.title = 'Canvas settings';
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (gearMenuEl) closeGearMenu();
+        else openGearMenu(btn);
+    });
+    toolbar.appendChild(btn);
 }
 
 buildToolbar();
