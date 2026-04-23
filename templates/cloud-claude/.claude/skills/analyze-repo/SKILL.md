@@ -73,12 +73,43 @@ chunk that one subagent can analyze independently. Heuristic:
 
 ### Size budget — the load-bearing constraint
 
-Each subagent runs in a context slot of roughly 65K tokens (sometimes
-larger; depends on the llama-server / Claude configuration). After
-the system prompt, canvas baseline, and task prompt eat ~20K tokens
-of that, a subagent has **≈ 40K tokens for actual file reading and
-analysis**. That works out to about **8000 lines of source code**
-at typical token density.
+Each subagent runs in a context slot whose size depends on the
+configured model (llama-server's `n_ctx`, Claude's per-model window,
+etc.). After the system prompt, canvas baseline, and task prompt
+consume ~20K tokens, the rest is your read budget. The line budget
+per module is derived from it at ~5 tokens per line.
+
+**Determine your budget before sizing modules.** Try in this order:
+
+1. **Project override.** Check `.mica/config.json` for an
+   `analyzeRepo.lineBudgetPerModule` field. If present, use it
+   verbatim — the user has tuned it for this project.
+
+2. **Auto-detect from llama-server.** If the project uses the Qwen
+   backend (llama-server), query its running context size:
+   ```bash
+   curl -s http://127.0.0.1:8012/props \
+     | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('default_generation_settings',{}).get('n_ctx', 0))"
+   ```
+   If you get a non-zero number (e.g. 65536, 262144, or 1048576),
+   compute: `budget = (n_ctx - 20000) / 5`. At 65K this is ~9000
+   lines; at 256K it's ~47000; at 1M it's ~200000.
+
+3. **Derive from your own model's context window.** If you're
+   running under Claude or an OpenRouter-routed model, you know
+   your own `n_ctx` — it's not the local llama-server's. Use it:
+   `budget = (your_n_ctx - 20000) / 5`. Typical numbers:
+   - Claude Sonnet / Opus (200K window): budget ≈ 36000 lines
+   - GPT-4o via OpenRouter (128K): ≈ 21000
+   - Gemini 2.5 Pro via OpenRouter (2M): ≈ 400000
+   - Llama 3.3 70B via OpenRouter (128K): ≈ 21000
+
+4. **Final fallback.** If none of the above apply and you can't
+   introspect your own context, use 8000 lines. Safe universal
+   default that won't overrun any mainstream model.
+
+Report the budget you chose in the Phase 1 summary so the user can
+see it and override if they disagree.
 
 **Before finalizing the module list, run a size estimate.** Use
 `run_shell_command` (`is_background: false`) to count lines across
@@ -91,7 +122,7 @@ wc -l <repo>/src/<module>/**/*.{c,h,py,ts,tsx,js,go,rs,rb,java}
 
 For every module, compute its total line count.
 
-**Split any module whose total exceeds 8000 lines.** Splitting rules,
+**Split any module whose total exceeds your budget.** Splitting rules,
 in priority order:
 
 1. **Obvious seams** — sub-directory (`drivers/` → `drivers-disk`,
@@ -101,8 +132,8 @@ in priority order:
    (`dvXXX.c`, `netXXX.c`), group by prefix.
 3. **Halve by file list** — last resort; split the sorted file list
    into two or more equal-size chunks named `<module>-a`,
-   `<module>-b`, etc. Each resulting module should land under the
-   8000-line budget.
+   `<module>-b`, etc. Each resulting module should land under your
+   computed budget.
 
 **Merge any module whose total is trivially small** (<300 lines,
 <3 files) into a neighbour or the `misc` bucket. Separate subagents
@@ -123,7 +154,8 @@ including the line count per module so it's visible to the user:
   "language": "<primary language>",
   "buildSystem": "<e.g. npm, cargo, poetry>",
   "topLevelTree": "<annotated tree, plain text>",
-  "lineBudgetPerModule": 8000,
+  "lineBudgetPerModule": <computed from /props or config override>,
+  "budgetSource": "<one of: 'config-override', 'llama-server-detected', 'fallback-default'>",
   "modules": [
     {
       "name": "auth",
