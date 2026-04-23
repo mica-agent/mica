@@ -108,10 +108,18 @@ Available without import:
 | `mica.files.url(path)` | `(path) => string` — URL for `<img src>` / `<embed>` / download links |
 | `mica.cardClasses.list()` | `async () => [{ name, builtIn, format }]` |
 | `mica.fetch(url, opts?)` | `async (url, { method?, headers?, body?, timeout? }) => { status, headers, body, durationMs, error?, errorCode?, truncated? }` — server-proxied HTTP (bypasses CORS). SSRF-protected (blocks private/loopback IPs). Rate-limited 120 req/60s per project. 10MB response cap, 60s max timeout. **Always resolves**; check `errorCode` then `status`. See "External HTTP" section below. |
-| `mica.on(event, cb)` | subscribe; returns unsub fn. Events: `file-changed`, `file-created`, `file-deleted`, `layout-changed` |
+| `mica.on(event, cb)` | subscribe; returns unsub fn. Events: `file-changed`, `file-created`, `file-deleted`, `layout-changed`, `card-error` |
 | `mica.onDestroy(cb)` | cleanup on unmount |
 | `mica.openChannel(fn, args)` | bidirectional stream to a server plugin |
 | `mica.refresh()` | reload the card (e.g. after external file change) |
+| `mica.reportError(message)` | fire-and-forget; surfaces `message` as a red "Send to agent" bubble in chat cards across the project. Use inside a catch block when your card also shows its own toast but you want the agent to know. |
+
+**The above table is exhaustive for `mica.files.*` and `mica.cardClasses.*`.** These namespaces are Proxy-guarded — calling a method that doesn't exist (e.g. `mica.files.append`, `mica.files.exists`, `mica.files.move`) throws `TypeError: mica.files has no method 'X'. Known: list, read, readBinary, write, delete, url.` AND auto-reports to chat. If you need to append to a file, the pattern is **read → concat → write**:
+
+```js
+const existing = await mica.files.read('docs/log.md').catch(() => '');
+await mica.files.write('docs/log.md', existing + '\n' + newLine);
+```
 
 **Prefer `mica.files.*` over raw `fetch('/api/files/...')`.** The helpers handle URL encoding, the `source` field for writes, and field-name normalization — you can't hallucinate endpoint paths or response shapes if you use them.
 

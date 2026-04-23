@@ -323,6 +323,58 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         return h;
       };
 
+      // Fire-and-forget error report to the server. Chat cards listen for the
+      // resulting `card-error` broadcast and render a "Send to agent" bubble.
+      // Runs OUTSIDE CARD_SHIM's fetch wrapper — uses window.fetch directly
+      // with an explicit X-Mica-Project header. Never throws; errors during
+      // reporting are swallowed.
+      const reportError = (message: string): void => {
+        try {
+          fetch(`/api/cards/${encodeURIComponent(filename)}/error`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Mica-Project": project },
+            body: JSON.stringify({ error: message }),
+          }).catch(() => {});
+        } catch {
+          /* best-effort */
+        }
+      };
+
+      // Wrap a namespace object so unknown method access returns a helpful
+      // shadow function that (when called) reports the hallucination to the
+      // server AND throws a descriptive error listing the real methods.
+      //
+      // Why this exists: agents regularly invent methods like
+      // `mica.files.append(...)` that don't exist. Without a guard, the call
+      // throws `TypeError: ... is not a function` — opaque, and if the card's
+      // own try/catch displays a local toast, the chat never sees the error
+      // so the user has to manually describe it to the agent. The Proxy turns
+      // every hallucinated call into (1) a detailed TypeError with a
+      // "known methods" list and (2) a chat-surfacing card-error report.
+      //
+      // Property READ returns a shadow function — not a throw — so existence
+      // checks like `if (mica.files.futureThing)` stay safe (function is
+      // truthy). The throw only happens when the shadow is CALLED, matching
+      // native JS behaviour: `obj.missing` returns undefined; `obj.missing()`
+      // throws.
+      const guardNamespace = <T extends object>(target: T, name: string): T => {
+        const known = Object.keys(target).join(", ");
+        return new Proxy(target, {
+          get(t, prop, receiver) {
+            if (prop in t || typeof prop === "symbol") return Reflect.get(t, prop, receiver);
+            const propName = String(prop);
+            return function hallucinatedMethod(): never {
+              const msg = `mica.${name} has no method '${propName}'. Known: ${known}.`;
+              reportError(msg);
+              throw new TypeError(msg);
+            };
+          },
+          has(t, prop) {
+            return prop in t;
+          },
+        });
+      };
+
       const files = {
         /** List all files and directories under the project.
          *  `isFile` and `isFolder` are always opposites — both provided so you can
@@ -430,8 +482,13 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         exports: exportFns || [],
         /** Get the instance file content. Returns cached string or Promise. Use with await. */
         getContent: () => _cachedContent !== null ? _cachedContent : _contentPromise,
-        files,
-        cardClasses,
+        files: guardNamespace(files, "files"),
+        cardClasses: guardNamespace(cardClasses, "cardClasses"),
+        /** Surface an error to chat. Chat cards listen for `card-error` and
+         *  render a "Send to agent" bubble with this message. Use inside
+         *  try/catch when your card handles its own UI (e.g. a toast) but
+         *  you also want the agent to know. Fire-and-forget; never throws. */
+        reportError,
         /** Proxy HTTP request through the Mica server. The server enforces
          *  SSRF protection (resolves DNS, blocks private/loopback IPs), a
          *  per-project rate limit, a response-size cap, and redacts common
