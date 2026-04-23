@@ -10,7 +10,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import type { CanvasFile } from "../api/canvasFiles";
-import { fetchCardBack, saveCardBack, fetchFileContent, getFileUrl } from "../api/canvasFiles";
+import { fetchCardBack, saveCardBack, getFileUrl } from "../api/canvasFiles";
 import CardRuntime from "./CardRuntime";
 
 interface RenderedCardData {
@@ -32,24 +32,20 @@ interface Props {
 
 function getFileType(filename: string): string {
   const ext = filename.split(".").pop()?.toLowerCase() || "";
-  if (ext === "md" || ext === "markdown") return "markdown";
-  if (ext === "mmd" || ext === "mermaid") return "mermaid";
-  if (ext === "json") return "json";
-  if (ext === "html" || ext === "htm") return "html";
   if (["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext)) return "image";
   if (["pdf"].includes(ext)) return "binary";
-  return "text";
+  // Everything else is resolved via the card-class registry. Files with no
+  // class render as the "???" unknown-type placeholder (see body render
+  // below), not as a text fallback. Text files have their own card class
+  // (card-classes/text/); other formats need a class to render.
+  return "unknown";
 }
 
 function getFileBadge(type: string): string {
   switch (type) {
-    case "markdown": return "MD";
-    case "mermaid": return "MMD";
-    case "json": return "JSON";
-    case "html": return "HTML";
     case "image": return "IMG";
     case "binary": return "BIN";
-    default: return "TXT";
+    default: return "???";
   }
 }
 
@@ -69,13 +65,11 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
   const [renderedCard, setRenderedCard] = useState<RenderedCardData | null>(null);
   const [renderChecked, setRenderChecked] = useState(false);
 
-  // Lazily loaded text content for fallback rendering
-  const [textContent, setTextContent] = useState<string | null>(null);
-
   const fileType = getFileType(file.name);
   // Prefer the badge the server resolved from metadata.json (sent with the
   // file list — synchronous on mount, no flash). Fall back to renderedCard
-  // metadata once loaded, then to the extension-based default.
+  // metadata once loaded, then to the extension-based default ("???" for
+  // anything without a registered card class).
   const badge = file.badge || renderedCard?.meta?.badge || getFileBadge(fileType);
 
   // Load card class (card.html format)
@@ -149,22 +143,12 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
       });
   }, [file.name, file.modifiedAt, project]);
 
-  // Load text content for fallback renderer (no card class)
-  useEffect(() => {
-    if (renderedCard?.html || !renderChecked) return;
-    if (fileType === "image" || fileType === "binary") return;
-
-    fetchFileContent(project, file.name)
-      .then(setTextContent)
-      .catch(() => setTextContent("(failed to load)"));
-  }, [file.name, file.modifiedAt, renderChecked, renderedCard, fileType, project]);
-
   // Check overflow
   useEffect(() => {
     const el = bodyRef.current;
     if (!el || flipped) return;
     setOverflows(el.scrollHeight > el.clientHeight + 4);
-  }, [textContent, flipped]);
+  }, [flipped]);
 
   // Load card back on flip
   useEffect(() => {
@@ -213,7 +197,7 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
               &#8645;
             </button>
           )}
-          {fileType === "html" && (
+          {(() => { const e = file.name.split(".").pop()?.toLowerCase(); return e === "html" || e === "htm"; })() && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -326,12 +310,23 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
         <div className="wb-card-body" style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 8 }}>
           <img src={getFileUrl(file.name)} alt={file.name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
         </div>
-      ) : textContent !== null ? (
-        <div
-          ref={bodyRef}
-          className={`wb-card-body ${overflows ? "wb-card-body--overflows" : ""}`}
-        >
-          <FileContent content={textContent} type={fileType} />
+      ) : fileType === "binary" ? (
+        <div className="wb-card-body" style={{ padding: 16, color: "#888", fontSize: 13 }}>
+          Binary file — open to view
+        </div>
+      ) : renderChecked ? (
+        // Class check has run and no class resolved. This is the explicit
+        // "unknown file type" state — a file at the canvas root whose
+        // extension has no matching card class. Before the race fix, this
+        // could also happen transiently while a class was still being
+        // written; now card-class-changed forces a re-check, so if it's
+        // visible here it's genuinely unknown. Loudly visible so the user
+        // or agent notices.
+        <div className="wb-card-body" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, gap: 10, color: "#888" }}>
+          <div style={{ fontSize: 40, fontWeight: 700, color: "#555", letterSpacing: 2 }}>???</div>
+          <div style={{ fontSize: 12, textAlign: "center", lineHeight: 1.5 }}>
+            No card class for <code style={{ color: "#c9a45d", background: "rgba(255,255,255,0.04)", padding: "1px 6px", borderRadius: 3 }}>.{file.name.split(".").pop()?.toLowerCase() || ""}</code>
+          </div>
         </div>
       ) : (
         <div className="wb-card-body" style={{ padding: 16, color: "#666" }}>Loading...</div>
@@ -348,74 +343,3 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
   );
 }
 
-// ── File Content Renderer ────────────────────────────────────
-
-function FileContent({ content, type }: { content: string; type: string }) {
-  switch (type) {
-    case "markdown":
-      return (
-        <div
-          style={{ color: "#ddd", fontSize: 14, lineHeight: 1.6, padding: 16 }}
-          dangerouslySetInnerHTML={{ __html: simpleMarkdown(content) }}
-        />
-      );
-    case "json":
-      return <pre style={{ color: "#b8d4e3", fontSize: 12, margin: 0, whiteSpace: "pre-wrap", padding: 16 }}>{content}</pre>;
-    default:
-      return <pre style={{ color: "#ccc", fontSize: 13, margin: 0, whiteSpace: "pre-wrap", padding: 16 }}>{content}</pre>;
-  }
-}
-
-function simpleMarkdown(md: string): string {
-  md = md.replace(/^```markdown\n([\s\S]*?)```$/gm, (_m, inner) => inner);
-
-  const fenced: string[] = [];
-  md = md.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
-    fenced.push(`<pre style="background:rgba(0,0,0,0.3);padding:8px 10px;border-radius:6px;overflow-x:auto;margin:6px 0"><code style="font-size:12px;font-family:monospace">${code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>`);
-    return `__FENCED__${fenced.length - 1}__`;
-  });
-
-  const tables: string[] = [];
-  md = md.replace(/(^\|.+\|\n?)+/gm, (block) => {
-    const rows = block.trim().split("\n");
-    let html = '<table style="border-collapse:collapse;margin:6px 0;font-size:12px;width:100%">';
-    rows.forEach((row, ri) => {
-      if (/^\|[\s-:|]+\|$/.test(row.trim())) return;
-      const cells = row.split("|").filter((_c, i, a) => i > 0 && i < a.length - 1);
-      const tag = ri === 0 ? "th" : "td";
-      html += "<tr>";
-      cells.forEach((cell) => {
-        const style = tag === "th" ? "background:rgba(255,255,255,0.05);font-weight:600;" : "";
-        html += `<${tag} style="border:1px solid #333;padding:4px 8px;${style}">${cell.trim()}</${tag}>`;
-      });
-      html += "</tr>";
-    });
-    html += "</table>";
-    tables.push(html);
-    return `__TABLE__${tables.length - 1}__`;
-  });
-
-  let result = md
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/`(.+?)`/g, "<code style='background:rgba(255,255,255,0.06);padding:1px 4px;border-radius:3px'>$1</code>")
-    .replace(/^- \[x\] (.+)$/gm, '<div style="opacity:0.6"><input type="checkbox" checked disabled /> <s>$1</s></div>')
-    .replace(/^- \[ \] (.+)$/gm, '<div><input type="checkbox" disabled /> $1</div>')
-    .replace(/^- (.+)$/gm, "<li>$1</li>")
-    .replace(/\n\n/g, "<br/><br/>")
-    .replace(/\n/g, "<br/>");
-
-  for (let i = 0; i < fenced.length; i++) {
-    result = result.replace(`__FENCED__${i}__`, fenced[i]);
-  }
-  for (let i = 0; i < tables.length; i++) {
-    result = result.replace(`__TABLE__${i}__`, tables[i]);
-  }
-  return result;
-}

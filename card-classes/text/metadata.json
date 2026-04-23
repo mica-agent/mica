@@ -1,0 +1,6 @@
+{
+  "extension": ".txt",
+  "badge": "TXT",
+  "defaultTitle": "Text",
+  "dependencies": { "scripts": [], "styles": [] }
+}

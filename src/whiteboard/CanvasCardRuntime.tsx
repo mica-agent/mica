@@ -168,19 +168,34 @@ export default function CanvasCardRuntime({ project }: Props) {
   };
 
   useEffect(() => {
+    // Compare two file lists by the fields that can change server-side. The
+    // earlier name-only check missed badge updates: if a class was registered
+    // after its instance had already been fetched, re-fetching returned the
+    // file with a populated `badge`, but the name set was unchanged and the
+    // update got skipped. CardFrame then stayed stuck with an empty badge and
+    // rendered as TXT until a hard refresh.
+    const filesEqual = (a: typeof children, b: typeof children): boolean => {
+      if (a.length !== b.length) return false;
+      const byName = new Map(a.map((f) => [f.name, f]));
+      for (const bf of b) {
+        const af = byName.get(bf.name);
+        if (!af) return false;
+        if (af.badge !== bf.badge) return false;
+        if (af.modifiedAt !== bf.modifiedAt) return false;
+        if (af.meta !== bf.meta) return false;
+      }
+      return true;
+    };
+
     const unsub1 = on("file-created", (msg: unknown) => {
       const m = msg as { filename?: string; source?: string };
       // Re-fetch canvas files — server determines membership. Skip the
-      // setChildren if the new file isn't canvas-visible (e.g. the agent
-      // wrote to backend/data/foo.py — not on the canvas, so the membership
-      // list is unchanged and we don't want to thrash the React tree).
+      // setChildren only when nothing the canvas cares about has changed
+      // (same files, same badges, same modifiedAt). A name-only match is not
+      // enough: a class can land after an instance, which updates the
+      // instance's badge without touching its name.
       fetchFiles(project, true).then((files) => {
-        setChildren((prev) => {
-          if (prev.length !== files.length) return files;
-          const prevNames = new Set(prev.map((f) => f.name));
-          for (const f of files) if (!prevNames.has(f.name)) return files;
-          return prev;
-        });
+        setChildren((prev) => filesEqual(prev, files) ? prev : files);
       }).catch(() => {});
       if (m.filename && !m.filename.startsWith(".")) {
         const cls = glowClassFor(m.source);
@@ -221,7 +236,20 @@ export default function CanvasCardRuntime({ project }: Props) {
       });
     });
 
-    return () => { unsub1(); unsub2(); unsub3(); };
+    // A card class in .mica/card-classes/ was created, changed, or deleted.
+    // Re-fetch canvas files so fresh badges propagate, and bump modifiedAt on
+    // every canvas file so each CardFrame's class-loading useEffect (keyed on
+    // file.modifiedAt) re-runs and picks up the new class definition. Without
+    // this, a class that lands after its instance stays invisible to the
+    // CardFrame until a hard refresh.
+    const unsub4 = on("card-class-changed", () => {
+      fetchFiles(project, true).then((files) => {
+        const now = new Date().toISOString();
+        setChildren(files.map((f) => ({ ...f, modifiedAt: now })));
+      }).catch(() => {});
+    });
+
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [project]);
 
   // ── File operations (for modals) ────────────────────────

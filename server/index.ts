@@ -323,10 +323,10 @@ const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
 function resolveCardClassDir(className: string, project: string | null): string | null {
   if (project) {
     const projectScoped = join(micaDir(project), "card-classes", className);
-    if (existsSync(join(projectScoped, "card.html")) || existsSync(join(projectScoped, "render.js"))) return projectScoped;
+    if (existsSync(join(projectScoped, "card.html"))) return projectScoped;
   }
   const builtIn = join(CARD_CLASSES_DIR, className);
-  if (existsSync(join(builtIn, "card.html")) || existsSync(join(builtIn, "render.js"))) return builtIn;
+  if (existsSync(join(builtIn, "card.html"))) return builtIn;
   return null;
 }
 
@@ -346,7 +346,7 @@ app.get("/api/card-classes/:className/:file", async (req, res) => {
     cardClassServeCount.windowStart = Date.now();
   }
   const fileName = req.params.file;
-  const allowed = ["render.js", "card.html", "card.js", "card.css", "metadata.json", "spec.md"];
+  const allowed = ["card.html", "card.js", "card.css", "metadata.json", "spec.md"];
   if (!allowed.includes(fileName)) {
     res.status(403).json({ error: `Not allowed: ${fileName}` });
     return;
@@ -374,12 +374,10 @@ app.get("/api/card-classes", async (req, res) => {
     const entries = await rd(CARD_CLASSES_DIR);
     for (const name of entries) {
       const dir = join(CARD_CLASSES_DIR, name);
-      const hasHtml = existsSync(join(dir, "card.html"));
-      const hasRenderJs = existsSync(join(dir, "render.js"));
-      if (hasHtml || hasRenderJs) {
+      if (existsSync(join(dir, "card.html"))) {
         classes[name] = {
           builtIn: true,
-          format: hasHtml ? "html" : "renderjs",
+          format: "html",
           hasCss: existsSync(join(dir, "card.css")),
           hasJs: existsSync(join(dir, "card.js")),
           hasMetadata: existsSync(join(dir, "metadata.json")),
@@ -396,12 +394,10 @@ app.get("/api/card-classes", async (req, res) => {
       const entries = await rd(projDir);
       for (const name of entries) {
         const dir = join(projDir, name);
-        const hasHtml = existsSync(join(dir, "card.html"));
-        const hasRenderJs = existsSync(join(dir, "render.js"));
-        if (hasHtml || hasRenderJs) {
+        if (existsSync(join(dir, "card.html"))) {
           classes[name] = {
             builtIn: false,
-            format: hasHtml ? "html" : "renderjs",
+            format: "html",
             hasCss: existsSync(join(dir, "card.css")),
             hasJs: existsSync(join(dir, "card.js")),
             hasMetadata: existsSync(join(dir, "metadata.json")),

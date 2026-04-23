@@ -2,6 +2,7 @@
   "name": "mica-app",
   "private": true,
   "version": "0.0.0",
+  "description": "A canvas where humans and agents compose context together.",
   "type": "module",
   "scripts": {
     "dev": "vite",
