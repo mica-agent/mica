@@ -53,12 +53,11 @@ function _reportError(e){
 }
 // _runCb: run a callback, reporting BOTH synchronous throws AND async
 // rejections (when the callback is async and returns a Promise). Card
-// authors routinely write `async () => { await mica.fetch(...); }` for
-// timers and event handlers — a sync try/catch would only see the pre-
-// await part of those. This wrapper also chains a .catch on the returned
-// Promise so post-await errors are reported too. Scoped to this card's
-// shim (no window-level unhandledrejection listener needed, no cross-
-// card fanout).
+// authors routinely write async arrow fns as setTimeout / addEventListener
+// callbacks; a sync try/catch would only see the pre-await part of those.
+// This wrapper also chains a .catch on the returned Promise so post-await
+// errors are reported too. Scoped to this card's shim (no window-level
+// unhandledrejection listener needed, no cross-card fanout).
 function _runCb(fn){return function(){try{var r=fn.apply(this,arguments);if(r&&typeof r.catch==='function')r.catch(_reportError);return r;}catch(e){_reportError(e)}}}
 var _si=window.setInterval.bind(window),_st=window.setTimeout.bind(window);
 var _ci=window.clearInterval.bind(window),_ct=window.clearTimeout.bind(window);
