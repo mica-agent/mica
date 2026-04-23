@@ -308,7 +308,8 @@ function updateCtxMeter(baselineTokens, contextWindow) {
   if (pct >= 85) color = "#f87171";
   else if (pct >= 50) color = "#fbbf24";
   ctxMeterFill.style.background = color;
-  ctxMeterLabel.textContent = pct + "%";
+  ctxMeterLabel.textContent = formatK(baselineTokens) + "/" + formatK(contextWindow) + " · " + pct + "%";
+  ctxMeterLabel.style.color = color;
   ctxMeterLabel.title =
     "This turn's input: " + formatK(baselineTokens) + " / " + formatK(contextWindow) +
     " (" + pct + "% of context window)";

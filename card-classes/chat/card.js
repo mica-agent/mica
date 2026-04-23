@@ -484,7 +484,11 @@ function updateCtxMeter(baselineTokens, contextWindow) {
   if (pct >= 85) color = "#f87171";
   else if (pct >= 50) color = "#fbbf24";
   ctxMeterFill.style.background = color;
-  ctxMeterLabel.textContent = pct + "%";
+  // Show "X/Y · Z%" so the user can read both absolute size and percentage
+  // at a glance. Colour the label to match the fill so it's unmistakable as
+  // a context indicator even in quick visual scans.
+  ctxMeterLabel.textContent = formatK(baselineTokens) + "/" + formatK(contextWindow) + " · " + pct + "%";
+  ctxMeterLabel.style.color = color;
   ctxMeterLabel.title =
     "Next turn's baseline prompt: " + formatK(baselineTokens) + " / " + formatK(contextWindow) +
     " (" + pct + "% of context window)";
