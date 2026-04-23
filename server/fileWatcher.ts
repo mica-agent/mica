@@ -109,10 +109,10 @@ export class FileWatcher extends EventEmitter {
       if (!reported) return;
       const rel = reported.split(path.sep).join("/");
       const parts = rel.split("/");
-      // Events inside card-classes survived the old filter; keep that. Otherwise
-      // reject hidden-prefix segments and ignored dirs.
-      const isCardClassPath = parts[0] === ".mica" && parts[1] === "card-classes";
-      if (!isCardClassPath && parts.some((p) => p.startsWith(".") || IGNORE_DIRS.has(p))) return;
+      // Reject hidden-prefix segments and ignored dirs. `.mica/card-classes/`
+      // has its own dedicated watcher below — it isn't reachable from this
+      // canvas-root subtree anyway.
+      if (parts.some((p) => p.startsWith(".") || IGNORE_DIRS.has(p))) return;
       const projectRelative = normalizedRoot === "" ? rel : `${normalizedRoot}/${rel}`;
       schedule(projectRelative);
     });
@@ -123,6 +123,30 @@ export class FileWatcher extends EventEmitter {
       watcher: canvasWatcher,
       dir: canvasAbs,
       translate: (r) => r, // canvas watcher's translation is inlined in the callback
+    });
+
+    // Card-classes watch (recursive). The canvas watcher above is rooted at
+    // `<project>/<canvasRoot>/`, so it never sees `.mica/card-classes/`
+    // events even though handleFileChange knows how to route them. Without
+    // this watcher, when an agent writes a brand-new card class directory,
+    // the client's on('card-class-changed') listener never fires and any
+    // instance rendered before the class was complete keeps showing "???"
+    // until a manual refresh.
+    const cardClassesAbs = path.join(projectDir, ".mica", "card-classes");
+    await fs.promises.mkdir(cardClassesAbs, { recursive: true });
+    const cardClassesWatcher = fs.watch(cardClassesAbs, { recursive: true }, (_eventType, reported) => {
+      if (!reported) return;
+      const rel = reported.split(path.sep).join("/");
+      const projectRelative = `.mica/card-classes/${rel}`;
+      schedule(projectRelative);
+    });
+    cardClassesWatcher.on("error", (err: Error) => {
+      console.warn(`[file-watcher] ${project}: watch error on .mica/card-classes:`, err.message);
+    });
+    subs.push({
+      watcher: cardClassesWatcher,
+      dir: cardClassesAbs,
+      translate: (_r) => null,
     });
 
     // Pinned files outside canvasRoot: watch each parent directory non-recursively,
