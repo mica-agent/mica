@@ -31,6 +31,16 @@ Anything on the canvas can be read by any agent that shows up
 later. The context is no longer private to one agent or to one
 session.
 
+This has a concrete implication for how chat threads relate to
+durable memory. A thread is not a record. The canvas is. A live
+thread is working memory for one arc of work. When that arc ends,
+the findings should be on canvas cards, and the thread can be
+archived (browsable by humans, readable by agents only on
+explicit demand). A thread that has grown too large is a signal
+that findings should be promoted to the canvas and a fresh thread
+started — not a failure to be worked around by summarizing or
+compacting the chat. The canvas is what outlives threads.
+
 ## Emacs, not Notion
 
 The lineage is architectural, not aesthetic. Emacs is a small set

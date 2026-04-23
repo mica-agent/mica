@@ -55,6 +55,15 @@ phrasing.
 9. **Read before writing.** Especially the card class you are
    about to change. Rewriting without reading drops details
    that were debugged in.
+10. **Don't rebuild agent internals.** Mica is an augmentation
+    layer on coding agents (Qwen Code, Claude Code, OpenRouter
+    variants), not a replacement. We shape what goes into the
+    prompt; the agent handles how it processes. Token-aware
+    chat-history trimming, silent summarization, prompt-cache
+    management, and reimplementations of `/compress` all live on
+    the agent's side of the line — we don't build them. See
+    DESIGN-DECISIONS.md §"Augmentation-layer boundary" for the
+    full table and the reasoning.
 
 ## The containment model (files are files)
 
@@ -129,6 +138,20 @@ features in the framework.
   card.css + metadata.json`. Server-side channel handlers live
   under `server/` (e.g. `server/claudeAgent.ts`,
   `server/plugins/pty.ts`), not inside card class directories.
+- **Don't reach across the augmentation-layer boundary.** If
+  you're about to add token-aware trimming, prompt-cache
+  handling, chat-history summarization, or any logic that
+  mirrors what the coding agent's SDK already does inside its
+  own turn, stop. The agent owns that. Mica shapes the input
+  (canvas baseline, task decomposition, thread lifecycle),
+  not the agent's internals. DESIGN-DECISIONS.md has the
+  table.
+- **Archived chat threads never enter the baseline.** When a
+  user hits "fresh thread," the old transcript lives on disk
+  under `.mica/chats/archived/` — readable by the agent on
+  explicit demand, never as ambient context. Baseline carries
+  the current thread only. See DESIGN-DECISIONS.md §"Canvas
+  is memory; threads are working memory."
 - **Don't skip StrictMode correctness.** See below.
 
 ## React host implementation notes

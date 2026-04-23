@@ -56,6 +56,83 @@ Per-project container isolation as a blast radius is under
 consideration (see `internal/VISION.md`) but is not the current
 reality.
 
+## Augmentation-layer boundary: Mica shapes the input, the agent runs the turn
+
+Mica-Lite runs on top of coding agents (Qwen Code, Claude Code,
+and OpenRouter-routed variants). It augments them. It does not
+replace them. This line is load-bearing: without it, Mica drifts
+toward reimplementing concerns the SDK already owns, and ends up
+competing with the tool it's built on.
+
+**The rule.** Everything upstream of the SDK call is Mica's
+problem. Everything after the SDK receives the payload is the
+agent's problem.
+
+| Mica-layer (shape the input) | Agent-layer (run the turn) |
+|---|---|
+| What lives in the canvas baseline | Prompt-cache / KV-cache management |
+| How canvas files are presented (full vs summary) | In-session chat-history compaction (`/compress`) |
+| Which cards are pinned to every turn vs on-demand | Tool-result compression inside a turn |
+| Breaking big tasks into bounded subagent scopes (the analyze-repo skill) | Deciding what fits in the model's context |
+| Storing chat history on disk canonically | Rolling its own truncation when exceeded |
+| Surfacing the `mica.*` bridge and subagent defs | Using those tools to complete the user's ask |
+| UX: fresh-thread action, context meter, overflow error card | Handling prompt rejection at the transport level |
+
+**Things Mica does not build** (non-goals, explicit):
+
+- Token-aware trimming of chat history before sending to the SDK.
+- Silent summarization of old chat turns.
+- Prompt-cache / KV-cache-aware prefix construction.
+- Any reimplementation of the agent's `/compress` command.
+- Parsing the model's response stream to detect context
+  exhaustion and retry with smaller payload.
+
+If the agent's compaction has bugs, those are upstream bugs to
+file with the SDK. Our response is to make the canvas + fresh-
+thread pattern strong enough that compaction is rarely needed.
+We do not compensate for agent internals by reinventing them.
+
+Reason: reimplementing the agent inside Mica is a losing trade.
+We don't control prompt-cache state the way the SDK does (a
+token-aware trim blows the KV cache every turn, costing real
+latency), and we inherit all the bugs of the original feature
+without the team around it to fix them. Shaping the prompt well
+upstream is the leverage Mica has.
+
+## Canvas is memory; threads are working memory
+
+The product tenet "context lives on the canvas, not inside the
+agent" has a direct implication for how chat threads relate to
+durable memory. A thread is not a record; the canvas is.
+
+**Live thread.** The in-progress chat session on one chat card.
+Loaded into the agent's context each turn. Working memory for
+this arc of work. Dies when the arc ends.
+
+**Archived thread.** A past thread, stored on disk under
+`.mica/chats/archived/<timestamp>-<slug>.json`. Not in the
+baseline. Browsable by humans. Readable by agents on specific
+demand, never as ambient context.
+
+**Canvas.** Outlives threads. Every durable finding belongs here.
+
+An overflow is not a failure of memory — it is a signal that an
+arc of work has produced enough volume that findings should be
+promoted to canvas and a fresh thread started. "Fresh thread" is
+a healthy reset, not failure recovery.
+
+**Agent behavior policy.** Before reading an archived thread,
+exhaust canvas sources: card contents, `decisions.md`, card
+modifiedAt timestamps, `git log`. If the canvas cannot answer a
+question the user treats as settled work, that is a gap — ask
+for clarification, or offer to promote the missing information
+to a card. Archived threads are one-off references. Never load a
+full archived thread into context; extract what's needed and
+summarize.
+
+This mirrors the analyze-repo discipline: don't read a whole
+large artifact into context; skim with intent.
+
 ## Storage model — work lives outside `.mica/`
 
 ```
