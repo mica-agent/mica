@@ -2,13 +2,26 @@
     <div id="project-toolbar" class="project-toolbar"></div>
     <div class="canvas-body">
         <div id="canvas-freeform" class="canvas-freeform"></div>
-        <aside id="canvas-meta-sidebar" class="canvas-meta-sidebar canvas-meta-sidebar--collapsed">
-            <div id="canvas-meta-resize" class="canvas-meta-resize" title="Drag to resize"></div>
-            <button id="canvas-meta-toggle" class="canvas-meta-toggle" title="How / project config">&#9776;</button>
-            <div id="canvas-meta-list" class="canvas-meta-list"></div>
-        </aside>
     </div>
     <div class="project-empty" style="display: none;">
         No cards yet. Use the toolbar above to create your first card.
+    </div>
+
+    <!-- Meta overlay: hidden by default, shown via the toolbar's gear menu.
+         #canvas-meta-list is the React portal target meta cards
+         (canvas-back, skills) get rendered into. Keeping it inside a
+         hidden overlay means React's portal logic still finds it and
+         meta cards still render/initialize correctly — they're just not
+         taking valuable canvas real estate until the user explicitly
+         opens the overlay. -->
+    <div id="canvas-meta-overlay" class="canvas-meta-overlay" style="display: none;">
+        <div class="canvas-meta-overlay-backdrop"></div>
+        <div class="canvas-meta-overlay-panel">
+            <div class="canvas-meta-overlay-header">
+                <span class="canvas-meta-overlay-title">Canvas settings</span>
+                <button id="canvas-meta-overlay-close" class="canvas-meta-overlay-close" title="Close">&times;</button>
+            </div>
+            <div id="canvas-meta-list" class="canvas-meta-list"></div>
+        </div>
     </div>
 </div>

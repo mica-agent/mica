@@ -15,80 +15,26 @@
 const toolbar = container.querySelector('#project-toolbar');
 const freeform = container.querySelector('#canvas-freeform');
 const emptyEl = container.querySelector('.project-empty');
-const metaSidebar = container.querySelector('#canvas-meta-sidebar');
-const metaList = container.querySelector('#canvas-meta-list');
-const metaToggle = container.querySelector('#canvas-meta-toggle');
-const metaResize = container.querySelector('#canvas-meta-resize');
 
-// -- Meta sidebar (hidden vs collapsed vs expanded; drag-to-resize).
-//    Three independent states per device class, all persisted via
-//    localStorage (no server round trips for a presentation-only choice):
-//      hidden    → display:none via canvas-meta-sidebar--hidden (set by gear)
-//      collapsed → 36px bar with toggle button (set by in-sidebar toggle)
-//      expanded  → 360px default, user-resizable (set by in-sidebar toggle)
-const _devSuffix = window.innerWidth < 768 ? 'phone' : window.innerWidth < 1200 ? 'tablet' : 'desktop';
-const META_KEY = 'mica-meta-sidebar-' + _devSuffix;
-const META_W_KEY = META_KEY + '-width';
-const META_HIDDEN_KEY = META_KEY + '-hidden';
+// -- Meta overlay (full-viewport modal, opens via toolbar gear) --
+// The overlay contains #canvas-meta-list, the React portal target meta
+// cards render into. It starts hidden; the gear menu's "Meta panel"
+// item is the only way to open it. Closed via × button, backdrop click,
+// or Escape.
+const metaOverlay = container.querySelector('#canvas-meta-overlay');
+const metaOverlayBackdrop = container.querySelector('.canvas-meta-overlay-backdrop');
+const metaOverlayClose = container.querySelector('#canvas-meta-overlay-close');
 
-// Device-class defaults for the hidden flag: small screens default to
-// hidden (meta takes too much of limited viewport), wide screens default
-// to visible (room to spare, users see it immediately). User's explicit
-// toggle wins from then on.
-function metaHiddenDefault() {
-    return _devSuffix === 'phone' || _devSuffix === 'tablet';
+function openMetaOverlay() {
+    metaOverlay.style.display = 'flex';
 }
-function isMetaHidden() {
-    const v = localStorage.getItem(META_HIDDEN_KEY);
-    if (v === '1') return true;
-    if (v === '0') return false;
-    return metaHiddenDefault();
+function closeMetaOverlay() {
+    metaOverlay.style.display = 'none';
 }
-function setMetaHidden(hide) {
-    localStorage.setItem(META_HIDDEN_KEY, hide ? '1' : '0');
-    metaSidebar.classList.toggle('canvas-meta-sidebar--hidden', hide);
-}
-
-function applyMetaState(expanded) {
-    metaSidebar.classList.toggle('canvas-meta-sidebar--expanded', expanded);
-    metaSidebar.classList.toggle('canvas-meta-sidebar--collapsed', !expanded);
-    if (expanded) {
-        const savedW = parseInt(localStorage.getItem(META_W_KEY) || '', 10);
-        metaSidebar.style.width = savedW > 0 ? savedW + 'px' : '';
-    } else {
-        metaSidebar.style.width = '';  // CSS class controls collapsed width
-    }
-}
-applyMetaState(localStorage.getItem(META_KEY) === '1');
-metaSidebar.classList.toggle('canvas-meta-sidebar--hidden', isMetaHidden());
-metaToggle.addEventListener('click', function(e) {
-    e.stopPropagation();
-    const willExpand = metaSidebar.classList.contains('canvas-meta-sidebar--collapsed');
-    applyMetaState(willExpand);
-    localStorage.setItem(META_KEY, willExpand ? '1' : '0');
-});
-
-// Drag the left edge of the sidebar to resize. Drag LEFT increases width.
-let _resizeStart = null;
-metaResize.addEventListener('pointerdown', function(e) {
-    if (metaSidebar.classList.contains('canvas-meta-sidebar--collapsed')) return;
-    e.preventDefault(); e.stopPropagation();
-    _resizeStart = { x: e.clientX, w: metaSidebar.offsetWidth };
-    try { metaResize.setPointerCapture(e.pointerId); } catch (_) {}
-});
-metaResize.addEventListener('pointermove', function(e) {
-    if (!_resizeStart) return;
-    const dx = _resizeStart.x - e.clientX;  // moving cursor LEFT widens sidebar
-    const minW = 240;
-    const maxW = Math.floor(window.innerWidth * 0.7);
-    const w = Math.max(minW, Math.min(maxW, _resizeStart.w + dx));
-    metaSidebar.style.width = w + 'px';
-});
-metaResize.addEventListener('pointerup', function(e) {
-    if (!_resizeStart) return;
-    try { metaResize.releasePointerCapture(e.pointerId); } catch (_) {}
-    localStorage.setItem(META_W_KEY, String(metaSidebar.offsetWidth));
-    _resizeStart = null;
+metaOverlayBackdrop.addEventListener('click', closeMetaOverlay);
+metaOverlayClose.addEventListener('click', closeMetaOverlay);
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && metaOverlay.style.display !== 'none') closeMetaOverlay();
 });
 
 // Scope /api/* calls to this card's project. Canvas layout, canvas-root, and
@@ -926,14 +872,16 @@ function buildToolbar() {
 }
 
 // -- Gear menu ------------------------------------------
-// Registry of toggle items. Each entry drives one menu row. Adding a new
-// toggle is one new object — the menu render is generic.
+// Registry of menu items. Two kinds:
+//   - action: `{ kind: 'action', label, onClick }` — runs on click, closes menu.
+//   - toggle: `{ kind: 'toggle', label, get, set }` — checkbox; menu stays open.
+// Adding a new entry is a one-liner; the renderer handles both kinds.
 const gearItems = [
     {
-        id: 'meta-visible',
+        kind: 'action',
+        id: 'meta-open',
         label: 'Meta panel',
-        get: () => !isMetaHidden(),
-        set: (v) => setMetaHidden(!v),
+        onClick: () => openMetaOverlay(),
     },
     // Future items: theme, debug overlays, card filters, etc.
 ];
@@ -956,14 +904,26 @@ function openGearMenu(anchorBtn) {
     gearItems.forEach((item, i) => {
         const row = window.document.createElement('label');
         row.className = 'canvas-gear-item';
-        const cb = window.document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = !!item.get();
-        cb.addEventListener('change', () => { item.set(cb.checked); });
-        const span = window.document.createElement('span');
-        span.textContent = item.label;
-        row.appendChild(cb);
-        row.appendChild(span);
+        if (item.kind === 'toggle') {
+            const cb = window.document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = !!item.get();
+            cb.addEventListener('change', () => { item.set(cb.checked); });
+            row.appendChild(cb);
+            const span = window.document.createElement('span');
+            span.textContent = item.label;
+            row.appendChild(span);
+        } else {
+            // action — clicking the row runs the handler and closes the menu
+            row.style.cursor = 'pointer';
+            const span = window.document.createElement('span');
+            span.textContent = item.label;
+            row.appendChild(span);
+            row.addEventListener('click', () => {
+                closeGearMenu();
+                try { item.onClick(); } catch (err) { console.error('[canvas] gear action failed:', err); }
+            });
+        }
         menu.appendChild(row);
         if (i < gearItems.length - 1) {
             const div = window.document.createElement('div');

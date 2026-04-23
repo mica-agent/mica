@@ -57,23 +57,6 @@
         box-shadow 0.2s;
 }
 
-/* Meta sidebar — docks "how" cards (canvas-back, skills) on the right */
-.canvas-meta-sidebar {
-    position: relative;
-    display: flex; flex-direction: column;
-    background: rgba(255,255,255,0.02);
-    border-left: 1px solid rgba(255,255,255,0.08);
-    overflow: hidden;
-    flex-shrink: 0;
-}
-.canvas-meta-sidebar--collapsed { width: 36px !important; }   /* !important beats inline width set by drag */
-.canvas-meta-sidebar--expanded { width: 360px; }              /* default; overridden by inline width if dragged */
-/* Fully hidden: removes the sidebar from layout entirely (vs --collapsed
-   which still reserves a 36px toggle-bar column). Toggled from the
-   toolbar gear menu; phone/tablet default to hidden (see isMetaHidden
-   in card.js) so mobile viewport isn't spent on an auxiliary surface. */
-.canvas-meta-sidebar--hidden { display: none !important; }
-
 /* Toolbar gear menu — small popover anchored to the gear button.
    Extensible: card.js drives content from the gearItems registry so
    adding a new toggle is a one-liner there, not a DOM change here. */
@@ -110,51 +93,88 @@
     margin: 4px 0;
 }
 
-/* Drag handle on the LEFT edge of the sidebar — drag horizontally to resize.
-   Hidden when collapsed (no point in resizing a 36px collapsed bar). */
-.canvas-meta-resize {
-    position: absolute; left: 0; top: 0; bottom: 0;
-    width: 6px; cursor: ew-resize;
-    z-index: 10;
-    background: transparent;
-    transition: background 0.15s ease;
+/* Meta overlay — full-viewport modal that shows canvas-back, skills, and
+   any other meta cards. Triggered from the toolbar gear menu; closed via
+   backdrop click or the × button. The #canvas-meta-list inside stays as
+   the React portal target, so meta cards still render + initialize
+   identically — just inside a hidden container until the user opens it. */
+.canvas-meta-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
 }
-.canvas-meta-resize:hover { background: rgba(96,165,250,0.3); }
-.canvas-meta-sidebar--collapsed .canvas-meta-resize { display: none; }
-
-.canvas-meta-toggle {
-    background: none; border: none; color: #8b949e;
-    padding: 8px 0; font-size: 16px; cursor: pointer;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
+.canvas-meta-overlay-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(2px);
+    cursor: pointer;
+}
+.canvas-meta-overlay-panel {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    width: min(720px, 100%);
+    height: min(80vh, 720px);
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    overflow: hidden;
+}
+.canvas-meta-overlay-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid #30363d;
     flex-shrink: 0;
+    font-size: 12px;
+    color: #8b949e;
 }
-.canvas-meta-toggle:hover { color: #ccc; background: rgba(255,255,255,0.03); }
+.canvas-meta-overlay-title { flex: 1; font-weight: 600; color: #e6edf3; }
+.canvas-meta-overlay-close {
+    background: none;
+    border: none;
+    color: #8b949e;
+    font-size: 22px;
+    line-height: 1;
+    padding: 0 6px;
+    cursor: pointer;
+}
+.canvas-meta-overlay-close:hover { color: #fff; }
 
 .canvas-meta-list {
-    flex: 1; min-height: 0; overflow-y: auto;
-    display: flex; flex-direction: column; gap: 8px;
-    padding: 8px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
 }
-.canvas-meta-sidebar--collapsed .canvas-meta-list { display: none; }
 
-/* Meta cards inside the sidebar override the freeform absolute positioning.
-   Expanded cards flex-grow to share the available vertical space — one
-   expanded card uses the whole sidebar height; multiple share. */
+/* Meta cards inside the overlay override freeform absolute positioning.
+   Each card stacks vertically; the overlay's own scroll handles overflow. */
 .canvas-meta-list > .wb-card {
     position: relative !important;
     left: auto !important; top: auto !important;
     width: 100% !important;
-    min-height: 220px;
-    flex: 1 1 auto;
+    min-height: 320px;
+    flex: 0 0 auto;
     opacity: 1;
 }
 .canvas-meta-list .wb-card-header { cursor: default; }
 .canvas-meta-list .wb-card-resize-handle { display: none; }
 
-/* Collapsed meta card: only the header is visible. */
+/* Collapsed meta card in the overlay: only the header is visible. */
 .canvas-meta-list > .wb-card.wb-card--collapsed {
     min-height: 0;
-    flex: 0 0 auto;
 }
 .canvas-meta-list > .wb-card.wb-card--collapsed .wb-card-body,
 .canvas-meta-list > .wb-card.wb-card--collapsed .wb-card-footer {
