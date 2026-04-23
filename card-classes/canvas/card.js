@@ -720,6 +720,140 @@ function buildToolbar() {
     const myGen = ++toolbarBuildGen;
     toolbar.innerHTML = '';
 
+    // Tidy button — lives on the LEFT of the toolbar (append first). The
+    // async card-class buttons land after the spacer, so the final layout
+    // is [Tidy][spacer(flex:1)][+ creation buttons].
+    const tidyBtn = window.document.createElement('button');
+    tidyBtn.className = 'toolbar-btn';
+    tidyBtn.textContent = 'Tidy';
+    tidyBtn.title = 'Tidy layout — keeps cards near their current position (hold Option/Alt to fit all on screen by filename order)';
+    tidyBtn.addEventListener('click', (e) => {
+        const cards = Array.from(freeform.querySelectorAll('.wb-card'));
+        if (cards.length === 0) return;
+
+        // Commit any expanded cards' current size as permanent: clear the
+        // transient flag + stash so Tidy's offsetWidth/offsetHeight reads
+        // flow through unchanged. This is the "Tidy while expanded → makes
+        // the new size stick" behavior.
+        cards.forEach((c) => {
+            if (c.classList.contains('wb-card--expanded')) {
+                c.classList.remove('wb-card--expanded');
+                delete c.dataset.prevLayout;
+            }
+        });
+
+        if (e.altKey) {
+            // Alt+Tidy: fit-all-on-screen. Keep filename sort here — the
+            // user is explicitly asking for a square recap and alphabetical
+            // order is a reasonable stable ordering for that intent.
+            cards.sort((a, b) => {
+                const aName = a.getAttribute('data-filename') || '';
+                const bName = b.getAttribute('data-filename') || '';
+                return aName.localeCompare(bName);
+            });
+        } else {
+            // Normal Tidy: sort by current VISUAL position so cards stay
+            // near where the user put them. Tolerance groups cards that are
+            // roughly in the same row into the same sort-bucket, so two
+            // cards whose top values differ by ~20px stay horizontal
+            // neighbors rather than getting reordered by a pixel difference.
+            const ROW_TOLERANCE = 40;
+            const yOf = (c) => {
+                const v = parseInt(c.style.top || '0', 10);
+                return Number.isFinite(v) ? v : 0;
+            };
+            const xOf = (c) => {
+                const v = parseInt(c.style.left || '0', 10);
+                return Number.isFinite(v) ? v : 0;
+            };
+            cards.sort((a, b) => {
+                const ay = yOf(a), by = yOf(b);
+                if (Math.abs(ay - by) > ROW_TOLERANCE) return ay - by;
+                return xOf(a) - xOf(b);
+            });
+        }
+
+        // Cascade-animate cards into their new positions.
+        animateLayoutChange(cards, { stagger: true });
+
+        const maxWidth = freeform.offsetWidth || 1200;
+        const maxHeight = freeform.offsetHeight || 800;
+
+        if (e.altKey) {
+            // Option/Alt + Tidy: resize cards to fit all on screen
+            const count = cards.length;
+            // Calculate optimal grid: try to make it roughly square
+            const cols = Math.ceil(Math.sqrt(count));
+            const rows = Math.ceil(count / cols);
+            let cardW = Math.floor((maxWidth - 2 * EDGE_PAD - (cols - 1) * GAP) / cols);
+            let cardH = Math.floor((maxHeight - 2 * EDGE_PAD - (rows - 1) * GAP) / rows);
+            // Clamp to reasonable minimums
+            cardW = Math.max(MIN_W, cardW);
+            cardH = Math.max(MIN_H, cardH);
+
+            layout = {};
+            cards.forEach((card, i) => {
+                const col = i % cols;
+                const row = Math.floor(i / cols);
+                const x = EDGE_PAD + col * (cardW + GAP);
+                const y = EDGE_PAD + row * (cardH + GAP);
+                card.style.left = `${x}px`;
+                card.style.top = `${y}px`;
+                card.style.width = `${cardW}px`;
+                card.style.height = `${cardH}px`;
+                card.classList.add('wb-card--resized');
+                const name = card.getAttribute('data-filename');
+                if (name) layout[name] = { x, y, w: cardW, h: cardH };
+            });
+        } else {
+            // Normal tidy: pack in sort order (position-based above) into
+            // rows, keeping each card's current size. The sort order already
+            // reflects the cards' visual rows, so re-packing this way mostly
+            // aligns gaps to EDGE_PAD/GAP without yanking anything far.
+            layout = {};
+            let x = EDGE_PAD, y = EDGE_PAD, rowMaxH = 0;
+            cards.forEach(card => {
+                const w = card.offsetWidth || CARD_W;
+                const h = card.offsetHeight || CARD_H;
+                if (x > EDGE_PAD && x + w > maxWidth - EDGE_PAD) {
+                    y += rowMaxH + GAP;
+                    x = EDGE_PAD;
+                    rowMaxH = 0;
+                }
+                card.style.left = `${x}px`;
+                card.style.top = `${y}px`;
+                if (h > rowMaxH) rowMaxH = h;
+                const name = card.getAttribute('data-filename');
+                if (name) layout[name] = { x, y, w, h };
+                x += w + GAP;
+            });
+        }
+        // Tidy is the ONLY place that shrinks canvas bounds — it's the
+        // explicit "clean up" gesture. Recompute from the newly-placed
+        // cards + padding so scrollbars match the tidied content.
+        let maxR = 0, maxB = 0;
+        for (const name of Object.keys(layout)) {
+            const c = layout[name];
+            if (!c) continue;
+            const right = c.x + c.w;
+            const bottom = c.y + c.h;
+            if (right > maxR) maxR = right;
+            if (bottom > maxB) maxB = bottom;
+        }
+        bounds = {
+            w: Math.max(maxR + BOUNDS_PAD, freeform.clientWidth || 1200),
+            h: Math.max(maxB + BOUNDS_PAD, freeform.clientHeight || 800),
+        };
+        applyBounds();
+        persistLayout();
+    });
+    toolbar.appendChild(tidyBtn);
+
+    // Spacer — pushes the card-creation buttons (added below) to the right.
+    const spacer = window.document.createElement('span');
+    spacer.className = 'toolbar-spacer';
+    toolbar.appendChild(spacer);
+
     // Dynamically load card classes and create buttons
     fetch('/api/card-classes', { headers: projectHeaders() }).then(r => r.json()).then(classes => {
         if (myGen !== toolbarBuildGen) return;  // a newer build superseded us
@@ -759,110 +893,6 @@ function buildToolbar() {
             toolbar.appendChild(btn);
         });
     }).catch(err => { console.error('[canvas] Failed to load card classes:', err); });
-
-    // Spacer
-    const spacer = window.document.createElement('span');
-    spacer.className = 'toolbar-spacer';
-    toolbar.appendChild(spacer);
-
-    // Tidy button -- auto-arrange in grid
-    const tidyBtn = window.document.createElement('button');
-    tidyBtn.className = 'toolbar-btn';
-    tidyBtn.textContent = 'Tidy';
-    tidyBtn.title = 'Tidy layout (hold Option/Alt to fit all on screen)';
-    tidyBtn.addEventListener('click', (e) => {
-        const cards = Array.from(freeform.querySelectorAll('.wb-card'));
-        if (cards.length === 0) return;
-
-        // Commit any expanded cards' current size as permanent: clear the
-        // transient flag + stash so Tidy's offsetWidth/offsetHeight reads
-        // flow through unchanged. This is the "Tidy while expanded → makes
-        // the new size stick" behavior.
-        cards.forEach((c) => {
-            if (c.classList.contains('wb-card--expanded')) {
-                c.classList.remove('wb-card--expanded');
-                delete c.dataset.prevLayout;
-            }
-        });
-
-        cards.sort((a, b) => {
-            const aName = a.getAttribute('data-filename') || '';
-            const bName = b.getAttribute('data-filename') || '';
-            return aName.localeCompare(bName);
-        });
-
-        // Cascade-animate cards into their new positions.
-        animateLayoutChange(cards, { stagger: true });
-
-        const maxWidth = freeform.offsetWidth || 1200;
-        const maxHeight = freeform.offsetHeight || 800;
-
-        if (e.altKey) {
-            // Option/Alt + Tidy: resize cards to fit all on screen
-            const count = cards.length;
-            // Calculate optimal grid: try to make it roughly square
-            const cols = Math.ceil(Math.sqrt(count));
-            const rows = Math.ceil(count / cols);
-            let cardW = Math.floor((maxWidth - 2 * EDGE_PAD - (cols - 1) * GAP) / cols);
-            let cardH = Math.floor((maxHeight - 2 * EDGE_PAD - (rows - 1) * GAP) / rows);
-            // Clamp to reasonable minimums
-            cardW = Math.max(MIN_W, cardW);
-            cardH = Math.max(MIN_H, cardH);
-
-            layout = {};
-            cards.forEach((card, i) => {
-                const col = i % cols;
-                const row = Math.floor(i / cols);
-                const x = EDGE_PAD + col * (cardW + GAP);
-                const y = EDGE_PAD + row * (cardH + GAP);
-                card.style.left = `${x}px`;
-                card.style.top = `${y}px`;
-                card.style.width = `${cardW}px`;
-                card.style.height = `${cardH}px`;
-                card.classList.add('wb-card--resized');
-                const name = card.getAttribute('data-filename');
-                if (name) layout[name] = { x, y, w: cardW, h: cardH };
-            });
-        } else {
-            // Normal tidy: arrange in grid with current card sizes
-            layout = {};
-            let x = EDGE_PAD, y = EDGE_PAD, rowMaxH = 0;
-            cards.forEach(card => {
-                const w = card.offsetWidth || CARD_W;
-                const h = card.offsetHeight || CARD_H;
-                if (x > EDGE_PAD && x + w > maxWidth - EDGE_PAD) {
-                    y += rowMaxH + GAP;
-                    x = EDGE_PAD;
-                    rowMaxH = 0;
-                }
-                card.style.left = `${x}px`;
-                card.style.top = `${y}px`;
-                if (h > rowMaxH) rowMaxH = h;
-                const name = card.getAttribute('data-filename');
-                if (name) layout[name] = { x, y, w, h };
-                x += w + GAP;
-            });
-        }
-        // Tidy is the ONLY place that shrinks canvas bounds — it's the
-        // explicit "clean up" gesture. Recompute from the newly-placed
-        // cards + padding so scrollbars match the tidied content.
-        let maxR = 0, maxB = 0;
-        for (const name of Object.keys(layout)) {
-            const c = layout[name];
-            if (!c) continue;
-            const right = c.x + c.w;
-            const bottom = c.y + c.h;
-            if (right > maxR) maxR = right;
-            if (bottom > maxB) maxB = bottom;
-        }
-        bounds = {
-            w: Math.max(maxR + BOUNDS_PAD, freeform.clientWidth || 1200),
-            h: Math.max(maxB + BOUNDS_PAD, freeform.clientHeight || 800),
-        };
-        applyBounds();
-        persistLayout();
-    });
-    toolbar.appendChild(tidyBtn);
 }
 
 buildToolbar();
