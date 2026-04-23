@@ -32,10 +32,37 @@ Stay inside that scope. Do NOT roam the whole repo. The orchestrator
 deliberately bounded your work so the analysis stays correct and
 concurrent with other module analysts.
 
+## Before reading anything: check the scope fits
+
+Your context slot is ~65K tokens total. After this system prompt,
+the canvas baseline, and the task prompt, you have roughly 40K
+tokens of read budget — about **8000 lines of source code**.
+
+Before opening any source files, **estimate the total size of your
+assigned file list**:
+
+```bash
+run_shell_command({
+  command: "wc -l <file1> <file2> ...",
+  description: "Estimate module size",
+  is_background: false
+})
+```
+
+- **Total ≤ 8000 lines:** proceed with full reading.
+- **Total 8000–15000 lines:** skim aggressively. Read headers only
+  for each `.c`/`.cpp` file, read `.h`/interface files in full.
+  Note in "Open questions" that you skimmed some files.
+- **Total > 15000 lines:** your module was mis-sized by the
+  orchestrator. Do NOT try to read everything. Return immediately
+  with `failed: module scope too large (<N> lines, budget 8000).
+  Recommend splitting by <seam>: <suggestions>`. The orchestrator
+  will re-split and re-dispatch.
+
 ## What to read
 
-1. Every file in your module's file list. Use `read_many_files` to
-   batch efficiently.
+1. Every file in your module's file list, subject to the size
+   budget above. Use `read_many_files` to batch efficiently.
 2. If a listed file is very large (e.g. > 2000 lines or > 100KB),
    skim by section headings / top-of-file only. Do not attempt to
    understand every line.

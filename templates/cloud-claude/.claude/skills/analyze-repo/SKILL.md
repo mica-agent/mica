@@ -61,19 +61,60 @@ From those, extract:
 - **Top-level directory structure** with one-line annotations.
 - **Likely entry points** (main script, CLI command, server start).
 
-Now **group the repo into 5–15 modules.** A module is a coherent
-chunk you can analyze independently. Heuristic:
+Now **group the repo into candidate modules.** A module is a coherent
+chunk that one subagent can analyze independently. Heuristic:
 
 - Start with top-level directories inside source (`src/`, `app/`,
   `packages/`, etc.).
 - **Merge trivial ones** (single file, or <100 lines total, or
   obvious utility folders like `constants/`) into a `misc` module.
-- **Split very large ones** (>50 files) by obvious seams —
-  `tests/` vs. source, sub-packages, layered folders.
 - Group configs, scripts, and build files into a `project-config`
   module unless they're numerous enough to warrant their own.
 
-Write the plan to `.mica/repo-analysis/<repo>/manifest.json`:
+### Size budget — the load-bearing constraint
+
+Each subagent runs in a context slot of roughly 65K tokens (sometimes
+larger; depends on the llama-server / Claude configuration). After
+the system prompt, canvas baseline, and task prompt eat ~20K tokens
+of that, a subagent has **≈ 40K tokens for actual file reading and
+analysis**. That works out to about **8000 lines of source code**
+at typical token density.
+
+**Before finalizing the module list, run a size estimate.** Use
+`run_shell_command` (`is_background: false`) to count lines across
+each proposed module's file list:
+
+```bash
+# Inside each candidate module's directory, or over its file list:
+wc -l <repo>/src/<module>/**/*.{c,h,py,ts,tsx,js,go,rs,rb,java}
+```
+
+For every module, compute its total line count.
+
+**Split any module whose total exceeds 8000 lines.** Splitting rules,
+in priority order:
+
+1. **Obvious seams** — sub-directory (`drivers/` → `drivers-disk`,
+   `drivers-net`, `drivers-tty`), `tests/` vs. source, layered
+   folders, ownership boundaries.
+2. **File-prefix grouping** — if files share a naming convention
+   (`dvXXX.c`, `netXXX.c`), group by prefix.
+3. **Halve by file list** — last resort; split the sorted file list
+   into two or more equal-size chunks named `<module>-a`,
+   `<module>-b`, etc. Each resulting module should land under the
+   8000-line budget.
+
+**Merge any module whose total is trivially small** (<300 lines,
+<3 files) into a neighbour or the `misc` bucket. Separate subagents
+for tiny modules waste a concurrency slot each and add orchestration
+overhead without producing meaningfully different analyses.
+
+**Target range after sizing:** usually 5–15 modules. Occasionally
+more for giant repos — that's fine as long as each module fits the
+budget.
+
+Write the plan to `.mica/repo-analysis/<repo>/manifest.json`,
+including the line count per module so it's visible to the user:
 
 ```json
 {
@@ -82,11 +123,13 @@ Write the plan to `.mica/repo-analysis/<repo>/manifest.json`:
   "language": "<primary language>",
   "buildSystem": "<e.g. npm, cargo, poetry>",
   "topLevelTree": "<annotated tree, plain text>",
+  "lineBudgetPerModule": 8000,
   "modules": [
     {
       "name": "auth",
       "repoPath": "src/auth/",
-      "files": ["src/auth/handler.py", "src/auth/tokens.py", ...]
+      "lineCount": 1240,
+      "files": ["src/auth/handler.py", "src/auth/tokens.py", "..."]
     },
     ...
   ]
@@ -94,12 +137,15 @@ Write the plan to `.mica/repo-analysis/<repo>/manifest.json`:
 ```
 
 **STOP HERE.** Report the module plan to the user in plain prose.
-Show the list of modules, the files assigned to each, and ask for
-confirmation. If the user edits the plan, update the manifest. Wait
-for explicit "proceed" before Phase 2.
+Show each module with its line count, and ask for confirmation. If
+the user edits the plan (merges, renames, re-splits), update the
+manifest. Wait for explicit "proceed" before Phase 2.
 
 This pause is the load-bearing gate. Subagents are cheap but not
-free; a bad module grouping wastes them. Confirm before dispatching.
+free; a mis-sized module wastes one and, in the worst case, blows
+the context slot (llama-server returns `request exceeds the available
+context size`, the CLI burns turns retrying, and eventually exits
+with a fatal error). Sizing correctly here is what prevents that.
 
 ## Phase 2 — DISPATCH (one subagent per module, parallel)
 
