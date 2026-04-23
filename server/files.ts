@@ -415,7 +415,10 @@ export interface FileInfo {
 
 /** Read canvas config (canvasRoot, pinned) from .mica/config.json. */
 export async function readCanvasConfig(project?: string): Promise<{ canvasRoot: string; pinned: string[] }> {
-  const defaults = { canvasRoot: "docs", pinned: [] as string[] };
+  // Default matches initProject's default (`"canvas"`). Older projects whose
+  // config explicitly carries `canvasRoot: "docs"` still work — this fallback
+  // only kicks in for configs that omit the field entirely.
+  const defaults = { canvasRoot: "canvas", pinned: [] as string[] };
   try {
     const configPath = project
       ? join(WORKSPACE_DIR, project, ".mica", "config.json")
@@ -848,7 +851,12 @@ export async function overlayTemplate(
       try { config = JSON.parse(await readFile(configPath, "utf-8")); } catch { /* ignore parse errors */ }
     }
     config.name = projectName;
-    if (options.canvasRoot) config.canvasRoot = options.canvasRoot;
+    // Always write canvasRoot so downstream readers (readCanvasConfig, the
+    // canvas card's card.js) don't fall back to their legacy "docs" default
+    // when the template's seeds actually live in "canvas/" (or wherever the
+    // caller specified). `targetCanvasRoot` is already the right value
+    // whether or not options.canvasRoot was passed.
+    config.canvasRoot = targetCanvasRoot;
     if (!config.canvasClass) config.canvasClass = "canvas";
     if (!config.template) config.template = templateName;
     if (!Array.isArray(config.pinned)) config.pinned = [];

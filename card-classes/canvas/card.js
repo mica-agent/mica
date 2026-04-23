@@ -76,10 +76,13 @@ function projectHeaders(extra) {
     return h;
 }
 
-// Canvas root — directory where new cards are created (e.g. "docs")
+// Canvas root — directory where new cards are created (default "canvas").
+// Matches initProject's default. The server's /api/canvas/config endpoint
+// normally returns a concrete value; this fallback only kicks in if the
+// fetch fails OR config.json omits the field entirely.
 let canvasRoot = '';
 fetch('/api/canvas/config', { headers: projectHeaders() }).then(r => r.json()).then(cfg => {
-    const root = cfg.canvasRoot || 'docs';
+    const root = cfg.canvasRoot || 'canvas';
     canvasRoot = root === '.' ? '' : root.replace(/\/$/, '') + '/';
 }).catch(() => {});
 
