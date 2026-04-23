@@ -230,20 +230,51 @@ function renderMarkdown(text) {
   return text;
 }
 
-// Render a faint horizon line when the next appended message crosses the
-// cursor boundary. Shows the user where the agent's visible history begins.
+// Build a horizon separator DOM node. Single instance — we move it, not
+// recreate it, when the cursor advances mid-session.
+function buildHorizonEl() {
+  const horizon = window.document.createElement("div");
+  horizon.className = "chat-horizon";
+  horizon.style.cssText =
+    "align-self:stretch;display:flex;align-items:center;gap:8px;color:#6e7681;" +
+    "font-size:10px;font-family:monospace;margin:6px 0;opacity:0.7;";
+  horizon.innerHTML =
+    '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>' +
+    '<span style="flex-shrink:0;">↑ earlier conversation (not in agent context)</span>' +
+    '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>';
+  return horizon;
+}
+
+// Apply the current cursor position to every message already in the scroll.
+// Greys out messages with index < contextCursor and positions the single
+// horizon separator so it sits just before the message at index contextCursor.
+// Called after a live cursor advance (assistant event with data.cursor > old
+// cursor). Append-time rendering in addMessage covers the initial history
+// load; this covers mid-session changes.
+function applyCursorDisplay() {
+  // Remove any stale horizon — we re-insert at the current position below.
+  const existing = messagesEl.querySelector(".chat-horizon");
+  if (existing) existing.remove();
+
+  const msgs = messagesEl.querySelectorAll("[data-msg-index]");
+  let inserted = false;
+  for (const m of msgs) {
+    const idx = parseInt(m.getAttribute("data-msg-index"), 10);
+    m.style.opacity = idx < contextCursor ? "0.55" : "";
+    // The horizon goes just before the first message at or after the cursor.
+    if (!inserted && contextCursor > 0 && idx >= contextCursor) {
+      messagesEl.insertBefore(buildHorizonEl(), m);
+      inserted = true;
+    }
+  }
+}
+
+// Render the horizon right before the next appended message if we're about to
+// cross the cursor. Used during the initial history load where messages are
+// appended sequentially.
 function maybeRenderHorizon() {
-  if (contextCursor > 0 && messageIndex === contextCursor) {
-    const horizon = window.document.createElement("div");
-    horizon.className = "chat-horizon";
-    horizon.style.cssText =
-      "align-self:stretch;display:flex;align-items:center;gap:8px;color:#6e7681;" +
-      "font-size:10px;font-family:monospace;margin:6px 0;opacity:0.7;";
-    horizon.innerHTML =
-      '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>' +
-      '<span style="flex-shrink:0;">↑ earlier conversation (not in agent context)</span>' +
-      '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>';
-    messagesEl.appendChild(horizon);
+  if (contextCursor > 0 && messageIndex === contextCursor && !messagesEl.querySelector(".chat-horizon")) {
+    messagesEl.appendChild(buildHorizonEl());
   }
 }
 
@@ -254,7 +285,9 @@ function addMessage(role, content, agent, questions) {
   maybeRenderHorizon();
   const msg = window.document.createElement("div");
   // Greyscale messages above the cursor — they exist for user reference but
-  // the agent doesn't see them.
+  // the agent doesn't see them. Tag with data-msg-index so applyCursorDisplay()
+  // can re-evaluate every message after a mid-session cursor advance.
+  msg.setAttribute("data-msg-index", String(messageIndex));
   const aboveHorizon = messageIndex < contextCursor;
   if (aboveHorizon) msg.style.opacity = "0.55";
   messageIndex++;
@@ -561,11 +594,15 @@ ch.onData(function(data) {
       setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
-      // Advance cursor locally if the server moved it at this turn. The user
-      // already sees their messages and the new assistant turn below; we
-      // don't re-render. The horizon marker will show on the NEXT appended
-      // message because messageIndex may now be < contextCursor.
-      if (typeof data.cursor === "number") contextCursor = data.cursor;
+      // Advance cursor locally if the server moved it. Trigger a re-render
+      // of cursor-dependent display state (greyed messages above the line,
+      // horizon separator at the cursor position) so the change is visible
+      // immediately — not only when the next message appends.
+      {
+        const prevCursor = contextCursor;
+        if (typeof data.cursor === "number") contextCursor = data.cursor;
+        if (contextCursor !== prevCursor) applyCursorDisplay();
+      }
       updateCtxMeter(data.baselineTokens || 0, data.contextWindow || 0);
       lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";

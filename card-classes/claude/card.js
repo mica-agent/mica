@@ -156,18 +156,40 @@ function renderMarkdown(text) {
   return text;
 }
 
+function buildHorizonEl() {
+  const horizon = window.document.createElement("div");
+  horizon.className = "chat-horizon";
+  horizon.style.cssText =
+    "align-self:stretch;display:flex;align-items:center;gap:8px;color:#6e7681;" +
+    "font-size:10px;font-family:monospace;margin:6px 0;opacity:0.7;";
+  horizon.innerHTML =
+    '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>' +
+    '<span style="flex-shrink:0;">↑ earlier conversation (not in agent context)</span>' +
+    '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>';
+  return horizon;
+}
+
+// Re-evaluate cursor-dependent display state across every rendered message
+// and re-position the single horizon separator. Call after a mid-session
+// cursor advance so the break is visible immediately.
+function applyCursorDisplay() {
+  const existing = messagesEl.querySelector(".chat-horizon");
+  if (existing) existing.remove();
+  const msgs = messagesEl.querySelectorAll("[data-msg-index]");
+  let inserted = false;
+  for (const m of msgs) {
+    const idx = parseInt(m.getAttribute("data-msg-index"), 10);
+    m.style.opacity = idx < contextCursor ? "0.55" : "";
+    if (!inserted && contextCursor > 0 && idx >= contextCursor) {
+      messagesEl.insertBefore(buildHorizonEl(), m);
+      inserted = true;
+    }
+  }
+}
+
 function maybeRenderHorizon() {
-  if (contextCursor > 0 && messageIndex === contextCursor) {
-    const horizon = window.document.createElement("div");
-    horizon.className = "chat-horizon";
-    horizon.style.cssText =
-      "align-self:stretch;display:flex;align-items:center;gap:8px;color:#6e7681;" +
-      "font-size:10px;font-family:monospace;margin:6px 0;opacity:0.7;";
-    horizon.innerHTML =
-      '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>' +
-      '<span style="flex-shrink:0;">↑ earlier conversation (not in agent context)</span>' +
-      '<span style="flex:1;height:1px;background:linear-gradient(to right,transparent,#30363d,transparent);"></span>';
-    messagesEl.appendChild(horizon);
+  if (contextCursor > 0 && messageIndex === contextCursor && !messagesEl.querySelector(".chat-horizon")) {
+    messagesEl.appendChild(buildHorizonEl());
   }
 }
 
@@ -177,6 +199,7 @@ function addMessage(role, content, agent, questions) {
   }
   maybeRenderHorizon();
   const msg = window.document.createElement("div");
+  msg.setAttribute("data-msg-index", String(messageIndex));
   const aboveHorizon = messageIndex < contextCursor;
   if (aboveHorizon) msg.style.opacity = "0.55";
   messageIndex++;
@@ -386,7 +409,14 @@ ch.onData(function(data) {
       setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
-      if (typeof data.cursor === "number") contextCursor = data.cursor;
+      // Advance cursor locally and re-render cursor-dependent display
+      // (greyed pre-cursor messages + horizon separator) so a mid-session
+      // advance is visible immediately, not delayed to the next message.
+      {
+        const prevCursor = contextCursor;
+        if (typeof data.cursor === "number") contextCursor = data.cursor;
+        if (contextCursor !== prevCursor) applyCursorDisplay();
+      }
       updateCtxMeter(data.baselineTokens || 0, data.contextWindow || 0);
       lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
