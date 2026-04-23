@@ -960,21 +960,32 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // openai-compatible provider is selected via authType, not via prefix.
             model: provider === "local" ? `openai:${modelName}` : modelName,
             authType: "openai" as const,
-            // "yolo" auto-approves ALL tools. Observed: canUseTool callback
-            // is never invoked in our programmatic setup regardless of mode —
-            // "default" hung on writes, "auto-edit" unblocked writes but still
-            // hung on run_shell_command (SDK was apparently awaiting an
-            // interactive confirmation that never comes in a headless SDK
-            // host). Grep of the backend log for [canUseTool: ENTRY shows
-            // zero invocations across every permissionMode we tried.
+            // "default" permission mode: canUseTool IS invoked for every
+            // write and shell tool not in allowedTools. Read-only tools
+            // auto-execute. This makes guardTool, checkCardClassMetadataConsistency,
+            // checkCardClassPrecondition, per-extension validators, the
+            // direct-write cap, the subagent-concurrency gate, and the
+            // AskUserQuestion intercept all actually functional again.
             //
-            // With yolo, tool execution proceeds without any canUseTool gate.
-            // What we give up: Bash background-process guard, ask_user_question
-            // intercept, subagent concurrency cap (all previously routed
-            // through canUseTool — dead code in practice but at least
-            // intentional). Relocate those to the event-loop layer below where
-            // we observe tool_use blocks directly.
-            permissionMode: "yolo" as const,
+            // A previous comment here claimed non-yolo modes hung the SDK.
+            // Verified against the current @qwen-code/sdk 0.1.6 via
+            // `scripts/probe-canusetool.ts default {write,shell}` — both
+            // canUseTool calls fired within ~40ms of the tool_use event.
+            // The historical hang was either an older SDK version or our
+            // own wiring bug that got fixed incidentally. If it recurs,
+            // the probe is the regression test.
+            //
+            // allowedTools skips canUseTool for read-only tools (saves a
+            // callback roundtrip per read). Our canUseTool contains no
+            // logic specific to reads; read-file tracking for the
+            // create-card-class precondition moved to the tool_use event
+            // observer below.
+            permissionMode: "default" as const,
+            allowedTools: [
+              "read_file", "read_many_files", "list_directory",
+              "glob", "grep_search",
+              "web_search", "web_fetch", "google_web_search",
+            ],
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
@@ -1035,6 +1046,18 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     tool: block.name,
                     description: describeToolUse(block.name, block.input || {}),
                   });
+                  // Track read-file calls here because read tools are in
+                  // allowedTools under permissionMode "default" and bypass
+                  // canUseTool. checkCardClassPrecondition consults this
+                  // set when a write is attempted, so an unpopulated set
+                  // would falsely block every card-class write.
+                  if (block.name === "read_file" || block.name === "Read") {
+                    const p = pathFromReadInput(block.input || {});
+                    if (p) readFilesThisTurn.add(p);
+                  } else if (block.name === "read_many_files") {
+                    const paths = ((block.input || {}) as { paths?: unknown }).paths;
+                    if (Array.isArray(paths)) for (const p of paths) if (typeof p === "string" && p) readFilesThisTurn.add(p);
+                  }
                   // Track outstanding subagent tasks so the concurrency counter
                   // decrements when they finish. SDK tags each tool_use with an
                   // `id` we'll match against the tool_result. Qwen's tool name
