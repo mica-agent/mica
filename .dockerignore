@@ -1,0 +1,20 @@
+# Keep the runtime image small: exclude local build artifacts and cruft.
+# Dev-only artefacts that would ship stale bits into the container:
+node_modules
+dist
+.mica-pids
+
+# Source control / hidden state we don't need at runtime:
+.git
+.github
+
+# Internal drafts and legacy docs — not needed at runtime:
+internal
+
+# OS cruft:
+*.log
+.DS_Store
+
+# Note: .devcontainer/ is intentionally NOT excluded. It ships with the
+# runtime image so users pulling the image still see how the dev image
+# is built, for parity.

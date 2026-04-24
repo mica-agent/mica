@@ -67,7 +67,67 @@ Three convictions shape every design decision.
   to plain files. Trying Mica costs almost nothing, and
   leaving costs nothing.
 
-## Quick start
+## Run on DGX Spark
+
+One command installs and launches Mica on a DGX Spark with its
+default local model (Qwen3.6-35B on llama-server, GPU-accelerated):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/robchang/mica/mica-lite/install.sh | bash
+```
+
+Takes 10–15 minutes on a fresh DGX Spark — a few minutes to pull
+the image, ~10 minutes for the first chat to download the default
+model. Subsequent launches start in seconds. Open
+`http://<dgx-ip>:5173/` when the installer says *"Mica is running."*
+Your projects live under `~/mica-workspace/`.
+
+Prereqs: Docker + [NVIDIA Container
+Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+The script preflight-checks both and bails out with a clear message
+if either is missing.
+
+### Tweaks
+
+Prepend any of these env vars to the install line:
+
+```bash
+# OpenRouter-only (skip the local GPU model):
+MICA_DISABLE_LLAMA=1 curl -fsSL https://raw.githubusercontent.com/robchang/mica/mica-lite/install.sh | bash
+
+# Also mount ~/.claude so Claude Code cards find your creds:
+MICA_MOUNT_CLAUDE=1 curl -fsSL ...
+
+# Different workspace dir (default ~/mica-workspace):
+MICA_WORKSPACE=/data/my-mica curl -fsSL ...
+```
+
+Other knobs the script respects: `MICA_IMAGE`, `MICA_PORT_BACKEND`,
+`MICA_PORT_FRONTEND`, `MICA_PORT_LLAMA`, `MICA_CONTAINER`.
+
+### Raw `docker run` (if you'd rather not `curl | bash`)
+
+```bash
+mkdir -p ~/mica-workspace
+docker run --rm -d --name mica --gpus all \
+  -v ~/mica-workspace:/project \
+  -v mica-models:/home/vscode/.cache/huggingface \
+  -p 3002:3002 -p 5173:5173 -p 8012:8012 \
+  ghcr.io/robchang/mica:latest
+```
+
+### Build it yourself
+
+```bash
+git clone https://github.com/robchang/mica
+cd mica
+docker build -t mica:local .
+# then the same docker run above, with mica:local instead of the ghcr.io image.
+```
+
+Once it's up: `docker logs -f mica` streams output, `docker stop mica` stops it.
+
+## Quick start (for Mica development)
 
 ```bash
 npm install

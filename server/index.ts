@@ -1467,10 +1467,17 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   channelManager.registerHandler("skills", createSkillComposeHandler());  // .skills files -> collaborative SKILL.md authoring
   channelManager.registerHandler("canvas-back", createCanvasBackComposeHandler());  // .canvas-back files -> propose-then-apply canvas-back editor
 
-  // Start llama-server for local AI
-  ensureLlamaServer().catch((err) => {
-    console.warn("[startup] llama-server failed to start:", (err as Error).message);
-  });
+  // Start llama-server for local AI — unless disabled via env. The
+  // MICA_DISABLE_LLAMA=1 escape hatch lets OpenRouter-only users skip
+  // the GPU model download + load (primary use case: the DGX-Spark
+  // Docker image running with `--no-llama`-equivalent flag).
+  if (process.env.MICA_DISABLE_LLAMA !== "1") {
+    ensureLlamaServer().catch((err) => {
+      console.warn("[startup] llama-server failed to start:", (err as Error).message);
+    });
+  } else {
+    console.log("[startup] MICA_DISABLE_LLAMA=1 — skipping local llama-server.");
+  }
 
   const workspaceName = getWorkspaceName();
 
