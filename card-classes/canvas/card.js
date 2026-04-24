@@ -239,10 +239,15 @@ function positionCard(card) {
     }
     const pos = layout[name];
     if (pos) {
+        // Heal sub-minimum heights from an older build (see toggleCardCollapse
+        // comment): if we stored h=40ish because we collapsed the card before
+        // the write-side fix, the uncollapsed view would render as a sliver.
+        // Clamp to CARD_H so the card at least shows a usable body.
+        const healedH = typeof pos.h === 'number' && pos.h >= MIN_H ? pos.h : CARD_H;
         card.style.left = `${pos.x}px`;
         card.style.top = `${pos.y}px`;
         card.style.width = `${pos.w || CARD_W}px`;
-        card.style.height = `${pos.h || CARD_H}px`;
+        card.style.height = `${healedH}px`;
         if (typeof pos.z === 'number') {
             card.style.zIndex = String(pos.z);
             if (pos.z > topZ) topZ = pos.z;
@@ -743,13 +748,22 @@ function toggleCardCollapse(filename, forceValue) {
 
     card.classList.toggle('wb-card--collapsed', nowCollapsed);
     const existing = layout[filename] || { x: card.offsetLeft, y: card.offsetTop, w: card.offsetWidth, h: card.offsetHeight };
-    // After a contract, offsetLeft/Top/Width/Height reflect the restored
-    // (pre-expand) layout — that's what we persist, matching the user's
-    // authored size.
+    // h in layout ALWAYS represents the uncollapsed height. Measuring
+    // card.offsetHeight AFTER applying wb-card--collapsed gives us ~40px
+    // (just the header), which would clobber the real size — reload or
+    // uncollapse would then render a paper-thin card. When collapsing,
+    // preserve the previously-stored h; only update it when the card is
+    // currently uncollapsed (its measured height is meaningful).
+    // Heal migration: if a prior write from an older build saved a
+    // sub-minimum h, reset to CARD_H so uncollapse produces a usable
+    // card instead of the same paper-thin strip.
+    const measuredH = nowCollapsed
+        ? (typeof existing.h === 'number' && existing.h >= MIN_H ? existing.h : CARD_H)
+        : card.offsetHeight;
     layout[filename] = {
         ...existing,
         x: card.offsetLeft, y: card.offsetTop,
-        w: card.offsetWidth, h: card.offsetHeight,
+        w: card.offsetWidth, h: measuredH,
         collapsed: nowCollapsed,
     };
     persistLayout();
@@ -904,10 +918,11 @@ function buildToolbar() {
 
             const packGroup = (group) => {
                 group.forEach(card => {
+                    const isCollapsed = card.classList.contains('wb-card--collapsed');
                     const w = card.offsetWidth || CARD_W;
                     // A collapsed card's offsetHeight is the header row only
                     // (height:auto in CSS), so it packs tighter automatically.
-                    const h = card.offsetHeight || CARD_H;
+                    const displayH = card.offsetHeight || CARD_H;
                     if (x > EDGE_PAD && x + w > maxWidth - EDGE_PAD) {
                         y += rowMaxH + GAP;
                         x = EDGE_PAD;
@@ -915,12 +930,20 @@ function buildToolbar() {
                     }
                     card.style.left = `${x}px`;
                     card.style.top = `${y}px`;
-                    if (h > rowMaxH) rowMaxH = h;
+                    if (displayH > rowMaxH) rowMaxH = displayH;
                     const name = card.getAttribute('data-filename');
                     if (name) {
                         const prior = layout[name] || {};
-                        layout[name] = { ...prior, x, y, w, h,
-                            collapsed: card.classList.contains('wb-card--collapsed') };
+                        // Store the UNCOLLAPSED h (what uncollapse should
+                        // restore to), never the just-measured 40px. If the
+                        // card was already collapsed before Tidy ran,
+                        // preserve the prior stored h; otherwise write the
+                        // measured one.
+                        const storedH = isCollapsed
+                            ? (typeof prior.h === 'number' && prior.h >= MIN_H ? prior.h : CARD_H)
+                            : displayH;
+                        layout[name] = { ...prior, x, y, w, h: storedH,
+                            collapsed: isCollapsed };
                     }
                     x += w + GAP;
                 });
