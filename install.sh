@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # Mica — one-line install for DGX Spark.
 #
-# Typical usage (from the README):
+# STATUS: not yet the documented install path. Until the repo is
+# public, raw.githubusercontent.com URLs aren't accessible to
+# strangers without a PAT, so this script can't be the primary
+# entrypoint. The README currently leads with a raw `docker run`
+# one-liner (Pattern A: "the docker image is the install", same
+# as Open WebUI, Gitea, etc.). This file is ready to be the
+# documented fastpath once the repo flips public — the install
+# line will be:
 #
 #   curl -fsSL https://raw.githubusercontent.com/robchang/mica/mica-lite/install.sh | bash
+#
+# Until then it's still directly invocable for local/private
+# testing: `bash ./install.sh`.
 #
 # This script:
 #   1. Preflight-checks the host (docker + NVIDIA Container Toolkit + arm64).
