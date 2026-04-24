@@ -14,7 +14,7 @@ const DEFAULT_PORT = 8012;
 // to A/B against Qwen3-Coder-Next ("unsloth/Qwen3-Coder-Next-GGUF" /
 // "Qwen3-Coder-Next-UD-Q4_K_XL.gguf").
 const HF_REPO = process.env.LLAMA_HF_REPO || "unsloth/Qwen3.6-35B-A3B-GGUF";
-const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf";
+const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf";
 const MODEL_PATH = process.env.MODEL_PATH || "";
 // Per-slot context size. llama.cpp divides `--ctx-size` across slots, so to
 // give EACH slot this many tokens we pass -np × CTX_SIZE_PER_SLOT below.
@@ -94,6 +94,22 @@ async function startServer(): Promise<string> {
     ? ["--model", useCachedPath]
     : ["-hfr", HF_REPO, "-hff", HF_FILE];
 
+  // Per-request log file. llama-server emits prompt tokens, prefill time, decode
+  // time, and tokens-generated per request — useful for correlating against
+  // Mica's per-turn metrics (see server/metrics.ts). Workspace-scoped since
+  // llama-server is a singleton across projects. Override via LLAMA_LOG_FILE.
+  const WORKSPACE_ROOT = process.env.PROJECT_DIR || `${process.env.HOME}/mica-workspace`;
+  const llamaLogFile = process.env.LLAMA_LOG_FILE || `${WORKSPACE_ROOT}/.mica-llama-server.log`;
+
+  // Host-memory prompt cache (llama.cpp PR #16391, merged Oct 2025). Catches
+  // evicted slot KV so the next matching request restores it from host RAM
+  // instead of re-prefilling. Directly targets our subagent fan-out pattern
+  // where shared canvas-baseline prefixes otherwise re-prefill on every slot
+  // reassignment. Default 16384 MiB — generous on Spark's 128 GB unified
+  // memory, and the GPU↔host restore is NVLink-C2C speed (near-free).
+  // Override via LLAMA_CACHE_RAM (MiB); set to "0" to disable, "-1" for unlimited.
+  const CACHE_RAM = process.env.LLAMA_CACHE_RAM || "16384";
+
   const args = [
     ...modelArgs,
     "--host", "0.0.0.0",
@@ -103,6 +119,8 @@ async function startServer(): Promise<string> {
     "--flash-attn", "on",
     "--ctx-size", CTX_SIZE_TOTAL,
     "-np", N_PARALLEL,
+    "--cache-ram", CACHE_RAM,
+    "--log-file", llamaLogFile,
     "--reasoning-format", "deepseek",
     // Default thinking OFF for ALL requests, regardless of caller.
     // Per-request override possible via chat_template_kwargs.enable_thinking,

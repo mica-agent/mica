@@ -1426,13 +1426,13 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   if (event.type !== "deleted" && event.filename.endsWith("/metadata.json")) {
     const absPath = join(projectDir(event.project), event.filename);
     enforceCardClassMetadata(absPath, {
+      // Auto-fix succeeded: framework already wrote the correct file. Log
+      // server-side for trace/audit, but DON'T broadcast card-error — the
+      // chat card would surface it as a red ⚠ banner indistinguishable
+      // from a genuine failure. The agent's next read sees the repaired
+      // content; no UI noise needed.
       onAutoFix: (reason) => {
-        console.log(`[card-class-enforce:${event.project}] ${reason}`);
-        broadcastToProject(event.project, {
-          type: "card-error",
-          filename: event.filename,
-          error: reason,
-        });
+        console.log(`[card-class-enforce:${event.project}] auto-fixed: ${reason}`);
       },
       onError: (reason) => {
         console.warn(`[card-class-enforce:${event.project}] ${reason}`);

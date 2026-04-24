@@ -617,6 +617,13 @@ ch.onData(function(data) {
       // so input_tokens is NOT "current context size" — it's cumulative
       // tokens shipped this turn. We report it as "sent XK" so users aren't
       // misled into thinking they're over the model's context window.
+      //
+      // Throughput display: we show TTFT (prefill wall time to first token)
+      // and a decode-only tok/s computed over the post-TTFT window. Wall
+      // tok/s is misleading on long-prompt / short-output turns because most
+      // of elapsedSec is prefill, not decode. TTFT + decode tok/s matches
+      // the OpenAI / Anthropic / llama.cpp convention and llama-server's
+      // own per-request eval-time numbers.
       {
         const parts = [];
         if (elapsedSec > 0) parts.push(formatDuration(elapsedSec));
@@ -624,9 +631,28 @@ ch.onData(function(data) {
         const usage = data.usage || {};
         const outTok = usage.output_tokens || usage.completion_tokens;
         if (outTok && outTok > 0) {
-          const tps = Math.round(outTok / Math.max(1, elapsedSec));
           parts.push("out " + formatK(outTok) + " tok");
-          parts.push(tps + " tok/s");
+        }
+        // Prefill: time to first token of the turn (cold prefill of initial
+        // prompt → first assistant byte). For multi-step tool-loop turns,
+        // this measures only the FIRST LLM call's prefill — subsequent calls
+        // each re-prefill their growing context but aren't surfaced here.
+        if (typeof data.ttftMs === "number" && data.ttftMs > 0) {
+          parts.push("prefill " + (data.ttftMs / 1000).toFixed(1) + "s");
+        }
+        // Generation rate = output_tokens / wall_time_after_first_token.
+        // For a simple chat reply (no tools) this matches llama-server's
+        // eval_time rate and the web-UI "recipe for pizza" baseline.
+        // For tool-loop turns (like 15-step Jira work) the denominator also
+        // includes tool execution time + inter-call prefill time, so this
+        // UNDER-estimates pure model decode speed — it's the user-perceived
+        // generation throughput, not the model's raw token rate. Labelled
+        // "gen" to distinguish from the theoretical decode rate you'd see
+        // in llama-server's per-request eval_time log.
+        if (outTok && outTok > 0 && typeof data.durationMs === "number" && typeof data.ttftMs === "number") {
+          const genMs = Math.max(1, data.durationMs - data.ttftMs);
+          const genTps = Math.round(outTok / (genMs / 1000));
+          parts.push("gen " + genTps + " tok/s");
         }
         const inTok = usage.input_tokens || usage.prompt_tokens;
         if (inTok && inTok > 0) {

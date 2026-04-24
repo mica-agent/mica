@@ -93,11 +93,16 @@ record_child_pid() {
 }
 
 echo "Starting backend on port $BACKEND_PORT..."
-node /workspaces/mica/node_modules/.bin/tsx server/index.ts > "$PID_DIR/backend.log" 2>&1 &
+# setsid + nohup so the server survives SIGHUP when the launching shell (which
+# may be short-lived — e.g. a non-interactive `bash scripts/restart.sh` from
+# an automation tool) exits. Without this, plain `&` backgrounded processes
+# receive SIGHUP on parent exit and shut down cleanly, which looks like a
+# random "server crash" after restart.
+setsid nohup node /workspaces/mica/node_modules/.bin/tsx server/index.ts > "$PID_DIR/backend.log" 2>&1 < /dev/null &
 record_child_pid $! "$PID_DIR/backend.pid"
 
 echo "Starting frontend on port $FRONTEND_PORT..."
-node /workspaces/mica/node_modules/.bin/vite > "$PID_DIR/frontend.log" 2>&1 &
+setsid nohup node /workspaces/mica/node_modules/.bin/vite > "$PID_DIR/frontend.log" 2>&1 < /dev/null &
 record_child_pid $! "$PID_DIR/frontend.pid"
 
 # Wait for backend to be ready (up to 15 seconds)

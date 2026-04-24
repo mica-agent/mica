@@ -1,0 +1,6 @@
+{
+  "extension": ".json",
+  "badge": "JSON",
+  "defaultTitle": "JSON",
+  "dependencies": { "scripts": [], "styles": [] }
+}

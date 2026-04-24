@@ -4,6 +4,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
+import { randomUUID } from "crypto";
 import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
@@ -17,6 +18,7 @@ import {
   endSubagentTask,
   getConcurrencyStatus,
 } from "./subagents.js";
+import { recordTurn, recordSubagent } from "./metrics.js";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
 // tag the write as agent-originated. Covers the Qwen/OpenRouter dialect
@@ -669,6 +671,16 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       const MAX_WRITES_PER_TURN = 2;
       let writesThisTurn = 0;
 
+      // Per-turn metrics state. Emitted at each termination path so we capture
+      // successful turns, empty-response turns, and error turns. See
+      // server/metrics.ts for the schema.
+      const turnId = randomUUID();
+      const tsStart = Date.now();
+      let firstTokenTs: number | null = null;
+      const toolCallCounts: Record<string, number> = {};
+      const subagentStarts = new Map<string, { name: string; tsStart: number }>();
+      let subagentCount = 0;
+
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
 
@@ -1026,6 +1038,8 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           console.log(`[mica-agent:evt#${_evtSeq}] ${evtType}${ptid ? ` parent=${ptid.slice(0, 8)}` : ""} +${gap}ms`);
 
           if (evtType === "assistant" && evt.message) {
+            // First assistant event = proxy for time-to-first-token (prefill done).
+            if (firstTokenTs === null) firstTokenTs = Date.now();
             const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; thinking?: string; input?: Record<string, unknown> }> };
             if (msg.content) {
               for (const block of msg.content) {
@@ -1035,6 +1049,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 }
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[mica-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
+                  toolCallCounts[block.name] = (toolCallCounts[block.name] || 0) + 1;
                   ctx.broadcast({
                     type: "progress",
                     tool: block.name,
@@ -1047,7 +1062,18 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                   // forward/back compat with older SDK builds.
                   if (block.name === "agent" || block.name === "task") {
                     const taskId = String((block as { id?: unknown }).id || "");
-                    if (taskId) outstandingSubagentTasks.add(taskId);
+                    if (taskId) {
+                      outstandingSubagentTasks.add(taskId);
+                      subagentCount++;
+                      const input = block.input || {};
+                      const subName = String(
+                        (input as Record<string, unknown>).subagent_type ||
+                        (input as Record<string, unknown>).agent_type ||
+                        (input as Record<string, unknown>).name ||
+                        "unknown"
+                      );
+                      subagentStarts.set(taskId, { name: subName, tsStart: Date.now() });
+                    }
                   }
                   if (WRITE_TOOL_NAMES.has(block.name.toLowerCase())) {
                     filesChanged = true;
@@ -1086,6 +1112,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "tool_result" && block.tool_use_id) {
                   if (outstandingSubagentTasks.delete(block.tool_use_id) && sessionProject) {
                     endSubagentTask(sessionProject);
+                  }
+                  // Emit per-subagent metric when the matching start is known.
+                  const start = subagentStarts.get(block.tool_use_id);
+                  if (start) {
+                    subagentStarts.delete(block.tool_use_id);
+                    const tsEnd = Date.now();
+                    void recordSubagent(sessionProject, {
+                      turn_id: turnId,
+                      tool_use_id: block.tool_use_id,
+                      subagent_name: start.name,
+                      ts_start: start.tsStart,
+                      ts_end: tsEnd,
+                      duration_ms: tsEnd - start.tsStart,
+                    });
                   }
                 }
               }
@@ -1162,6 +1202,10 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           console.log(`[mica-agent] cursor advanced to ${newCursor} (capacity ${Math.round(capacity * 100)}%, arc-complete)`);
         }
 
+        const tsEnd = Date.now();
+        const durationMs = tsEnd - tsStart;
+        const ttftMs = firstTokenTs !== null ? firstTokenTs - tsStart : null;
+
         console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
         ctx.broadcast({
           type: "assistant",
@@ -1175,6 +1219,29 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           capacity,
           cursor: newCursor,
           cursorAdvanced,
+          durationMs,
+          ...(ttftMs !== null ? { ttftMs } : {}),
+        });
+
+        void recordTurn(sessionProject, {
+          turn_id: turnId,
+          ts_start: tsStart,
+          ts_end: tsEnd,
+          duration_ms: durationMs,
+          ttft_ms: ttftMs,
+          chat_id: chatId,
+          agent: "qwen",
+          model: modelName,
+          input_tokens: typeof (usage as { input_tokens?: unknown })?.input_tokens === "number" ? (usage as { input_tokens: number }).input_tokens : 0,
+          output_tokens: typeof (usage as { output_tokens?: unknown })?.output_tokens === "number" ? (usage as { output_tokens: number }).output_tokens : 0,
+          baseline_tokens: baselineTokens,
+          context_window: contextWindow,
+          capacity,
+          subagent_count: subagentCount,
+          tool_calls: toolCallCounts,
+          files_changed: filesChanged ? 1 : 0,
+          cursor_advanced: cursorAdvanced,
+          arc_complete: arcComplete,
         });
 
       } catch (err) {
@@ -1188,6 +1255,30 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           console.error(`[mica-agent] Error during ${message.slice(0, 40)}:`, errMsg);
           ctx.broadcast({ type: "error", error: errMsg });
         }
+        // Minimal metric for the error/empty path. Fields scoped inside the try
+        // (modelName, baselineTokens, usage) aren't accessible here; baseline
+        // analysis focuses on successful turns anyway.
+        const tsEnd = Date.now();
+        void recordTurn(sessionProject, {
+          turn_id: turnId,
+          ts_start: tsStart,
+          ts_end: tsEnd,
+          duration_ms: tsEnd - tsStart,
+          ttft_ms: firstTokenTs !== null ? firstTokenTs - tsStart : null,
+          chat_id: chatId,
+          agent: "qwen",
+          model: "",
+          input_tokens: 0,
+          output_tokens: 0,
+          baseline_tokens: 0,
+          context_window: 0,
+          capacity: 0,
+          subagent_count: subagentCount,
+          tool_calls: toolCallCounts,
+          files_changed: 0,
+          cursor_advanced: false,
+          arc_complete: false,
+        });
       } finally {
         recordTurnEnd(ctx.filename);
         console.log(`[mica-agent] processMessage DONE: ${message.slice(0, 60)} | queue depth: ${queue.length}`);

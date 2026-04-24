@@ -1,0 +1,6 @@
+{
+  "extension": ".xml",
+  "badge": "XML",
+  "defaultTitle": "XML",
+  "dependencies": { "scripts": [], "styles": [] }
+}

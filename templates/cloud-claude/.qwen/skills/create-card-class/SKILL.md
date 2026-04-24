@@ -86,7 +86,18 @@ If the user asks for "a solar system card," your extension is `.solar` and your 
 }
 ```
 
+**Required fields — every `metadata.json` MUST include all of these:**
+
+| Field | Silent failure if omitted |
+|---|---|
+| `extension` | Framework auto-repairs from the directory name and logs a warning. Always include to avoid the roundtrip. |
+| `badge` | Card renders with a `???` placeholder on the canvas — a visible regression, not caught by `JSON.parse` verification. |
+| `defaultTitle` | Card title falls back to the raw instance filename; functional but ugly. |
+| `dependencies` | No scripts/styles loaded — fine if you need none, silent breakage of your card's libraries otherwise. |
+
 `primaryFile` is optional — only for classes that render a specific filename inside a directory instance.
+
+**Do NOT include `name`, `description`, or `version`.** Those are not Mica fields and get ignored; they're a package.json-shaped leak from LLM priors. The fields above are the only ones the framework reads.
 
 ## CARD_SHIM globals in `card.js`
 
@@ -304,7 +315,13 @@ A correct `card.js` / `card.html` / `metadata.json` / `card.css` skeleton lives 
 cp -r /workspaces/mica/templates/_card-class-skeleton .mica/card-classes/<your-name>
 ```
 
-Then `edit` the files in place to replace the `REPLACE_ME` placeholders and add your card's behavior. Do NOT use `write_file` to author `card.js` from an empty page — that's where class-wrappers, `export` keywords, and invented base classes leak in. The skeleton already has the correct shape; stay inside its structure.
+Then `edit` the files in place to replace the `REPLACE_ME` placeholders and add your card's behavior. Do NOT use `write_file` to author **any** of the four files from an empty page:
+
+- `card.js` hand-written from scratch leaks class-wrappers, `export` keywords, and invented base classes.
+- `metadata.json` hand-written from scratch drops required fields (`badge`, `defaultTitle`) and leaks package.json-shaped fields (`name`, `version`) — see the Required fields table above.
+- `card.html` / `card.css` hand-written drift from scoping conventions.
+
+The skeleton already has the correct shape; stay inside its structure.
 
 After the copy:
 1. `edit metadata.json`: set `extension`, `badge`, `defaultTitle`

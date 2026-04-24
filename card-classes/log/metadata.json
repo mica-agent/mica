@@ -1,0 +1,6 @@
+{
+  "extension": ".log",
+  "badge": "LOG",
+  "defaultTitle": "Log",
+  "dependencies": { "scripts": [], "styles": [] }
+}

@@ -1,0 +1,6 @@
+{
+  "extension": ".csv",
+  "badge": "CSV",
+  "defaultTitle": "CSV",
+  "dependencies": { "scripts": [], "styles": [] }
+}

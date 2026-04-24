@@ -1,0 +1,6 @@
+{
+  "extension": ".yml",
+  "badge": "YAML",
+  "defaultTitle": "YAML",
+  "dependencies": { "scripts": [], "styles": [] }
+}

@@ -5,6 +5,7 @@
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
+import { randomUUID } from "crypto";
 import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT } from "./files.js";
 import { buildSubagentCanvasContext } from "./micaAgent.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
@@ -20,6 +21,7 @@ import {
   getConcurrencyStatus,
   type ParsedSubagent,
 } from "./subagents.js";
+import { recordTurn, recordSubagent } from "./metrics.js";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
 // tag the write as agent-originated. Covers the Qwen/OpenRouter dialect
@@ -541,6 +543,15 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       // Per-turn read tracking — see micaAgent.ts for rationale.
       const readFilesThisTurn = new Set<string>();
 
+      // Per-turn metrics state. Emitted at each termination path. See
+      // server/metrics.ts for the schema.
+      const turnId = randomUUID();
+      const tsStart = Date.now();
+      let firstTokenTs: number | null = null;
+      const toolCallCounts: Record<string, number> = {};
+      const subagentStarts = new Map<string, { name: string; tsStart: number }>();
+      let subagentCount = 0;
+
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
 
@@ -783,13 +794,25 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           const evtType = evt.type as string;
 
           if (evtType === "assistant" && evt.message) {
+            // First assistant event = proxy for time-to-first-token (prefill done).
+            if (firstTokenTs === null) firstTokenTs = Date.now();
             const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; input?: Record<string, unknown>; id?: string }> };
             if (msg.content) {
               for (const block of msg.content) {
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[claude-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
+                  toolCallCounts[block.name] = (toolCallCounts[block.name] || 0) + 1;
                   if ((block.name === "Task" || block.name === "Agent") && block.id) {
                     outstandingSubagentTasks.add(block.id);
+                    subagentCount++;
+                    const input = block.input || {};
+                    const subName = String(
+                      (input as Record<string, unknown>).subagent_type ||
+                      (input as Record<string, unknown>).agent_type ||
+                      (input as Record<string, unknown>).name ||
+                      "unknown"
+                    );
+                    subagentStarts.set(block.id, { name: subName, tsStart: Date.now() });
                   }
                   ctx.broadcast({
                     type: "progress",
@@ -831,6 +854,19 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "tool_result" && block.tool_use_id) {
                   if (outstandingSubagentTasks.delete(block.tool_use_id) && sessionProject) {
                     endSubagentTask(sessionProject);
+                  }
+                  const start = subagentStarts.get(block.tool_use_id);
+                  if (start) {
+                    subagentStarts.delete(block.tool_use_id);
+                    const tsEnd = Date.now();
+                    void recordSubagent(sessionProject, {
+                      turn_id: turnId,
+                      tool_use_id: block.tool_use_id,
+                      subagent_name: start.name,
+                      ts_start: start.tsStart,
+                      ts_end: tsEnd,
+                      duration_ms: tsEnd - start.tsStart,
+                    });
                   }
                 }
               }
@@ -900,6 +936,10 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           console.log(`[claude-agent] cursor advanced to ${newCursor} (capacity ${Math.round(capacity * 100)}%, arc-complete)`);
         }
 
+        const tsEnd = Date.now();
+        const durationMs = tsEnd - tsStart;
+        const ttftMs = firstTokenTs !== null ? firstTokenTs - tsStart : null;
+
         console.log(`[claude-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
         ctx.broadcast({
           type: "assistant",
@@ -913,6 +953,29 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           capacity,
           cursor: newCursor,
           cursorAdvanced,
+          durationMs,
+          ...(ttftMs !== null ? { ttftMs } : {}),
+        });
+
+        void recordTurn(sessionProject, {
+          turn_id: turnId,
+          ts_start: tsStart,
+          ts_end: tsEnd,
+          duration_ms: durationMs,
+          ttft_ms: ttftMs,
+          chat_id: chatId,
+          agent: "claude",
+          model: process.env.ANTHROPIC_MODEL || "claude-default",
+          input_tokens: typeof (usage as { input_tokens?: unknown })?.input_tokens === "number" ? (usage as { input_tokens: number }).input_tokens : 0,
+          output_tokens: typeof (usage as { output_tokens?: unknown })?.output_tokens === "number" ? (usage as { output_tokens: number }).output_tokens : 0,
+          baseline_tokens: inputTokens,
+          context_window: CLAUDE_CTX_WINDOW,
+          capacity,
+          subagent_count: subagentCount,
+          tool_calls: toolCallCounts,
+          files_changed: filesChanged ? 1 : 0,
+          cursor_advanced: cursorAdvanced,
+          arc_complete: arcComplete,
         });
 
       } catch (err) {
@@ -926,6 +989,29 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           console.error(`[claude-agent] Error during ${message.slice(0, 40)}:`, errMsg);
           ctx.broadcast({ type: "error", error: errMsg });
         }
+        // Minimal metric for error/empty path — fields scoped inside the try
+        // aren't accessible here. Baseline analysis focuses on successful turns.
+        const tsEnd = Date.now();
+        void recordTurn(sessionProject, {
+          turn_id: turnId,
+          ts_start: tsStart,
+          ts_end: tsEnd,
+          duration_ms: tsEnd - tsStart,
+          ttft_ms: firstTokenTs !== null ? firstTokenTs - tsStart : null,
+          chat_id: chatId,
+          agent: "claude",
+          model: process.env.ANTHROPIC_MODEL || "claude-default",
+          input_tokens: 0,
+          output_tokens: 0,
+          baseline_tokens: 0,
+          context_window: 0,
+          capacity: 0,
+          subagent_count: subagentCount,
+          tool_calls: toolCallCounts,
+          files_changed: 0,
+          cursor_advanced: false,
+          arc_complete: false,
+        });
       } finally {
         recordTurnEnd(ctx.filename);
         console.log(`[claude-agent] processMessage DONE: ${message.slice(0, 60)} | queue depth: ${queue.length}`);
