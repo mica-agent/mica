@@ -78,8 +78,22 @@
     </div>
   </div>
 
-  <div style="display:flex;gap:6px;padding:8px 12px;border-top:1px solid #30363d;flex-shrink:0;">
+  <div id="chat-attach-row" style="display:none;align-items:center;gap:6px;padding:4px 12px 0;flex-shrink:0;">
+    <span id="chat-attach-chip" style="background:rgba(124,58,237,0.18);color:#c9aef7;border:1px solid rgba(124,58,237,0.4);border-radius:4px;padding:2px 8px;font-size:11px;display:inline-flex;align-items:center;gap:4px;">
+      <span>📷</span>
+      <span id="chat-attach-filename"></span>
+      <button id="chat-attach-clear" title="Remove attachment" style="background:transparent;border:none;color:#c9aef7;cursor:pointer;font-size:12px;padding:0 2px;line-height:1;">×</button>
+    </span>
+  </div>
+
+  <div id="chat-attach-picker" style="display:none;position:absolute;bottom:50px;left:12px;right:12px;max-height:240px;overflow:auto;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px;z-index:10;box-shadow:0 4px 12px rgba(0,0,0,0.4);">
+    <div style="color:#6e7681;font-size:11px;padding:4px 8px;">Attach screenshot of…</div>
+    <div id="chat-attach-options"></div>
+  </div>
+
+  <div style="display:flex;gap:6px;padding:8px 12px;border-top:1px solid #30363d;flex-shrink:0;position:relative;">
     <span id="chat-ctx-btn" title="Show context files" style="display:flex;align-items:center;cursor:pointer;color:#6e7681;font-size:12px;padding:0 4px;flex-shrink:0;">ctx</span>
+    <button id="chat-attach-btn" title="Attach a screenshot of a canvas card" style="background:transparent;border:1px solid #30363d;color:#8b949e;border-radius:6px;padding:4px 8px;font-size:14px;cursor:pointer;font-family:inherit;line-height:1;flex-shrink:0;">📷</button>
     <input id="chat-input" type="text" placeholder="Ask Qwen Agent..." style="flex:1;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:13px;outline:none;font-family:inherit;" />
     <button id="chat-stop" style="background:#f87171;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;display:none;">Stop</button>
     <button id="chat-send" style="background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">Send</button>

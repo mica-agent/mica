@@ -469,7 +469,13 @@ export async function updateCanvasConfig(
   await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf-8");
 }
 
-/** Read project-wide OpenRouter API key from .mica/config.json. Returns null when unset. */
+/** Read the OpenRouter API key. Resolution order:
+ *    1. Project-scoped `<project>/.mica/config.json` (set via the gear UI).
+ *    2. Workspace-scoped `.mica/config.json` (shared across projects in a
+ *       workspace).
+ *    3. `OPENROUTER_API_KEY` environment variable (populated from `.env`
+ *       by the dotenv load in server/index.ts, or from ambient env).
+ *  Returns null when none of the three are set. */
 export async function readOpenRouterKey(project: string | undefined): Promise<string | null> {
   const configPath = project
     ? join(WORKSPACE_DIR, project, ".mica", "config.json")
@@ -477,10 +483,10 @@ export async function readOpenRouterKey(project: string | undefined): Promise<st
   try {
     const cfg = JSON.parse(await readFile(configPath, "utf-8"));
     const k = cfg.openrouterApiKey;
-    return typeof k === "string" && k.length > 0 ? k : null;
-  } catch {
-    return null;
-  }
+    if (typeof k === "string" && k.length > 0) return k;
+  } catch { /* fall through to env */ }
+  const envKey = process.env.OPENROUTER_API_KEY;
+  return typeof envKey === "string" && envKey.length > 0 ? envKey : null;
 }
 
 /** Write or clear the project-wide OpenRouter API key in .mica/config.json. Empty string clears. */

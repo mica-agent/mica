@@ -1,11 +1,11 @@
 ---
 name: doc-consistency
-description: Create, update, modify, or write a spec, plan, design doc, diagram, decision note, README, or any project document. Use BEFORE writing and BEFORE editing — check sibling docs for alignment, adopt existing vocabulary, and ask when you find contradictions instead of silently picking a version.
+description: Keep docs and the code they describe in sync. Fires (a) before writing or editing a spec, plan, design doc, diagram, decision note, README, etc., AND (b) before or after editing CODE that a doc describes (e.g., a card class's card.js/html/css/metadata.json when the canvas has a spec.md). Checks sibling docs for alignment, propagates user-observable behavior changes from code back to spec, asks when contradictions surface.
 ---
 
 # Keep related docs consistent
 
-Projects accumulate multiple docs describing the same system — spec, design, implementation plan, diagrams, decisions, README. If you touch one without checking the others, they drift. The user then has to ask you to "confirm X and Y are consistent" after the fact. Prevent this.
+Projects accumulate multiple docs describing the same system — spec, design, implementation plan, diagrams, decisions, README. And the CODE they describe is just another source of truth that can drift. If you touch one without checking the others, they drift silently. The user then has to ask you to "confirm X and Y are consistent" after the fact. Prevent this.
 
 ## Before WRITING a new doc
 
@@ -28,6 +28,30 @@ Projects accumulate multiple docs describing the same system — spec, design, i
    - **Flag**: sibling expresses a DECISION that overrides your edit → stop and ask.
    - **Skip**: sibling describes a different layer and isn't affected.
 4. **Report changes**: "I updated `design.md` section 3. Propagated the rename to `system-diagram.mmd`. Left `decisions.md` alone (it records a prior version; adding a new decision entry would be a separate action if you want one)."
+
+## Before editing CODE that a doc describes
+
+Code drift is the SAME problem as doc drift — `spec.md` describes a card's behavior, you add a feature by editing `card.js`, now spec and code disagree. The user has to notice and ask.
+
+The threshold is NOT "big feature." It's **any user-observable change**: adding an item to a list the spec enumerates ("Cities shown (15)"), adding/removing a feature, changing a behavior, renaming a mode, altering a default. Even a one-line edit qualifies.
+
+1. **Before editing code**, scan for a describing doc:
+   - `spec.md`, `<name>-design.md`, `README.md`, any `.md` in `docs/` or `canvas/` that names the card/module/file you're about to change.
+   - Quick grep: `grep -rln "<card-class-name>\|<filename>" canvas/ docs/` (or your project's doc dir).
+2. **If a doc describes the code you're about to change**, plan the spec edit in the SAME turn as the code edit. Both writes go through; both land on disk; both get announced in your chat reply. Do not ship the code change alone and defer the spec "for next turn" — that IS the drift.
+3. **If no doc describes it yet**, you're writing undocumented code. Either (a) add a one-paragraph note to `spec.md` alongside the code change, or (b) call it out in chat so the user can decide whether to grow a doc via `grow-canvas`.
+
+### Examples of things that qualify
+
+- Adding a city to a `CITIES` array → update the spec's city count and list.
+- Flipping a default (tick rate, timezone, color scheme) → update the spec's "Defaults" section.
+- Adding a new panel, tooltip, click behavior, hotkey → update the spec's "Interaction" section.
+- Changing an algorithm in a way the user will feel (day/night calculation, distance formula) → update the spec's "How it works" section.
+- Pure refactor, no user-observable change → no spec edit needed. Say so in chat: "Refactored foo.js, no behavior change."
+
+### Self-check before finishing a turn that touched code
+
+Before broadcasting your final reply, re-read your own code edits. Ask: *"If someone reads `spec.md` after this turn, will it still accurately describe what the card does?"* If no — edit spec now, before replying. Trivial edits to spec are cheap; the drift you leave behind is expensive.
 
 ## Ask when ambiguous — NEVER silently harmonize
 

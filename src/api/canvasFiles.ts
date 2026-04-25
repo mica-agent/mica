@@ -196,10 +196,13 @@ export async function fetchFile(project: string, filename: string): Promise<Canv
 }
 
 /** Get the raw file URL (for binary files — images, PDFs, etc.).
- *  Note: returns just the URL; binary fetches won't auto-include the project header.
- *  For project-scoped binary fetches use `projFetch` directly or set a header on `<img>`. */
-export function getFileUrl(filename: string): string {
-  return `${API_BASE}/api/files/${encodeURIComponent(filename)}`;
+ *  `<img>` / `window.open()` can't send the `X-Mica-Project` header, so the
+ *  project is carried as a query string instead — the server's
+ *  getRequestProject() accepts either header or `?project=` (see
+ *  server/index.ts:150). Without the project qualifier, multi-project
+ *  workspaces would 404 or serve from the wrong project. */
+export function getFileUrl(filename: string, project: string): string {
+  return `${API_BASE}/api/files/${encodeURIComponent(filename)}?project=${encodeURIComponent(project)}`;
 }
 
 export async function saveFile(project: string, filename: string, content: string): Promise<void> {

@@ -3,9 +3,33 @@
 # Kills any stale processes on the required ports first.
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Source .env so MICA_PORT / MICA_FRONTEND_PORT / etc. set there reach this
+# shell. Mirrors server/index.ts + vite.config.ts resolution: workspace .env
+# first, repo-root .env as fallback. Ambient env that was already set in the
+# invoking shell wins over both (we only assign to unset vars via default
+# expansion below). The `set -a / set +a` dance auto-exports every var the
+# file defines so they propagate to the backend + vite children.
+_src_env() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  set -a
+  # shellcheck disable=SC1090
+  . "$f"
+  set +a
+}
+# Workspace .env lives at PROJECT_DIR_OVERRIDE (caller-set) OR the dev
+# default used below at line ~87 (/workspaces/testproj) OR the Docker
+# default (/project). Try each in order.
+for _candidate in "${PROJECT_DIR_OVERRIDE:-}" /workspaces/testproj /project; do
+  [ -n "$_candidate" ] && _src_env "$_candidate/.env" && break || true
+done
+_src_env "$REPO_ROOT/.env"
+
 BACKEND_PORT="${MICA_PORT:-3002}"
 FRONTEND_PORT="${MICA_FRONTEND_PORT:-5173}"
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_DIR="$REPO_ROOT"
 PID_DIR="$PROJECT_DIR/.mica-pids"
 
 mkdir -p "$PID_DIR"

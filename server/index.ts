@@ -2,6 +2,20 @@
 // Serves a workspace with project subdirectories.
 // Each project has its own files, layout, canvas, and AI context.
 
+// Load .env BEFORE any other import that reads process.env. Two locations,
+// in order of precedence:
+//   1. <PROJECT_DIR>/.env — user's workspace (Docker bind-mount target);
+//      what a container user edits to set their keys/models.
+//   2. <repo-root>/.env   — dev checkout; handy for local debugging.
+// Variables already set in process.env (e.g. from `docker run -e`) win —
+// dotenv's default `override: false` preserves them.
+import dotenv from "dotenv";
+import { existsSync } from "node:fs";
+import { join as joinPath } from "node:path";
+const _workspaceEnv = joinPath(process.env.PROJECT_DIR || "/project", ".env");
+if (existsSync(_workspaceEnv)) dotenv.config({ path: _workspaceEnv });
+dotenv.config();  // fallback: repo-root .env (and ambient process.env wins)
+
 import express from "express";
 import cors from "cors";
 import http from "http";
@@ -74,6 +88,7 @@ import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { registerGitEndpoints } from "./plugins/git.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata } from "./cardValidators.js";
+import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
@@ -573,6 +588,41 @@ app.post("/api/cards/:filename/error", (req, res) => {
 
 app.post("/api/cards/:filename/ok", (_req, res) => {
   res.json({ ok: true });
+});
+
+// ── Card screenshot upload ──────────────────────────────────
+// Frontend (src/whiteboard/screenshotClient.ts) POSTs the html2canvas output
+// here. Body is JSON { data: base64Png, width, height } — sized well within
+// the 5 MB JSON limit for typical cards. On failure, client POSTs
+// { error: "<reason>" } and we reject the pending capture promise.
+app.post("/api/cards/:filename/screenshot/:captureId", async (req, res) => {
+  const { captureId } = req.params;
+  const { data, width, height, error } = req.body as {
+    data?: string; width?: number; height?: number; error?: string;
+  };
+  try {
+    if (error) {
+      failCapture(captureId, error);
+      res.json({ ok: true });
+      return;
+    }
+    if (typeof data !== "string" || !data) {
+      res.status(400).json({ error: "data (base64) required" });
+      return;
+    }
+    // Strip optional data URL prefix.
+    const b64 = data.replace(/^data:image\/[^;]+;base64,/, "");
+    const buf = Buffer.from(b64, "base64");
+    const result = await resolveCapture(
+      captureId,
+      buf,
+      typeof width === "number" ? width : 0,
+      typeof height === "number" ? height : 0,
+    );
+    res.json({ ok: true, path: result.relativePath, bytes: result.bytes });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // ── Chat lifecycle (clear / archive browser) ────────────────
@@ -1362,8 +1412,9 @@ function broadcast(msg: Record<string, unknown>) {
   }
 }
 
-/** Send a message only to WS clients subscribed to the given project. */
-function broadcastToProject(project: string, msg: Record<string, unknown>) {
+/** Send a message only to WS clients subscribed to the given project.
+ *  Returns the number of clients the message was successfully queued to. */
+function broadcastToProject(project: string, msg: Record<string, unknown>): number {
   const data = JSON.stringify(msg);
   let count = 0;
   for (const [ws, proj] of wsProjects) {
@@ -1372,6 +1423,7 @@ function broadcastToProject(project: string, msg: Record<string, unknown>) {
     try { ws.send(data); count++; } catch { wsClients.delete(ws); wsProjects.delete(ws); }
   }
   console.log(`[broadcast:${project}] ${msg.type} → ${count} subscribers`);
+  return count;
 }
 
 // ── File Watcher Events ──────────────────────────────────────
@@ -1458,6 +1510,8 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   registerMicaHandler("chat", chatHandler);  // mica.chat.*
   registerMicaHandler("exec", execHandler);  // mica.exec.*
   registerMicaHandler("fetch", fetchHandler);  // mica.fetch.*
+  setScreenshotBroadcast(broadcastToProject);
+  registerMicaHandler("render", renderHandler);  // mica.render.capture
 
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent

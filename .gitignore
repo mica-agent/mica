@@ -36,3 +36,7 @@ __pycache__/
 # Project data (projects are external repos, not part of Mica)
 projects/
 workspaces.json
+
+# Environment config — .env.example is committed, .env is not.
+.env
+.env.local

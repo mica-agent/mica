@@ -219,7 +219,7 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                window.open(getFileUrl(file.name), "_blank");
+                window.open(getFileUrl(file.name, project), "_blank");
               }}
               title="Preview in new tab"
               className="wb-card-btn"
@@ -326,7 +326,7 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
         </div>
       ) : fileType === "image" ? (
         <div className="wb-card-body" style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 8 }}>
-          <img src={getFileUrl(file.name)} alt={file.name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+          <img src={getFileUrl(file.name, project)} alt={file.name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
         </div>
       ) : fileType === "binary" ? (
         <div className="wb-card-body" style={{ padding: 16, color: "#888", fontSize: 13 }}>

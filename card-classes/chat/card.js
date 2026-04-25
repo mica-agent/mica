@@ -4,6 +4,13 @@
 const messagesEl = container.querySelector("#chat-messages");
 const inputEl = container.querySelector("#chat-input");
 const sendBtn = container.querySelector("#chat-send");
+const attachBtn = container.querySelector("#chat-attach-btn");
+const attachRow = container.querySelector("#chat-attach-row");
+const attachChip = container.querySelector("#chat-attach-chip");
+const attachFilenameEl = container.querySelector("#chat-attach-filename");
+const attachClearBtn = container.querySelector("#chat-attach-clear");
+const attachPicker = container.querySelector("#chat-attach-picker");
+const attachOptionsEl = container.querySelector("#chat-attach-options");
 const stopBtn = container.querySelector("#chat-stop");
 const statusBar = container.querySelector("#chat-statusbar");
 const statusMain = container.querySelector("#chat-status-main");
@@ -707,16 +714,98 @@ ch.onData(function(data) {
 
 ch.onClose(function() {});
 
+// Pending screenshot attachment — set when the user picks a canvas file via
+// the 📷 picker, cleared on send or on 'x'. When set, the send() below
+// includes `attachmentFilename` in the outgoing message, and the server
+// bypasses the Qwen SDK to call llama-server directly with the rendered
+// card image as user-role content (see processImageMessage in micaAgent.ts).
+// The tool-result image path via the MCP render_capture tool remains for
+// agent-triggered verification during card authoring; this UI path is for
+// the user's own "look at this and tell me what you see" queries.
+let pendingAttachment = null;
+
+function updateAttachChip() {
+  if (pendingAttachment) {
+    attachFilenameEl.textContent = pendingAttachment;
+    attachRow.style.display = "flex";
+  } else {
+    attachRow.style.display = "none";
+  }
+}
+
+function clearAttachment() {
+  pendingAttachment = null;
+  updateAttachChip();
+}
+
+attachClearBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  clearAttachment();
+});
+
+function hidePicker() { attachPicker.style.display = "none"; }
+
+async function openPicker() {
+  // Fetch the project's canvas files. The chat card itself is one of these;
+  // filter it out along with other meta cards. Result is a short list of
+  // pinned canvas content the user might want to screenshot.
+  attachOptionsEl.innerHTML = '<div style="color:#6e7681;font-size:11px;padding:6px 8px;">Loading…</div>';
+  attachPicker.style.display = "block";
+  try {
+    const res = await fetch(`/api/files?canvas=true`, { headers: { "X-Mica-Project": mica.project || "" } });
+    const files = await res.json();
+    const candidates = (files || []).filter((f) => !f.meta && f.name !== mica.filename);
+    if (candidates.length === 0) {
+      attachOptionsEl.innerHTML = '<div style="color:#6e7681;font-size:11px;padding:6px 8px;">No other cards on canvas.</div>';
+      return;
+    }
+    attachOptionsEl.innerHTML = "";
+    candidates.forEach((f) => {
+      const opt = document.createElement("div");
+      opt.textContent = f.name;
+      opt.style.cssText = "padding:6px 8px;color:#e6edf3;font-size:12px;cursor:pointer;border-radius:3px;";
+      opt.addEventListener("mouseenter", () => { opt.style.background = "rgba(124,58,237,0.15)"; });
+      opt.addEventListener("mouseleave", () => { opt.style.background = "transparent"; });
+      opt.addEventListener("click", () => {
+        pendingAttachment = f.name;
+        updateAttachChip();
+        hidePicker();
+        inputEl.focus();
+      });
+      attachOptionsEl.appendChild(opt);
+    });
+  } catch (err) {
+    attachOptionsEl.innerHTML = `<div style="color:#f87171;font-size:11px;padding:6px 8px;">Failed to load files: ${err && err.message ? err.message : err}</div>`;
+  }
+}
+
+attachBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (attachPicker.style.display === "block") hidePicker(); else openPicker();
+});
+
+// Hide picker on outside click.
+document.addEventListener("click", (e) => {
+  if (attachPicker.style.display !== "block") return;
+  if (attachPicker.contains(e.target) || attachBtn.contains(e.target)) return;
+  hidePicker();
+});
+
 function send() {
   const text = inputEl.value.trim();
-  if (!text) return;
+  if (!text && !pendingAttachment) return;
   inputEl.value = "";
   // Server queues if busy — let the user keep typing while the agent works.
   if (busy) {
     queuedCount++;
     addDetailLine(`Queued: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
   }
-  ch.send({ message: text });
+  const payload = { message: text || "(no prompt)" };
+  if (pendingAttachment) {
+    payload.attachmentFilename = pendingAttachment;
+    clearAttachment();
+  }
+  ch.send(payload);
   updateSendButton();
 }
 

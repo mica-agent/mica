@@ -110,6 +110,15 @@ async function startServer(): Promise<string> {
   // Override via LLAMA_CACHE_RAM (MiB); set to "0" to disable, "-1" for unlimited.
   const CACHE_RAM = process.env.LLAMA_CACHE_RAM || "16384";
 
+  // Vision projection. Qwen3.6-35B-A3B is multimodal; the mmproj sidecar
+  // enables image input via llama-server. Default: F16 from the same unsloth
+  // repo as the main GGUF (findHfCachedFile scans all snapshot dirs).
+  // If not present, vision stays dormant — non-fatal, text turns keep working.
+  // Override via LLAMA_MMPROJ.
+  const cachedMmproj = await findHfCachedFile(HF_REPO, "mmproj-F16.gguf");
+  const mmprojPath = process.env.LLAMA_MMPROJ || cachedMmproj || "";
+  const mmprojArgs = mmprojPath ? ["--mmproj", mmprojPath] : [];
+
   const args = [
     ...modelArgs,
     "--host", "0.0.0.0",
@@ -120,6 +129,7 @@ async function startServer(): Promise<string> {
     "--ctx-size", CTX_SIZE_TOTAL,
     "-np", N_PARALLEL,
     "--cache-ram", CACHE_RAM,
+    ...mmprojArgs,
     "--log-file", llamaLogFile,
     "--reasoning-format", "deepseek",
     // Default thinking OFF for ALL requests, regardless of caller.

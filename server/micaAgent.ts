@@ -19,6 +19,9 @@ import {
   getConcurrencyStatus,
 } from "./subagents.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
+import { captureCard } from "./screenshot.js";
+import { readFile as fsReadFile } from "fs/promises";
+import { z } from "zod";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
 // tag the write as agent-originated. Covers the Qwen/OpenRouter dialect
@@ -122,17 +125,76 @@ interface ChatMessage {
 
 // Lazy-load the SDK
 let _query: ((config: unknown) => AsyncIterable<unknown>) | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _tool: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _createSdkMcpServer: any = null;
 async function getQuery() {
   if (!_query) {
     try {
       const mod = await import("@qwen-code/sdk");
       _query = (mod as { query: typeof _query }).query;
+      _tool = (mod as { tool: unknown }).tool;
+      _createSdkMcpServer = (mod as { createSdkMcpServer: unknown }).createSdkMcpServer;
     } catch (err) {
       console.error("[mica-agent] Failed to load @qwen-code/sdk:", (err as Error).message);
       throw new Error("@qwen-code/sdk not available");
     }
   }
   return _query!;
+}
+
+/** Build the mica-render MCP server with the project bound in. A fresh
+ *  instance per turn is cheap (it's just object construction) and binds
+ *  `sessionProject` into the tool handler's closure cleanly. */
+function buildRenderMcpServer(sessionProject: string | null): unknown | null {
+  if (!sessionProject || !_tool || !_createSdkMcpServer) return null;
+  const captureToolDef = _tool(
+    "render_capture",
+    "Capture a PNG screenshot of a card as it is currently rendered on the " +
+    "canvas AND ATTACH THE IMAGE to the tool result so you can look at it " +
+    "directly. You HAVE vision capability on this model (Qwen3.6-35B-A3B " +
+    "with mmproj loaded) — when this tool returns, the screenshot is visible " +
+    "to you as an image attached to the tool result. Do NOT say 'I can't " +
+    "view images' after calling this; describe what you see, including " +
+    "colors, layout, specific text visible in the image, and whether the " +
+    "card rendered correctly. Use this after building or editing a card " +
+    "class to visually verify it works. The browser tab must be open to " +
+    "the project's canvas. The filename is the canvas-root-relative path " +
+    "of the card instance file (e.g. 'canvas/my-widget.burndown'), not " +
+    "the card class directory.",
+    { filename: z.string().describe("Canvas-root-relative path of the instance file (e.g. 'canvas/my.burndown')") },
+    async (args: { filename: string }) => {
+      try {
+        const result = await captureCard(sessionProject, args.filename);
+        const png = await fsReadFile(result.path);
+        const base64 = png.toString("base64");
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `The screenshot is attached to this tool result as an image. ` +
+                `Look at the attached image and describe what you actually see ` +
+                `— colors, layout, rendered text, whether anything is clipped or broken. ` +
+                `File: ${args.filename} (${result.width}×${result.height}, ${Math.round(result.bytes / 1024)} KiB, saved to ${result.relativePath}).`,
+            },
+            { type: "image", data: base64, mimeType: "image/png" },
+          ],
+        };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `Capture failed: ${(err as Error).message}` }],
+        };
+      }
+    },
+  );
+  return _createSdkMcpServer({
+    name: "mica-render",
+    version: "1.0.0",
+    tools: [captureToolDef],
+  });
 }
 
 // -- History persistence --
@@ -420,6 +482,19 @@ You execute shell commands inside the same container that runs Mica itself. Thes
 
 If you need to test a web app the user is building, launch it on a DIFFERENT port (e.g. 9000, 9090) — don't use 5173 or 3002. If a port conflict happens, use a different port rather than killing anything.`);
 
+  // Vision capability declaration. The underlying model is Qwen3.6-35B-A3B
+  // multimodal with mmproj-F16 loaded by llama-server — vision IS active on
+  // this runtime. Without this explicit note, the model's prior pulls it
+  // toward saying "I can't view images" even when an image IS attached to
+  // a tool result (confirmed by curl tests that show the same model
+  // correctly describes image content when called directly, while the
+  // agent flow self-reports as blind). The note nudges the prior.
+  parts.push(`## You have vision
+
+You CAN see images. This runtime loads Qwen3.6-35B-A3B with its vision encoder (mmproj). When a tool result includes an image attachment, you actually see that image — don't say "I can't view images" or fall back to describing source code when a picture is right there. Describe the attached image directly: colors, layout, visible text, whether anything is clipped or wrong.
+
+The \`render_capture\` tool (MCP server \`mica-render\`) returns a screenshot of a rendered canvas card with the image attached. Use it to visually verify card work and report what you actually see in the pixels.`);
+
   // Default behavior (if no agent card back provides instructions)
   parts.push(`## Your Role
 You are a team member on this project, not a tool. You collaborate with the human — you don't just execute orders.
@@ -587,7 +662,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     // projects share the same filename.
     const chatId = ctx.sessionId;
     let busy = false;
-    let queue: string[] = [];
+    // Queue carries plain strings for text turns, or {text, attach} for
+    // image-bearing turns. The drain handler below branches on shape.
+    let queue: Array<string | { text: string; attach: string }> = [];
     let activeAbort: AbortController | null = null;
 
     // Read once at session start. If the user reconfigures canvasRoot/pinned
@@ -714,11 +791,22 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           }
           baseUrl = "https://openrouter.ai/api/v1";
           apiKey = key;
-          modelName = cardSettings.model || "anthropic/claude-3.5-sonnet";
+          // Default model resolution: per-card gear setting > OPENROUTER_DEFAULT_MODEL
+          // env var (from .env) > built-in fallback.
+          modelName = cardSettings.model || process.env.OPENROUTER_DEFAULT_MODEL || "anthropic/claude-3.5-sonnet";
         } else {
           baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
           apiKey = "dummy";
-          modelName = cardSettings.model || "openai:local";
+          // Model label for local llama-server. The name is informational from
+          // llama-server's perspective (it uses whatever's loaded at startup),
+          // but the Qwen SDK uses it to pick supported modalities via regex
+          // match: /^qwen3-vl-/ → { image: true, video: true }. Our local
+          // GGUF is Qwen3.6-35B-A3B with mmproj loaded (see llamaServer.ts),
+          // so we tag it as "qwen3-vl-local" to unlock the SDK's image path
+          // for mica.render.capture tool-result delivery. Without this
+          // relabel the SDK strips image content to "[Unsupported modality]"
+          // text before sending.
+          modelName = cardSettings.model || "qwen3-vl-local";
         }
         console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
 
@@ -1000,6 +1088,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // tool, keeping the parent's context small. See plan:
             // /home/vscode/.claude/plans/joyful-honking-hinton.md
             ...(subagents.length > 0 ? { agents: subagents } : {}),
+            // SDK-hosted MCP server exposing `render_capture` — see
+            // buildRenderMcpServer above. Tool result returns the PNG inline
+            // (via MCP ImageContent) so the next LLM call can see it via
+            // Qwen3.6-35B-A3B's vision (mmproj-F16 loaded by llama-server).
+            // Only attach when the server built OK (project set AND SDK
+            // exports present); omitting is a safe no-op.
+            // createSdkMcpServer() already returns { type: "sdk", name, instance }
+            // — use the returned value directly as the mcpServers entry. Wrapping
+            // it again produces `{instance: <the config>}`, which the SDK then
+            // tries to .connect() and fails with "i.connect is not a function".
+            ...(() => {
+              const server = buildRenderMcpServer(sessionProject);
+              return server ? { mcpServers: { "mica-render": server } } : {};
+            })(),
             env: {
               OPENAI_API_KEY: apiKey,
               OPENAI_BASE_URL: baseUrl,
@@ -1290,13 +1392,168 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           const next = queue.shift()!;
           setImmediate(() => {
             busy = false; sessionState.busy = false;
-            processMessage(next);
+            if (typeof next === "string") processMessage(next);
+            else processImageMessage(next.text, next.attach);
           });
         } else {
           busy = false; sessionState.busy = false;
           if (sessionState.coalesceBuffer.size > 0) {
             setImmediate(() => deliverCoalescedEvents());
           }
+        }
+      }
+    }
+
+    // Image-attached user turn. Bypasses the Qwen SDK entirely because the
+    // SDK's `prompt: string` parameter can't carry image content, and the
+    // tool-result image-delivery path (via `render_capture` MCP tool) is
+    // fragile across chat-template + modality boundaries. Calling
+    // llama-server directly with user-role image_url content is the
+    // well-trodden vision path — confirmed working via curl tests.
+    //
+    // Trade-off: this turn has no tool-use. It's a one-shot "describe /
+    // inspect this card" query. Agent-triggered verification during
+    // card authoring continues to use the MCP render_capture tool.
+    async function processImageMessage(text: string, attachmentFilename: string) {
+      if (busy) {
+        queue.push({ text, attach: attachmentFilename });
+        return;
+      }
+      busy = true; sessionState.busy = true;
+      console.log(`[mica-agent] processImageMessage START: ${text.slice(0, 60)} [attach=${attachmentFilename}]`);
+
+      const turnId = randomUUID();
+      const tsStart = Date.now();
+
+      // Broadcast the user message with attachment marker so the chat card
+      // can render a little 📷 indicator on the bubble.
+      ctx.broadcast({ type: "user", content: text, attachmentFilename });
+
+      // Persist user turn to history. Stash attachment info in the content so
+      // it shows up in transcripts / agent re-reads; not pretty but honest.
+      const history = await loadHistory(chatId, sessionProject);
+      history.push({ role: "user", content: `${text}\n\n[📷 attached: ${attachmentFilename}]` });
+      await saveHistory(chatId, history, sessionProject);
+
+      ctx.broadcast({ type: "thinking" });
+
+      try {
+        if (!sessionProject) throw new Error("No active project");
+
+        const capture = await captureCard(sessionProject, attachmentFilename);
+        const pngBuffer = await fsReadFile(capture.path);
+        const base64 = pngBuffer.toString("base64");
+
+        // Bring along a short tail of text-only prior history so the model
+        // has conversational continuity. Cursor-aware: skip messages the
+        // user has "released" with a Clear.
+        const cursor = await readChatCursor(chatId, sessionProject);
+        const prior = history.slice(cursor, -1);
+        const HISTORY_MSG_CAP = 6;
+        const recent = prior.slice(-HISTORY_MSG_CAP);
+
+        const llmMessages: Array<Record<string, unknown>> = [
+          {
+            role: "system",
+            content:
+              "You are inspecting a card rendered in the Mica canvas app. An image of the rendered card is attached to the user's latest message. Look at the attached image and answer the user's question directly based on what you see — colors, layout, visible text and numbers, any regions that look clipped, broken, overlapping, or wrong. Do not describe what the card SHOULD show based on source code. Describe what is actually in the image.",
+          },
+          ...recent.map((m) => ({ role: m.role, content: m.content })),
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: text || `Describe what you see in the attached screenshot of ${attachmentFilename}.`,
+              },
+              { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } },
+            ],
+          },
+        ];
+
+        const firstTokenAt = { t: null as number | null };
+        const requestStart = Date.now();
+        const res = await fetch(`${LLAMA_URL.replace(/\/v1$/, "")}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "qwen3-vl-local",
+            messages: llmMessages,
+            max_tokens: 1024,
+          }),
+        });
+        firstTokenAt.t = Date.now(); // non-streaming: approximate TTFT as full response receipt
+
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          throw new Error(`llama-server ${res.status}: ${errBody.slice(0, 300)}`);
+        }
+        const data = await res.json() as {
+          choices?: Array<{ message?: { content?: string } }>;
+          usage?: Record<string, unknown>;
+        };
+        const reply = data.choices?.[0]?.message?.content || "(no response)";
+
+        const tsEnd = Date.now();
+
+        console.log(`[mica-agent] broadcasting assistant (image-path) for: ${text.slice(0, 60)}`);
+        ctx.broadcast({
+          type: "assistant",
+          content: reply,
+          agent: "Qwen",
+          filesChanged: false,
+          ...(data.usage ? { usage: data.usage } : {}),
+          contextWindow: LOCAL_CTX_WINDOW,
+          baselineTokens: 0,
+          arcComplete: false,
+          capacity: 0,
+          cursor,
+          cursorAdvanced: false,
+          durationMs: tsEnd - tsStart,
+          ttftMs: firstTokenAt.t !== null ? firstTokenAt.t - requestStart : null,
+        });
+
+        const updatedHistory = await loadHistory(chatId, sessionProject);
+        updatedHistory.push({ role: "assistant", content: reply, agent: "Qwen" });
+        await saveHistory(chatId, updatedHistory, sessionProject);
+
+        const usageObj = (data.usage ?? {}) as { prompt_tokens?: unknown; completion_tokens?: unknown };
+        void recordTurn(sessionProject, {
+          turn_id: turnId,
+          ts_start: tsStart,
+          ts_end: tsEnd,
+          duration_ms: tsEnd - tsStart,
+          ttft_ms: firstTokenAt.t !== null ? firstTokenAt.t - requestStart : null,
+          chat_id: chatId,
+          agent: "qwen",
+          model: "qwen3-vl-local",
+          input_tokens: typeof usageObj.prompt_tokens === "number" ? usageObj.prompt_tokens : 0,
+          output_tokens: typeof usageObj.completion_tokens === "number" ? usageObj.completion_tokens : 0,
+          baseline_tokens: 0,
+          context_window: LOCAL_CTX_WINDOW,
+          capacity: 0,
+          subagent_count: 0,
+          tool_calls: { attach_image: 1 },
+          files_changed: 0,
+          cursor_advanced: false,
+          arc_complete: false,
+        });
+      } catch (err) {
+        const errMsg = (err as Error).message || String(err);
+        console.error(`[mica-agent] processImageMessage error: ${errMsg}`);
+        ctx.broadcast({ type: "error", error: errMsg });
+      } finally {
+        recordTurnEnd(ctx.filename);
+        console.log(`[mica-agent] processImageMessage DONE | queue depth: ${queue.length}`);
+        if (queue.length > 0) {
+          const next = queue.shift()!;
+          setImmediate(() => {
+            busy = false; sessionState.busy = false;
+            if (typeof next === "string") processMessage(next);
+            else processImageMessage(next.text, next.attach);
+          });
+        } else {
+          busy = false; sessionState.busy = false;
         }
       }
     }
@@ -1327,7 +1584,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       },
 
       onData(clientId, data) {
-        const msg = data as { type?: string; message?: string };
+        const msg = data as { type?: string; message?: string; attachmentFilename?: string };
 
         if (msg.type === "interrupt") {
           if (activeAbort) {
@@ -1347,11 +1604,19 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         if (!message) return;
 
         if (busy) {
-          queue.push(message);
+          queue.push(msg.attachmentFilename ? { text: message, attach: msg.attachmentFilename } : message);
           return;
         }
 
-        processMessage(message);
+        // Image-bearing turns bypass the Qwen SDK entirely. See
+        // processImageMessage below for rationale — the SDK can't carry
+        // images through its `prompt: string` parameter, and tool-result
+        // delivery was unreliable across chat-template/modality boundaries.
+        if (msg.attachmentFilename) {
+          processImageMessage(message, msg.attachmentFilename);
+        } else {
+          processMessage(message);
+        }
       },
 
       onDestroy() {

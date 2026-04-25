@@ -30,7 +30,7 @@ Standing rules. The canvas starts intentionally minimal so it can grow with the 
 
 3. **Notice when a card needs to exist (`grow-canvas` skill).** When the conversation reveals a dimension that deserves its own surface (UX flows, architecture, decisions, todos, README), CREATE it (per the aggressiveness rule below). Don't pre-litter with empty placeholders; don't bury durable content in chat scrollback.
 
-4. **Keep cards consistent (`doc-consistency` skill).** When you edit one doc, scan related siblings, propagate or flag mismatches.
+4. **Keep cards consistent (`doc-consistency` skill).** When you edit one doc, scan related siblings, propagate or flag mismatches. **The same rule applies when you edit CODE that a doc describes** — changing a card's `card.js`/`card.html`/`card.css`/`metadata.json` in a user-observable way (new feature, new item in an enumerated list, behavior/default change) requires updating `spec.md` (or the equivalent describing doc) in the same turn. A one-line code edit that changes what the user sees still counts. Before finishing the turn, re-read your code edits and ask: "does `spec.md` still accurately describe what this card does?" If not, edit it now.
 
 5. **Aggressiveness: conservative.**
    - **Cheap operations — DO immediately.** Writing or updating any doc card (`spec.md`, `decisions.md`, `questions.md`, new `<topic>-design.md`, `flows.mmd`, etc.) is just text — instantly revertable. Just write it, then announce briefly in chat: "Drafted solar system spec in spec.md — review there." Do NOT ask "should I go ahead?" before doc edits.

@@ -328,8 +328,14 @@ After the copy:
 2. `edit card.html`: replace the placeholder `<div id="body">` with your markup
 3. `edit card.js`: remove the placeholder line and add behavior. Uncomment the `mica.files.*` / `mica.on(...)` patterns you need.
 4. `edit card.css` if you need custom styling beyond the default.
+5. **Create an instance file** (e.g. `canvas/my.<extension>`) so the card mounts on the canvas.
+6. **Visually verify with `render_capture`.** Call the tool with the instance filename, e.g.:
 
-Verify by creating an instance file (e.g. `docs/my.<extension>`) and hard-refreshing the browser.
+   ```
+   render_capture({ filename: "canvas/my.<extension>" })
+   ```
+
+   The result includes a PNG of the rendered card — inspect it directly to confirm: the card mounted, the expected layout appears, labels are legible, nothing is clipped or overflowing, no red error banner. If something looks wrong, iterate on the card-class files and re-capture. JSON validity and `node -c` only prove syntax; only a visual check proves the card actually works.
 
 ## Decompose before coding
 

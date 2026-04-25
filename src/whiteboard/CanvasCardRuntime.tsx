@@ -19,6 +19,7 @@ import { on, destroyBridgeFor, windowId } from "../api/micaSocket";
 import CardRuntime from "./CardRuntime";
 import CardFrame from "./CardFrame";
 import FileEditor from "./FileEditor";
+import { initScreenshotClient } from "./screenshotClient";
 import "./whiteboard.css";
 
 interface Props {
@@ -88,6 +89,12 @@ export default function CanvasCardRuntime({ project }: Props) {
     loadData(controller.signal);
     return () => controller.abort();
   }, [loadData]);
+
+  // Start the screenshot listener. Safe to call on every project change; the
+  // module is idempotent and rebinds the current project for outbound uploads.
+  useEffect(() => {
+    initScreenshotClient(project);
+  }, [project]);
 
   // ── Find freeform container after card class renders ────
 
