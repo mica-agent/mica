@@ -234,6 +234,17 @@ Compare against what the helper returns. Common hallucinated fields that don't e
 2. **Use IDs for dynamic elements** — never `:nth-child`, never positional selectors.
 3. **Prefer `mica.files.write()`** — auto-injects both `source` and `cardSource` so self-echoes can be filtered with `mica.isSelfEcho(e)`. Raw `fetch()` writes need both fields by hand.
 4. **Prefer CDN libraries** via `metadata.json.dependencies.scripts` over hand-coding: Chart.js, FullCalendar, Sortable.js, CodeMirror, Leaflet, Marked, Mermaid. Don't reinvent.
+
+   **VERIFY EVERY CDN URL before writing it to metadata.json.** Both unpkg and jsdelivr return 404 for hallucinated paths (wrong version, wrong file, wrong scope), and you cannot tell from training data alone. Run a HEAD check:
+   ```bash
+   curl -sI -L <url> | head -1   # expect: HTTP/2 200 (302 chains are fine if final is 200)
+   ```
+   Common hallucination patterns to watch for:
+   - **Missing `@scope/` prefix** for scoped packages (e.g. `unpkg.com/leaflet-terminator/...` is WRONG; the real package is `@joergdietrich/leaflet.terminator`).
+   - **Version that never published** (e.g. `@1.0.0` when the latest is `0.1.0` — your prior is biased toward round numbers).
+   - **Wrong subpath inside the package** (`/L.Terminator.js` vs `/index.js` vs `/dist/leaflet-terminator.js` — README filenames don't always match the npm-published layout).
+
+   If a HEAD check 404s, fall back to the package's npm registry listing (`https://registry.npmjs.org/<pkg>`) to find the actual `main` field and the latest version, OR use `https://www.jsdelivr.com/package/npm/<pkg>` which lists all files in the published tarball.
 5. **Never block the UI** during async work — update DOM progressively.
 6. **Instance files go in the canvas root** (usually `docs/`), not in `.mica/`.
 7. **Verify API shapes with `curl` before writing code that depends on them** (see above).
@@ -253,6 +264,25 @@ if (typeof Mica !== 'undefined' && Mica.registerCardClass) {
 ```
 
 Also forbidden: `this.context.api.listFiles(...)`, `this.context.api.getFile(...)`, `context.template`, `export default class` — these are all invented APIs. If you write any of them, the card will silently not start.
+
+### ❌ ALSO FORBIDDEN — never redeclare CARD_SHIM globals
+
+`container`, `mica`, and a few helpers are injected as globals before your script runs. The runtime wraps your card.js inside a closure, so any top-level `const`/`let` with the same name produces a hard `SyntaxError: Cannot declare a const variable twice: 'container'` at mount time and the card never starts.
+
+```js
+// WRONG — `container` is already a const in this scope.
+const container = document.getElementById('map-container');
+const mica = window.mica;     // also wrong, also fatal
+```
+
+```js
+// CORRECT — `container` is THIS card's DOM frame. Reach inside it via
+// querySelector to grab elements from your own card.html.
+const mapEl = container.querySelector('#map-container');
+const button = container.querySelector('#go');
+```
+
+Names reserved by CARD_SHIM that you must NOT redeclare: `container`, `mica`. Any other variable name is yours to use.
 
 ## ✅ CORRECT — `card.js` runs as top-level code
 
@@ -323,9 +353,19 @@ Then `edit` the files in place to replace the `REPLACE_ME` placeholders and add 
 
 The skeleton already has the correct shape; stay inside its structure.
 
-After the copy:
-1. `edit metadata.json`: set `extension`, `badge`, `defaultTitle`
-2. `edit card.html`: replace the placeholder `<div id="body">` with your markup
+After the copy, **the very next thing you do — before adding any behavior — is replace every REPLACE_ME placeholder in `metadata.json`**. Until that's done, the card is broken at the framework level (the resolver compares `extension` to the directory name, so `.REPLACE_ME` in `world-time-clock/` produces a `card-error` and the card never loads). One quick verification:
+
+```bash
+grep -nR "REPLACE_ME" .mica/card-classes/<your-name>/
+# expect: no output
+```
+
+If grep returns ANY hits, fix them before doing anything else.
+
+Then in this order:
+
+1. **`edit metadata.json`** — replace `extension`, set `badge` (2-3 char mnemonic), set `defaultTitle` (human-readable). Verify with the grep above; the file must contain zero `REPLACE_ME`.
+2. `edit card.html`: replace the placeholder `<div id="body">` with your markup.
 3. `edit card.js`: remove the placeholder line and add behavior. Uncomment the `mica.files.*` / `mica.on(...)` patterns you need.
 4. `edit card.css` if you need custom styling beyond the default.
 5. **Create an instance file** (e.g. `canvas/my.<extension>`) so the card mounts on the canvas.
@@ -349,3 +389,22 @@ Multi-file build. Use the `decompose-task` skill. Typical ladder AFTER the skele
 6. CSS + polish
 
 Ship step 1, verify, then step 2. Do not one-shot a 200-line `card.js`. Run `bash scripts/restart.sh` after server changes; hard-refresh after frontend-only changes.
+
+## Debugging "Failed to load dependency: <url>" card-errors
+
+When the chat surfaces a card-error of the form `Failed to load dependency: Failed to load https://...`, the URL itself is the prime suspect. The card class loaded its `metadata.json`, asked the browser to fetch the CDN script, and the browser got a 404 (or a CORS / MIME-type rejection).
+
+**DO NOT re-read `metadata.json` looking for clarity.** The file contains exactly the URL that's failing — re-reading it produces no new information. This is a common loop trap: the model keeps cat-ing the metadata hoping the next read explains the error, the URL stays wrong, and the loop runs until the SDK kills the process. Break out immediately:
+
+1. **Verify the failing URL with curl:**
+   ```bash
+   curl -sI -L "<the exact URL from the error>" | head -1
+   ```
+   If 404, the URL is hallucinated. Don't guess a fix — look it up.
+2. **Find the real URL:**
+   - npm registry: `curl -s https://registry.npmjs.org/<pkg> | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['dist-tags']['latest'], '/', d['versions'][d['dist-tags']['latest']].get('main', '?'))"` — gives latest version + the package's `main` entry point.
+   - jsdelivr file index: `https://www.jsdelivr.com/package/npm/<pkg>` — lists every file in the tarball.
+   - For scoped packages (`@scope/name`), the URL on unpkg is `unpkg.com/@scope/name@<version>/<file>` — easy to forget the `@scope/` part.
+3. **Update `metadata.json` with the verified URL,** then ask the user to refresh; the card-error will fire again only if the new URL is also wrong.
+
+Time budget for this: ONE round of curl + one metadata edit. If the second URL also 404s, stop and ask the user — guessing a third URL is a bad use of context.

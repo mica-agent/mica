@@ -47,7 +47,12 @@ The threshold is NOT "big feature." It's **any user-observable change**: adding 
 - Flipping a default (tick rate, timezone, color scheme) → update the spec's "Defaults" section.
 - Adding a new panel, tooltip, click behavior, hotkey → update the spec's "Interaction" section.
 - Changing an algorithm in a way the user will feel (day/night calculation, distance formula) → update the spec's "How it works" section.
+- **Bug fix that changes displayed values** → update spec. The frame is "what does the user see now vs before?" If the answer is "different output," it's user-observable. Examples: replacing hardcoded `utcOffset` with IANA timezones (the old spec table of UTC offsets is now lying — it should say "via `Intl.DateTimeFormat` with the city's IANA timezone, DST-aware"); rounding fix that changes label values; off-by-one in a date calculation. Bug fix is NOT a free pass to skip spec — if anything, it's the most important time to update.
 - Pure refactor, no user-observable change → no spec edit needed. Say so in chat: "Refactored foo.js, no behavior change."
+
+### Don't think of work as "feature" vs "bug fix" vs "refactor"
+
+The doc-consistency rule fires on the OUTPUT, not the INTENT. If your turn changes what the card shows the user, the spec needs to match — whether you framed the work as adding a feature, fixing a bug, or rewriting the algorithm. The simplest test: open spec.md, read its description of the card's behavior, then ask "is this still true after my edit?" If no, edit spec.
 
 ### Self-check before finishing a turn that touched code
 

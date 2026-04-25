@@ -708,6 +708,27 @@ ch.onData(function(data) {
       setStatus("Error", "#f87171", false);
       addDetailLine("ERROR: " + (data.error || "Unknown"));
       addMessage("assistant", "Error: " + (data.error || "Unknown"), "System");
+      // Detect "turn exceeded the model's context window" — distinct from
+      // baseline-driven capacity (which the >=80%/>=95% triggers above
+      // measure). Cumulative tool-loop input can blow the per-call slot
+      // even when baseline is at 8%, so the assistant-path triggers won't
+      // catch it. Pattern-match the well-known phrasings from llama.cpp,
+      // OpenAI, Anthropic, OpenRouter and force a Clear/Spawn prompt so
+      // the user has a one-click escape.
+      {
+        const errMsg = String(data.error || "");
+        const isContextOverflow =
+          /exceeds (the )?(available )?context (size|length|window)/i.test(errMsg) ||
+          /maximum context length/i.test(errMsg) ||
+          /reduce the length of (either|the)/i.test(errMsg) ||
+          /context_length_exceeded/i.test(errMsg);
+        if (isContextOverflow) {
+          addContextSuggestion(
+            "Last turn exceeded the model's context window. The thread accumulated more tokens during tool use than the model can read in one call. Clearing or spawning a new card resets the working memory so you can continue.",
+            { forceChoice: true }
+          );
+        }
+      }
       break;
   }
 });
@@ -1096,6 +1117,7 @@ const settingsCancel = container.querySelector('#chat-settings-cancel');
 const settingsSave = container.querySelector('#chat-settings-save');
 const settingsModel = container.querySelector('#chat-settings-model');
 const settingsModelHint = container.querySelector('#chat-settings-model-hint');
+const settingsModelDropdown = container.querySelector('#chat-settings-model-dropdown');
 const settingsKeyRow = container.querySelector('#chat-settings-key-row');
 const settingsKey = container.querySelector('#chat-settings-key');
 const settingsKeyStatus = container.querySelector('#chat-settings-key-status');
@@ -1106,15 +1128,167 @@ const MODEL_DEFAULTS = {
   openrouter: 'anthropic/claude-3.5-sonnet'
 };
 
+// Lazy-loaded OpenRouter model catalog. Populated on first openSettings()
+// after the user picks the OpenRouter provider. Cached in-process here so
+// switching the panel open/closed doesn't refetch; the server also caches
+// for an hour. Field is freeform — typing a model id not in the list still
+// works (you might have access to a private/preview model).
+let openrouterModels = null;        // null = not loaded; [] = loaded empty/failed; [...] = loaded
+let openrouterFetchInflight = null; // shared promise to dedupe parallel calls
+
+function formatPricePerM(usdPerM) {
+  if (typeof usdPerM !== 'number' || !isFinite(usdPerM)) return null;
+  if (usdPerM === 0) return '$0';
+  if (usdPerM < 0.01) return '$' + usdPerM.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  if (usdPerM < 1) return '$' + usdPerM.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  if (usdPerM < 10) return '$' + usdPerM.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  return '$' + Math.round(usdPerM);
+}
+
+function formatContextLen(n) {
+  if (typeof n !== 'number' || n <= 0) return null;
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1).replace(/\.0$/, '') + 'M ctx';
+  if (n >= 1000) return Math.round(n / 1000) + 'K ctx';
+  return n + ' ctx';
+}
+
+function formatModelMeta(m) {
+  const parts = [];
+  const pIn = formatPricePerM(m.promptPerM);
+  const pOut = formatPricePerM(m.completionPerM);
+  // "free" if both rates explicitly 0; otherwise show whichever side(s) we know.
+  if (m.promptPerM === 0 && m.completionPerM === 0) {
+    parts.push('free');
+  } else if (pIn || pOut) {
+    parts.push((pIn || '?') + '/M in · ' + (pOut || '?') + '/M out');
+  }
+  const ctx = formatContextLen(m.contextLength);
+  if (ctx) parts.push(ctx);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function fetchOpenrouterModels() {
+  if (openrouterModels !== null) return Promise.resolve(openrouterModels);
+  if (openrouterFetchInflight) return openrouterFetchInflight;
+  openrouterFetchInflight = fetch('/api/openrouter/models', { headers: projectHeaders() })
+    .then(function(r) { return r.ok ? r.json() : { models: [] }; })
+    .then(function(j) { openrouterModels = Array.isArray(j.models) ? j.models : []; return openrouterModels; })
+    .catch(function() { openrouterModels = []; return openrouterModels; })
+    .finally(function() { openrouterFetchInflight = null; });
+  return openrouterFetchInflight;
+}
+
+function renderModelDropdown(query) {
+  if (!Array.isArray(openrouterModels) || openrouterModels.length === 0) {
+    settingsModelDropdown.style.display = 'none';
+    settingsModelDropdown.innerHTML = '';
+    return;
+  }
+  const q = (query || '').trim().toLowerCase();
+  // Filter: substring on id and name; rank exact-prefix > id-substring > name-substring.
+  const matches = [];
+  for (const m of openrouterModels) {
+    const id = m.id || '';
+    const idLow = id.toLowerCase();
+    const name = m.name || '';
+    const nameLow = name.toLowerCase();
+    if (!q) { matches.push({ m, rank: 0 }); continue; }
+    if (idLow.startsWith(q)) matches.push({ m, rank: 0 });
+    else if (idLow.includes(q)) matches.push({ m, rank: 1 });
+    else if (nameLow.includes(q)) matches.push({ m, rank: 2 });
+  }
+  if (matches.length === 0) {
+    settingsModelDropdown.innerHTML = '<div style="padding:8px;color:#6e7681;font-size:11px;">No matches. The id is still saved as-is — useful for private/preview models.</div>';
+    settingsModelDropdown.style.display = 'block';
+    return;
+  }
+  matches.sort(function(a, b) { return a.rank - b.rank || a.m.id.localeCompare(b.m.id); });
+  const top = matches.slice(0, 50);
+  settingsModelDropdown.innerHTML = '';
+  top.forEach(function(entry) {
+    const m = entry.m;
+    const row = document.createElement('div');
+    row.className = 'or-model-row';
+    row.style.cssText = 'padding:6px 8px;cursor:pointer;font-size:12px;border-bottom:1px solid rgba(255,255,255,0.04);';
+    row.dataset.modelId = m.id;
+    const idEl = document.createElement('div');
+    idEl.style.cssText = 'color:#e6edf3;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;';
+    idEl.textContent = m.id;
+    row.appendChild(idEl);
+    if (m.name && m.name !== m.id) {
+      const nameEl = document.createElement('div');
+      nameEl.style.cssText = 'color:#8b949e;font-size:11px;margin-top:1px;';
+      nameEl.textContent = m.name;
+      row.appendChild(nameEl);
+    }
+    // Pricing + context summary line. OpenRouter returns prices as USD per
+    // token; the proxy converts to USD per million tokens (the universal
+    // quote unit). Free models — both rates 0 — display as "free".
+    const meta = formatModelMeta(m);
+    if (meta) {
+      const metaEl = document.createElement('div');
+      metaEl.style.cssText = 'color:#7ec699;font-size:11px;margin-top:1px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;';
+      metaEl.textContent = meta;
+      row.appendChild(metaEl);
+    }
+    row.addEventListener('mouseenter', function() { row.style.background = 'rgba(124,58,237,0.18)'; });
+    row.addEventListener('mouseleave', function() { row.style.background = 'transparent'; });
+    // Use mousedown rather than click so the input's blur (which would hide
+    // the dropdown) doesn't fire first and cancel the selection.
+    row.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      settingsModel.value = m.id;
+      hideModelDropdown();
+    });
+    settingsModelDropdown.appendChild(row);
+  });
+  if (matches.length > top.length) {
+    const more = document.createElement('div');
+    more.style.cssText = 'padding:6px 8px;color:#6e7681;font-size:11px;';
+    more.textContent = '+ ' + (matches.length - top.length) + ' more — refine to narrow.';
+    settingsModelDropdown.appendChild(more);
+  }
+  settingsModelDropdown.style.display = 'block';
+}
+
+function hideModelDropdown() {
+  settingsModelDropdown.style.display = 'none';
+}
+
+function showModelDropdownIfOpenrouter() {
+  let provider = 'local';
+  providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
+  if (provider !== 'openrouter') { hideModelDropdown(); return; }
+  fetchOpenrouterModels().then(function() {
+    renderModelDropdown(settingsModel.value);
+  });
+}
+
+settingsModel.addEventListener('focus', showModelDropdownIfOpenrouter);
+settingsModel.addEventListener('input', function() {
+  let provider = 'local';
+  providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
+  if (provider !== 'openrouter') return;
+  if (openrouterModels === null) fetchOpenrouterModels().then(function() { renderModelDropdown(settingsModel.value); });
+  else renderModelDropdown(settingsModel.value);
+});
+// Hide on blur with a small delay so the row's mousedown can complete.
+settingsModel.addEventListener('blur', function() {
+  setTimeout(hideModelDropdown, 120);
+});
+
 function updateProviderUI(provider) {
   if (provider === 'openrouter') {
     settingsKeyRow.style.display = 'block';
     settingsModel.placeholder = MODEL_DEFAULTS.openrouter + ' (default)';
-    settingsModelHint.textContent = 'Any OpenRouter model id, e.g. anthropic/claude-3.5-sonnet, openai/gpt-4o';
+    settingsModelHint.textContent = 'Pick from the list or type any OpenRouter model id, e.g. anthropic/claude-3.5-sonnet, openai/gpt-4o.';
+    // Pre-warm the catalog so the dropdown is responsive on first focus.
+    fetchOpenrouterModels();
   } else {
     settingsKeyRow.style.display = 'none';
     settingsModel.placeholder = MODEL_DEFAULTS.local + ' (default)';
     settingsModelHint.textContent = 'For local llama-server the model name is informational; the loaded model is whatever the server started with.';
+    hideModelDropdown();
   }
 }
 

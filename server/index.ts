@@ -569,6 +569,72 @@ app.post("/api/openrouter/validate", async (req, res) => {
   }
 });
 
+// List available OpenRouter models. Proxies the public OpenRouter endpoint
+// and caches in-memory for an hour — the catalog is stable on minute-to-hour
+// timescales, the chat card hits this once per settings-panel-open, and a
+// 1h TTL is invisible to users while sparing OpenRouter from a fan-out hit.
+// No auth required (public catalog). Returns slim shape including pricing
+// (per-million-tokens, since that's how model prices are universally quoted)
+// and context length.
+type ModelEntry = {
+  id: string;
+  name?: string;
+  promptPerM?: number;       // USD per million prompt tokens
+  completionPerM?: number;   // USD per million completion tokens
+  contextLength?: number;    // tokens
+};
+let _modelsCache: { ts: number; data: ModelEntry[] } | null = null;
+const MODELS_TTL_MS = 60 * 60 * 1000;
+
+function parseUsdPerToken(v: unknown): number | undefined {
+  // OpenRouter returns prices as strings in USD-per-token. Convert to USD per
+  // million tokens for human-readable display ($5/M reads more cleanly than
+  // 0.000005 per token). Empty string / missing / NaN → undefined.
+  if (typeof v !== "string" || !v) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return n * 1_000_000;
+}
+
+app.get("/api/openrouter/models", async (_req, res) => {
+  if (_modelsCache && Date.now() - _modelsCache.ts < MODELS_TTL_MS) {
+    res.json({ ok: true, models: _modelsCache.data, cached: true });
+    return;
+  }
+  try {
+    const r = await fetch("https://openrouter.ai/api/v1/models", { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) {
+      res.status(502).json({ ok: false, error: `OpenRouter returned ${r.status}` });
+      return;
+    }
+    const json = await r.json() as {
+      data?: Array<{
+        id?: unknown;
+        name?: unknown;
+        pricing?: { prompt?: unknown; completion?: unknown };
+        context_length?: unknown;
+      }>;
+    };
+    const models: ModelEntry[] = (json.data || [])
+      .filter((m) => typeof m.id === "string" && m.id)
+      .map((m) => {
+        const entry: ModelEntry = { id: m.id as string };
+        if (typeof m.name === "string" && m.name) entry.name = m.name;
+        const promptPerM = parseUsdPerToken(m.pricing?.prompt);
+        const completionPerM = parseUsdPerToken(m.pricing?.completion);
+        if (promptPerM !== undefined) entry.promptPerM = promptPerM;
+        if (completionPerM !== undefined) entry.completionPerM = completionPerM;
+        if (typeof m.context_length === "number" && m.context_length > 0) entry.contextLength = m.context_length;
+        return entry;
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+    _modelsCache = { ts: Date.now(), data: models };
+    res.json({ ok: true, models, cached: false });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: (err as Error).message });
+  }
+});
+
 // ── Card error/ok reporting ─────────────────────────────────
 
 app.post("/api/cards/:filename/error", (req, res) => {

@@ -30,7 +30,16 @@ Standing rules. The canvas starts intentionally minimal so it can grow with the 
 
 3. **Notice when a card needs to exist (`grow-canvas` skill).** When the conversation reveals a dimension that deserves its own surface (UX flows, architecture, decisions, todos, README), CREATE it (per the aggressiveness rule below). Don't pre-litter with empty placeholders; don't bury durable content in chat scrollback.
 
-4. **Keep cards consistent (`doc-consistency` skill).** When you edit one doc, scan related siblings, propagate or flag mismatches. **The same rule applies when you edit CODE that a doc describes** — changing a card's `card.js`/`card.html`/`card.css`/`metadata.json` in a user-observable way (new feature, new item in an enumerated list, behavior/default change) requires updating `spec.md` (or the equivalent describing doc) in the same turn. A one-line code edit that changes what the user sees still counts. Before finishing the turn, re-read your code edits and ask: "does `spec.md` still accurately describe what this card does?" If not, edit it now.
+4. **Keep cards consistent (`doc-consistency` skill).** When you edit one doc, scan related siblings, propagate or flag mismatches. **The same rule applies when you edit CODE that a doc describes** — changing a card's `card.js`/`card.html`/`card.css`/`metadata.json` in a user-observable way (new feature, new item in an enumerated list, behavior/default change, **bug fix that changes displayed values**) requires updating `spec.md` (or the equivalent describing doc) in the same turn. A one-line code edit that changes what the user sees still counts. **Bug-fix turns and refactor turns are NOT exceptions** — the rule fires on the OUTPUT (does the user see something different?) not on how you framed the work.
+
+   **MANDATORY pre-reply check on any turn that touched code.** Before broadcasting your final assistant reply, run this 4-second check:
+   1. List the code files you edited this turn.
+   2. Open `spec.md` (or whichever doc describes the card).
+   3. Read its current description of what your code does.
+   4. Ask: "After my edits, is this description still accurate, or is it now lying?"
+   5. If lying → `edit spec.md` to match BEFORE sending your reply. Don't defer "for next turn." Don't say "I'll update docs later." The drift you leave behind is the bug.
+
+   Common skip points to catch: timezone math fixes, date/number calculations, default values flipped, colors/styles changed, items added/removed from an enumerated list. The local model in particular tends to skip this on bug-fix turns — the framework can't auto-detect when behavior changed, so the discipline has to live in your turn flow.
 
 5. **Aggressiveness: act, then summarize.**
    - **Cheap operations — DO immediately.** Writing or updating any doc card (`spec.md`, `decisions.md`, `questions.md`, new `<topic>-design.md`, `flows.mmd`, etc.) is just text — instantly revertable. Write thorough drafts; you have the context budget. Chat reply just announces what was written: "Drafted solar system spec in spec.md."

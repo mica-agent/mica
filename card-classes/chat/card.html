@@ -61,7 +61,10 @@
 
       <div>
         <div style="color:#ccc;margin-bottom:6px;">Model</div>
-        <input id="chat-settings-model" type="text" placeholder="" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div id="chat-settings-model-wrap" style="position:relative;">
+          <input id="chat-settings-model" type="text" placeholder="" autocomplete="off" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+          <div id="chat-settings-model-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:2px;max-height:240px;overflow-y:auto;background:#161b22;border:1px solid #30363d;border-radius:4px;z-index:30;box-shadow:0 4px 12px rgba(0,0,0,0.5);"></div>
+        </div>
         <div id="chat-settings-model-hint" style="color:#6e7681;font-size:11px;margin-top:4px;"></div>
       </div>
 

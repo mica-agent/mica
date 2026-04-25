@@ -241,11 +241,55 @@ export async function enforceCardClassMetadata(
   }
 
   if (bare !== dirName) {
-    // Mismatched — can't guess which side is wrong. Surface as card-error
-    // so the agent can decide: rename the dir or change the extension field.
-    opts.onError?.(
-      `\`${dirName}/metadata.json\` declares \`extension: ".${bare}"\` but the parent directory is \`${dirName}\`. The Mica resolver maps a file extension directly to a directory name — they must match. Either rename the directory to \`.mica/card-classes/${bare}/\` or change the extension field to \`".${dirName}"\`.`,
-    );
+    // Specific case: agent copied the skeleton (templates/_card-class-skeleton/)
+    // but never edited metadata.json to replace the placeholder. Same for
+    // defaultTitle. Catch this BEFORE the generic mismatch error so the
+    // agent gets a precise action — "you skipped step 1 of the recipe" —
+    // rather than a vague "directory and extension don't match" that has
+    // sent agents into long debugging loops.
+    const looksLikePlaceholder = /REPLACE_ME|XYZ_PLACEHOLDER/i.test(bare) ||
+      (typeof parsed.defaultTitle === "string" && /REPLACE_ME/i.test(parsed.defaultTitle));
+    if (looksLikePlaceholder) {
+      // Route through onAutoFix (server-log only) instead of onError (red
+      // banner in chat). Reason: the placeholder state is TRANSIENT — it
+      // exists for the brief window between `cp -r skeleton` and the
+      // agent's followup `edit metadata.json`. Showing a red error during
+      // that gap is spammy; the agent's STEP 0 mandatory grep check (in
+      // the create-card-class skill) catches it on the authoring side
+      // before the work continues, so the framework doesn't need to alarm.
+      // We don't auto-rewrite the placeholder because the framework can't
+      // know what `extension` / `defaultTitle` the user wants — only the
+      // mismatch path below has a known authoritative value (the dir name).
+      opts.onAutoFix?.(
+        `\`${dirName}/metadata.json\` still has skeleton placeholders (\`extension: ".${bare}"\`${typeof parsed.defaultTitle === "string" && /REPLACE_ME/i.test(parsed.defaultTitle) ? `, \`defaultTitle: "${parsed.defaultTitle}"\`` : ""}) — agent should replace these per the create-card-class skill's STEP 0.`,
+      );
+      return;
+    }
+    // Mismatched — auto-fix to match the directory name, same precedent as
+    // the missing-extension path above. The directory name IS the resolver's
+    // lookup key, so any extension that doesn't match it is dead text. The
+    // skill says "directory name is authoritative"; we trust that.
+    //
+    // Why auto-fix instead of card-error: agents repeatedly create the
+    // mismatch (typing `.world-clock` while the dir is `world-time-clock`,
+    // matching the spec name vs. matching the user's dir) and then burn
+    // context trying to figure out which side the framework wanted them
+    // to fix. Auto-fix is reversible (it's just a JSON edit) and short-
+    // circuits the loop. Logged via onAutoFix so the server keeps a
+    // record; nothing surfaces to the chat UI.
+    parsed.extension = `.${dirName}`;
+    const out = JSON.stringify(parsed, null, 2) + "\n";
+    try {
+      const { writeFile } = await import("fs/promises");
+      await writeFile(absolutePath, out, "utf-8");
+      opts.onAutoFix?.(
+        `\`${dirName}/metadata.json\` declared \`extension: ".${bare}"\` which didn't match the parent directory \`${dirName}\`. Rewrote extension to \`".${dirName}"\` (directory name is the authoritative side per the resolver). If you actually wanted the extension \`.${bare}\`, rename the directory instead.`,
+      );
+    } catch (err) {
+      opts.onError?.(
+        `Failed to auto-fix metadata.json extension mismatch (${bare} vs ${dirName}): ${(err as Error).message}`,
+      );
+    }
   }
 }
 

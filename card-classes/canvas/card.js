@@ -823,7 +823,7 @@ function buildToolbar() {
     const tidyBtn = window.document.createElement('button');
     tidyBtn.className = 'toolbar-btn';
     tidyBtn.textContent = 'Tidy';
-    tidyBtn.title = 'Tidy layout — keeps cards near their current position (hold Option/Alt to fit all on screen by filename order)';
+    tidyBtn.title = 'Tidy layout — resolves overlaps with minimal displacement (cards stay where you put them). Hold Option/Alt for fit-all-on-screen grid.';
     tidyBtn.addEventListener('click', (e) => {
         const cards = Array.from(freeform.querySelectorAll('.wb-card'));
         if (cards.length === 0) return;
@@ -904,60 +904,97 @@ function buildToolbar() {
                     collapsed: card.classList.contains('wb-card--collapsed') };
             });
         } else {
-            // Normal tidy: partition by collapse state. Expanded cards pack
-            // into the top region; collapsed cards pack into a compact strip
-            // below them. Position-preserving sort applies within each group
-            // so cards keep their relative left-to-right order. When no
-            // cards are collapsed the second pass is a no-op and this is
-            // identical to the prior behavior.
-            const expanded = cards.filter((c) => !c.classList.contains('wb-card--collapsed'));
-            const collapsedCards = cards.filter((c) => c.classList.contains('wb-card--collapsed'));
-
+            // Normal tidy — MINIMAL DISPLACEMENT. Keep every card as close
+            // to its current position as possible; only nudge cards that
+            // overlap something already placed. Reading-order processing
+            // (top→bottom, left→right) anchors the top-left card at its
+            // current spot and resolves conflicts forward.
+            //
+            // Resolution strategy per card: try current position. If it
+            // overlaps an already-placed card, push it right past the
+            // overlap (preserves Y, minimal vertical displacement). If
+            // that would exceed canvas width, snap to (EDGE_PAD, just
+            // below the lowest overlapping card). Repeat until placed.
+            //
+            // No partition by collapse state — a collapsed card stays where
+            // the user left it; only its own offsetHeight (the header strip)
+            // is used for collision math, so it occupies less vertical
+            // space and won't push later cards down unnecessarily.
+            //
+            // For Alt+Tidy use the fit-all-on-screen path above; this path
+            // is the gentle conflict resolver users reach for after
+            // dragging things into rough position.
+            const placed = [];  // [{x, y, w, h}] in placement order
             layout = {};
-            let x = EDGE_PAD, y = EDGE_PAD, rowMaxH = 0;
 
-            const packGroup = (group) => {
-                group.forEach(card => {
-                    const isCollapsed = card.classList.contains('wb-card--collapsed');
-                    const w = card.offsetWidth || CARD_W;
-                    // A collapsed card's offsetHeight is the header row only
-                    // (height:auto in CSS), so it packs tighter automatically.
-                    const displayH = card.offsetHeight || CARD_H;
-                    if (x > EDGE_PAD && x + w > maxWidth - EDGE_PAD) {
-                        y += rowMaxH + GAP;
+            const overlaps = (a, b) => (
+                a.x < b.x + b.w &&
+                a.x + a.w > b.x &&
+                a.y < b.y + b.h &&
+                a.y + a.h > b.y
+            );
+
+            cards.forEach(card => {
+                const isCollapsed = card.classList.contains('wb-card--collapsed');
+                const w = card.offsetWidth || CARD_W;
+                // Use offsetHeight for collision math: a collapsed card
+                // measures only the header strip, so other cards naturally
+                // pack below it without extra padding.
+                const collisionH = card.offsetHeight || CARD_H;
+
+                // Start at the card's current position, clamped into canvas
+                // bounds. Cards pulled in from drag-overflow that landed
+                // off-canvas snap back into the visible area as a side
+                // effect — desirable for tidy.
+                let x = parseInt(card.style.left || '0', 10) || EDGE_PAD;
+                let y = parseInt(card.style.top || '0', 10) || EDGE_PAD;
+                if (x < EDGE_PAD) x = EDGE_PAD;
+                if (y < EDGE_PAD) y = EDGE_PAD;
+                if (x + w > maxWidth - EDGE_PAD) x = Math.max(EDGE_PAD, maxWidth - EDGE_PAD - w);
+
+                // Resolve overlaps against already-placed cards.
+                let attempts = 0;
+                while (attempts < cards.length + 1) {
+                    const candidate = { x, y, w, h: collisionH };
+                    const hit = placed.find((p) => overlaps(candidate, p));
+                    if (!hit) break;
+                    // Try push-right past the conflict (preserves Y).
+                    const pushRightTo = hit.x + hit.w + GAP;
+                    if (pushRightTo + w <= maxWidth - EDGE_PAD) {
+                        x = pushRightTo;
+                    } else {
+                        // No horizontal room — drop to next row, anchored
+                        // below the LOWEST card whose row overlaps this Y
+                        // band, then reset X to start of canvas.
+                        const sameBand = placed.filter((p) =>
+                            p.y < y + collisionH && p.y + p.h > y
+                        );
+                        const newY = sameBand.length > 0
+                            ? Math.max(...sameBand.map((p) => p.y + p.h)) + GAP
+                            : hit.y + hit.h + GAP;
+                        y = newY;
                         x = EDGE_PAD;
-                        rowMaxH = 0;
                     }
-                    card.style.left = `${x}px`;
-                    card.style.top = `${y}px`;
-                    if (displayH > rowMaxH) rowMaxH = displayH;
-                    const name = card.getAttribute('data-filename');
-                    if (name) {
-                        const prior = layout[name] || {};
-                        // Store the UNCOLLAPSED h (what uncollapse should
-                        // restore to), never the just-measured 40px. If the
-                        // card was already collapsed before Tidy ran,
-                        // preserve the prior stored h; otherwise write the
-                        // measured one.
-                        const storedH = isCollapsed
-                            ? (typeof prior.h === 'number' && prior.h >= MIN_H ? prior.h : CARD_H)
-                            : displayH;
-                        layout[name] = { ...prior, x, y, w, h: storedH,
-                            collapsed: isCollapsed };
-                    }
-                    x += w + GAP;
-                });
-            };
+                    attempts++;
+                }
 
-            packGroup(expanded);
-            // Divider gap between the expanded region and the collapsed
-            // strip so users can see the two groups at a glance.
-            if (expanded.length > 0 && collapsedCards.length > 0) {
-                y += rowMaxH + GAP * 2;
-                x = EDGE_PAD;
-                rowMaxH = 0;
-            }
-            packGroup(collapsedCards);
+                card.style.left = `${x}px`;
+                card.style.top = `${y}px`;
+                placed.push({ x, y, w, h: collisionH });
+
+                const name = card.getAttribute('data-filename');
+                if (name) {
+                    const prior = layout[name] || {};
+                    // Preserve the UNCOLLAPSED height in stored layout so
+                    // re-expand restores the right size — never persist the
+                    // 40px measured height of a collapsed card as `h`.
+                    const storedH = isCollapsed
+                        ? (typeof prior.h === 'number' && prior.h >= MIN_H ? prior.h : CARD_H)
+                        : collisionH;
+                    layout[name] = { ...prior, x, y, w, h: storedH,
+                        collapsed: isCollapsed };
+                }
+            });
         }
         // Tidy is the ONLY place that shrinks canvas bounds — it's the
         // explicit "clean up" gesture. Recompute from the newly-placed
