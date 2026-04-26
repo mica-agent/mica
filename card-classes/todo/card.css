@@ -1,11 +1,34 @@
+/* Todo card body fills the wb-card frame. Flex column with the badges
+   pinned at the top, the items list scrolling in the middle, and the
+   add-task input pinned at the bottom — so a long task list stays
+   navigable inside whatever height the user resized the card to,
+   without requiring expand-to-full. Mirrors the markdown card's layout. */
 .card-todo {
   padding: 8px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .todo-badges {
   display: flex;
   gap: 6px;
   margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.todo-items-container {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Horizontal padding gives the in-progress pulse animation (a box-shadow
+     that radiates 6px outward from the leftmost status dot) room to render
+     without being clipped by overflow-y:auto. The overflow-y also implicitly
+     clips overflow-x, so the pulse needs ≥6px of inset on the left. Right
+     padding doubles as scrollbar gutter. */
+  padding: 0 6px 0 8px;
 }
 
 .todo-badge {
@@ -22,6 +45,16 @@
 .todo-done {
   background: rgba(74, 222, 128, 0.15);
   color: #4ade80;
+}
+
+.todo-inprogress {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+}
+
+.todo-failed {
+  background: rgba(248, 113, 113, 0.22);
+  color: #f87171;
 }
 
 .todo-section-header {
@@ -52,6 +85,49 @@
   flex-shrink: 0;
 }
 
+/* Status glyph for agent-managed states (active / failed). Same width as
+   the checkbox so the rest of the row stays aligned regardless of whether
+   the leading cell is interactive or display-only. */
+.todo-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+/* Amber matches the .todo-inprogress badge above. The earlier blue clashed
+   with .todo-active (the pending-count badge), giving the (wrong)
+   impression that pulsing dots represented pending items. */
+.todo-status--active {
+  background: rgba(251, 191, 36, 0.28);
+  color: #fbbf24;
+  box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.6);
+  animation: todo-status-pulse 1.6s ease-out infinite;
+}
+
+@keyframes todo-status-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.55); }
+  70%  { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+
+.todo-status--failed {
+  background: rgba(248, 113, 113, 0.22);
+  color: #f87171;
+  cursor: pointer;
+}
+
+.todo-status--failed:hover {
+  background: rgba(248, 113, 113, 0.35);
+}
+
 .todo-text {
   flex: 1;
   font-size: 13px;
@@ -60,6 +136,15 @@
 .todo-item--done .todo-text {
   text-decoration: line-through;
   opacity: 0.4;
+}
+
+.todo-item--active .todo-text {
+  color: #fde68a;  /* light amber, same hue family as the dot + badge */
+  font-weight: 500;
+}
+
+.todo-item--failed .todo-text {
+  color: #fca5a5;
 }
 
 .todo-assign-group {
@@ -144,6 +229,7 @@
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
 }
 
 .todo-add-input {

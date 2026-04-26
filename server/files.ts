@@ -956,6 +956,20 @@ function chatArchiveDir(chatId: string, project: string | null | undefined): str
   return join(micaDir(project ?? undefined), "chats", "archived", chatId);
 }
 
+/** Read the live chat history's message count. Returns 0 if no history
+ *  file exists or the file is empty/corrupt. Used by the manual advance-
+ *  cursor endpoint to set cursor = current length. */
+export async function readChatHistoryLength(
+  chatId: string,
+  project: string | null | undefined,
+): Promise<number> {
+  try {
+    const raw = await readFile(chatHistoryPath(chatId, project), "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch { return 0; }
+}
+
 /** Read the cursor (count of messages the agent should skip). Returns 0 if
  *  no cursor file exists. */
 export async function readChatCursor(chatId: string, project: string | null | undefined): Promise<number> {

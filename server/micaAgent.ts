@@ -49,6 +49,65 @@ const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
 // footer — OpenRouter cards get the per-model value from SDK result.modelUsage
 // when present, falling back to this constant otherwise.
 const LOCAL_CTX_WINDOW = parseInt(process.env.LLAMA_CTX_SIZE || "65536", 10);
+
+/** Per-file size cap above which an intent doc is demoted from inlined-in-
+ *  baseline to listing-only-with-abstract. Scales proportionally with the
+ *  context window: bigger windows allow bigger inlined docs without crowding
+ *  tool I/O. The 32KB hard ceiling reflects cognitive density, not budget —
+ *  past ~8K tokens of one doc, model attention dilutes regardless of slot
+ *  size, so even a 1M-context model reads better with focused docs.
+ *
+ *  Math: ~4 chars/token × 4% of window = bytes that one inlined doc may
+ *  consume. At 65K context: ~10KB. At 128K: ~20KB. At 256K+: 32KB ceiling.
+ *  Paired with the task-decomposer's split-monolith rule which keeps docs
+ *  ≤ this cap so they remain eligible for inlining when relevant.
+ *
+ *  Computed once at module load (LOCAL_CTX_WINDOW is env-driven, set at
+ *  process start). If the user changes LLAMA_CTX_SIZE they'll need to
+ *  restart, same as for any context-size change. */
+function intentInlineCapBytes(contextWindowTokens: number): number {
+  return Math.min(32768, Math.floor(contextWindowTokens * 0.04 * 4));
+}
+
+/** Per-subagent dispatch budgets. A subagent (component-coder, etc.) runs
+ *  in its own context slot of the same size as the parent. After overhead
+ *  (system prompt + task prompt + thinking + assistant output across ~10
+ *  iterations), the subagent has roughly (ctx - 25K) tokens of fresh I/O
+ *  budget. Convert to bytes at 4 chars/token for human-readable file-size
+ *  caps. Three derived caps:
+ *
+ *    totalIO    — total reads + writes the subagent's task should imply.
+ *                 Above this, the task is too large for one slot.
+ *    perInput   — per-file cap for any single file the subagent reads.
+ *                 Larger files require offset/limit partial reads.
+ *    perOutput  — per-file cap for any single file the subagent writes.
+ *                 Larger output files mean the next dispatch (which may
+ *                 read this file) overflows; split the work across files.
+ *
+ *  At 65K context: totalIO ≈ 160KB, perInput ≈ 16KB, perOutput ≈ 10KB.
+ *  At 128K: totalIO ≈ 412KB, perInput ≈ 32KB, perOutput ≈ 20KB.
+ *  At 256K+: hard ceilings clamp to keep cognitive load manageable. */
+function subagentBudgetBytes(contextWindowTokens: number): {
+  totalIO: number;
+  perInput: number;
+  perOutput: number;
+} {
+  // Tokens left after the fixed subagent overhead. ~25K covers system
+  // prompt (~12K) + task prompt (~2K) + ~10K of thinking + assistant
+  // responses across a typical 10-iteration tool loop.
+  const ioTokens = Math.max(8192, contextWindowTokens - 25000);
+  return {
+    totalIO: Math.min(524288, ioTokens * 4),                // 512KB hard ceiling
+    perInput: Math.min(65536, intentInlineCapBytes(contextWindowTokens) * 2),  // 64KB ceiling, 2× the inline cap
+    perOutput: intentInlineCapBytes(contextWindowTokens),   // matches inline cap (~10KB at 65K)
+  };
+}
+
+/** Format byte counts for prompt text — KB rounded to one decimal. */
+function fmtKB(bytes: number): string {
+  const kb = bytes / 1024;
+  return kb >= 100 ? `${Math.round(kb)}KB` : `${kb.toFixed(1)}KB`;
+}
 const MAX_HISTORY = 50;
 
 // Patterns that would disrupt Mica itself. Block these before the shell runs them.
@@ -228,6 +287,93 @@ export function getLastTurnAt(chatFilename: string): number | undefined {
   return lastTurnAt.get(chatFilename);
 }
 
+/** Pull a one-line "what is this doc about" abstract from a markdown / .todo
+ *  file: H1 title + first non-blank paragraph after it (or before, if no H1).
+ *  Used to enrich listing-only entries in the canvas baseline so the
+ *  orchestrator can decide whether to read a doc without paying the full
+ *  token cost upfront.
+ *
+ *  Returns null when the file is unreadable, empty, or has no extractable
+ *  shape (e.g. binary, all blank). Truncates the abstract to ~120 chars
+ *  so a single doc can't dominate the listing.
+ *
+ *  Why "first paragraph after H1": markdown convention — the first
+ *  paragraph of a well-written doc is its lede. Authors who don't write a
+ *  lede still get the H1 as the title hint, which on its own already
+ *  improves orchestrator awareness vs. just "(20K bytes)". */
+async function extractDocAbstract(
+  filename: string,
+  project: string | undefined,
+): Promise<{ title: string; abstract: string } | null> {
+  try {
+    const file = await readProjectFile(filename, project);
+    const text = file.content;
+    if (!text || isLikelyBinary(filename, text)) return null;
+    const lines = text.split(/\r?\n/);
+    let title = "";
+    let i = 0;
+    // Find the first non-blank line. If it's an H1/H2, use its text as title.
+    for (; i < lines.length; i++) {
+      const l = lines[i].trim();
+      if (!l) continue;
+      const headingMatch = l.match(/^#{1,2}\s+(.+)$/);
+      if (headingMatch) {
+        title = headingMatch[1].trim();
+        i++;
+        break;
+      }
+      // First non-blank line isn't a heading — bail; we'll grab it as the
+      // abstract anchor. Reset i so the abstract loop sees this line.
+      break;
+    }
+    // Find the first prose paragraph by skipping past blanks, sub-headings,
+    // and frontmatter delimiters. Many specs write
+    //   # Title
+    //   ## Overview
+    //   <lede paragraph>
+    // — the lede lives under the first H2, not directly under the H1. Stop
+    // at the first blank line after we've started capturing content.
+    const buf: string[] = [];
+    let started = false;
+    for (; i < lines.length; i++) {
+      const l = lines[i].trim();
+      if (!l) {
+        if (started && buf.length > 0) break;
+        continue;
+      }
+      if (l.startsWith("#")) {
+        // Skip sub-headings encountered before we've found prose. After
+        // we've started collecting, a heading boundary stops us.
+        if (started) break;
+        continue;
+      }
+      if (l === "---" && !started) continue; // YAML frontmatter delimiter
+      started = true;
+      buf.push(l);
+      if (buf.join(" ").length > 240) break;
+    }
+    const abstract = buf.join(" ").replace(/\s+/g, " ").slice(0, 120).trim();
+    if (!title && !abstract) return null;
+    return { title, abstract };
+  } catch {
+    return null;
+  }
+}
+
+/** Format a listing entry's `${name} (${size})` line with the optional
+ *  title + abstract suffix. Centralized so buildContext and
+ *  buildSubagentCanvasContext stay consistent. */
+function formatListingEntry(name: string, sizeBytes: number, meta: { title: string; abstract: string } | null, extraNote?: string): string {
+  const sizeStr = `${sizeBytes} bytes`;
+  let suffix = "";
+  if (meta) {
+    if (meta.title) suffix += ` — "${meta.title}"`;
+    if (meta.abstract) suffix += ` — ${meta.abstract}`;
+  }
+  if (extraNote) suffix += ` — ${extraNote}`;
+  return `- \`${name}\` (${sizeStr})${suffix}`;
+}
+
 /** Canvas baseline injected into every subagent's systemPrompt so the
  *  subagent starts with the same project awareness as the parent (canvas-back,
  *  spec/design files, file locations, container danger notes). Without this,
@@ -241,6 +387,20 @@ export function getLastTurnAt(chatFilename: string): number | undefined {
  *  guidance (subagents can't delegate further), chat history. */
 export async function buildSubagentCanvasContext(project: string | null): Promise<string> {
   const parts: string[] = [];
+
+  // Authoritative budget block — the role-specific systemPrompt (component-
+  // coder.md, etc.) refers back to these numbers rather than hardcoding,
+  // so they scale automatically when LLAMA_CTX_SIZE changes.
+  const budget = subagentBudgetBytes(LOCAL_CTX_WINDOW);
+  parts.push(
+    `## Your context budget\n\n` +
+    `Your slot is ${LOCAL_CTX_WINDOW} tokens. After system prompt + task prompt + thinking + assistant output across a typical 10-iteration tool loop, you have approximately the following budget for fresh tool I/O (reads + your own write echoes):\n\n` +
+    `- **Total I/O budget: ${fmtKB(budget.totalIO)}** — total bytes of reads + writes your task should imply. If your task implies more, it's too big for one slot.\n` +
+    `- **Per-input cap: ${fmtKB(budget.perInput)}** — any single file read above this should use \`read_file\` with \`offset:\` + \`limit:\` for a partial read, not a full read.\n` +
+    `- **Per-output cap: ${fmtKB(budget.perOutput)}** — any single file you \`write_file\` above this size will overflow the next dispatch that needs to read it.\n\n` +
+    `Estimate before reading. \`run_shell_command\` with \`wc -c <file1> <file2> ...\` is the cheapest check. If your task scope exceeds the total I/O budget, return \`failed: scope too large (<N>KB total, budget ${fmtKB(budget.totalIO)})\` with a recommended split — the parent will re-decompose. Silently overflowing wastes the slot AND the user's time.\n\n` +
+    `These numbers scale automatically with the runtime context size — you don't recompute them, you just respect the values stated above.`,
+  );
 
   // Project context (canvas-back)
   try {
@@ -264,10 +424,19 @@ export async function buildSubagentCanvasContext(project: string | null): Promis
       lines.push(``);
       for (const f of files) {
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
-        const meta = await getCardClassMeta(ext, project);
-        if (meta.meta) continue;
-        const suffix = BINARY_EXTS.has(ext) ? " (binary)" : "";
-        lines.push(`- \`${f.name}\` (${f.size} bytes${suffix})`);
+        const cmeta = await getCardClassMeta(ext, project);
+        if (cmeta.meta) continue;
+        if (BINARY_EXTS.has(ext)) {
+          lines.push(`- \`${f.name}\` (${f.size} bytes, binary)`);
+          continue;
+        }
+        // Pull title+abstract for markdown-shaped intent docs so subagents
+        // can pick what to read without re-listing themselves. Code/config
+        // files stay as bare name+size — their "abstract" would need
+        // language-specific parsing and adds little signal.
+        const isIntent = ext === ".md" || ext === ".todo";
+        const docMeta = isIntent ? await extractDocAbstract(f.name, project || undefined) : null;
+        lines.push(formatListingEntry(f.name, f.size, docMeta));
       }
       if (lines.length > 3) parts.push(lines.join("\n"));
     }
@@ -370,42 +539,95 @@ export async function buildContext(agentFilename: string, project: string | null
   // to "<binary, N bytes>" if the file isn't decodable cleanly. Hardcoded BINARY_EXTS
   // for the common known-binary cases (images, archives, executables) avoid wasting
   // a read attempt.
-  // Project files — full content of every canvas-visible text file goes in.
-  // No truncation, no per-file cap, no file-count cap: the canvas IS the
-  // agent's direction. If the prompt gets too big, we flag it (see the size
-  // check below) but still send — the expectation is that the user splits
-  // oversized cards (divide-and-conquer), not that we silently clip.
+  // Project files — split into INTENT docs (full content) and EVERYTHING
+  // ELSE (listing only). The orchestrator's job is delegation; it needs
+  // the project's intent (specs, plans, contracts) inline but reads
+  // implementation files on demand or delegates them to subagents.
+  //
+  // Why split: every canvas file's full content used to land in baseline.
+  // For projects with several large files (taxomatic: 24K-token baseline)
+  // the parent overflows the 65K context slot before doing useful work.
+  // Listing-only for code/config files drops baseline by ~80% on heavy
+  // projects while still giving the agent the file map it needs to
+  // route reads. Subagents already use the same shape via
+  // buildSubagentCanvasContext — this aligns parent + subagent baselines.
+  //
+  // INTENT extensions get full content: .md (specs, design docs, notes),
+  // .todo (plans / task lists). Everything else (.js, .ts, .py, .html,
+  // .css, .json, .yaml, custom card classes) gets a one-line listing
+  // entry so the agent knows what's there without paying the token cost.
+  //
+  // Per-file size cap on intent inlining: even an INTENT-classified file
+  // gets demoted to listing-only if it exceeds the cap. A 30KB
+  // architectural spec.md is reference material best read on demand; a
+  // 1KB questions.md or 2KB todo file genuinely belongs in baseline.
+  // The cap scales with LOCAL_CTX_WINDOW (see intentInlineCapBytes),
+  // so relaxing context lets bigger docs stay inlined automatically.
+  const INTENT_EXTS = new Set([".md", ".todo"]);
+  const INTENT_INLINE_SIZE_CAP = intentInlineCapBytes(LOCAL_CTX_WINDOW);
   try {
     const files = await listCanvasFiles(project || undefined);
     if (files.length > 0) {
-      const emitted: string[] = [];
+      const intentEntries: string[] = [];
+      const listingEntries: string[] = [];
       for (const f of files) {
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
         // Skip meta cards (canvas-back, skills, etc.). Their on-disk file is
         // a shell; their real content is surfaced through other sections of
         // this prompt (e.g. canvas-back.md is already emitted as "## Project
-        // Context" above). Listing their empty shells here just confuses the
-        // agent into investigating "missing" content.
+        // Context" above).
         const meta = await getCardClassMeta(ext, project);
         if (meta.meta) continue;
+
         if (BINARY_EXTS.has(ext)) {
-          emitted.push(`### ${f.name} (${f.size} bytes, binary)`);
+          listingEntries.push(`- \`${f.name}\` (${f.size} bytes, binary)`);
           continue;
         }
+        if (!INTENT_EXTS.has(ext)) {
+          // Listing-only: code, config, data, custom card classes. Agent
+          // reads on demand (or delegates to a subagent that reads). No
+          // abstract — code-file abstracts would need language-specific
+          // parsing and add little signal vs. the orchestrator just
+          // checking the file's role from its name + extension.
+          listingEntries.push(`- \`${f.name}\` (${f.size} bytes)`);
+          continue;
+        }
+        if (f.size > INTENT_INLINE_SIZE_CAP) {
+          // Big intent doc — extract H1 title + first paragraph so the
+          // orchestrator knows what the doc is about and can decide
+          // whether to read it on this turn. The bare "20K bytes" is
+          // useless for routing decisions; "Authentication: login,
+          // logout, session storage" is enough to choose.
+          const docMeta = await extractDocAbstract(f.name, project || undefined);
+          listingEntries.push(
+            formatListingEntry(f.name, f.size, docMeta, "large doc, read with `read_file` when relevant"),
+          );
+          continue;
+        }
+        // Intent doc, small enough to inline — emit with full content.
         try {
           const file = await readProjectFile(f.name, project || undefined);
           if (isLikelyBinary(f.name, file.content)) {
-            emitted.push(`### ${f.name} (${f.size} bytes, binary)`);
+            listingEntries.push(`- \`${f.name}\` (${f.size} bytes, binary)`);
           } else if (file.content.length === 0) {
-            emitted.push(`### ${f.name} (empty — intentional shell or placeholder)`);
+            intentEntries.push(`### ${f.name} (empty — intentional shell or placeholder)`);
           } else {
-            emitted.push(`### ${f.name}\n${file.content}`);
+            intentEntries.push(`### ${f.name}\n${file.content}`);
           }
-        } catch { emitted.push(`### ${f.name} (${f.size} bytes, unreadable)`); }
+        } catch {
+          listingEntries.push(`- \`${f.name}\` (${f.size} bytes, unreadable)`);
+        }
       }
-      if (emitted.length > 0) {
-        parts.push(`## Project Files`);
-        for (const e of emitted) parts.push(e);
+      if (intentEntries.length > 0) {
+        parts.push(`## Project Files (intent docs — full content)`);
+        for (const e of intentEntries) parts.push(e);
+      }
+      if (listingEntries.length > 0) {
+        parts.push(
+          `## Project Files (other — listing only)\n\n` +
+          `Use \`read_file\` to pull any of these when you need their content. They are NOT pre-loaded — keeping them out of baseline lets the parent turn handle long sessions without overflow.\n\n` +
+          listingEntries.join("\n"),
+        );
       }
     }
   } catch { /* ignore */ }
@@ -420,40 +642,96 @@ export async function buildContext(agentFilename: string, project: string | null
     canvasRoot = cfg.canvasRoot || cfg.docsDir || DEFAULT_CANVAS_ROOT;
   } catch { /* use default */ }
 
-  // Available subagents — delegation cheat sheet injected every turn.
+  // Available subagents + orchestrator mode — injected every turn.
   // Skills (including decompose-task) only fire when the user's message
   // pattern-matches their description, which local Qwen often misses. This
   // section gives the agent unconditional awareness of its delegation options
-  // so heavy implementation turns route through the `task` tool instead of
-  // filling the parent's context with 30+ write_file payloads.
+  // and teaches the orchestrator workflow that keeps multi-file builds
+  // structurally below the context-overflow line.
   try {
     const agents = await loadProjectSubagents(project, "qwen");
     if (agents.length > 0) {
+      const hasDecomposer = agents.some((a) => a.name === "task-decomposer");
+      const hasComponentCoder = agents.some((a) => a.name === "component-coder");
       const lines: string[] = [
-        `## Available Subagents`,
+        `## You are an Orchestrator`,
         ``,
-        `You have specialized Subagents available. Delegating to a Subagent is HOW you implement multi-file work without exhausting your context window — each Subagent runs in its own session, does the work, and returns a short summary. Your parent context (this turn) keeps only the summaries, not the subagent's tool I/O or written file content.`,
+        `For non-trivial multi-file work, you do not write code yourself — you read the canvas plan, dispatch each component to a specialized Subagent, and mark items complete. This is the ONLY way to build multi-file features inside the local model's 65K context slot. Inline implementation runs out of context around the 7th–10th \`write_file\` and the turn errors mid-stream.`,
         ``,
-        `**To invoke a Subagent, write a request in your turn response using natural language naming the agent.** Example phrasings (these patterns trigger SDK routing):`,
+        `Each Subagent runs in its own context window. It reads what it needs from canvas on demand and returns a short summary. Your parent context (this turn) keeps the plan and the summaries, never the file contents.`,
+        ``,
+        `**To invoke a Subagent**, write a request in your turn response using natural language naming the agent. Example phrasings (these patterns trigger SDK routing):`,
         `- "Have the component-coder Subagent implement \`src/email_monitor.py\` per ${canvasRoot}/spec.md § Email Monitor."`,
-        `- "Let the component-coder Subagent build \`deploy.sh\`. Reference ${canvasRoot}/spec.md § Deployment."`,
-        `- "Use the component-coder Subagent to write \`src/auth.py\` based on ${canvasRoot}/interfaces.md § Auth."`,
+        `- "Use the task-decomposer Subagent to plan: <user's request verbatim>"`,
         ``,
         `Available Subagents:`,
       ];
       for (const a of agents) {
         lines.push(`- **${a.name}**: ${a.description}`);
       }
+      lines.push(``, `## Orchestrator workflow (MANDATORY for non-trivial requests)`, ``);
+      if (hasDecomposer && hasComponentCoder) {
+        lines.push(
+          `**RULE 0: For non-trivial requests, your FIRST tool call MUST be \`task-decomposer\`. Not \`read_file\`. Not \`list_directory\`. Not \`glob\`. The decomposer.**`,
+          ``,
+          `If you read project files first to "get a comprehensive understanding," you have already lost the context game. The decomposer reads what it needs in its own slot; your slot stays free for dispatching subagents and tracking progress. Reading 10 files inline burns the budget the decomposer was supposed to spend for you.`,
+          ``,
+          `Trigger this workflow whenever the user's request is **multi-file work OR planning-shaped work**, regardless of phrasing. All of these are orchestrator-mode:`,
+          ``,
+          `- Building / implementing / creating: "build X", "implement Y", "create Z"`,
+          `- Refactoring / restructuring: "refactor X into Y", "split this into modules"`,
+          `- **Reviewing or planning** (these are NOT just-read-and-answer asks): "review the spec and figure out next steps", "design X", "audit Y", "what's the best implementation path", "plan how we'd add Z", "assess the codebase", "determine the best path forward"`,
+          `- Extending / adding features: "add X to the app", "extend Y to support Z"`,
+          `- ANY user message that contains "review", "design", "audit", "figure out", "best path", "next steps", "plan how" — even when paired with project-file references like "the spec" or "the design docs"`,
+          ``,
+          `**The temptation to read first is the failure mode.** Resist it. The user's words can sound like they want analysis ("review the spec") but the right next action is delegation, not reading. Trust that the decomposer will read carefully — that's its job.`,
+          ``,
+          `Steps:`,
+          ``,
+          `1. **Restate** the ask in one sentence. If genuinely ambiguous, ask the clarifying question and stop.`,
+          `2. **Delegate the planning IMMEDIATELY** — invoke \`task-decomposer\` with the user's request verbatim. **This is your first tool call.** It writes \`${canvasRoot}/spec.md\`, \`${canvasRoot}/interfaces.md\`, and \`${canvasRoot}/plan.todo\` in its own context slot, returns a one-line status. You do not plan inline.`,
+          `3. **Read \`${canvasRoot}/plan.todo\`** — each \`## Active\` line is one delegation-ready item naming a subagent (\`@component-coder\`) and a spec section.`,
+          `4. **Show the user** the plan items so they can edit \`plan.todo\` before execution if they want.`,
+          `5. **Per-item lifecycle: \`[ ]\` → \`[~]\` → \`[x]\` (or \`[!]\`).** For each plan item, in this order:`,
+          `   - **Before dispatching:** \`edit\` plan.todo to flip the item's marker from \`[ ]\` to \`[~]\` (in-progress). The .todo card renders this as a pulsing dot — the user sees what you're working on.`,
+          `   - **Dispatch:** invoke \`component-coder\` with the plan item's text verbatim.`,
+          `   - **On successful return:** \`edit\` plan.todo to flip \`[~]\` to \`[x]\` (done).`,
+          `   - **On failure return** (component-coder responds \`failed: ...\`): \`edit\` plan.todo to flip \`[~]\` to \`[!]\` (failed). User sees a red marker and can intervene; the .todo card lets them click \`!\` to reset to \`[ ]\` for retry.`,
+          `   - Independent items can be dispatched in parallel — but EACH gets its own \`[~]\` flip BEFORE its dispatch and its own \`[x]\` / \`[!]\` flip AFTER its return.`,
+          `   **Do NOT batch updates.** The .todo card watches its own file and re-renders per save. Per-item edits become live UI progress (pending → in-progress → done). Batching loses that visibility AND loses work if you hit overflow before the flush.`,
+          `6. **Iterate** until \`## Active\` has no \`[ ]\` or \`[~]\` items left. Summarize what shipped — without including file contents.`,
+          ``,
+          `**SKIP this workflow** for: single-file edits under ~50 lines, typo fixes, single-config tweaks, narrowly-scoped Q&A like "what does function foo() do in src/x.js" (one read, one answer). Just answer or edit inline.`,
+          ``,
+          `**SKIP this workflow** if the user explicitly says "just do it directly" / "don't bother with subagents" / "this is small". Respect their override.`,
+        );
+      } else {
+        // Fallback: project doesn't have the orchestrator subagents installed.
+        // Tell the agent to do the lighter inline-decomposition pattern.
+        lines.push(
+          `(This project doesn't have the \`task-decomposer\` and \`component-coder\` subagents installed for the full orchestrator pattern. Use lighter inline decomposition instead:)`,
+          ``,
+          `- Plan produces **>2 files of new code**: delegate each unit to a Subagent.`,
+          `- Single component spans **>200 lines of new code**: delegate.`,
+          `- Independent components can run in parallel: name multiple Subagents in one response.`,
+          ``,
+          `**BEFORE delegating**, write or update \`${canvasRoot}/interfaces.md\` with any shared types / function signatures / data shapes. Subagents have fresh context and cannot see each other's in-flight work — contracts MUST live on canvas first.`,
+        );
+      }
+      const subBudget = subagentBudgetBytes(LOCAL_CTX_WINDOW);
       lines.push(
         ``,
-        `WHEN to delegate (these are not suggestions — the parent turn's context cap will reject direct writes after a small budget):`,
-        `- Your plan produces **>2 files of new code**: delegate each coherent unit to a Subagent. Do NOT write them directly from this turn.`,
-        `- A single component spans **>200 lines of new code**: delegate.`,
-        `- Independent components can run in parallel: name multiple Subagents in one response.`,
+        `## Subagent context budget (when sizing dispatches)`,
         ``,
-        `Concurrency is capped per-project (default 3 concurrent local, 4 OpenRouter).`,
+        `Each subagent runs in its own ${LOCAL_CTX_WINDOW}-token slot, with the following I/O budget after overhead:`,
         ``,
-        `**BEFORE delegating**, write or update \`${canvasRoot}/interfaces.md\` with any shared types / function signatures / data shapes. Subagents have fresh context and cannot see each other's in-flight work — contracts MUST live on canvas first. Each delegation request should reference the relevant spec/interfaces section so the Subagent reads the right authoritative source.`,
+        `- Total I/O per dispatch: ${fmtKB(subBudget.totalIO)}`,
+        `- Per-input file cap: ${fmtKB(subBudget.perInput)} (above this, dispatch must use offset/limit reads)`,
+        `- Per-output file cap: ${fmtKB(subBudget.perOutput)} (above this, the next dispatch reading it overflows)`,
+        ``,
+        `When you dispatch \`component-coder\` (or other executor) for a plan item, mentally cost the reads + writes that item implies. If a single item would blow these budgets, ask the \`task-decomposer\` to refactor — split the item, split the target file, or scope to partial reads via \`offset:\` + \`limit:\`. Cheaper to refactor the plan than to overflow a subagent and lose the dispatch.`,
+        ``,
+        `Concurrency is capped per-project (default 3 concurrent local, 4 OpenRouter). If you dispatch more, the extras queue.`,
       );
       parts.push(lines.join("\n"));
     }
@@ -1115,6 +1393,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // Forwarded verbatim to the client so the chat card can compute tokens/sec from elapsed time.
         let usage: Record<string, unknown> | null = null;
         let contextWindow: number = provider === "openrouter" ? 0 : LOCAL_CTX_WINDOW;
+        // SDK error result detection: when llama-server / OpenRouter returns a
+        // 400 (e.g. context overflow), the SDK emits a result event with
+        // `is_error: true, subtype: "error_during_execution", error: { message }`
+        // — not a thrown exception. Without inspecting these fields the result
+        // text stays empty, the success path runs, and the chat card sees a
+        // bland "Done." instead of the error → its overflow detector never
+        // fires, no Clear/Spawn affordance appears. Capture the message here
+        // and route through the error broadcast below.
+        let sdkResultError: string | null = null;
 
         // Track in-flight subagent task invocations (tool_use_id → nothing,
         // Set is sufficient). beginSubagentTask was called in canUseTool; we
@@ -1237,6 +1524,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           if (evtType === "result") {
             const result = evt.result as { text?: string } | undefined;
             if (result?.text) resultText = result.text;
+            // SDK signals provider-side errors via is_error + error.message
+            // on the result event. See server/cli.js: buildResultMessage.
+            if ((evt as { is_error?: boolean }).is_error) {
+              const errInfo = (evt as { error?: { message?: string } }).error;
+              sdkResultError = errInfo?.message?.trim() || "Provider returned an error";
+              console.log(`[mica-agent] SDK result is_error subtype=${String(evt.subtype || "")} message=${sdkResultError.slice(0, 200)}`);
+            }
             // Capture `usage` from whichever shape the SDK surfaces it on: some
             // versions put it on `evt.usage`, others nest it under `evt.result.usage`.
             const evtUsage = (evt as { usage?: unknown }).usage;
@@ -1307,6 +1601,39 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         const tsEnd = Date.now();
         const durationMs = tsEnd - tsStart;
         const ttftMs = firstTokenTs !== null ? firstTokenTs - tsStart : null;
+
+        // If the SDK reported a provider-side error on the result event
+        // (most commonly llama-server 400 for context overflow), broadcast
+        // it as an error so the chat card's overflow detector at
+        // card-classes/chat/card.js:719 can pattern-match the message and
+        // surface the Clear/Spawn affordance. Skip the success-path
+        // broadcast and the metric record; the catch-block path below
+        // already handles its own metric for failed turns.
+        if (sdkResultError) {
+          console.log(`[mica-agent] broadcasting error (sdk-result path) for: ${message.slice(0, 60)}: ${sdkResultError.slice(0, 100)}`);
+          ctx.broadcast({ type: "error", error: sdkResultError });
+          void recordTurn(sessionProject, {
+            turn_id: turnId,
+            ts_start: tsStart,
+            ts_end: tsEnd,
+            duration_ms: durationMs,
+            ttft_ms: ttftMs,
+            chat_id: chatId,
+            agent: "qwen",
+            model: modelName,
+            input_tokens: typeof (usage as { input_tokens?: unknown })?.input_tokens === "number" ? (usage as { input_tokens: number }).input_tokens : 0,
+            output_tokens: typeof (usage as { output_tokens?: unknown })?.output_tokens === "number" ? (usage as { output_tokens: number }).output_tokens : 0,
+            baseline_tokens: baselineTokens,
+            context_window: contextWindow,
+            capacity,
+            subagent_count: subagentCount,
+            tool_calls: toolCallCounts,
+            files_changed: filesChanged ? 1 : 0,
+            cursor_advanced: false,
+            arc_complete: false,
+          });
+          return;
+        }
 
         console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
         ctx.broadcast({

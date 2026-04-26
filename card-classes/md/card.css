@@ -4,6 +4,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Anchor for the absolutely-positioned Δ badge in the top-right. */
+  position: relative;
 }
 
 .card-markdown-editor #editor {
@@ -60,3 +62,161 @@
 .card-markdown-editor .ProseMirror pre code {
   white-space: pre;
 }
+
+/* ── Δ change-summary badge ─────────────────────────────────────
+   Absolute-positioned chip in the top-right of the card body, revealed
+   by card.js after each external content sync. Hover (or keyboard
+   focus-within) opens a popover listing the +/~/− hunks of the most
+   recent change. The popover sits below the trigger with no visual
+   hover gap (padding-top inside the popover bridges the trigger), so
+   moving the mouse from chip to popover doesn't close it.
+
+   Why a badge instead of per-block highlighting: a per-paragraph flash
+   is invisible when the card is taller than the viewport. The badge
+   stays in view at any scroll position and lets the user check what
+   changed at any time after spotting the whole-card glow. ────── */
+
+.md-delta-badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 10;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.md-delta-trigger {
+  background: rgba(96, 165, 250, 0.15);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  color: #a8c8ff;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: default;
+  font: inherit;
+  letter-spacing: 0.3px;
+}
+
+.md-delta-trigger:hover,
+.md-delta-trigger:focus-visible {
+  background: rgba(96, 165, 250, 0.28);
+  outline: none;
+}
+
+.md-delta-counts {
+  margin-left: 4px;
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.md-delta-popover {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  /* padding-top is the hover-bridge: included in the popover's box so
+     the cursor never crosses an empty gap between trigger and body. */
+  padding-top: 4px;
+}
+
+.md-delta-badge:hover .md-delta-popover,
+.md-delta-badge:focus-within .md-delta-popover {
+  display: block;
+}
+
+.md-delta-popover-body {
+  width: 360px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px 10px 10px;
+  /* Fully opaque + backdrop blur so document text behind the popover
+     never bleeds through. The earlier 97% alpha let underlying lines
+     ghost through, making the list hard to read on dense docs. */
+  background: #14161c;
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+  font-size: 12px;
+  line-height: 1.55;
+  color: #e7e9ee;
+}
+
+.md-delta-popover-title {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.md-delta-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.md-delta-list li {
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border-radius: 4px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Add and mod items are navigable — the block they describe still exists
+   in the doc. Deletion items are display-only since the block is gone. */
+.md-delta-list li.md-delta-add,
+.md-delta-list li.md-delta-mod {
+  cursor: pointer;
+}
+
+.md-delta-list li.md-delta-add:hover,
+.md-delta-list li.md-delta-mod:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.md-delta-list li.md-delta-del {
+  cursor: default;
+  opacity: 0.85;
+}
+
+/* Transient highlight when the user clicks a delta item — applied to the
+   editor block we scrolled to, then auto-removed after 1.6s. Strong
+   inset glow + color tint draw the eye without disrupting reading. */
+@keyframes md-delta-nav-highlight {
+  0%   { background-color: rgba(96, 165, 250, 0); box-shadow: inset 0 0 0 0 rgba(96, 165, 250, 0); }
+  10%  { background-color: rgba(96, 165, 250, 0.42); box-shadow: inset 0 0 18px 2px rgba(96, 165, 250, 0.55); }
+  60%  { background-color: rgba(96, 165, 250, 0.25); box-shadow: inset 0 0 12px 1px rgba(96, 165, 250, 0.35); }
+  100% { background-color: rgba(96, 165, 250, 0); box-shadow: inset 0 0 0 0 rgba(96, 165, 250, 0); }
+}
+
+.card-markdown-editor .md-delta-nav-target {
+  animation: md-delta-nav-highlight 1.6s ease-out;
+  border-radius: 4px;
+  position: relative;
+}
+
+.md-delta-list .sigil {
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-weight: bold;
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+}
+
+.md-delta-list .preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.md-delta-add { color: #86efac; }
+.md-delta-mod { color: #fde68a; }
+.md-delta-del { color: #fca5a5; }

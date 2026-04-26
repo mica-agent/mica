@@ -24,7 +24,7 @@ const ctxMeterEl = container.querySelector("#chat-ctx-meter");
 const ctxMeterFill = container.querySelector("#chat-ctx-meter-fill");
 const ctxMeterLabel = container.querySelector("#chat-ctx-meter-label");
 const clearBtn = container.querySelector("#chat-clear-btn");
-const spawnBtn = container.querySelector("#chat-spawn-btn");
+const horizonBtn = container.querySelector("#chat-horizon-btn");
 const archiveBtn = container.querySelector("#chat-archive-btn");
 const archivePanel = container.querySelector("#chat-archive-panel");
 const archiveListEl = container.querySelector("#chat-archive-list");
@@ -361,7 +361,7 @@ function addErrorBubble(filename, errorText) {
   pre.style.cssText = "background:rgba(0,0,0,0.3);color:#fecaca;padding:6px 8px;border-radius:4px;margin:4px 0 8px;font-family:monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:120px;overflow-y:auto;";
   pre.textContent = errorText;
   const btn = window.document.createElement("button");
-  btn.textContent = "Send to agent";
+  btn.textContent = "Ask agent to fix";
   btn.style.cssText = "background:rgba(248,113,113,0.18);color:#fecaca;border:1px solid rgba(248,113,113,0.5);border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;";
   btn.addEventListener("mouseenter", function() { btn.style.background = "rgba(248,113,113,0.32)"; });
   btn.addEventListener("mouseleave", function() { btn.style.background = "rgba(248,113,113,0.18)"; });
@@ -874,6 +874,12 @@ function clearCard(opts) {
   });
 }
 
+// Spawn a new chat card as a sibling of this one. Wired today only from
+// the Clear/Spawn suggestion panel that appears under context pressure —
+// the chat card's header "+" button now advances the horizon instead
+// (see advanceHorizon below). For a deliberate "make a separate chat
+// card" outside the suggestion-panel flow, use the canvas toolbar's
+// `+ Chat` button — that's the canonical path.
 function spawnSiblingCard() {
   const suggested = (mica.filename || "")
     .replace(/\.chat$/i, "")
@@ -885,8 +891,6 @@ function spawnSiblingCard() {
   if (!base) return;
   const name = base.trim().replace(/\.chat$/i, "");
   if (!name) return;
-  // Default canvasRoot to the dirname of this card so the sibling lands in
-  // the same folder.
   const parts = mica.filename.split("/");
   parts.pop();
   const dir = parts.join("/");
@@ -894,6 +898,38 @@ function spawnSiblingCard() {
   mica.files.write(target, "").catch(function(err) {
     console.error("[chat] spawn failed:", err);
     window.alert("Could not create " + target + ": " + (err && err.message ? err.message : "unknown"));
+  });
+}
+
+// Force-advance the context cursor to the end of the live history. Renders
+// a horizon below the current last message; everything above it stays
+// visible (and scrollable) but the agent ignores it on the next turn.
+// Use this when you know an arc is done before the agent emits the auto-
+// arc-complete marker — e.g. you finished one feature and want to start
+// a new topic in the same card. For a literally-new sibling card, use the
+// canvas toolbar's `+ Chat` button (we used to mirror that here, but it
+// duplicated the toolbar for a 2-second shortcut and crowded the header).
+function advanceHorizon() {
+  if (messageIndex === 0) return;  // empty card: nothing to fold above
+  if (contextCursor >= messageIndex) return;  // already at the end
+  const ok = window.confirm(
+    "Mark this conversation as a fresh arc? Earlier messages will stay " +
+    "visible but the agent won't see them on the next turn. " +
+    "(This invalidates the prompt cache — a small cost if you're done with the current task.)"
+  );
+  if (!ok) return;
+  fetch("/api/chats/" + encodeURIComponent(mica.cardId) + "/advance-cursor", {
+    method: "POST",
+    headers: projectHeaders({ "Content-Type": "application/json" }),
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    // Server broadcasts cursor-advanced; we apply locally for instant UX.
+    if (typeof data.cursor === "number") {
+      contextCursor = data.cursor;
+      applyCursorDisplay();
+    }
+  }).catch(function(err) {
+    console.error("[chat] advance-cursor failed:", err);
+    window.alert("Could not advance horizon: " + (err && err.message ? err.message : "unknown"));
   });
 }
 
@@ -986,7 +1022,7 @@ function openArchiveViewer(archiveName) {
 }
 
 clearBtn.addEventListener("click", function() { clearCard(); });
-spawnBtn.addEventListener("click", function() { spawnSiblingCard(); });
+horizonBtn.addEventListener("click", function() { advanceHorizon(); });
 
 let archiveOpen = false;
 archiveBtn.addEventListener("click", function(e) {
@@ -1013,6 +1049,18 @@ const _unsubChatCleared = mica.on("chat-cleared", function(ev) {
   lastCapacity = 0;
 });
 mica.onDestroy(_unsubChatCleared);
+
+// Mirror cursor advances triggered from peer windows so all open clients
+// agree on what's above the horizon. The local-trigger path in
+// advanceHorizon() already updated this window optimistically; this
+// listener handles the cross-window case.
+const _unsubCursorAdvanced = mica.on("cursor-advanced", function(ev) {
+  if (!ev || ev.chatId !== mica.cardId) return;
+  if (typeof ev.cursor !== "number" || ev.cursor <= contextCursor) return;
+  contextCursor = ev.cursor;
+  applyCursorDisplay();
+});
+mica.onDestroy(_unsubCursorAdvanced);
 
 stopBtn.addEventListener("click", function() {
   ch.send({ type: "interrupt" });

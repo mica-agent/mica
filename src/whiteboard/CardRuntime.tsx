@@ -230,7 +230,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
     };
 
     // POST CDN/dependency load failures to /api/cards/:filename/error so the
-    // chat card can surface them with a "Send to agent" button. Same endpoint
+    // chat card can surface them with a "Ask agent to fix" button. Same endpoint
     // the CARD_SHIM uses for script throws — gives the agent a uniform signal.
     const reportLoadError = (err: unknown) => {
       const msg = (err as Error)?.message || String(err);
@@ -324,7 +324,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       };
 
       // Fire-and-forget error report to the server. Chat cards listen for the
-      // resulting `card-error` broadcast and render a "Send to agent" bubble.
+      // resulting `card-error` broadcast and render a "Ask agent to fix" bubble.
       // Runs OUTSIDE CARD_SHIM's fetch wrapper — uses window.fetch directly
       // with an explicit X-Mica-Project header. Never throws; errors during
       // reporting are swallowed.
@@ -485,7 +485,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         files: guardNamespace(files, "files"),
         cardClasses: guardNamespace(cardClasses, "cardClasses"),
         /** Surface an error to chat. Chat cards listen for `card-error` and
-         *  render a "Send to agent" bubble with this message. Use inside
+         *  render a "Ask agent to fix" bubble with this message. Use inside
          *  try/catch when your card handles its own UI (e.g. a toast) but
          *  you also want the agent to know. Fire-and-forget; never throws. */
         reportError,

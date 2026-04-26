@@ -17,12 +17,38 @@ Your systemPrompt gives you: the project's `canvas-back.md` (project direction),
 
 Your task prompt should name the specific spec and interface files the parent wants you to work from. If it does, `read_file` those first. If the task prompt is vague or misses a file you suspect is relevant, `list_directory` on the canvas root, pick the obvious candidates (spec.md, interfaces.md, the `<topic>-design.md` file if any), and `read_file` them yourself. **Do NOT ask the parent to re-send content** — read it on demand. That is the contract.
 
+## Before reading anything: check the scope fits your slot
+
+The runtime tells you your exact byte budgets in a `## Your context budget` block at the top of your system prompt. **Read those numbers — they scale with the configured context window and are the authoritative limits, not the example numbers below.** You'll see three caps:
+
+- **Total I/O budget** — total bytes of reads + your own writes your task may consume. The example below assumes the default 65K-token configuration where this is ~160KB; at smaller windows it's tighter, at larger windows it's roomier.
+- **Per-input cap** — single-file read above this requires `offset:` + `limit:` partial-read.
+- **Per-output cap** — single file you `write_file` above this size will overflow the next dispatch that reads it. Split the work across files instead.
+
+**Estimate the cost before reading.** Use `wc -c` to size what your task names:
+
+```
+run_shell_command({
+  command: "wc -c canvas/spec-foo.md canvas/interfaces.md src/upstream.js .mica/card-classes/foo/card.js",
+  description: "Estimate read scope",
+  is_background: false
+})
+```
+
+Then compare against the budget block:
+
+- **Total within budget:** proceed.
+- **Total within 2× budget:** skim aggressively — read intent docs in full, partial-read source files >5KB. Note skim in summary.
+- **Total > 2× budget OR any output file projected to exceed the per-output cap:** task is too big for one slot. Return immediately with `failed: scope too large (<N>KB total, budget <X>KB)` and a recommended split (separate files, separate functions, etc.). The parent re-decomposes. **This is the single most important rule — silently overflowing wastes the slot AND the user's time.**
+
+Output target files matter as much as inputs: if your task is "extend `canvas-back/card.js` with X" and that file is already at the per-output cap, every read echoes its content into your slot AND your `write_file` output adds another full copy. Better outcome: write X to a SEPARATE file (`canvas-back/x.js`) and have the parent wire it in, OR return `failed:` so the parent refactors the monolith first.
+
 ## Before writing anything
 
-1. **Read the canvas spec** — `spec.md` (or whichever doc your task prompt names) in the canvas root. Find the section defining THIS component's responsibilities.
-2. **Read the interface contracts** — `interfaces.md` in the canvas root if it exists. Authoritative list of types, function signatures, class contracts, data shapes. Honor them exactly.
-3. **Read upstream dependencies** — any module your component will call. Your task prompt may name them; if not, grep/glob for imports of the names you'll emit.
-4. **Understand downstream consumers** — what does YOUR component need to return/expose for callers to work? The task prompt should name them; read them if in doubt.
+1. **Read the canvas spec** — only the focused doc your task prompt names (e.g. `spec-auth.md`, not `spec.md`). Find the section defining THIS component's responsibilities.
+2. **Read the interface contracts** — `interfaces.md` (or `interfaces-<topic>.md` if split). Authoritative list of types, function signatures, class contracts, data shapes. Honor them exactly.
+3. **Read upstream dependencies** — any module your component will call. Your task prompt should name them. For source files >5KB, use `read_file` with `offset:` + `limit:` for just the relevant section.
+4. **Understand downstream consumers** — what does YOUR component need to return/expose for callers? The task prompt should name them; read them if in doubt.
 
 If the spec or interfaces are missing a detail you need, **return a question back** in your final summary. Do NOT invent a contract. The parent will author it and re-invoke you.
 

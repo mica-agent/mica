@@ -57,6 +57,9 @@ import {
   archiveChat,
   listArchivedChats,
   readArchivedChat,
+  readChatCursor,
+  readChatHistoryLength,
+  writeChatCursor,
   DEFAULT_CANVAS_ROOT,
   DEFAULT_CANVAS_CLASS,
   BINARY_EXTS,
@@ -718,6 +721,43 @@ app.post("/api/chats/:chatId/clear", async (req, res) => {
   }
 });
 
+// Manually advance the context cursor to the current end of history. The
+// user-facing trigger is the chat card's header "+" / horizon button —
+// they're explicitly saying "treat this conversation as a fresh arc; the
+// agent should ignore the prior turns on its next call." The auto-advance
+// path (server-side, gated on arc-complete + capacity ≥ 80%) handles the
+// common case; this endpoint handles the rest. Idempotent — calling it
+// when cursor is already at the end is a no-op.
+app.post("/api/chats/:chatId/advance-cursor", async (req, res) => {
+  const { chatId } = req.params;
+  if (!chatId || chatId.includes("/") || chatId.includes("..")) {
+    res.status(400).json({ error: "invalid chatId" });
+    return;
+  }
+  const proj = getRequestProject(req);
+  try {
+    const len = await readChatHistoryLength(chatId, proj);
+    const prev = await readChatCursor(chatId, proj);
+    if (len === 0) {
+      res.json({ ok: true, cursor: 0, advanced: 0 });
+      return;
+    }
+    if (prev >= len) {
+      res.json({ ok: true, cursor: prev, advanced: 0 });
+      return;
+    }
+    await writeChatCursor(chatId, proj, len, len);
+    // Broadcast so peer windows on the same project re-render the horizon
+    // and grey out the now-above-cursor messages without a full reload.
+    if (proj) {
+      broadcastToProject(proj, { type: "cursor-advanced", chatId, cursor: len });
+    }
+    res.json({ ok: true, cursor: len, advanced: len - prev });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 app.get("/api/chats/:chatId/archived", async (req, res) => {
   const { chatId } = req.params;
   if (!chatId || chatId.includes("/") || chatId.includes("..")) {
@@ -899,6 +939,17 @@ app.post("/api/canvas/pin", async (req, res) => {
     if (!cfg.pinned.includes(filename)) {
       cfg.pinned.push(filename);
       await updateCanvasConfig(proj, { pinned: cfg.pinned });
+      // Sync the file watcher so subsequent edits to the newly pinned file
+      // arrive as `file-changed` broadcasts. Without this, the watcher only
+      // covers what was pinned at addProject time — pins added mid-session
+      // would silently drop edits until a reconnect.
+      if (proj) await fileWatcher.refreshPinned(proj, cfg.pinned);
+      // Tell subscribers a new file just became canvas-visible. Reusing the
+      // existing `file-created` event piggy-backs on CanvasCardRuntime's
+      // existing handler (which calls fetchFiles to reconcile children).
+      // Without this, the frontend has no signal that pinning happened and
+      // the new card stays invisible until the user manually reloads.
+      if (proj) broadcastToProject(proj, { type: "file-created", filename, source: "pin" });
     }
     res.json({ ok: true, pinned: cfg.pinned });
   } catch (err) {
@@ -912,8 +963,18 @@ app.delete("/api/canvas/pin", async (req, res) => {
     if (!filename) { res.status(400).json({ error: "filename required" }); return; }
     const proj = getRequestProject(req) || undefined;
     const cfg = await readCanvasConfig(proj);
+    const wasPinned = cfg.pinned.includes(filename);
     cfg.pinned = cfg.pinned.filter((f: string) => f !== filename);
     await updateCanvasConfig(proj, { pinned: cfg.pinned });
+    // Tear down the parent-dir watcher (if this was the last pin in that
+    // dir). Otherwise the watcher would keep the inotify slot alive for
+    // the rest of the session and re-emit edits as ghost broadcasts.
+    if (wasPinned && proj) await fileWatcher.refreshPinned(proj, cfg.pinned);
+    // Mirror the pin-add broadcast: when a pinned root file is unpinned,
+    // it disappears from the canvas-files list. The frontend listens for
+    // `file-deleted` to filter the children array, which is the right
+    // shape — the card should leave the canvas, not the file system.
+    if (wasPinned && proj) broadcastToProject(proj, { type: "file-deleted", filename });
     res.json({ ok: true, pinned: cfg.pinned });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -932,7 +993,12 @@ app.get("/api/canvas/config", async (req, res) => {
 app.put("/api/canvas/config", async (req, res) => {
   try {
     const updates = req.body as { canvasRoot?: string; pinned?: string[] };
-    await updateCanvasConfig(getRequestProject(req) || undefined, updates);
+    const proj = getRequestProject(req) || undefined;
+    await updateCanvasConfig(proj, updates);
+    // Same reasoning as the /api/canvas/pin handlers: keep the watcher's
+    // pinned set in sync with the persisted config so mid-session edits
+    // to the new pin list don't silently drop file-change broadcasts.
+    if (proj && updates.pinned) await fileWatcher.refreshPinned(proj, updates.pinned);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
