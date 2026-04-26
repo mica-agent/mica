@@ -1,6 +1,6 @@
 ---
 name: decompose-task
-description: Triggers on any non-trivial multi-file work — including planning-shaped asks. Activates for verbs like build / implement / create / develop / refactor / extend / add (feature work) AND review / design / audit / plan / assess / figure out next steps / determine best implementation path (planning work). Also triggers when the user references multiple files / components / modules in one ask. Tells the agent to delegate planning to the task-decomposer subagent BEFORE any inline file reads — review and design ARE planning, not "investigate by reading."
+description: Triggers on any non-trivial multi-file work — including planning-shaped asks. Activates for verbs like build / implement / create / develop / refactor / extend / add (feature work) AND review / design / audit / plan / assess / figure out next steps / determine best implementation path (planning work). Also triggers when the user references multiple files / components / modules in one ask. Tells the agent to delegate planning to the task-decomposer subagent BEFORE any inline file reads — review and design ARE planning, not "investigate by reading." DOES NOT trigger on bug-fix requests ("fix … bug", "broken", "doesn't work", "regression", "is wrong", "error in", "investigate why X is broken / not working") — those activate the `fix-bug` skill instead, which has its own inline-first playbook. If both this and `fix-bug` could match, prefer `fix-bug`.
 ---
 
 # Decompose the task — but don't decompose it yourself

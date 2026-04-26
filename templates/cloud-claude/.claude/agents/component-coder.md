@@ -52,6 +52,35 @@ Output target files matter as much as inputs: if your task is "extend `canvas-ba
 
 If the spec or interfaces are missing a detail you need, **return a question back** in your final summary. Do NOT invent a contract. The parent will author it and re-invoke you.
 
+## Sanity-check the spec's constraint + API pair before implementing
+
+Well-written Mica specs (post task-decomposer revision) name BOTH a user-facing constraint AND the chosen `mica.*` primitive that satisfies it. Example: *"Profile persists across browser refresh and is visible on the canvas. Implementer: `mica.files.write('canvas/profile.md', md)`."*
+
+Two checks before you implement that pair:
+
+1. **Does the named API satisfy the stated constraint?** If the spec says "must be visible as a card on the canvas" and names `IndexedDB`, the spec is wrong — IDB blobs are invisible to Mica, not on canvas. Return `failed: spec mismatch — <constraint> requires <correct mica.* API>; spec named <wrong API>` so the parent fixes the spec rather than you implementing the wrong primitive.
+2. **Does the constraint match what the user actually wants?** Sometimes a spec is internally consistent (constraint + matching API) but neither is what the user said. You can usually trust the constraint here — flag in your summary if the constraint reads suspicious.
+
+When the spec passes both checks, implement the named API directly. No re-derivation. The mapping was done at spec time.
+
+## Substitute browser-direct APIs only for legacy specs (or your own catches)
+
+Some specs were written before the constraint+API guidance landed and may describe work in browser-vanilla terms (`localStorage`, raw `fetch()`, `BroadcastChannel`). For those, substitute the `mica.*` equivalent and **note the substitution in your final summary** so the parent can verify the spec didn't intend the browser primitive deliberately.
+
+Substitutions to make:
+
+- Spec says "persist data to localStorage / IndexedDB" → `mica.files.write('canvas/<x>.json', JSON.stringify(state))` (canvas-native, survives browser-clear, syncs cross-tab). Browser API only if the spec explicitly says "ephemeral, this-tab-only."
+- Spec says "fetch the LLM" / "call the API" → `mica.fetch(url, ...)` (SSRF protection, 10MB cap, 60s timeout). Raw `fetch()` only for same-origin user dev servers explicitly named in the spec.
+- Spec says "watch for changes" / "react when X updates" → `mica.on('file-changed', e => …)` filtered by `e.filename`, paired with `mica.onDestroy(unsub)`. Never poll, never `setInterval` for change detection.
+- Spec says "communicate with another card" → `mica.openChannel` (server plugin) or canvas files + `mica.on('file-changed')`. Never `BroadcastChannel`, `postMessage`, shared globals.
+- Spec says "on mount" → `mica.getContent()` for this card's own file, `mica.files.read()` for siblings.
+- Spec says "on unmount" / "cleanup" → `mica.onDestroy(cb)`. Pair every listener, observer, and timer.
+- Spec says "report an error" → `mica.reportError(message)`. Surfaces an "Ask agent to fix" bubble in chat cards.
+
+Substitution summary line example: `"Substituted spec's 'IndexedDB for chat persistence' → mica.files.write('canvas/chat.json', ...) — canvas-native, syncs cross-tab. Flag if spec wanted browser-only."`
+
+For full API parameter shapes, the `create-card-class` skill at `.qwen/skills/create-card-class/SKILL.md` (or `.claude/skills/...`) has the table. You can `read_file` it if you're unsure about a primitive — but it's not in your baseline by default, so don't load it speculatively.
+
 ## When writing
 
 - Write the files named in your task prompt. Nothing else — no "while I'm at it" edits.

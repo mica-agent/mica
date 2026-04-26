@@ -402,6 +402,45 @@ export async function buildSubagentCanvasContext(project: string | null): Promis
     `These numbers scale automatically with the runtime context size — you don't recompute them, you just respect the values stated above.`,
   );
 
+  // Available mica.* APIs — auto-injected so subagents (task-decomposer,
+  // component-coder, etc.) know what primitives the runtime provides
+  // BEFORE writing specs or implementing card classes. Without this,
+  // generated specs reach for browser-direct APIs (`fetch`, `indexedDB`,
+  // `localStorage`) and the resulting card class loses Mica's
+  // affordances: SSRF protection, canvas-native persistence,
+  // cross-window sync, channel pubsub, lifecycle hooks. Tight summary
+  // here; full reference lives in the `create-card-class` skill body
+  // (which subagents can `read_file` if they need details).
+  parts.push(
+    `## Available mica.* APIs — prefer these over browser-direct equivalents\n\n` +
+    `When you write specs (task-decomposer) or implement card classes (component-coder), default to these Mica-provided primitives. They're injected by CARD_SHIM into every card class's runtime, alongside \`container\` (the card's root DOM node). Reach for browser globals only when no mica.* equivalent exists.\n\n` +
+    `**Identity & lifecycle**\n` +
+    `- \`mica.cardId\` — stable per-instance UUID (per file)\n` +
+    `- \`mica.filename\` — the card's instance file path\n` +
+    `- \`mica.windowId\` — per-tab id (NOT per-card; use cardId for instance state)\n` +
+    `- \`mica.onDestroy(cb)\` — cleanup on unmount; pair every \`addEventListener\`, \`setInterval\`, \`ResizeObserver\` etc. with this\n` +
+    `- \`mica.refresh()\` — reload the card; cheaper alternatives are usually preferred (in-place DOM patches)\n` +
+    `- \`mica.isSelfEcho(event)\` — true if event was caused by THIS card writing; use to break write-loops on \`file-changed\`\n\n` +
+    `**Canvas-native persistence — use INSTEAD of localStorage / IndexedDB / sessionStorage**\n` +
+    `- \`mica.getContent()\` → \`Promise<string>\` — read this card's instance file; called once at mount\n` +
+    `- \`mica.files.read(path)\` → \`Promise<string>\` — read any project file\n` +
+    `- \`mica.files.readBinary(path)\` → \`Promise<ArrayBuffer>\` — binary read\n` +
+    `- \`mica.files.write(path, content)\` → \`Promise<void>\` — text or binary; auto-routes by content type; SSE-broadcasts \`file-changed\` to peer windows\n` +
+    `- \`mica.files.list()\` → file metadata array\n` +
+    `- \`mica.files.delete(path)\` / \`mica.files.url(path)\` (URL for \`<img src>\` etc.)\n\n` +
+    `Why prefer these over browser storage: canvas files survive browser-data clear, sync cross-tab via the file watcher, are git-trackable, and are visible to the user as cards. IndexedDB/localStorage data is invisible to Mica and lost on browser reset.\n\n` +
+    `**HTTP — use INSTEAD of \`fetch()\`**\n` +
+    `- \`mica.fetch(url, opts?)\` → \`Promise<{ status, headers, body, durationMs, errorCode? }>\` — server-proxied, bypasses CORS, blocks private/loopback IPs (SSRF protection), 120 req/60s rate limit per project, 10MB response cap, 60s max timeout. Always resolves; check \`errorCode\` then \`status\`.\n\n` +
+    `Use direct \`fetch()\` ONLY when you specifically need browser-side semantics (e.g. relative-URL same-origin to the user's own dev server during card development). For LLM endpoints, public APIs, RSS feeds, anything cross-origin: \`mica.fetch\` is correct.\n\n` +
+    `**Events & cross-card communication**\n` +
+    `- \`mica.on(event, cb)\` → unsubscribe fn. Events: \`file-changed\`, \`file-created\`, \`file-deleted\`, \`layout-changed\`, \`card-error\`. Always pair with \`mica.onDestroy(unsub)\`.\n` +
+    `- \`mica.openChannel(handlerName, args)\` → bidirectional stream to a server-side plugin (chat, terminal, pty). Use for stateful streams; for one-shot queries \`mica.fetch\` is simpler.\n` +
+    `- \`mica.reportError(message)\` → surfaces a "Ask agent to fix" bubble in chat cards across the project. Use in catch blocks for errors the user should know about.\n\n` +
+    `**Card-class introspection**\n` +
+    `- \`mica.cardClasses.list()\` → registered classes; check before defining a new one (extension may already be handled).\n\n` +
+    `For a fuller reference (parameter shapes, edge cases), read the \`create-card-class\` skill in \`.qwen/skills/create-card-class/SKILL.md\` (or \`.claude/skills/...\`). Don't paste its content into your specs verbatim — point at it.`,
+  );
+
   // Project context (canvas-back)
   try {
     const canvasBack = await readFile(join(getMicaDir(project), "canvas-back.md"), "utf-8");

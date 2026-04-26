@@ -113,6 +113,39 @@ The decision is mechanical: independent H2 sections in a large doc = split candi
 
 Once the canvas is in shape, write the plan against the (now possibly focused) docs.
 
+## How to spec persistence, HTTP, eventing, and lifecycle — constraint + API, both
+
+For every spec sentence that describes persistence, HTTP, cross-card communication, or lifecycle, write **two things**, in this order:
+
+1. **The user-facing constraint** — what behavior the user can verify. *Not* "persist X" (vague) but *what survives browser-clear / what syncs cross-tab / what's visible as a card on the canvas / what's recoverable from git*. The constraint is reviewable by someone who doesn't know mica.*.
+2. **The chosen mica.* primitive** that satisfies the constraint, named explicitly. The implementer copies it; no re-derivation.
+
+Both belong in the spec. The constraint without the API forces the implementer to re-derive the choice (often picks browser defaults from training prior — `localStorage`, raw `fetch`, `BroadcastChannel`). The API without the constraint is unreviewable for behavior. Hybrid forces you to *justify* the API by stating the constraint, which catches API mismatches at spec time, before any code is written.
+
+**Worked examples:**
+
+- ❌ "Persist user profile."
+- ❌ "Use `mica.files.write` for profile."
+- ✅ *"User profile persists across browser refresh AND is visible on the canvas as a `.md` card AND syncs across tabs of the same project. Implementer: use `mica.files.write('canvas/profile.md', md)`."*
+
+- ❌ "Call the LLM at the configured endpoint."
+- ❌ "Use `mica.fetch` for the LLM call."
+- ✅ *"LLM calls go to the configured endpoint with a 60s timeout, 10MB response cap, and SSRF protection (the user's local llama-server is allowed; arbitrary public IPs are not). Implementer: `mica.fetch(this.llmEndpoint, ...)`."*
+
+- ❌ "React when the spec changes."
+- ❌ "Use `mica.on('file-changed')`."
+- ✅ *"When `canvas/spec.md` is edited (by the user, the agent, or a peer window), the card re-derives its display within the file-watcher debounce (~300ms) without the user clicking anything. Implementer: `mica.on('file-changed', e => …)` filtered by `e.filename === 'canvas/spec.md'`, paired with `mica.onDestroy(unsub)`."*
+
+**Why this format catches errors that pure-API or pure-constraint specs miss:**
+
+- The constraint *forces you to articulate "is this even what we want?"* — if you can't write a constraint sentence the user would understand, the design isn't ready and you shouldn't be picking an API yet.
+- The API *deters the implementer's training-prior fallback to `localStorage`/`IndexedDB`/`fetch()`*. Without the API named, local Qwen specifically defaults to those; even Claude burns context re-deriving.
+- The pairing *makes API mismatches visible*. A spec that says "must be visible on the canvas" + "use IndexedDB" is obviously wrong on the page — the constraint and API don't match. Strip the API and the mismatch hides until implementation.
+
+**When mica.* doesn't fit and a browser-direct API is correct** (e.g. `Web Audio` for sound, `IntersectionObserver` for scroll reveal, `localStorage` for a deliberately ephemeral collapse-state that should NOT sync cross-tab), say so explicitly in the spec with the constraint-then-API form: *"Collapse state is per-tab and resets on tab close — it's deliberately ephemeral. Implementer: `localStorage` (NOT `mica.files.write`, which would sync the state across tabs and persist past browser-clear, which is wrong here)."* The constraint + counter-default makes the unusual choice auditable.
+
+You have the full mica.* surface in your system prompt's `## Available mica.* APIs` block. When in doubt about whether a primitive exists, that's your reference.
+
 ## What to write — three artifacts
 
 Write to the **project's canvas root** — the parent's prompt told you about it (default `canvas/`). Use it consistently for all three artifacts.
