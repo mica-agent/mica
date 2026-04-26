@@ -254,6 +254,60 @@ For the state machines, the transport adapter pattern, and
 handler contract examples, see
 [ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md).
 
+### Registered channel handlers
+
+Each entry below is a card class that has a server-side channel
+handler registered via `channelManager.registerHandler(<class>, factory)`
+in `server/index.ts`. A card whose extension matches one of these
+classes can call `mica.openChannel(label, args?)` from its `card.js`
+and the channel routes to the matching handler. Cards whose extension
+has NO registered handler will fail with `Error: No handler registered
+for: <class>`.
+
+**Routing rule:** the route key is the card's file extension, NOT the
+`label` argument. The label is decorative (passed to the factory's
+`_args`); cards typically use any string they like.
+
+| Card class | Handler factory | Source | Purpose |
+|---|---|---|---|
+| `.chat` | `createAgentHandler` | `server/micaAgent.ts` | Qwen agent SDK loop with subagent dispatch + tools |
+| `.claude` | `createClaudeAgentHandler` | `server/claudeAgent.ts` | Claude Code SDK loop, parallel shape |
+| `.terminal` | `createPtyHandler` | `server/plugins/pty.ts` | Terminal PTY (node-pty) |
+| `.llm-chat` | `createLlmChatHandler` | `server/plugins/llmChat.ts` | OpenAI-compatible streaming chat, switchable models, no tools |
+| `.skills` | `createSkillComposeHandler` | `server/plugins/skillCompose.ts` | Collaborative SKILL.md authoring (propose → apply) |
+| `.canvas-back` | `createCanvasBackComposeHandler` | `server/plugins/canvasBackCompose.ts` | Propose-then-apply edits to canvas-back.md |
+
+**For LLM access in a custom card class**, prefer reusing `.llm-chat`
+(if the off-the-shelf streaming-chat UX fits) or `.chat` / `.claude`
+(if the full agent loop fits). Build a new handler under
+`server/plugins/<name>.ts` only when the LLM contract is genuinely
+domain-specific (custom system prompt managed server-side, structured
+JSON deltas, retrieval, multi-step pipelines).
+
+**Anti-pattern:** a card-class spec or implementation that has the
+card calling LLM endpoints directly via `fetch()` or `mica.fetch()`.
+LLM endpoint, model selection, API keys, retry, abort, and protocol
+parsing belong server-side. The card's job is to render and forward
+user input.
+
+### Service handlers (RPC, not duplex)
+
+Distinct from channel handlers. Registered via
+`registerMicaHandler(namespace, handler)` in `server/index.ts`,
+exposed to cards as `mica.<namespace>.*`. Used for one-shot
+request/response, not stateful streams:
+
+| Namespace | Card-side API | Purpose |
+|---|---|---|
+| `chat` | `mica.chat.*` | Send a message into a chat thread from another card |
+| `exec` | `mica.exec.*` | Run a server-side command, get output |
+| `fetch` | `mica.fetch(url, opts)` | SSRF-protected, rate-limited HTTP |
+| `render` | `mica.render.capture(filename)` | Headless screenshot of a rendered card |
+
+If you find yourself building a custom service-handler-shaped need,
+ask whether a channel handler is the better fit (long-lived state,
+streaming responses, abort semantics).
+
 ## Agents
 
 Two agent card classes ship today. Both are regular card classes

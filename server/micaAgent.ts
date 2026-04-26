@@ -374,6 +374,67 @@ function formatListingEntry(name: string, sizeBytes: number, meta: { title: stri
   return `- \`${name}\` (${sizeStr})${suffix}`;
 }
 
+/** Authoritative mica.* API surface, injected into BOTH the parent's
+ *  buildContext AND every subagent's buildSubagentCanvasContext. Single
+ *  source of truth so the parent (when doing inline work) and the
+ *  subagents (when implementing under the parent's task prompt) see
+ *  the same primitive set, channel-handler registry, and anti-patterns.
+ *
+ *  Earlier this block lived inline in buildSubagentCanvasContext only —
+ *  meaning the parent had to dispatch a subagent to surface it. When
+ *  the parent did inline work (e.g. "review and revise spec.md"), it
+ *  reverted to its prior knowledge of mica.*, which is incomplete and
+ *  often wrong (defaults to browser primitives). Now both contexts get
+ *  the same string. ~700 token cost on the parent's baseline; fixes
+ *  the spec-generation failure mode where the parent would write a spec
+ *  that has the card calling LLM endpoints directly. */
+const MICA_API_REFERENCE_BLOCK =
+  `## Available mica.* APIs — prefer these over browser-direct equivalents\n\n` +
+  `When you write specs (task-decomposer) or implement card classes (component-coder), default to these Mica-provided primitives. They're injected by CARD_SHIM into every card class's runtime, alongside \`container\` (the card's root DOM node). Reach for browser globals only when no mica.* equivalent exists.\n\n` +
+  `**Identity & lifecycle**\n` +
+  `- \`mica.cardId\` — stable per-instance UUID (per file)\n` +
+  `- \`mica.filename\` — the card's instance file path\n` +
+  `- \`mica.windowId\` — per-tab id (NOT per-card; use cardId for instance state)\n` +
+  `- \`mica.onDestroy(cb)\` — cleanup on unmount; pair every \`addEventListener\`, \`setInterval\`, \`ResizeObserver\` etc. with this\n` +
+  `- \`mica.refresh()\` — reload the card; cheaper alternatives are usually preferred (in-place DOM patches)\n` +
+  `- \`mica.isSelfEcho(event)\` — true if event was caused by THIS card writing; use to break write-loops on \`file-changed\`\n\n` +
+  `**Canvas-native persistence — use INSTEAD of localStorage / IndexedDB / sessionStorage**\n` +
+  `- \`mica.getContent()\` → \`Promise<string>\` — read this card's instance file; called once at mount\n` +
+  `- \`mica.files.read(path)\` → \`Promise<string>\` — read any project file\n` +
+  `- \`mica.files.readBinary(path)\` → \`Promise<ArrayBuffer>\` — binary read\n` +
+  `- \`mica.files.write(path, content)\` → \`Promise<void>\` — text or binary; auto-routes by content type; SSE-broadcasts \`file-changed\` to peer windows\n` +
+  `- \`mica.files.list()\` → file metadata array\n` +
+  `- \`mica.files.delete(path)\` / \`mica.files.url(path)\` (URL for \`<img src>\` etc.)\n\n` +
+  `Why prefer these over browser storage: canvas files survive browser-data clear, sync cross-tab via the file watcher, are git-trackable, and are visible to the user as cards. IndexedDB/localStorage data is invisible to Mica and lost on browser reset.\n\n` +
+  `**HTTP — use INSTEAD of \`fetch()\` for cross-origin / public APIs**\n` +
+  `- \`mica.fetch(url, opts?)\` → \`Promise<{ status, headers, body, durationMs, errorCode? }>\` — server-proxied, bypasses CORS, blocks private/loopback IPs (SSRF protection), 120 req/60s rate limit per project, 10MB response cap, 60s max timeout. Always resolves; check \`errorCode\` then \`status\`.\n\n` +
+  `Use direct \`fetch()\` ONLY for same-origin Mica-internal endpoints (e.g. \`/api/llm/status\`). For external APIs, RSS, etc.: \`mica.fetch\`.\n\n` +
+  `**LLM / agent access — NEVER call llama-server, OpenRouter, or any LLM endpoint directly**\n\n` +
+  `Cards do not own LLM endpoints, API keys, or streaming protocol. LLM access is mediated by a SERVER-SIDE channel handler that the card opens via \`mica.openChannel\`. Three patterns, in order of how custom you need to be:\n\n` +
+  `1. **Drop a \`.llm-chat\` card on the canvas** — out-of-the-box streaming chat with a model switcher, no system prompt customization. The card class is already implemented (\`card-classes/llm-chat/\`) and registers \`channelManager.registerHandler("llm-chat", createLlmChatHandler())\` on the server. Use this when the user's need is "let me chat with an LLM" with no domain logic.\n` +
+  `2. **Drop a \`.chat\` card** — full Qwen/Claude agent SDK with subagents, tools, file ops. Heavyweight; use when the conversation needs the agent loop (e.g., a chat that helps the user build). System prompt comes from canvas-back + skills.\n` +
+  `3. **Build a custom card class with a paired server handler** — for domain-specific contracts (custom system prompt, structured response parsing, retrieval, multi-step pipelines). Requires both: (a) the card class files (card.html/js/css/metadata.json), AND (b) a server plugin at \`server/plugins/<name>.ts\` exporting a factory, AND (c) a registration line in \`server/index.ts\`: \`channelManager.registerHandler("<class-name>", create<Name>Handler())\`. Reference implementations: \`server/plugins/llmChat.ts\` (simple chat completion) and \`server/plugins/pty.ts\` (terminal). The card opens its channel with \`mica.openChannel(<any-string>, args?)\` — the routing key is the CARD's file extension, not the string argument (which is decorative, passed to the factory's \`_args\`).\n\n` +
+  `**Existing channel-handler card classes** (already registered, ready to use):\n` +
+  `- \`.chat\` → full Qwen agent SDK loop\n` +
+  `- \`.claude\` → Claude Code agent SDK loop\n` +
+  `- \`.terminal\` → PTY (node-pty)\n` +
+  `- \`.llm-chat\` → direct LLM streaming chat (OpenAI-compatible, switchable models)\n` +
+  `- \`.skills\` → collaborative SKILL.md authoring (propose/apply)\n` +
+  `- \`.canvas-back\` → propose-then-apply canvas-back.md edits\n\n` +
+  `**Anti-pattern (the spec-generation failure mode):** writing a spec that says "the card calls llama-server at \`/v1/chat/completions\` via \`fetch\`" or "use \`mica.fetch\` for the LLM call (with a note that \`mica.fetch\` blocks loopback)." Both are wrong — the card never calls LLM endpoints. If the spec implies it does, you've misframed the architecture; revise to "card opens \`mica.openChannel\`; server handler at \`server/plugins/<name>.ts\` owns the LLM call."\n\n` +
+  `**Channel API shape** (when you do call \`mica.openChannel\`):\n` +
+  `- \`const ch = mica.openChannel(label, args?)\` — open duplex stream\n` +
+  `- \`ch.send(msg)\` — push a message; server receives via \`onData(clientId, data)\`\n` +
+  `- \`ch.onData(cb)\` — receive server broadcasts (event types defined by handler)\n` +
+  `- \`ch.onClose(cb)\` — server closed the channel\n` +
+  `- \`ch.close()\` — client closes; pair with \`mica.onDestroy(() => ch.close())\`\n\n` +
+  `**Events & cross-card communication**\n` +
+  `- \`mica.on(event, cb)\` → unsubscribe fn. Events: \`file-changed\`, \`file-created\`, \`file-deleted\`, \`layout-changed\`, \`card-error\`. Always pair with \`mica.onDestroy(unsub)\`.\n` +
+  `- \`mica.reportError(message)\` → surfaces a "Ask agent to fix" bubble in chat cards across the project. Use in catch blocks for errors the user should know about.\n\n` +
+  `**Card-class introspection**\n` +
+  `- \`mica.cardClasses.list()\` → registered classes; check before defining a new one (extension may already be handled).\n\n` +
+  `For a fuller reference (parameter shapes, edge cases), read the \`create-card-class\` skill in \`.qwen/skills/create-card-class/SKILL.md\` (or \`.claude/skills/...\`). Don't paste its content into your specs verbatim — point at it.`;
+
 /** Canvas baseline injected into every subagent's systemPrompt so the
  *  subagent starts with the same project awareness as the parent (canvas-back,
  *  spec/design files, file locations, container danger notes). Without this,
@@ -411,35 +472,7 @@ export async function buildSubagentCanvasContext(project: string | null): Promis
   // cross-window sync, channel pubsub, lifecycle hooks. Tight summary
   // here; full reference lives in the `create-card-class` skill body
   // (which subagents can `read_file` if they need details).
-  parts.push(
-    `## Available mica.* APIs — prefer these over browser-direct equivalents\n\n` +
-    `When you write specs (task-decomposer) or implement card classes (component-coder), default to these Mica-provided primitives. They're injected by CARD_SHIM into every card class's runtime, alongside \`container\` (the card's root DOM node). Reach for browser globals only when no mica.* equivalent exists.\n\n` +
-    `**Identity & lifecycle**\n` +
-    `- \`mica.cardId\` — stable per-instance UUID (per file)\n` +
-    `- \`mica.filename\` — the card's instance file path\n` +
-    `- \`mica.windowId\` — per-tab id (NOT per-card; use cardId for instance state)\n` +
-    `- \`mica.onDestroy(cb)\` — cleanup on unmount; pair every \`addEventListener\`, \`setInterval\`, \`ResizeObserver\` etc. with this\n` +
-    `- \`mica.refresh()\` — reload the card; cheaper alternatives are usually preferred (in-place DOM patches)\n` +
-    `- \`mica.isSelfEcho(event)\` — true if event was caused by THIS card writing; use to break write-loops on \`file-changed\`\n\n` +
-    `**Canvas-native persistence — use INSTEAD of localStorage / IndexedDB / sessionStorage**\n` +
-    `- \`mica.getContent()\` → \`Promise<string>\` — read this card's instance file; called once at mount\n` +
-    `- \`mica.files.read(path)\` → \`Promise<string>\` — read any project file\n` +
-    `- \`mica.files.readBinary(path)\` → \`Promise<ArrayBuffer>\` — binary read\n` +
-    `- \`mica.files.write(path, content)\` → \`Promise<void>\` — text or binary; auto-routes by content type; SSE-broadcasts \`file-changed\` to peer windows\n` +
-    `- \`mica.files.list()\` → file metadata array\n` +
-    `- \`mica.files.delete(path)\` / \`mica.files.url(path)\` (URL for \`<img src>\` etc.)\n\n` +
-    `Why prefer these over browser storage: canvas files survive browser-data clear, sync cross-tab via the file watcher, are git-trackable, and are visible to the user as cards. IndexedDB/localStorage data is invisible to Mica and lost on browser reset.\n\n` +
-    `**HTTP — use INSTEAD of \`fetch()\`**\n` +
-    `- \`mica.fetch(url, opts?)\` → \`Promise<{ status, headers, body, durationMs, errorCode? }>\` — server-proxied, bypasses CORS, blocks private/loopback IPs (SSRF protection), 120 req/60s rate limit per project, 10MB response cap, 60s max timeout. Always resolves; check \`errorCode\` then \`status\`.\n\n` +
-    `Use direct \`fetch()\` ONLY when you specifically need browser-side semantics (e.g. relative-URL same-origin to the user's own dev server during card development). For LLM endpoints, public APIs, RSS feeds, anything cross-origin: \`mica.fetch\` is correct.\n\n` +
-    `**Events & cross-card communication**\n` +
-    `- \`mica.on(event, cb)\` → unsubscribe fn. Events: \`file-changed\`, \`file-created\`, \`file-deleted\`, \`layout-changed\`, \`card-error\`. Always pair with \`mica.onDestroy(unsub)\`.\n` +
-    `- \`mica.openChannel(handlerName, args)\` → bidirectional stream to a server-side plugin (chat, terminal, pty). Use for stateful streams; for one-shot queries \`mica.fetch\` is simpler.\n` +
-    `- \`mica.reportError(message)\` → surfaces a "Ask agent to fix" bubble in chat cards across the project. Use in catch blocks for errors the user should know about.\n\n` +
-    `**Card-class introspection**\n` +
-    `- \`mica.cardClasses.list()\` → registered classes; check before defining a new one (extension may already be handled).\n\n` +
-    `For a fuller reference (parameter shapes, edge cases), read the \`create-card-class\` skill in \`.qwen/skills/create-card-class/SKILL.md\` (or \`.claude/skills/...\`). Don't paste its content into your specs verbatim — point at it.`,
-  );
+  parts.push(MICA_API_REFERENCE_BLOCK);
 
   // Project context (canvas-back)
   try {
@@ -740,7 +773,14 @@ export async function buildContext(agentFilename: string, project: string | null
           `   **Do NOT batch updates.** The .todo card watches its own file and re-renders per save. Per-item edits become live UI progress (pending → in-progress → done). Batching loses that visibility AND loses work if you hit overflow before the flush.`,
           `6. **Iterate** until \`## Active\` has no \`[ ]\` or \`[~]\` items left. Summarize what shipped — without including file contents.`,
           ``,
-          `**SKIP this workflow** for: single-file edits under ~50 lines, typo fixes, single-config tweaks, narrowly-scoped Q&A like "what does function foo() do in src/x.js" (one read, one answer). Just answer or edit inline.`,
+          `**SKIP this workflow** ONLY for these narrow cases:`,
+          `- typo fixes (renaming a variable, fixing a misspelling)`,
+          `- single-config tweaks (changing one setting in one config file)`,
+          `- narrowly-scoped Q&A like "what does function foo() do in src/x.js" (one read, one answer — the answer is the deliverable)`,
+          ``,
+          `**Spec / architecture / canvas-back / interfaces revisions are NOT skip-eligible — even when only one file is touched.** A spec rewrite that touches multiple sections, or any edit informed by architectural guidance the user just shipped, is planning-shaped work. Delegate to \`task-decomposer\`. The "single-file" language is about scope of CONSEQUENCE (does this affect downstream code?), not literal file count. A spec rewrite affects every subagent that reads it — high consequence — delegate it.`,
+          ``,
+          `**Multi-section edits in one file are NOT "single-file edits."** If you'd touch 3+ sections of one file, or rewrite >50 lines of one file, or apply architectural guidance to one file, it's planning-shaped. Delegate.`,
           ``,
           `**SKIP this workflow** if the user explicitly says "just do it directly" / "don't bother with subagents" / "this is small". Respect their override.`,
         );
@@ -775,6 +815,14 @@ export async function buildContext(agentFilename: string, project: string | null
       parts.push(lines.join("\n"));
     }
   } catch { /* no subagents available — skip section */ }
+
+  // mica.* API reference — same block subagents see, so the parent has the
+  // surface in front of it whether it's dispatching or doing inline work.
+  // Earlier this lived in the subagent baseline only; the parent reverted to
+  // its prior on inline tasks (e.g. "review and revise spec.md") and produced
+  // specs that had cards calling LLM endpoints directly. Adding here closes
+  // that gap. ~700 token cost on the parent's baseline.
+  parts.push(MICA_API_REFERENCE_BLOCK);
 
   parts.push(`## File Locations
 - The canvas directory is \`${canvasRoot}/\` — this is where everything visible on the canvas lives

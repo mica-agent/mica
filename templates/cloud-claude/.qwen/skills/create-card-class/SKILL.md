@@ -206,6 +206,98 @@ const r2 = await mica.fetch('https://api.example.com/v1/items', {
 
 To skip self-echoes use `mica.isSelfEcho(e)` — NOT `e.source !== mica.windowId`. windowId is per-tab, so the windowId check also suppresses writes from sibling cards in the same tab. `mica.isSelfEcho()` checks `cardSource` against this card's UUID.
 
+## Server-side channel handlers via `mica.openChannel(label, args?)`
+
+Some card classes need bidirectional duplex streams to the server — terminal PTYs, streaming LLM completions, long-running agent loops, collaborative editing protocols. For those, the card opens a channel; the server runs a handler in a per-file session and exchanges messages.
+
+### Existing channel-handler card classes (no work to use them)
+
+These already have server handlers registered in `server/index.ts`. Drop the corresponding card on the canvas and the channel is wired:
+
+| Card class | Server handler | What it does |
+|---|---|---|
+| `.chat` | `createAgentHandler` (Qwen SDK) | Full agent loop with subagent dispatch + tools |
+| `.claude` | `createClaudeAgentHandler` | Same shape, Claude Code SDK |
+| `.terminal` | `createPtyHandler` | Terminal PTY (node-pty) |
+| `.llm-chat` | `createLlmChatHandler` | OpenAI-compatible streaming chat with model switcher; no tools, no system-prompt customization. Reference impl for "I just want to talk to an LLM." |
+| `.skills` | `createSkillComposeHandler` | Collaborative SKILL.md authoring (propose / apply) |
+| `.canvas-back` | `createCanvasBackComposeHandler` | Propose-then-apply edits to canvas-back.md |
+
+If your card's job overlaps with one of these, REUSE that card class instead of writing a new one. E.g., for "let me chat with an LLM," instantiate a `.llm-chat` card; don't build a custom one.
+
+### Routing rule
+
+When the card runs `mica.openChannel('whatever', args)`, the server routes by **the card's file extension**, NOT the string argument. The argument is decorative — it's passed to the factory's `_args` parameter and most handlers ignore it. So `mica.openChannel('hello')` and `mica.openChannel('llm_session')` from a `.chat` card both land in the same `chat` handler.
+
+This means: **a custom card class without a registered handler will fail with `Error: No handler registered for: <classname>`** when it tries `mica.openChannel`. You must register one.
+
+### Building a custom card class with a server handler
+
+Two file additions on top of the standard card class:
+
+**(1) `server/plugins/<name>.ts`** — exports a factory:
+
+```ts
+import type { ChannelHandler, SessionContext } from "../channelManager.js";
+
+export function create<Name>Handler() {
+  return async function factory(
+    _content: string,                      // initial card-file content (often unused)
+    _args: Record<string, unknown>,        // the args from openChannel(label, args)
+    ctx: SessionContext,                   // sendTo / broadcast / sessionId etc.
+  ): Promise<ChannelHandler> {
+    // Per-session state lives in this closure
+    const history: Message[] = [];
+
+    return {
+      onAttach(clientId) {
+        // Replay state to a (re)connecting client
+        ctx.sendTo(clientId, { type: "history", messages: history });
+      },
+
+      async onData(_clientId, data) {
+        // Handle inbound messages from card.js's ch.send()
+        // Stream responses via ctx.broadcast({ type: "delta", content })
+      },
+
+      onDestroy() {
+        // Cleanup when the card-file is deleted (session ends)
+      },
+    };
+  };
+}
+```
+
+**(2) Register it in `server/index.ts`** alongside the existing handlers:
+
+```ts
+channelManager.registerHandler("<class-name>", create<Name>Handler());
+```
+
+`<class-name>` = the file extension without the leading dot. So `.taxomatic` files use `channelManager.registerHandler("taxomatic", ...)`.
+
+### When to add a custom handler vs. reuse `.llm-chat`
+
+| Need | Use | Reason |
+|---|---|---|
+| Custom UI but generic LLM streaming | `.llm-chat` card class doesn't fit (its UI is fixed); build custom handler | UI ≠ contract; different concerns |
+| Off-the-shelf chat with no domain logic | `.llm-chat` directly | Already does what you need |
+| Custom system prompt | Custom handler (the existing `llm-chat` handler doesn't accept system prompts from the card) | Could PR to `llmChat.ts` to accept a prompt; or fork |
+| Structured response parsing (JSON deltas, tool-call extraction) | Custom handler — the parser belongs server-side | Card shouldn't own LLM-output parsing logic |
+| Multi-step pipeline (chat → research → synthesize → respond) | Custom handler | Orchestration is server-side concern |
+| Streaming with backpressure or fan-out | Custom handler | Channel is the natural primitive |
+
+### Reference: `card-classes/llm-chat/card.js` and `server/plugins/llmChat.ts`
+
+The cleanest small example. ~140 lines on each side. Read both before building a custom handler — they show the canonical send/onData/history shape, abort handling, and SSE-stream parsing.
+
+### Anti-patterns
+
+- ❌ `card.js` calls `fetch('http://localhost:8012/v1/chat/completions')` directly — bypasses Mica entirely; loses provider abstraction, rate limit, abort, history.
+- ❌ `card.js` calls `mica.fetch` to the LLM — works for cloud LLMs but blocked by SSRF for local llama-server (loopback IPs are blocked).
+- ❌ Building a custom handler for a need that `.llm-chat` already covers.
+- ❌ Putting LLM-response parsing in the card — when the LLM contract changes (different provider, structured output schema), every card needs editing.
+
 ## Raw HTTP endpoints (fallback only)
 
 You should almost never need these — `mica.files.*` and `mica.cardClasses.list()` cover the common cases. Documented here in case you need something they don't expose.
