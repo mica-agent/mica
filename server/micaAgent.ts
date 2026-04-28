@@ -18,6 +18,7 @@ import {
   endSubagentTask,
   getConcurrencyStatus,
 } from "./subagents.js";
+import { markProjectActivity } from "./projectActivity.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
@@ -1153,6 +1154,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         return;
       }
       busy = true; sessionState.busy = true;
+      markProjectActivity(sessionProject, +1);
       console.log(`[mica-agent] processMessage START: ${message.slice(0, 60)}`);
 
       // Per-turn read tracking. Used by checkCardClassPrecondition to refuse
@@ -1873,6 +1875,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         });
       } finally {
         recordTurnEnd(ctx.filename);
+        markProjectActivity(sessionProject, -1);
         console.log(`[mica-agent] processMessage DONE: ${message.slice(0, 60)} | queue depth: ${queue.length}`);
         // Hand off to next queued message WITHOUT releasing busy outside this
         // synchronous block. setImmediate's callback briefly clears busy then
@@ -1910,6 +1913,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         return;
       }
       busy = true; sessionState.busy = true;
+      markProjectActivity(sessionProject, +1);
       console.log(`[mica-agent] processImageMessage START: ${text.slice(0, 60)} [attach=${attachmentFilename}]`);
 
       const turnId = randomUUID();
@@ -2034,6 +2038,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         ctx.broadcast({ type: "error", error: errMsg });
       } finally {
         recordTurnEnd(ctx.filename);
+        markProjectActivity(sessionProject, -1);
         console.log(`[mica-agent] processImageMessage DONE | queue depth: ${queue.length}`);
         if (queue.length > 0) {
           const next = queue.shift()!;

@@ -31,6 +31,13 @@ export interface ProjectInfo {
   hasGit?: boolean;
   hasMica?: boolean;
   docsDir?: string;
+  /** Number of agent turns currently in flight for this project. >0 means
+   *  an agent is actively processing. Updated live via the
+   *  project-activity-changed WebSocket event. */
+  activeTurns?: number;
+  /** Wall-clock timestamp (ms) of the last turn-start or turn-end for this
+   *  project. Used to render "active … ago" hints if needed. */
+  lastActivityAt?: number;
 }
 
 /** File metadata from GET /api/files (no content). */

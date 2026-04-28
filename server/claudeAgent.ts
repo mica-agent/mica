@@ -22,6 +22,7 @@ import {
   type ParsedSubagent,
 } from "./subagents.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
+import { markProjectActivity } from "./projectActivity.js";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
 // tag the write as agent-originated. Covers the Qwen/OpenRouter dialect
@@ -538,6 +539,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         return;
       }
       busy = true; sessionState.busy = true;
+      markProjectActivity(sessionProject, +1);
       console.log(`[claude-agent] processMessage START: ${message.slice(0, 60)}`);
 
       // Per-turn read tracking — see micaAgent.ts for rationale.
@@ -1014,6 +1016,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         });
       } finally {
         recordTurnEnd(ctx.filename);
+        markProjectActivity(sessionProject, -1);
         console.log(`[claude-agent] processMessage DONE: ${message.slice(0, 60)} | queue depth: ${queue.length}`);
         // Hand off to next queued message WITHOUT releasing busy. This avoids
         // a race where an incoming WS onData sees busy=false in the millisecond

@@ -92,6 +92,12 @@ import { registerGitEndpoints } from "./plugins/git.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata, enforceCardJsLint } from "./cardValidators.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
+import {
+  setActivityBroadcast,
+  getProjectActivity,
+  clearProjectActivity,
+  broadcastProjectListChanged,
+} from "./projectActivity.js";
 
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
@@ -214,7 +220,14 @@ app.get("/api/project", async (req, res) => {
 app.get("/api/projects", async (_req, res) => {
   try {
     const projects = await listProjects();
-    res.json(projects);
+    // Enrich with current activity state so the project-list page renders
+    // the live "active" badge on initial load. Subsequent updates arrive
+    // via project-activity-changed broadcasts.
+    const enriched = projects.map((p) => ({
+      ...p,
+      ...getProjectActivity(p.name),
+    }));
+    res.json(enriched);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -233,6 +246,7 @@ app.post("/api/projects", async (req, res) => {
     } else {
       await createProject(name, docsDir || DEFAULT_CANVAS_ROOT);
     }
+    broadcastProjectListChanged();
     res.json({ success: true, name, template: template || null });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -256,6 +270,7 @@ app.post("/api/projects/clone", async (req, res) => {
       templateName: template || undefined,
       canvasRoot: docsDir || undefined,
     });
+    broadcastProjectListChanged();
     res.json({ success: true, name: projectName, template: template || null });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -283,6 +298,10 @@ app.put("/api/projects/:project/rename", async (req, res) => {
     channelManager.destroyAllForProject(oldName);
     evictCardIdsForProject(oldName);
     await renameProject(oldName, newName);
+    // Activity counters were keyed by the old name; clear them so they
+    // don't appear under a stale identity if the old name is reused later.
+    clearProjectActivity(oldName);
+    broadcastProjectListChanged();
     res.json({ success: true, name: newName });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -299,6 +318,8 @@ app.delete("/api/projects/:project", async (req, res) => {
     channelManager.destroyAllForProject(name);
     evictCardIdsForProject(name);
     await deleteProject(name);
+    clearProjectActivity(name);
+    broadcastProjectListChanged();
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -1664,6 +1685,10 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   registerMicaHandler("exec", execHandler);  // mica.exec.*
   registerMicaHandler("fetch", fetchHandler);  // mica.fetch.*
   setScreenshotBroadcast(broadcastToProject);
+  // Wire workspace-level broadcasts for project activity + list changes.
+  // Uses `broadcast` (all clients) rather than `broadcastToProject` because
+  // the project-list page isn't subscribed to any specific project.
+  setActivityBroadcast(broadcast);
   registerMicaHandler("render", renderHandler);  // mica.render.capture
 
   // Register channel-based plugins

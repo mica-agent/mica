@@ -8,6 +8,7 @@ import {
   fetchTemplates,
 } from './api/canvasFiles';
 import type { ProjectInfo, TemplateInfo } from './api/canvasFiles';
+import { on as onMicaEvent } from './api/micaSocket';
 
 interface Props {
   workspaceName: string;
@@ -37,6 +38,26 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
   useEffect(() => {
     loadProjects();
     fetchTemplates().then(setTemplates).catch((err) => console.error('Failed to load templates:', err));
+  }, [loadProjects]);
+
+  // Live updates from the server. Two events to handle:
+  //   - project-activity-changed: an agent turn started / ended for a project.
+  //     Patch the project's activeTurns + lastActivityAt without re-fetching.
+  //   - project-list-changed: a project was created / deleted / renamed.
+  //     Re-fetch the whole list (cheap; not paginated).
+  useEffect(() => {
+    const offActivity = onMicaEvent('project-activity-changed', (raw) => {
+      const data = raw as { project: string; activeTurns: number; lastActivityAt: number };
+      setProjects((prev) => prev.map((p) =>
+        p.name === data.project
+          ? { ...p, activeTurns: data.activeTurns, lastActivityAt: data.lastActivityAt }
+          : p
+      ));
+    });
+    const offListChanged = onMicaEvent('project-list-changed', () => {
+      loadProjects();
+    });
+    return () => { offActivity(); offListChanged(); };
   }, [loadProjects]);
 
   const handleCreate = useCallback(async (name: string, docsDir: string, template: string | null) => {
@@ -183,13 +204,20 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
               onClick={() => onOpenProject(project)}
             >
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 15, fontWeight: 500, color: '#ddd' }}>
+                <div style={{ fontSize: 15, fontWeight: 500, color: '#ddd', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {(project.activeTurns ?? 0) > 0 && (
+                    <span
+                      title={`Agent active${project.activeTurns! > 1 ? ` (${project.activeTurns} turns)` : ''}`}
+                      style={activeDotStyle}
+                    />
+                  )}
                   {project.name}
                 </div>
                 <div style={{ fontSize: 12, color: '#666', marginTop: 2, display: 'flex', gap: 8 }}>
                   {project.hasGit && <span style={{ color: '#f97316' }}>git</span>}
                   {project.hasMica && <span style={{ color: '#4ade80' }}>mica</span>}
                   {!project.hasMica && <span style={{ color: '#888' }}>not initialized</span>}
+                  {(project.activeTurns ?? 0) > 0 && <span style={{ color: '#4ade80' }}>active</span>}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
@@ -422,3 +450,29 @@ const menuItemStyle: React.CSSProperties = {
   cursor: 'pointer',
   transition: 'background 0.1s',
 };
+
+// Pulsing green dot rendered next to a project name when activeTurns > 0.
+// Inline animation defined via a once-injected <style> block; React's inline
+// style API doesn't support @keyframes, so we inject the keyframe rule into
+// document.head on module load.
+const activeDotStyle: React.CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: '50%',
+  background: '#4ade80',
+  boxShadow: '0 0 8px rgba(74, 222, 128, 0.6)',
+  animation: 'mica-active-pulse 1.6s ease-in-out infinite',
+  flexShrink: 0,
+};
+
+if (typeof document !== 'undefined' && !document.getElementById('mica-active-pulse-style')) {
+  const styleEl = document.createElement('style');
+  styleEl.id = 'mica-active-pulse-style';
+  styleEl.textContent = `
+    @keyframes mica-active-pulse {
+      0%, 100% { opacity: 0.5; transform: scale(0.92); }
+      50%      { opacity: 1;   transform: scale(1.1);  }
+    }
+  `;
+  document.head.appendChild(styleEl);
+}
