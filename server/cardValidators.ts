@@ -407,17 +407,25 @@ function _detectWrappedNotCalled(content: string): string | null {
 }
 
 function _detectParseError(content: string): string | null {
+  // Mica's runtime wraps card.js in `(async function(mica,_c){…})()` — an
+  // ASYNC function body. Use AsyncFunction (not the regular Function
+  // constructor) so the parse test allows top-level `await` — which our
+  // canonical card.js skeleton actually uses (`const x = await mica.getContent()`)
+  // and which is valid in the runtime wrap. Earlier this validator used
+  // `new Function(content)`, which doesn't allow top-level await and
+  // produced false positives that the agent then "fixed" by mangling
+  // valid code.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const AsyncFunction = (async function () {}).constructor as any;
   try {
-    // Function constructor parses content as a function body — same shape
-    // as Mica's IIFE wrap. If this throws, the card will throw at mount.
-    new Function(content);
+    new AsyncFunction(content);
     return null;
   } catch (e) {
     const msg = (e as Error).message;
     // export/import errors are caught with specific messages above; if we
     // reach here for those, fall through.
     if (/Unexpected (?:keyword|token) ['"]?(?:export|import)/.test(msg)) return null;
-    return `card.js fails to parse as a function body: ${msg}. Mica wraps card.js in \`(async function(mica,_c){…})()\`, so the file content must be valid as a function body. Common causes: unbalanced braces, stray top-level keywords (\`return\` outside a function), accidentally pasted shell/HTML content, or an extra closing brace at the end of the file.`;
+    return `card.js fails to parse as an async function body: ${msg}. Mica wraps card.js in \`(async function(mica,_c){…})()\`, so the file content must be valid as an async function body. Common causes: unbalanced braces, stray top-level keywords (\`return\` outside a function — though \`await\` IS fine at top level since the wrapper is async), accidentally pasted shell/HTML content, or an extra closing brace at the end of the file.`;
   }
 }
 
