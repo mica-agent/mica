@@ -30,6 +30,14 @@ export default function App() {
     }
   }, [activeProject]);
 
+  // Mirror the active project name into the document title so browser tabs
+  // show which project this tab is on. Reverts to the default when no
+  // project is active. The "— Mica" suffix preserves the app identity for
+  // tab grouping and bookmarking.
+  useEffect(() => {
+    document.title = activeProject ? `${activeProject.name} — Mica` : "Mica — Magic Canvas";
+  }, [activeProject]);
+
   useEffect(() => {
     fetchWorkspace().then(setWorkspace).catch(console.error);
   }, []);
