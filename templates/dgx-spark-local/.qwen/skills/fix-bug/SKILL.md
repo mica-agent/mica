@@ -52,6 +52,8 @@ Once you know the root cause, change only what's needed to fix it. Specifically:
 
 If the fix would naturally exceed ~50 lines of changes, stop and reconsider. Either the bug is bigger than reported, or you're fixing too much. Either case warrants a conversation with the user before continuing.
 
+**If the "fix" turns out to require >30 lines of new bespoke logic** (e.g., the bug is "the day/night overlay is wrong" and you're about to write 80 lines of solar geometry to fix it), invoke the `discover-library` skill instead — see `.qwen/skills/discover-library/SKILL.md`. A library-shaped fix replaces both the bug and the surrounding fragile code with a maintained dependency. The library decision goes in `spec.md § Subproblems and their solutions` and you update the doc-consistency-required spec sections per `doc-consistency/SKILL.md`. Don't quietly grow the bespoke surface during a bug fix; that's how 8-line bugs become 80-line bugs.
+
 ### 4. Verify the bug is gone AND check for regressions
 
 Two distinct checks:

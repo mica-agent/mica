@@ -1,0 +1,128 @@
+---
+name: discover-library
+description: Triggers when designing the implementation of a recognizable subproblem that would otherwise need >30 lines of bespoke code — mapping, charting, drag-and-drop, geospatial math, syntax highlighting, animation, calendaring, terminal emulation, code editing, math typesetting, audio synthesis, file diffing, etc. Use during spec drafting (card-class builds), during plan writing (decomposed builds), and during bug fixes that would need substantial new logic. Output is a documented decision in spec.md § Subproblems and their solutions — "use X@version because Y" OR "no library fits because Z". Always verify the chosen CDN URL with curl before recording.
+---
+
+# Discover an existing library before designing custom
+
+Recognizable subproblems usually have established libraries. The most expensive failure mode in agent-built code is silently writing 80 lines of from-scratch geometry / parsing / protocol code when a 1-line library call would suffice. **Search before you design.**
+
+## When this skill fires
+
+Whenever you're about to design or implement a subproblem that fits a recognizable category. Specifically:
+
+- **During spec drafting** (card-class builds via `create-card-class`): each entry in `## Subproblems and their solutions` gets a search.
+- **During plan writing** (decomposed builds via `task-decomposer`): each subcomponent that includes implementation logic gets a search; the chosen library lands in `interfaces.md § Library versions`.
+- **During bug fixes** (via `fix-bug`): if your fix would need >30 lines of new bespoke code, search first — maybe a library replaces both the bug and the surrounding code.
+- **Recursively, per subproblem.** Picking Leaflet for the map does NOT discharge the search for sub-features built on top of it: a day/night terminator overlay is its own search target (`leaflet day night terminator plugin` → `Leaflet.Terminator`); a heatmap layer is its own (`leaflet.heat`); marker-clustering its own (`leaflet.markercluster`). After choosing a primary library, list the sub-features the user asked for and run a separate search per sub-feature.
+
+## Procedure — 4 steps, ONE `WebSearch` + ONE `WebFetch` per subproblem
+
+### 1. Search
+
+```
+WebSearch "<problem> javascript library"
+```
+
+Examples that work:
+- `leaflet day night terminator plugin`
+- `javascript chart library timeline scrubber`
+- `javascript code editor lightweight CDN`
+- `javascript drag and drop sortable cdn`
+
+One query per subproblem. The top maintained candidate is usually the right answer.
+
+### 2. Evaluate
+
+`WebFetch` the top candidate's README or npm page. Confirm:
+
+- It solves THIS specific subproblem (not adjacent — read the API summary).
+- It's actively maintained (last commit/release within ~12 months).
+- It ships to a CDN you can use (unpkg, jsdelivr — module-bundlers don't help in card classes).
+- The API surface is what you'd want to call (`L.terminator()` is one line; some libraries demand a 50-line builder pattern).
+
+If the top candidate fails any of these, look at the second candidate. Stop after two — three or more candidates means the search query was too vague or the subproblem is genuinely bespoke.
+
+### 3. Verify CDN URL
+
+```bash
+curl -sI -L "<the exact URL you'll write into metadata.json>" | head -1
+# Expect: HTTP/2 200 (302 chains fine if final is 200)
+```
+
+The URL has to be the EXACT string you'll commit to `metadata.json.dependencies.scripts`. Both unpkg and jsdelivr return 404 for hallucinated paths — wrong version, wrong file, wrong scope. Common slip-ups:
+
+- **Missing `@scope/` prefix** for scoped packages (`unpkg.com/leaflet-terminator/...` is WRONG; the real package is `@joergdietrich/leaflet.terminator`).
+- **Version that never published** (`@1.0.0` when the latest is `0.1.0` — your prior is biased toward round numbers).
+- **Wrong subpath inside the package** (`/L.Terminator.js` vs `/index.js` vs `/dist/leaflet-terminator.js` — README filenames don't always match the npm-published layout).
+
+If a HEAD check 404s, fall back to the package's npm registry listing (`https://registry.npmjs.org/<pkg>`) for the actual `main` field, OR `https://www.jsdelivr.com/package/npm/<pkg>` which lists every file in the published tarball.
+
+### 4. Record the decision in spec.md
+
+Append (or update) the `## Subproblems and their solutions` section in `canvas/spec.md` with one row per subproblem:
+
+```markdown
+## Subproblems and their solutions
+
+| Subproblem | Decision | Reason |
+|---|---|---|
+| World map rendering | Use `leaflet@1.9.4` (Tier-1 verified) | Industry standard; one line `L.map(id)` to mount. |
+| Day/night terminator overlay | Use `leaflet.terminator@1.3.0` (Tier-1 verified) | Drop-in `L.terminator()` call; handles antimeridian crossing. |
+| Solar elevation math | No library fits — bespoke 8 lines | Reuses values the card already computes; pulling a 40KB lib to save 8 lines is a loss. |
+| City list (9 fixed cities) | No library — static data | Hardcoded array, not a "library subproblem." |
+```
+
+## Output shape — what counts as "done" with this skill
+
+A row in `## Subproblems and their solutions` for **every** recognizable subproblem the spec covers. No exceptions for "this one is simple" — record "no library — N lines bespoke" so reviewers can audit the choice.
+
+If you skip the row, the user reviewing spec.md can't catch a wrong call: a missing entry reads like "agent didn't search," and they have to prompt you ("did you check for a library for X?"). The whole point of the row is to make the search visible.
+
+## When NOT to use this skill
+
+Don't burn the budget on subproblems that are genuinely tiny:
+
+- 3-input form with a sum at the bottom — not a "library subproblem"
+- A counter card with a + button
+- A static label, a list of 5 items, a JSON viewer with 10 lines of formatting
+- Pure data structures (cities array, color palette, timezone list) — these aren't libraries
+
+The threshold: **if you'd write more than ~30 lines of bespoke code AND the problem matches a recognizable category**, search. Otherwise, skip.
+
+## When the user explicitly opts out
+
+If the user says *"no external libraries"* or *"keep it pure JS"* — respect that. Record the constraint in spec.md and skip future searches. But ALWAYS confirm: *"You said no external libraries — that's a hard constraint, right? Some subproblems would need 100+ lines of custom code (e.g. day/night terminator)."* The user might mean "no charting library" but be fine with `leaflet`; ambiguous "no external dependencies" shouldn't be assumed without checking.
+
+## Anti-patterns
+
+- ❌ **Searching once for the top-level domain.** "javascript world clock library" finds nothing useful; you conclude "no library fits" and roll custom. **WRONG** — the top-level might be bespoke, but each *subproblem* (map, terminator, timezone display) has its own library.
+- ❌ **Finding a library and not verifying the URL.** Top result on a search is a real library, but the version you guess + the file path you guess might 404. **Always run `curl -sI` on the exact URL.**
+- ❌ **Recording "no library fits" without showing what was searched.** Reviewers can't tell whether you searched and picked or never searched. The row should name the search query AND the library you considered AND why it didn't fit.
+- ❌ **Ignoring user pushback after a "no library" decision.** If the user says "use a library to simplify this," go back to step 1 and search again. The `## Subproblems` table is editable — re-search and update.
+
+## Worked example — what good looks like
+
+User asks for a world clock card with a day/night overlay. Subproblems and library decisions:
+
+```markdown
+## Subproblems and their solutions
+
+| Subproblem | Decision | Reason |
+|---|---|---|
+| 2D world map | `leaflet@1.9.4` via `https://unpkg.com/leaflet@1.9.4/dist/leaflet.js` (curl 200; CSS at `.../leaflet.css`) | The default; `L.map(id)` mounts in one line. Considered SVG-embedded; rejected (need pan/zoom). |
+| Map tiles | CartoDB Positron via `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png` (sample tile curl 200; no auth) | Free tier; clean light theme. Considered OSM directly; CartoDB renders cleaner. |
+| Day/night terminator | `@joergdietrich/leaflet.terminator@1.3.0` via `https://unpkg.com/@joergdietrich/leaflet.terminator@1.3.0/L.Terminator.js` (curl 200; exposes `L.terminator`) | Drop-in `L.terminator().addTo(map)`. Handles antimeridian crossing internally. Considered: rolling custom solar math + `L.polygon`; rejected (~80 lines + drift risk). |
+| Live timezone display | `Intl.DateTimeFormat` (browser built-in) | No library needed; `new Intl.DateTimeFormat('en-US', {timeZone: 'Asia/Tokyo'})` returns formatted local time. |
+| Solar elevation (per-city day/night flag) | No library — bespoke 8 lines | Reuses subsolar lat/lng we computed for the terminator. Library overhead unjustified for 8 lines. |
+| City list (9 preset cities) | No library — static array | Just data. |
+```
+
+This is what spec.md should look like before any code is written. The reviewer scanning this can immediately catch a wrong call ("wait, why are we hand-rolling solar math when leaflet.terminator already does it?").
+
+## Cross-references
+
+- `create-card-class/SKILL.md` § STEP 0.5 — invokes this skill recursively for each subproblem during inline card-class builds.
+- `decompose-task/SKILL.md` and the `task-decomposer` agent — invoke this during plan writing; library decisions land in `interfaces.md § Library versions`.
+- `fix-bug/SKILL.md` — invoke this when a fix would need >30 lines of new bespoke code.
+- The Pre-completion smoke test in `create-card-class/SKILL.md` — Tier 1 (URL reachability) and Tier 2 (library global / API surface) verifications happen at this skill's step 3, recorded in spec.md so the smoke test has a ledger to compare against.

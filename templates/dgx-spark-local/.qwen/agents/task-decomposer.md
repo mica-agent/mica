@@ -150,25 +150,21 @@ The decision is mechanical: independent H2 sections in a large doc = split candi
 
 Once the canvas is in shape, write the plan against the (now possibly focused) docs.
 
-## Job 2.5: Library-first research — search before designing custom
+## Job 2.5: Library-first research — invoke the `discover-library` skill per subproblem
 
-Before you write any subcomponent that solves a recognizable problem (mapping, charting, drag-and-drop, code editing, calendaring, geospatial math, syntax highlighting, animation, math typesetting, terminal emulation, etc.), spend one tool call confirming whether an established library already solves it.
+Before you commit any subcomponent's contract that includes implementation logic, **invoke the `discover-library` skill** (see `.qwen/skills/discover-library/SKILL.md`) for each recognizable subproblem the spec describes. The skill is the single source of truth for the search → evaluate → verify → record procedure; don't duplicate it here.
 
-**Why this is your job, not the implementer's.** By the time `component-coder` is dispatched, the contract in `interfaces.md` already names the library (or commits to a custom implementation). If you skipped library research, the contract bakes in a from-scratch implementation that the implementer is expected to honor — there's no recovery path during dispatch. The decision lives in your slot.
+**Why this is your job, not the implementer's.** By the time `component-coder` is dispatched, the contract in `interfaces.md` already names the library (or commits to a custom implementation). If you skipped library research, the contract bakes in a from-scratch implementation that the implementer is expected to honor — there's no recovery path during dispatch. **The decision lives in your slot.**
 
-**The procedure:**
+**Where the skill's outputs land in YOUR artifacts:**
 
-1. **`web_search`** for "<problem> javascript library" or "<problem> npm" — one query is usually enough. You're looking for: what's the de-facto library, is it actively maintained, does it ship to a CDN.
-2. **`web_fetch`** the top candidate's README or npm page to confirm: it solves the specific subproblem, the latest version's CDN URL exists, the API surface is what you'd want to use.
-3. **Pick one, or record why no library fits.** Acceptable outcomes:
-   - "Use Leaflet.Terminator 1.3.0 for the day/night overlay — drop-in `L.terminator()`."
-   - "No library fits — solar elevation math here is 8 lines and depends on values the rest of the card already computes; pulling a 40KB library to save 8 lines is a loss."
-   - The decision and reasoning go in `decomposition.md § Subcomponents` (`Honors:` line) and the chosen URL goes in `interfaces.md § Library versions` (verified per the recipe below).
-4. **Verify the CDN URL is reachable.** Use `web_fetch` (HEAD or short GET) on the exact URL you're going to put in `metadata.json.dependencies.scripts`. Both unpkg and jsdelivr return 404 for hallucinated paths, and your training prior is biased toward round version numbers and convention-shaped subpaths that may not match what's actually published. The implementer-side `create-card-class/SKILL.md` describes a Pre-completion smoke test with three tiers — your library research is Tier 1 + Tier 2 done at planning time, so the implementer doesn't have to re-do it.
+- The chosen library + version go in `interfaces.md § Library versions` (verified URLs).
+- The "use X" / "no library fits because Y" rationale goes in `decomposition.md § Subcomponents` on the `Honors:` line.
+- The full per-subproblem decision table goes in `spec.md § Subproblems and their solutions` (the skill's primary output shape).
 
-**When NOT to library-search.** If the problem is genuinely small and bespoke (a counter, a label, a list of 5 cities, a JSON viewer with 10 lines of formatting), don't bother — the search burns tokens for no win. The threshold: if you'd write more than ~30 lines to solve it from scratch, search.
+**Run the skill once per recognizable subproblem, not once per project.** A world-clock build has at least three subproblems (map rendering, day/night terminator, timezone display) and each gets its own search. Picking Leaflet for the map does not discharge the search for the terminator. The skill handles this recursion; you make sure to invoke it at every subproblem boundary you find while drafting the spec.
 
-**Worked example.** User asked for a world clock with day/night overlay. Solar geometry / antimeridian-handling polygon work is the recognizable problem. One `web_search` ("leaflet day night terminator overlay") finds [Leaflet.Terminator](https://github.com/joergdietrich/Leaflet.Terminator); `web_fetch` confirms the CDN at `unpkg.com/@joergdietrich/leaflet.terminator@1.3.0/L.Terminator.js` returns 200 and exposes `L.terminator`. Decomposition.md says "use Leaflet.Terminator"; interfaces.md § Library versions pins the URL; the contract for the day/night subcomponent is "call `L.terminator({...})` and `setTime()` per tick" — not "compute a great-circle polygon and split at the antimeridian." Avoids 80 lines of fragile geometry the implementer would have written without this step.
+**When NOT to invoke.** If a subproblem is genuinely small (counter, label, static list, <30 lines of obvious code), don't burn the budget. The skill's "When NOT to use" section names the threshold.
 
 ## How to spec persistence, HTTP, eventing, and lifecycle — constraint + API, both
 

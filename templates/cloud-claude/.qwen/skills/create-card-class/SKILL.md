@@ -35,25 +35,17 @@ GET /api/card-classes/{name}/spec.md         # prose description, if the class s
 
 Only proceed past this step when you have confirmed that no existing class handles the intent.
 
-## STEP 0.5 — Search for libraries before designing custom (recursively, per subproblem)
+## STEP 0.5 — Use the `discover-library` skill, recursively per subproblem
 
-Before designing any non-trivial subcomponent — mapping, charting, drag-and-drop, code editing, calendaring, geospatial math, syntax highlighting, animation, math typesetting, terminal emulation, anything you'd write more than ~30 lines for — confirm whether an established library already solves it. **One `web_search` + one `web_fetch` per subproblem is the budget.**
+Before designing any non-trivial subcomponent of the card, **invoke the `discover-library` skill** (see `.qwen/skills/discover-library/SKILL.md`). The skill handles search → evaluate → verify URL → record-in-spec.md as one canonical procedure. Don't duplicate that procedure here.
 
-```
-web_search "<problem> javascript library"   # e.g. "leaflet day night terminator overlay"
-# Pick the top maintained candidate; web_fetch its README or npm page.
-# Decision: "use <library@version>" OR "no library fits because <reason>".
-```
+What's specific to card-class authoring (and goes here, not in the skill):
 
-**This applies recursively to every subproblem, not just the top-level domain.** Picking Leaflet as the map library does NOT discharge the search for sub-features built on top of it: a day/night terminator overlay is its own search target (`leaflet day night terminator plugin` → `Leaflet.Terminator`); a heatmap layer is its own (`leaflet.heat`); a marker-clustering layer is its own (`leaflet.markercluster`); a routing layer is its own (`leaflet-routing-machine`). After you choose a primary library, **list the sub-features the user asked for and run a separate search per sub-feature**. The most expensive failure mode the system has produced is exactly this: agent picks Leaflet, then writes 80 lines of custom great-circle solar geometry for the terminator instead of one `L.terminator()` call. The library was found; the subproblem was not searched.
+- **Run `discover-library` once per recognizable subproblem, not once per card.** A world-clock card has at least three subproblems (map rendering, day/night terminator overlay, timezone display) and each gets its own search. Picking Leaflet for the map does NOT discharge the search for the terminator subproblem — that's a separate library decision (`Leaflet.Terminator`). The most expensive failure mode the system has produced is exactly this: agent searches "world clock library," finds nothing useful, concludes "no library fits," then writes 80 lines of custom great-circle solar geometry for the terminator. **Per-subproblem search prevents that.**
 
-If you pick a library, **verify its CDN URL is reachable before writing it into `metadata.json`** — see the Pre-completion smoke test section below for the recipe. Tier 1 (URL returns 200) and Tier 2 (loaded library exposes the global the card calls) are mandatory before you commit `metadata.json`.
+- **Each `discover-library` invocation lands a row in `spec.md § Subproblems and their solutions`.** That table is the agent's auditable record of what was searched and what was decided. STEP 0.75's spec gate uses it as the visible artifact of "did the search actually run."
 
-Acceptable "no library fits" outcomes — record the reason inline so reviewers don't re-litigate:
-- "Solar elevation math is 8 lines and reuses values the card already computes; pulling a 40KB library to save 8 lines is a loss."
-- "The thing the user wants is a 3-input form with a sum at the bottom; no library."
-
-The most expensive failure mode is silently writing 80 lines of from-scratch geometry/parsing/protocol code when a 1-line library call would suffice. Rule 4 below says "Don't reinvent" as a principle — this step is the procedure that enforces it.
+- **The chosen URLs go into `metadata.json.dependencies.scripts` only after Tier-1 verification** (`curl -sI -L <url>`) per the Pre-completion smoke test below. The skill records the verification result in spec.md; the smoke test re-checks before declaring done.
 
 ## STEP 0.75 — Draft spec.md and get approval BEFORE writing any card-class code
 
