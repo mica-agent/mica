@@ -158,12 +158,39 @@ function snapshotScrollers() {
 const badgeEl = container.querySelector('.md-delta-badge');
 const countsEl = container.querySelector('.md-delta-counts');
 const listEl = container.querySelector('.md-delta-list');
+const triggerEl = container.querySelector('.md-delta-trigger');
 console.info('[md-delta] mount', {
   badge: !!badgeEl,
   counts: !!countsEl,
   list: !!listEl,
+  trigger: !!triggerEl,
   diffLib: typeof Diff !== 'undefined',
 });
+
+// Click-to-toggle popover. Replaces the old :hover/`:focus-within` CSS
+// trigger, which broke when the popover overlapped the toastui editor's
+// content (its stacking context stole pointer events; the popover was
+// visually behind the markdown text and couldn't be hovered or clicked).
+if (triggerEl && badgeEl) {
+  triggerEl.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    badgeEl.classList.toggle('is-open');
+  });
+  // Close on outside click. Listening on document with capture=false is
+  // fine because triggerEl's handler stops propagation, so this fires
+  // only for clicks elsewhere. Clicks on popover items also bubble here,
+  // so check whether the click originated inside the badge before closing.
+  document.addEventListener('click', function(ev) {
+    if (!badgeEl.classList.contains('is-open')) return;
+    if (!badgeEl.contains(ev.target)) badgeEl.classList.remove('is-open');
+  });
+  // Esc closes too.
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape' && badgeEl.classList.contains('is-open')) {
+      badgeEl.classList.remove('is-open');
+    }
+  });
+}
 
 function _previewLine(hunkValue) {
   // First non-blank line, capped at 120 chars. Diff hunks frequently
@@ -277,16 +304,35 @@ function _findBlockByPreview(preview) {
   if (!proseMirror) return null;
   const needle = _normalizeBlockText(preview).slice(0, 60);
   if (needle.length < 4) return null;
-  const blocks = Array.from(proseMirror.querySelectorAll(':scope > *'));
-  // Prefix match first (most precise), then substring fallback.
-  for (const b of blocks) {
-    const hay = _normalizeBlockText(b.textContent || '');
-    if (hay && hay.startsWith(needle)) return b;
+
+  function tryMatch(els) {
+    for (const b of els) {
+      const hay = _normalizeBlockText(b.textContent || '');
+      if (hay && hay.startsWith(needle)) return b;
+    }
+    for (const b of els) {
+      const hay = _normalizeBlockText(b.textContent || '');
+      if (hay && hay.indexOf(needle) >= 0) return b;
+    }
+    return null;
   }
-  for (const b of blocks) {
-    const hay = _normalizeBlockText(b.textContent || '');
-    if (hay && hay.indexOf(needle) >= 0) return b;
-  }
+
+  // First pass: top-level blocks (paragraphs, headings — direct children
+  // of .ProseMirror). Fast and precise for the common case.
+  const topLevel = Array.from(proseMirror.querySelectorAll(':scope > *'));
+  let hit = tryMatch(topLevel);
+  if (hit) return hit;
+
+  // Second pass: leaf-level text-bearing elements. Catches list items,
+  // blockquote children, table cells — diff items often correspond to a
+  // single bullet that isn't a direct child of .ProseMirror, so the
+  // top-level search misses them.
+  const leaves = Array.from(proseMirror.querySelectorAll(
+    'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, td, dt, dd'
+  ));
+  hit = tryMatch(leaves);
+  if (hit) return hit;
+
   return null;
 }
 
@@ -306,6 +352,8 @@ if (listEl) {
     setTimeout(function() {
       block.classList.remove('md-delta-nav-target');
     }, 1700);
+    // Close popover after navigation so the highlighted block is visible.
+    if (badgeEl) badgeEl.classList.remove('is-open');
   });
 }
 

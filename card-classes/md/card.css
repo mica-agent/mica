@@ -80,26 +80,34 @@
   position: absolute;
   top: 6px;
   right: 8px;
-  z-index: 10;
+  /* Toast UI editor creates its own stacking context for the content area,
+     so a low z-index here would cause the popover to render behind editor
+     text — both visually (bleed-through) and for hit-testing (cursor
+     lands on the markdown content, not the popover, breaking hover and
+     clicks). 1000 puts the badge above the editor's internal stacks. */
+  z-index: 1000;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 11px;
   line-height: 1;
 }
 
 .md-delta-trigger {
-  background: rgba(96, 165, 250, 0.15);
+  /* Opaque blue-tinted dark — alpha tint layered over a solid base so
+     document text never bleeds through. Earlier rgba(96,165,250,0.15)
+     alone was 15% opaque and the markdown underneath ghosted through. */
+  background: linear-gradient(rgba(96, 165, 250, 0.18), rgba(96, 165, 250, 0.18)), #14161c;
   border: 1px solid rgba(96, 165, 250, 0.35);
   color: #a8c8ff;
   padding: 3px 8px;
   border-radius: 999px;
-  cursor: default;
+  cursor: pointer;
   font: inherit;
   letter-spacing: 0.3px;
 }
 
 .md-delta-trigger:hover,
 .md-delta-trigger:focus-visible {
-  background: rgba(96, 165, 250, 0.28);
+  background: linear-gradient(rgba(96, 165, 250, 0.32), rgba(96, 165, 250, 0.32)), #14161c;
   outline: none;
 }
 
@@ -115,13 +123,14 @@
   position: absolute;
   top: 100%;
   right: 0;
-  /* padding-top is the hover-bridge: included in the popover's box so
-     the cursor never crosses an empty gap between trigger and body. */
-  padding-top: 4px;
+  margin-top: 4px;
+  /* Hover-bridge UX was fragile (cursor crossing the gap between trigger
+     and body, plus z-stacking issues with the toastui editor's content
+     stealing pointer events). Switched to click-to-toggle via
+     .is-open class set by card.js. */
 }
 
-.md-delta-badge:hover .md-delta-popover,
-.md-delta-badge:focus-within .md-delta-popover {
+.md-delta-badge.is-open .md-delta-popover {
   display: block;
 }
 
