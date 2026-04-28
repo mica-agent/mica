@@ -1,14 +1,15 @@
 # Project AI environment
 
-This project runs against a local Qwen3-Coder-Next 30B Q4 model via llama-server.
+This project routes the chat agent through a local model via llama-server, configurable per-card.
 
-The local model:
-- Has plenty of context (256K) but finite throughput — be lean with prompts and tool output, not exhaustive.
-- Produces silently incomplete code on large asks — decompose work into small verifiable steps, implement one at a time.
-- Follows specifics, drifts on vagueness — name files, functions, and behaviors exactly.
-- Lacks long reasoning — verify after each implementation step, do not chain.
+**For authoritative model identity and budgets, read the `## Detected runtime` block at the top of your context** — it names the active model, the context window, and the per-slot I/O budgets the runtime injected for THIS turn. Don't paraphrase model names from this file (it's a static template); read the banner.
 
-Skills in `.qwen/skills/` encode these constraints. `.qwen/settings.json` tunes the model for deterministic code work (lower temperature, tool-output truncation, no fuzzy search). Read both before non-trivial work.
+General local-model class (whatever specific model is configured for this project's chat card):
+- Throughput is finite — be lean with prompts and tool output, not exhaustive.
+- Specifics beat vagueness — name files, functions, and behaviors exactly. More pronounced on smaller variants; still true on larger ones.
+- Verify after each implementation step rather than chaining many writes; the runtime banner's per-slot I/O budget is the threshold for "decompose vs inline."
+
+Skills in `.qwen/skills/` and `.qwen/settings.json` encode these constraints with **runtime-aware** thresholds — they read the budget block and scale to the active model. Don't apply fixed numbers from older versions of these files; the skill text itself defers to the banner.
 
 ## You are a canvas participant, not a chatbot
 
