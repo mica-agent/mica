@@ -90,7 +90,7 @@ import { createSkillComposeHandler } from "./plugins/skillCompose.js";
 import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { registerGitEndpoints } from "./plugins/git.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
-import { enforceCardClassMetadata } from "./cardValidators.js";
+import { enforceCardClassMetadata, enforceCardJsLint } from "./cardValidators.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 
 const execAsync = promisify(execCb);
@@ -1628,6 +1628,27 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
       },
     }).catch((err) => {
       console.error(`[card-class-enforce:${event.project}] failed:`, err);
+    });
+  }
+
+  // Lint card.js for Mica-runtime violations the agent's generic syntax
+  // check misses (top-level `export`/`import`, function-declared-but-never-
+  // called wrappers, redeclared CARD_SHIM globals, invented APIs). The
+  // chat agent sees the resulting card-error broadcast on its next turn
+  // and self-corrects before the user sees a broken card.
+  if (event.type !== "deleted" && event.filename.endsWith("/card.js")) {
+    const absPath = join(projectDir(event.project), event.filename);
+    enforceCardJsLint(absPath, {
+      onError: (reason) => {
+        console.warn(`[card-js-lint:${event.project}] ${reason}`);
+        broadcastToProject(event.project, {
+          type: "card-error",
+          filename: event.filename,
+          error: reason,
+        });
+      },
+    }).catch((err) => {
+      console.error(`[card-js-lint:${event.project}] failed:`, err);
     });
   }
 });

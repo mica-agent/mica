@@ -611,7 +611,28 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             `})()`;
           oldScript.remove();
           (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
-          el.appendChild(newScript);
+          // Wrap in try/catch: appending a <script> with invalid syntax
+          // (e.g. top-level `export`, malformed braces) makes the browser
+          // throw SyntaxError synchronously during parse. The IIFE never
+          // runs, so its `.catch` never attaches, and the error dies in
+          // the browser's console with no `card-error` broadcast — the
+          // chat agent never sees it. Catch here and POST manually so the
+          // agent gets the same surface it would for any other card error.
+          // (Layer-1 prevention is `enforceCardJsLint` in cardValidators;
+          // this is the mount-time safety net for whatever slips through.)
+          try {
+            el.appendChild(newScript);
+          } catch (parseErr) {
+            const msg = (parseErr as Error)?.message || String(parseErr);
+            console.error(`[card-runtime] Script parse failed in ${filename}:`, parseErr);
+            fetch(`/api/cards/${encodeURIComponent(filename)}/error`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "X-Mica-Project": project },
+              body: JSON.stringify({
+                error: `card.js fails to parse at mount: ${msg}. The script wrapper rejected it before any code ran. Common causes: top-level \`export\`/\`import\`, unbalanced braces, accidentally pasted non-JS content. Mica wraps card.js in \`(async function(mica,_c){…})()\` — the file must be valid as a function body.`,
+              }),
+            }).catch(() => {});
+          }
         });
 
       };
