@@ -67,6 +67,14 @@ Before any `cp -r` of the skeleton or any `Write` to a card-class file, draft `c
 
 If the user only sees the card AFTER it's built, every disagreement is a rebuild. If they see the spec FIRST, disagreements are one-line spec edits.
 
+**Sensing a thin spec — ask before fleshing it out.** If `canvas/spec.md` already exists but is brief (one paragraph, missing the required sections below), the gate is **not satisfied** — a one-line spec gives the user nothing to course-correct on. Don't autonomously rewrite it; **ask first**:
+
+> *"Existing `spec.md` is a one-liner. Per STEP 0.75 I'd flesh it out with the structured sections (Files / Dependencies / Subproblems / Behavior / Out of scope / Smoke test results / Assumptions) before building. Should I draft that now?"*
+
+Wait for yes. Then draft the structured version IN PLACE — preserve the original sentence(s) as the elevator pitch under the H1; expand around it. Post the standard approval gate per below. If the user says "no, just build it as-is," respect that — they've explicitly opted out of the structured spec, and the gate becomes a "ok to build?" confirmation against the thin spec.
+
+This is the same "ask on inkling" pattern the doc-consistency skill uses for sibling-doc updates. You don't unilaterally rewrite specs any more than you unilaterally rewrite siblings — defer to the user. Without this, the gate fails silently on existing thin specs: agent reads `spec.md`, sees content, marks gate satisfied, builds against an inadequate brief.
+
 **Required spec.md sections** — strip any that genuinely don't apply, but most do for any non-trivial card:
 
 - `# <Card name>` + a one-paragraph elevator pitch.
