@@ -108,6 +108,42 @@ function fmtKB(bytes: number): string {
   const kb = bytes / 1024;
   return kb >= 100 ? `${Math.round(kb)}KB` : `${kb.toFixed(1)}KB`;
 }
+
+/** Runtime detection banner injected at the top of both the parent's context
+ *  AND each subagent's canvas baseline. Surfaces the model + context budgets
+ *  the runtime actually has, so prompts that would otherwise hardcode
+ *  assumptions for a specific model class can read these numbers instead.
+ *
+ *  This is what lets the same canvas-back / skills produce different behavior
+ *  on Qwen-30B vs Claude-via-OpenRouter without forking templates: the
+ *  agent reads the banner, then applies the rules-of-thumb in canvas-back
+ *  in light of what's actually running. See task-decomposer.md and
+ *  decompose-task/SKILL.md for the readers. */
+function buildRuntimeBanner(opts: {
+  modelName: string | null;
+  contextWindowTokens: number;
+}): string {
+  const ctxK = Math.round(opts.contextWindowTokens / 1024);
+  const subagentBudget = subagentBudgetBytes(opts.contextWindowTokens);
+  const inlineCap = intentInlineCapBytes(opts.contextWindowTokens);
+  // Parent's spare for fresh tool I/O after baseline (canvas-back + skills +
+  // file listing + history). ~25K tokens of overhead is the same accounting
+  // used in subagentBudgetBytes; convert remaining tokens to bytes at 4 chars/tok.
+  const parentSpareTokens = Math.max(8192, opts.contextWindowTokens - 25000);
+  const parentSpareBytes = parentSpareTokens * 4;
+  const modelLabel = opts.modelName?.trim() || "configured per chat card (see settings)";
+  return [
+    `## Detected runtime`,
+    ``,
+    `Model: ${modelLabel}`,
+    `Context window: ${ctxK}K tokens`,
+    `Parent inline I/O budget after baseline: ≈${fmtKB(parentSpareBytes)}`,
+    `Per-subagent slot total I/O: ${fmtKB(subagentBudget.totalIO)}`,
+    `Per-doc inline cap (intent docs): ${fmtKB(inlineCap)}`,
+    ``,
+    `Treat the guidance below in light of these numbers. Where canvas-back or skill files give rules of thumb tuned for a specific model class (e.g. "lacks long reasoning", "produces silently incomplete code on large asks", "decompose at 7th–10th file"), the runtime numbers above are AUTHORITATIVE — read them before applying any threshold. A strong model on a generous slot should not be treated as a 30B local model with 65K context just because canvas-back was originally written for that profile.`,
+  ].join("\n");
+}
 const MAX_HISTORY = 50;
 
 // Patterns that would disrupt Mica itself. Block these before the shell runs them.
@@ -446,16 +482,26 @@ const MICA_API_REFERENCE_BLOCK =
  *  Excluded vs the parent's full buildContext: per-card behavior instructions,
  *  since-last-turn diffs (subagents have no last turn), available-subagents
  *  guidance (subagents can't delegate further), chat history. */
-export async function buildSubagentCanvasContext(project: string | null): Promise<string> {
+export async function buildSubagentCanvasContext(
+  project: string | null,
+  modelName?: string | null,
+  contextWindowTokens?: number,
+): Promise<string> {
   const parts: string[] = [];
+  const ctxTokens = contextWindowTokens ?? LOCAL_CTX_WINDOW;
+
+  // Runtime detection banner — model + budget numbers above all other
+  // guidance so subagents reading the canvas baseline calibrate to what's
+  // actually running, not to canvas-back's hardcoded assumptions.
+  parts.push(buildRuntimeBanner({ modelName: modelName ?? null, contextWindowTokens: ctxTokens }));
 
   // Authoritative budget block — the role-specific systemPrompt (component-
   // coder.md, etc.) refers back to these numbers rather than hardcoding,
   // so they scale automatically when LLAMA_CTX_SIZE changes.
-  const budget = subagentBudgetBytes(LOCAL_CTX_WINDOW);
+  const budget = subagentBudgetBytes(ctxTokens);
   parts.push(
     `## Your context budget\n\n` +
-    `Your slot is ${LOCAL_CTX_WINDOW} tokens. After system prompt + task prompt + thinking + assistant output across a typical 10-iteration tool loop, you have approximately the following budget for fresh tool I/O (reads + your own write echoes):\n\n` +
+    `Your slot is ${ctxTokens} tokens. After system prompt + task prompt + thinking + assistant output across a typical 10-iteration tool loop, you have approximately the following budget for fresh tool I/O (reads + your own write echoes):\n\n` +
     `- **Total I/O budget: ${fmtKB(budget.totalIO)}** — total bytes of reads + writes your task should imply. If your task implies more, it's too big for one slot.\n` +
     `- **Per-input cap: ${fmtKB(budget.perInput)}** — any single file read above this should use \`read_file\` with \`offset:\` + \`limit:\` for a partial read, not a full read.\n` +
     `- **Per-output cap: ${fmtKB(budget.perOutput)}** — any single file you \`write_file\` above this size will overflow the next dispatch that needs to read it.\n\n` +
@@ -541,8 +587,20 @@ export async function buildSubagentCanvasContext(project: string | null): Promis
   return parts.join("\n\n");
 }
 
-export async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
+export async function buildContext(
+  agentFilename: string,
+  project: string | null,
+  since?: number,
+  modelName?: string | null,
+  contextWindowTokens?: number,
+): Promise<string> {
   const parts: string[] = [];
+  const ctxTokens = contextWindowTokens ?? LOCAL_CTX_WINDOW;
+
+  // Runtime detection banner — model + budget numbers above all other
+  // guidance so the agent calibrates to what's actually running, not to
+  // canvas-back's hardcoded model-class assumptions.
+  parts.push(buildRuntimeBanner({ modelName: modelName ?? null, contextWindowTokens: ctxTokens }));
 
   // 0. Since your last turn — file changes between turns. Skipped on first turn.
   // Scoped to canvas + pinned files: mirrors the file-watcher's scope, and
@@ -1135,11 +1193,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       ctx.broadcast({ type: "thinking" });
 
       try {
-        const since = getLastTurnAt(ctx.filename);
-        const context = await buildContext(ctx.filename, sessionProject, since);
-
         // Per-card provider routing. Read fresh each turn so settings changes
         // take effect on the next message without restarting the session.
+        // Resolved BEFORE buildContext so the runtime banner can include the
+        // actual model name — that's how skills tell whether we're on Qwen-30B
+        // or Claude-via-OpenRouter and calibrate their thresholds.
         const cardSettings = await readCardSettings(sessionProject || undefined, ctx.filename);
         const provider = cardSettings.provider === "openrouter" ? "openrouter" : "local";
         let baseUrl: string;
@@ -1175,6 +1233,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
         console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
 
+        const since = getLastTurnAt(ctx.filename);
+        const context = await buildContext(ctx.filename, sessionProject, since, modelName);
+
         // Configure per-project subagent concurrency cap based on provider.
         // Local llama-server parallelism is bounded by its -np setting; OpenRouter
         // is bounded to prevent fan-out runaway. Re-run every turn so a config
@@ -1194,7 +1255,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // exist on canvas, leading to path confusion and wandering reads.
         const subagentsRaw = await loadProjectSubagents(sessionProject, "qwen");
         const subagentBaseline = subagentsRaw.length > 0
-          ? await buildSubagentCanvasContext(sessionProject)
+          ? await buildSubagentCanvasContext(sessionProject, modelName)
           : "";
         const subagents = subagentsRaw.map((a) => ({
           ...a,
@@ -1470,6 +1531,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             env: {
               OPENAI_API_KEY: apiKey,
               OPENAI_BASE_URL: baseUrl,
+              // Forward web-search provider keys so qwen-code's built-in
+              // web_search / web_fetch tools actually work. Without these
+              // forwarded, the SDK reports "search is disabled - configure
+              // a provider in settings.json" and the agent falls back to
+              // its training prior for fact-finding (URL verification,
+              // library versions, etc.) — plausible-but-stale.
+              ...(process.env.TAVILY_API_KEY ? { TAVILY_API_KEY: process.env.TAVILY_API_KEY } : {}),
+              ...(process.env.DASHSCOPE_API_KEY ? { DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY } : {}),
+              ...(process.env.GOOGLE_AI_STUDIO ? { GOOGLE_AI_STUDIO: process.env.GOOGLE_AI_STUDIO } : {}),
             },
           },
         }) as AsyncIterable<Record<string, unknown>>;

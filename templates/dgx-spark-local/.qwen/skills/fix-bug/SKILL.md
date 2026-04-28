@@ -28,6 +28,10 @@ If you can't reproduce, **stop and ask**. A speculative fix is a guess. Either y
 
 ### 2. Diagnose root cause, not symptom
 
+**First — consult `canvas/decomposition.md` if it exists.** The `## Subcomponents` section is your routing table for "where does this bug live?". Each subcomponent's "owns" line tells you which one is responsible for the affected behavior; its "Honors" line tells you which contract sections constrain it. A bug in DOM rendering belongs to the DOM-layer subcomponent; a persistence bug belongs to the model layer; an init-order bug belongs to the boundary the contract names. Routing to the right subcomponent saves diagnosis time AND ensures the fix lands in the part of the code that actually owns the behavior — not in a peer that happens to be downstream of the symptom.
+
+If decomposition.md doesn't exist (project wasn't decomposed), proceed with structural reading as below.
+
 Trace from the user-visible failure backward. The question isn't "what edit makes the symptom go away?" — it's "what's the smallest change that prevents the wrong output from being produced in the first place?"
 
 Anti-patterns to watch for in your own thinking:
@@ -61,6 +65,8 @@ The `verify-then-continue` skill handles the type-check + restart + curl mechani
 
 A bug fix that changes what the user sees (a number rendered differently, a default flipped, an error message altered, an item appearing/disappearing in a list) requires a `spec.md` (or analogous doc) update in the same turn. The `doc-consistency` skill already says this — bug-fix turns are not exceptions.
 
+**Also update `decomposition.md` if the bug exposed a structural issue** — wrong subcomponent ownership ("this should belong to the model layer, not the controller"), missing contract section, undocumented dependency. Add a revision-log entry. The cost is one line of markdown; the value is the next bug-fix session knows the architecture has been refined. If the fix is purely local (within one subcomponent's accepted scope, no boundary issues surfaced), decomposition.md needs no update.
+
 If the bug fix only changes implementation (same observable behavior, just correct internally — e.g., a memory leak fixed without any user-visible difference), no doc update needed. State this in your summary so the user knows you considered it.
 
 ## Routing: inline vs delegate to `bug-fixer`
@@ -88,6 +94,51 @@ A single bug fix is typically inline work — the parent agent reproduces, diagn
 - "Here are 5 bugs, fix them all" → dispatch each independent bug as a separate `bug-fixer` task, in parallel where possible.
 
 If `bug-fixer` is not registered as a subagent in your project (`agents/bug-fixer.md` doesn't exist), inline is your only option — note that in your reply if a delegation would have helped, so the user can decide whether to install the subagent.
+
+## Card runtime errors — "Failed to load dependency / Failed to load X"
+
+When the chat surfaces a `[card-error] Failed to load dependency: Failed to load <url-or-name>`, the diagnostic order matters. Skipping ahead to "what's wrong with the loading mechanism?" is the most expensive guess you can make — there's a whole architecture of card.html / metadata.json / CARD_SHIM to spelunk through, and the answer is usually upstream of all of it.
+
+**Diagnose in this order, not the other way around:**
+
+### 1. Is the URL reachable? (Tier 1 — cheapest)
+
+```bash
+curl -sI -L "<the exact URL from the error>" | head -1
+```
+
+If 404, the URL is wrong — fix `metadata.json`. Don't guess a replacement; look it up:
+
+- npm registry: `curl -s https://registry.npmjs.org/<pkg>` → `dist-tags.latest` + `versions[<latest>].main`
+- jsdelivr file index: `https://www.jsdelivr.com/package/npm/<pkg>` lists every file in the published tarball
+- For scoped packages, the path on unpkg is `unpkg.com/@scope/name@<version>/<file>` — easy to forget the `@scope/` part
+
+A 404 here resolves the bug. Stop, fix the URL, ask the user to refresh.
+
+### 2. Does the resource match the assumption? (Tier 2)
+
+If the URL returned 200 but the card still fails: the file loaded, but its contents don't match what the card expects. Common failure modes:
+
+- **Wrong global / namespace.** Card calls `L.terminator(...)` but the loaded library exposes `L.Terminator` (capital T), or `L.DayNightTerminator`. Fix: read the library's README, fix the call site in `card.js`. Do NOT change `metadata.json` — the URL is fine.
+- **Wrong version semantics.** Card calls `chart.update()` (Chart.js v3+) but `metadata.json` pinned `@2.x`. Fix: bump the version pin and re-run Tier 1 verification on the new URL.
+- **MIME type wrong.** Server returned 200 but `Content-Type: text/html` (e.g. you got an HTML 404 page from a different host). Fix: the URL is structurally wrong; back to step 1.
+
+For any of these, `web_fetch` the URL and grep the response body for the global the card calls (`grep -E "L\.terminator|L\.Terminator" leaflet.terminator.js`).
+
+### 3. Is the loading mechanism correct? (last resort)
+
+Only if Tier 1 and Tier 2 both pass — URL reachable, library exposes the expected surface — does the bug live in the card-class loading path. At that point read:
+
+- `.qwen/skills/create-card-class/SKILL.md` § "FORBIDDEN in `card.html`" — the most common offender. If `card.html` contains `<script src="card.js"></script>`, `<link rel="stylesheet" href="card.css">`, or a `<!DOCTYPE>`/`<html>`/`<head>`/`<body>` wrapper, those are wrong; the server inlines `card.js`/`card.css` itself. The fix is to delete those tags, not to add them to `metadata.json.dependencies`.
+- The card class's `metadata.json.dependencies` listing — confirm only THIRD-PARTY scripts/styles are listed there. Adding `card.js` or `card.css` to dependencies is wrong; those are class-internal and resolve relative to the **instance file**, not the class directory.
+
+### Anti-pattern: re-read metadata.json hoping for clarity
+
+If the error says "Failed to load <url>", the URL it's failing on is exactly what's in `metadata.json`. Re-reading the file produces no new information. The model can fall into a loop: cat metadata.json → "looks right" → cat metadata.json again → loop until SDK kills the process. Break out: do `curl` first.
+
+### Time budget
+
+ONE round of `curl` + one fix to `metadata.json` (or one fix to the call site, or one fix to `card.html`). If the second attempt also fails, stop and ask the user — guessing a third URL is a bad use of context.
 
 ## What NOT to do
 

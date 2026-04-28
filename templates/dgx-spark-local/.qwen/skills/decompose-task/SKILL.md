@@ -1,56 +1,97 @@
 ---
 name: decompose-task
-description: Triggers on any non-trivial multi-file work — including planning-shaped asks. Activates for verbs like build / implement / create / develop / refactor / extend / add (feature work) AND review / design / audit / plan / assess / figure out next steps / determine best implementation path (planning work). Also triggers when the user references multiple files / components / modules in one ask. Tells the agent to delegate planning to the task-decomposer subagent BEFORE any inline file reads — review and design ARE planning, not "investigate by reading." DOES NOT trigger on bug-fix requests ("fix … bug", "broken", "doesn't work", "regression", "is wrong", "error in", "investigate why X is broken / not working") — those activate the `fix-bug` skill instead, which has its own inline-first playbook. If both this and `fix-bug` could match, prefer `fix-bug`.
+description: Triggers when the work is large enough that decomposition pays AND a sufficient integration contract is writable upfront — i.e. you can specify (in interfaces.md) DOM IDs, function signatures, data shapes, init order, lifecycle, library versions, etc. with enough detail that two implementers honoring the contract on their side, ignorant of each other, would integrate cleanly. The contract is the central deliverable; without it, parallel subagents produce incompatible code and serial dispatch is just slow inline work. Examples that trigger: multi-card-class projects (chat + calendar + todo), multi-module refactors with stable interfaces, anything where the integration surface is namable. Examples that do NOT trigger: a single small card class (use `create-card-class` inline), tightly coupled work where the contract becomes a partial implementation (animation wedded to data flow, novel UI patterns being explored), bug fixes (use `fix-bug`). Planning-shaped asks (review / design / audit / plan / "figure out next steps") still trigger so a plan and contract land on canvas. If both this and `fix-bug` could match, prefer `fix-bug`. If both this and `create-card-class` could match for a single card, prefer `create-card-class`.
 ---
 
 # Decompose the task — but don't decompose it yourself
 
-The local model has a 65K-token context slot. Decomposing a multi-component build inline (in YOUR turn), then writing each component inline, blows past that slot around the 7th–10th file. By the time you'd be ready to `write_file`, the plan and the contracts and the prior file contents are already crowding the budget.
+Your context slot has a finite budget. Read your `## Detected runtime` block at the top of the system prompt for the exact numbers — both your slot AND each subagent's slot. Decomposing a multi-component build inline (in YOUR turn), then writing each component inline, can blow past that budget on tighter slots, leaving you mid-task with no room left.
 
-**The structural fix:** planning lives on the canvas, not in your transcript. You are the *orchestrator*. A `task-decomposer` subagent does the planning in its own context slot. A `component-coder` subagent does each piece of implementation in its own context slot. You read the plan from `canvas/plan.todo` and dispatch.
+**The structural fix:** planning lives on the canvas, not in your transcript. You are the *orchestrator*. A `task-decomposer` subagent does the planning in its own context slot, producing four artifacts on the canvas (spec.md, interfaces.md, decomposition.md, plan.todo). A `component-coder` subagent does each piece of implementation in its own context slot. You read the artifacts and dispatch.
+
+The orchestrator pattern is **runtime-budget-aware**: on a generous slot the parent might inline most work and only orchestrate genuinely large builds; on a tight slot the threshold drops and orchestration kicks in earlier. Read your runtime numbers; don't apply a fixed file-count rule.
 
 ## The orchestrator workflow
 
-Triggers on non-trivial multi-file work AND on planning-shaped asks. Examples:
+The decision is not "is this multi-component?" but **"can a sufficient contract be written upfront?"** A contract is sufficient when two implementers, ignorant of each other, would honor it on their side and integrate cleanly. With a sufficient contract, parallel subagents are safe and the orchestrator pays off. Without one, naive decomposition fragments the build — each subagent invents its own version of the integration surface and the outputs don't compose.
 
-- "build me a TV dashboard"
-- "implement the email monitor"
-- "refactor app.js into modules"
-- "review the spec and figure out next steps"
-- "design the auth module"
-- "audit the codebase"
-- "what's the best implementation path"
-- "plan how we'd add billing"
-- Any ask involving >2 files or >200 lines, or any "review/design/figure out" phrasing.
+Examples that DO trigger (contract is writable AND the build is large enough that the contract's cost is worth paying):
 
-**STOP — before you reach for `read_file`:** Reviewing IS planning. Designing IS planning. Figuring out next steps IS planning. The temptation to "just look at spec.md and the code first" is your prior pulling you toward a pattern that overflows. Don't.
+- "build me three card classes — chat, calendar, and todo" — independent units, contract is each card class's metadata + its public file format. Three parallel orchestrator runs, each likely inline.
+- "refactor app.js + plugins.js + storage.js into a new module layout" — contract is the new module boundaries + their public interfaces. Worth writing.
+- "build a complex card with map, terminator, controls, persistence, undo/redo" — single card class but large. Contract is the DOM IDs + persistence shape + init order + lifecycle. Worth writing → parallel implementers per file are safe.
+- "audit the codebase" / "review the spec and figure out next steps" — planning-shaped, lands a plan + contract on canvas regardless.
 
-The first thing you do on any of the above asks is **delegate to `task-decomposer`**, NOT read files. The decomposer reads what it needs in its own context slot. You stay light, dispatching from the plan it produces.
+Examples that do NOT trigger:
+
+- "create a small world clock card" — one card class, contract is trivially small. Overhead of writing it formally exceeds the parallelism win. Use `create-card-class` inline.
+- "add a day/night overlay to the existing world clock" — one feature inside one card class, no new integration surface. Inline.
+- "fix the addLayer bug in card.js" — bug, no plan needed. Use `fix-bug` inline.
+- "build a tightly coupled animation where data flow and rendering are wedded" — contract would become a partial implementation. Inline.
+
+**The decision rule has three axes — all must hold for decomposition to pay off:**
+
+1. **Logical decomposability.** Can you name the integration surface (DOM IDs, function signatures, data shapes, init order, lifecycle) with enough detail that two ignorant implementers would integrate? If the contract becomes a partial implementation, the work isn't decomposable — inline.
+2. **Parent's inline capacity is exceeded.** Estimate the work: how many files, how much existing code to read, how much new code to write. Compare against your spare context budget (the system prompt's budget block). If it fits inline, **inline wins regardless of decomposability** — contract overhead and subagent bootstrap cost never pay off when the parent could just do the work. Decompose only when the parent genuinely cannot hold the work.
+3. **Each subcomponent fits a single subagent's slot.** When you do decompose, each plan item must fit the executor's per-slot budget (input reads + output write + reasoning room). On a tighter context window this forces finer-grained subcomponents and a more verbose contract — because the contract has to carry more of the integration burden when the implementer can hold less in working memory.
+
+**Model strength compounds across these axes.** A 7B local model may need to decompose a 4-file card class because the parent can't hold it AND each file has to split into smaller pieces because no subagent can hold a full card.js. A 200K-context cloud model holds the same card class trivially inline; the orchestrator pattern stays dormant. A 65K-Qwen sits in between: typical card classes fit inline (use `create-card-class`); large complex cards (200+ lines per file, multiple subsystems, large existing codebase) genuinely don't and benefit from contract-first decomposition. The decision adapts to your runtime budget, not to a fixed verb-shape rule.
+
+If you decide to delegate, the **first** thing you do is invoke `task-decomposer`. Light reads (the user's spec.md, a quick glance at canvas state) are fine before deciding — the prohibition against reading isn't dogma, it's a hedge for when context is genuinely tight. Use the budget block in your system prompt: if you have headroom for a 3-5KB context-gathering read before deciding, do it; if not, delegate without reading.
 
 Steps:
 
 1. **Restate the ask** in one sentence. If genuinely ambiguous (the user said "build me a music player" with no other context), ask the clarifying question and stop. If the ask is clear enough to plan, continue.
 
-2. **Delegate the planning IMMEDIATELY** — call `task({ agent: "task-decomposer", prompt: "<the user's request, verbatim, plus any clarifying context they gave>" })`. **Make this your first tool call.** Do NOT read any files first — the decomposer reads the canvas itself. If you find yourself thinking "let me just check spec.md first to give the decomposer context," stop: the decomposer has the same canvas you do, in its own slot. The decomposer writes/updates `canvas/spec.md`, `canvas/interfaces.md`, and `canvas/plan.todo`, then returns a one-line status.
+2. **Delegate the planning IMMEDIATELY** — call `task({ agent: "task-decomposer", prompt: "<the user's request, verbatim, plus any clarifying context they gave>" })`. **Make this your first tool call.** Do NOT read any files first — the decomposer reads the canvas itself. The decomposer writes/updates four artifacts: `canvas/spec.md`, `canvas/interfaces.md` (with named sections), `canvas/decomposition.md` (the design memory), `canvas/plan.todo` (with per-item `Context:` and `Skip:` manifests). It returns a one-line status.
 
-3. **Read the plan** — `read_file canvas/plan.todo`. Each `## Active` item is one delegation-ready task. Items name the assignee (`@component-coder`) and the spec section the subagent should reference.
+   The decomposer may return `declined: parent can inline this work — ...` — that's a successful outcome meaning the orchestrator pattern doesn't pay off here. Drop the orchestrator path and inline the work yourself (or invoke `create-card-class` skill for cards). Don't re-invoke `task-decomposer` to force a plan.
 
-4. **Show the user** — paste the plan items into your turn response so they can see what's about to ship. If they want to edit before execution, they will say so (or edit `plan.todo` directly).
+3. **Read the design + plan** — `read_file canvas/decomposition.md` and `read_file canvas/plan.todo`. Decomposition.md is the canonical architecture doc (subcomponents, dependency graph, rejected seams, verification gates). Plan.todo is the dispatch queue with curated `Context:`/`Skip:` manifests per item. Confirm they align: every plan item should reference a `## Subcomponents § <name>` entry from decomposition.md.
 
-5. **Mark in-progress, dispatch, mark complete — per item, in that order.** Each plan item has a *lifecycle* on the `.todo` card the user is watching:
+4. **Surface the design to the user.** In your turn response: paste the decomposition.md content (or summarize it) so the user sees the architecture you're about to ship. Mention plan.todo for the queue. The user can interject by replying or by editing `decomposition.md` / `plan.todo` directly — both files are on canvas. Do NOT pause/wait artificially; finish your turn and dispatch on the next, OR continue dispatching now if the design is clear and the user gave a green light. The point is visibility, not a forced gate.
 
-   - **Before dispatch:** `edit` plan.todo to flip `[ ]` → `[~]` on this item (in-progress marker). The .todo card renders this as a pulsing blue dot — the user sees exactly which item is being worked on right now.
-   - **Then dispatch:** `task({ agent: "component-coder", prompt: "<plan item text verbatim>" })`. Independent items can be dispatched together (multiple `task` calls in one response, each preceded by its own `[~]` flip).
-   - **On successful return:** `edit` plan.todo to flip `[~]` → `[x]` (done marker). The .todo card renders ✓ and the user sees the item complete.
-   - **On failure return** (component-coder responds `failed: ...`): `edit` plan.todo to flip `[~]` → `[!]` (failed marker, red). Optionally add a one-line comment under the item with the failure reason. The user can click the `!` to reset the item to `[ ]` for retry, or fix the issue and ask you to re-dispatch.
+5. **Mark in-progress, dispatch with role-context, mark complete — per item, in that order.** Each plan item has a lifecycle on the `.todo` card the user is watching:
 
-   **Do NOT batch.** The .todo card watches its own file and re-renders on every save. Per-item edits become live UI progress: pending → in-progress → done. Batching breaks that — the user sees nothing for minutes, then everything flips at once. Worse, if you hit context-overflow mid-turn the un-flushed progress is lost.
+   - **Before dispatch:** `edit` plan.todo to flip `[ ]` → `[~]` on this item.
+   - **Then dispatch:** call `task({ agent: "component-coder", prompt: "<role-context + plan item text>" })`. **Construct the prompt** by reading the item's `Context:` line for the section names, then pasting:
+     - The relevant `## Subcomponents § <name>` entry from decomposition.md (so the subagent knows what it owns and what's out of scope — the orchestrator does this paste because the subagent shouldn't burn its slot reading the whole decomposition.md).
+     - The plan item text verbatim (Context:, Skip:, parallel-safe flag, etc).
+     - The subagent reads its named contract/spec sections itself.
+   - **Default to PARALLEL dispatch when items are marked `parallel-safe: true`** — that flag is the planner's assertion that the contract is sufficient. Issue multiple `task` calls in one response (each preceded by its own `[~]` flip). Drop to sequential only for items marked `parallel-safe: false`.
+   - **On successful return:** flip `[~]` → `[x]`.
+   - **On failure return** (`failed: ...`):
+     - `failed: contract gap on <X>` or `failed: contract too coarse` — re-invoke `task-decomposer` with the gap description; it extends interfaces.md (and possibly decomposition.md), then re-dispatch the failed item.
+     - `failed: context manifest insufficient — needed § <X>` — edit plan.todo to add `<X>` to the item's `Context:` line, then re-dispatch.
+     - `failed: decomposition needs revision — <what>` — re-invoke `task-decomposer` with the discovery; it updates decomposition.md (adds a revision-log entry), updates plan.todo to match, then re-dispatch affected items.
+     - `failed: scope too large` — re-invoke `task-decomposer` to split the item.
+     - For other failures: flip `[~]` → `[!]` and surface to the user.
 
-   **Markers summary:** `[ ]` = pending, `[~]` = in progress (you're working on it now), `[x]` = done, `[!]` = failed (user should review).
+   **Do NOT batch state edits.** The .todo card watches its own file and re-renders on every save. Per-item edits become live UI progress: pending → in-progress → done.
 
-6. **Iterate** until `## Active` has no `[ ]` or `[~]` items left. Each parent turn handles one or two batches of dispatches; the user sees progress in real time as items move pending → in-progress → done on the .todo card.
+   **Markers summary:** `[ ]` = pending, `[~]` = in progress, `[x]` = done, `[!]` = failed.
 
-7. **Final summary** — when the plan is empty, summarize what shipped and ask if the user wants anything refined. Do NOT include file contents in your summary — the user can scroll or open the cards.
+6. **Iterate** until `## Active` has no `[ ]` or `[~]` items left. Update decomposition.md with revision-log entries any time the design shifted during iteration (seams moved, new subcomponents added, scope changed). The decomposition stays current; future sessions inherit the current truth, not the original plan.
+
+7. **Verify the contract held, then verify the artifact works.** Empty `## Active` is NOT success on its own. Subagents reported `done` based on their own slot's view; your job at the integration boundary is two-stage:
+
+   **Stage 1 — contract verification.** Read each plan item's output and confirm it honors `interfaces.md`. The contract is the agreement that made parallel dispatch safe; integration only succeeds if every implementer kept their side. For card classes:
+   - For each named DOM ID in `interfaces.md § DOM contract`, grep card.html for the ID — confirm it exists. Grep card.js for `getElementById('<id>')` and `querySelector('#<id>')` — confirm every reference resolves to an ID the contract names AND that card.html defines.
+   - Confirm card.css has rules for the IDs/classes the contract says it must style.
+   - Confirm card.js's init function follows the contract's specified order (read the function, walk the steps).
+   - Confirm cleanup contract: every `setInterval` / `addEventListener` / `ResizeObserver` / Leaflet `L.map(...)` has a tear-down inside `mica.onDestroy`.
+
+   If any contract violation is found, the parent's response is **NOT** to fix it inline. Re-dispatch the divergent subagent with a corrective prompt naming the contract section and the violation. Contract violations are localizable — that's the property contracts buy you.
+
+   **Stage 2 — integration verification.** Once contracts are verified, run end-to-end:
+   - For card-class builds: **`render_capture({ filename: "<canvas>/<instance>.<extension>" })`**. Inspect the returned PNG. Did the card mount? Is the layout right? Is there a red error banner? Also check `.mica/cards/<id>.json` for any errors the card emitted via `mica.reportError`.
+   - For non-card builds: run the project's own integration test (`npm test`, `pytest`, etc.) or, if none exists, verify the artifacts compose (e.g. import the new module and invoke a smoke entry point).
+
+   If Stage 2 fails despite Stage 1 passing, the contract had a behavioral gap — refine `interfaces.md` to close it (this is contract debt the next build benefits from), then re-dispatch the affected subagent.
+
+   Do NOT skip either stage to ship faster. A broken card the user has to find is more expensive than two extra parent-side verification turns.
+
+8. **Final summary** — when verification passes, summarize what shipped and ask if the user wants anything refined. Do NOT include file contents in your summary — the user can scroll or open the cards.
 
 You produce no implementation code yourself. Your role is read-the-plan, dispatch, mark-done, repeat.
 
@@ -87,8 +128,10 @@ The pre-orchestrator pattern was: decompose inline → write contracts inline �
 
 Once a `component-coder` returns successful, that component is presumed verified (the subagent's job spec requires verification before reporting success). Trust but spot-check: if a critical-path component succeeded, you can `read_file` to glance at it before dispatching the next batch. Don't read every component or you'll re-leak context into your parent slot.
 
-## Why this matters more on local Qwen
+## Why this matters more on tighter context budgets
 
-The cloud Claude path has a much larger context window and stronger working memory — it can hold 8 files in flight without overflow. The local Qwen 65K slot can't. For local, the orchestrator pattern isn't a nice-to-have — it's the only way to ship multi-component features without the turn errrring out mid-stream. For cloud, it's a cleaner pattern that produces a visible plan but isn't strictly required.
+The orchestrator pattern's value scales with how much the parent's slot can hold. On a 200K+ slot the parent can inline most builds; orchestration is a stylistic preference for visibility. On a 65K slot the parent overflows around the 7th–10th file in a multi-component build; orchestration is the only path that ships. On a 32K slot, even smaller builds force decomposition.
 
-The skills file you're reading is loaded on Qwen. Apply the orchestrator pattern by default.
+Read your runtime block. If your slot is generous and the work fits inline, decline (return early in step 2 or skip the skill entirely — invoke `create-card-class` or do the work directly). If your slot is tight and the work won't fit inline, the orchestrator pattern is your tool. The decision is per-runtime, not per-skill.
+
+The contract-first / decomposition-as-design-memory / per-subagent curation patterns above are valuable regardless of slot size — they're how decomposed work stays coherent. But the *threshold for triggering decomposition* depends on the runtime, not on the skill.

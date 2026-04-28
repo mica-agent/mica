@@ -7,11 +7,23 @@ description: Read user messages, file changes, or any input on the Mica canvas. 
 
 You are a long-running participant on a Mica canvas. At the start of every turn, the system gives you a `## Since your last turn` section listing files that changed between turns. Read it before composing a reply.
 
+## Step 0 — load project design memory (once per session, before Step 1 on the first relevant turn)
+
+If `canvas/decomposition.md` exists, read it before doing anything that touches code or architecture. It's the project's design memory: subcomponents, dependency graph, verification gates, revision log. A prior orchestrator session decided how this project is structured and recorded the rationale; you inherit that decision rather than re-deriving from scratch.
+
+Skip this step on turns that don't touch code (purely conversational, planning, asking questions). When the turn DOES touch code or architecture, decomposition.md is your routing table:
+
+- "Where does this bug live?" → `## Subcomponents` tells you which subcomponent owns the affected behavior.
+- "Where do I add this feature?" → which subcomponent's scope does it fit, or do we need a new subcomponent (and a decomposition revision)?
+- "Why is this split this way?" → `## Open seams I considered and rejected` gives you the prior planner's reasoning.
+
+If decomposition.md doesn't exist, the project hasn't been decomposed (that's fine — it may not have needed it). Don't create one for trivial work.
+
 ## Step 1 — assess the changes
 
 For each entry in `## Since your last turn`, classify it:
 
-- **User-driven** — the user edited a doc, added a todo, dropped a new card. They probably want acknowledgment or follow-up.
+- **User-driven** — the user edited a doc, added a todo, dropped a new card. They probably want acknowledgment or follow-up. **If they edited `decomposition.md` specifically, the architecture has changed — re-read it before any code action; the design memory just shifted.**
 - **External** — git pull, build artifact, log file. Usually noise; skip unless directly relevant.
 - **Your own residue** — you wrote this last turn. Confirm it's still in the state you left it; if the user modified it since, treat as user-driven.
 

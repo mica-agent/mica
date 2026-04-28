@@ -35,6 +35,56 @@ GET /api/card-classes/{name}/spec.md         # prose description, if the class s
 
 Only proceed past this step when you have confirmed that no existing class handles the intent.
 
+## STEP 0.5 — Search for libraries before designing custom (recursively, per subproblem)
+
+Before designing any non-trivial subcomponent — mapping, charting, drag-and-drop, code editing, calendaring, geospatial math, syntax highlighting, animation, math typesetting, terminal emulation, anything you'd write more than ~30 lines for — confirm whether an established library already solves it. **One `web_search` + one `web_fetch` per subproblem is the budget.**
+
+```
+web_search "<problem> javascript library"   # e.g. "leaflet day night terminator overlay"
+# Pick the top maintained candidate; web_fetch its README or npm page.
+# Decision: "use <library@version>" OR "no library fits because <reason>".
+```
+
+**This applies recursively to every subproblem, not just the top-level domain.** Picking Leaflet as the map library does NOT discharge the search for sub-features built on top of it: a day/night terminator overlay is its own search target (`leaflet day night terminator plugin` → `Leaflet.Terminator`); a heatmap layer is its own (`leaflet.heat`); a marker-clustering layer is its own (`leaflet.markercluster`); a routing layer is its own (`leaflet-routing-machine`). After you choose a primary library, **list the sub-features the user asked for and run a separate search per sub-feature**. The most expensive failure mode the system has produced is exactly this: agent picks Leaflet, then writes 80 lines of custom great-circle solar geometry for the terminator instead of one `L.terminator()` call. The library was found; the subproblem was not searched.
+
+If you pick a library, **verify its CDN URL is reachable before writing it into `metadata.json`** — see the Pre-completion smoke test section below for the recipe. Tier 1 (URL returns 200) and Tier 2 (loaded library exposes the global the card calls) are mandatory before you commit `metadata.json`.
+
+Acceptable "no library fits" outcomes — record the reason inline so reviewers don't re-litigate:
+- "Solar elevation math is 8 lines and reuses values the card already computes; pulling a 40KB library to save 8 lines is a loss."
+- "The thing the user wants is a 3-input form with a sum at the bottom; no library."
+
+The most expensive failure mode is silently writing 80 lines of from-scratch geometry/parsing/protocol code when a 1-line library call would suffice. Rule 4 below says "Don't reinvent" as a principle — this step is the procedure that enforces it.
+
+## STEP 0.75 — Draft spec.md and get approval BEFORE writing any card-class code
+
+Before any `cp -r` of the skeleton or any `write_file` to a card-class file, draft `canvas/spec.md` with the structured design and post a short approval gate in chat. Implementation starts AFTER the user replies — not before.
+
+**Why this gate exists.** Single-card-class builds skip the orchestrator pattern (decomposer → spec.md → interfaces.md → plan.todo) because the contract is trivially small. But "trivially small contract" doesn't mean "no spec." Without a spec the user can't course-correct on:
+
+- The library choices (was Leaflet.Terminator searched for the day/night overlay? Chart.js vs Plotly?).
+- The behavior boundaries (9 fixed cities or user-editable? day/night with twilight band or hard boundary? click-to-add-city?).
+- The visual approach (light or dark basemap? legend placement? labels on-map or sidebar?).
+
+If the user only sees the card AFTER it's built, every disagreement is a rebuild. If they see the spec FIRST, disagreements are one-line spec edits.
+
+**Required spec.md sections** — strip any that genuinely don't apply, but most do for any non-trivial card:
+
+- `# <Card name>` + a one-paragraph elevator pitch.
+- `## What it does` — user-visible behavior. Bullet points; the user reads this top-down.
+- `## Files` — the four card-class files (metadata.json, card.html, card.css, card.js) with one-line descriptions of what each owns.
+- `## Dependencies` — every external library (Tier-1 verified URLs per the Pre-completion smoke test) plus a one-line "why this library" justification.
+- `## Subproblems and their solutions` — for each recognizable subproblem (e.g. "day/night terminator overlay"), name the chosen library OR explicitly record "no library fits because <reason>." This is the explicit output of STEP 0.5.
+- `## Behavior` — interactions, tick rates, persistence, edge cases.
+- `## Out of scope for v1` — what you're NOT building. Forces the user to confirm scope before code is written.
+- `## Smoke test results` — empty at draft time; filled in after build per the Pre-completion smoke test section.
+- `## Assumptions` — Tier-3 documented assumptions per the Pre-completion smoke test section.
+
+**The approval gate.** Post a chat reply that's a one-liner: *"Drafted in `canvas/spec.md` — review and OK to build?"* — NOT a paste of the spec content. The user opens spec.md on the canvas to read; chat carries only the gate. Wait for an explicit affirmative ("ok," "yes," "go ahead," "ship it") before any further tool call. If the user pushes back ("no, smaller scope" / "use Chart.js not Plotly"), edit spec.md to reflect the change and re-post the gate.
+
+**When to skip this gate.** If the request is genuinely a one-liner ("add a counter card with a + button") — the drafting overhead exceeds the iteration win AND the user can't meaningfully course-correct on something this small. Heuristic: if you'd write fewer than ~50 lines total across all four card-class files, skip the gate and build directly. Otherwise, gate.
+
+**Why this matters for the inline path specifically.** Going from "ok build it" directly to a fully-built card is what produces iteration churn — every disagreement becomes a code rewrite instead of a spec edit. The spec-first gate keeps iteration cheap by moving disagreements upstream of code. The orchestrator path enforces this implicitly (the decomposer ships spec.md as artifact 1); the inline path needs it explicitly.
+
 ## Extension conventions — use community-standard short forms
 
 Extensions follow external conventions, not invention. Always use the canonical short form — the registered class will match it.
@@ -341,6 +391,116 @@ Compare against what the helper returns. Common hallucinated fields that don't e
 6. **Instance files go in the canvas root** (usually `docs/`), not in `.mica/`.
 7. **Verify API shapes with `curl` before writing code that depends on them** (see above).
 
+## Pre-completion smoke test — verify EVERY external dependency before declaring done
+
+The most expensive class of card-build failures comes from coding against assumptions about external state without verifying them. CDN URLs that 404, REST endpoints that return a different shape than imagined, tile servers with wrong template patterns, npm versions that never published — all silent in the build, visible only at runtime. **Verification at build time is cheaper than a debug round-trip with the user.**
+
+Before declaring a card class complete, enumerate every external resource it touches at runtime, run the appropriate smoke test, and record the result. Three tiers, by what verification is possible:
+
+### Tier 1 — Reachability (mandatory)
+
+For every URL the card depends on at load or runtime:
+
+| Target | Where it lives | Check |
+|---|---|---|
+| Script CDN URLs | `metadata.json.dependencies.scripts` | `curl -sI -L <url> \| head -1` → expect `HTTP/2 200` (302 chains fine if final is 200) |
+| Stylesheet CDN URLs | `metadata.json.dependencies.styles` | same |
+| Tile-server pattern | hardcoded in `card.js` (e.g. `'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'`) | substitute one sample (e.g. `s=a, z=2, x=2, y=2`), curl, expect 200 |
+| Font URLs | `metadata.json.dependencies.styles` or `@font-face` in card.css | curl, expect 200 |
+| GeoJSON / data URLs | hardcoded in `card.js` | curl, expect 200 |
+
+Tier-1 failures are usually one of three patterns: missing `@scope/` prefix, version that never published, wrong subpath inside the package. The "Rule 4 — Prefer CDN libraries" section above has the recovery recipe.
+
+### Tier 2 — Shape (mandatory for any REST/WS endpoint)
+
+For every external API the card calls:
+
+| Target | Check |
+|---|---|
+| REST endpoint (`mica.fetch` or direct CDN data) | call once with sample params, `JSON.parse`, assert the fields the card expects exist (`data[0].lat`, `data[0].lng`, etc.) |
+| WebSocket message contract | open the channel, send a ping, log the first response payload shape |
+| npm package version | `curl -s https://registry.npmjs.org/<pkg>` → confirm `dist-tags.latest` matches what `metadata.json` pins |
+| Library global / namespace | confirm the loaded library exposes the global the card calls (`L.terminator` vs `L.Terminator`, `Chart` vs `Chart.js`, `mermaid.run` vs `mermaid.init`) — read the library's README or run a tiny page that loads the script and `console.log(window.<global>)` |
+
+Tier-2 catches the most insidious failures: a 200 response doesn't mean the resource matches your assumption. A library can load fine and expose a different surface than the agent imagined from training data.
+
+### Tier 3 — Documented assumption (mandatory for everything you can't verify)
+
+Some failure modes only appear at runtime in a real browser, with real auth, real CORS, real rate limits. The build agent can't simulate all of them. Instead, **write the assumption down** so the failure mode becomes "documented assumption was wrong" instead of "we never thought about it":
+
+| Assumption | Where to record |
+|---|---|
+| Auth model — no key required, key in env, OAuth flow, etc. | `spec.md` § Assumptions |
+| CORS posture — does the server send `Access-Control-Allow-Origin: *`? Did you verify with a browser-side test? | `spec.md` § Assumptions |
+| Rate limits — calls per minute, response if exceeded | `spec.md` § Assumptions |
+| Regional / geo restrictions | `spec.md` § Assumptions |
+| Required headers — `User-Agent`, `Origin`, `Referer` | `spec.md` § Assumptions |
+| API stability — is this a versioned endpoint or a hostname that may move? | `spec.md` § Assumptions |
+
+A card class with no `## Assumptions` block in spec.md is incomplete — at minimum, write "no external APIs called" or "all dependencies are public CDNs with no auth."
+
+### Recording the smoke test
+
+Append a `## Smoke test results` section to `spec.md` (or the card class's `context.md` if you prefer class-scoped) listing every URL/endpoint with status + shape. Future runs can compare against this ledger; it doubles as documentation for whoever debugs the card next.
+
+Example:
+
+```markdown
+## Smoke test results
+
+| Resource | Tier | Status | Notes |
+|---|---|---|---|
+| `unpkg.com/leaflet@1.9.4/dist/leaflet.js` | 1 | 200 | exposes `window.L` |
+| `unpkg.com/@joergdietrich/leaflet.terminator@1.3.0/L.Terminator.js` | 1+2 | 200 | exposes `L.terminator` (lowercase t) |
+| `basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png` | 1 | 200 (sample tile) | no auth, free tier |
+
+## Assumptions
+
+- CartoDB Dark Matter tiles: no auth, no rate limit specified for low-volume use; assume <100 cards × 256 tiles each per session is fine.
+- Leaflet.Terminator: assumed CORS-friendly (script load, not fetch).
+- No browser-side geolocation API used.
+```
+
+The smoke test is a precondition for "card class is ready to ship," not an optional step. Skipping it produces the build → break → debug round-trip we're trying to eliminate.
+
+## ❌ FORBIDDEN in `card.html` — the server inlines card.js and card.css
+
+`card.html` is a fragment, not a document. The Mica server reads `card.html`, `card.css`, and `card.js` from the class directory and assembles the runtime HTML by concatenating: `cardHtml + <style>${cardCss}</style> + <script>${cardJs}</script>`. The card.js and card.css are **already inlined** by the time the browser sees the markup.
+
+Therefore, **never** put any of these in `card.html`:
+
+```html
+<!-- WRONG — server inlines card.js. This script tag fetches `card.js` as
+     a relative URL against the host page (the React app), gets 404 or HTML
+     back, and surfaces as "Failed to load dependency: Failed to load card.js". -->
+<script src="card.js"></script>
+
+<!-- WRONG — same reason. Server inlines card.css. -->
+<link rel="stylesheet" href="card.css">
+
+<!-- WRONG — card.html is a fragment, not a document. The server assembles
+     the document; your <!DOCTYPE>/<html>/<head>/<body> are at best wasted
+     bytes and at worst an attractive nuisance for "let me put a script tag
+     in head" mistakes. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>...</head>
+<body>...</body>
+</html>
+```
+
+```html
+<!-- CORRECT — fragment only. Use IDs for anything card.js will update. -->
+<div class="my-card">
+  <div id="header">...</div>
+  <div id="body"></div>
+</div>
+```
+
+For reference shape, read any of the built-in card classes (`.../card-classes/canvas/card.html`, `.../card-classes/llm-chat/card.html`) — they all start with a top-level `<div>`, never with `<!DOCTYPE>`.
+
+Library scripts and styles ARE legitimate external dependencies — they go in `metadata.json.dependencies.scripts` / `.styles`, NOT in `<script src=...>` tags inside card.html. The runtime loads metadata.json's deps before assembling the card; that's the supported path.
+
 ## ❌ FORBIDDEN — never write `card.js` like this
 
 ```js
@@ -469,9 +629,11 @@ Then in this order:
 
    The result includes a PNG of the rendered card — inspect it directly to confirm: the card mounted, the expected layout appears, labels are legible, nothing is clipped or overflowing, no red error banner. If something looks wrong, iterate on the card-class files and re-capture. JSON validity and `node -c` only prove syntax; only a visual check proves the card actually works.
 
-## Decompose before coding
+## Build in stages, inline
 
-Multi-file build. Use the `decompose-task` skill. Typical ladder AFTER the skeleton copy:
+A single card class is ONE coherent unit even though it has 4 files (the files share live state — DOM IDs flow from card.html → card.js, computed styles flow from card.css → card.js). Decomposing it across subagent slots fragments that shared state and produces broken cards. Build it inline, in stages. **Do NOT delegate a single-card-class build to subagents** — that pattern is for multi-card-class or multi-module work where units are genuinely independent.
+
+Typical ladder AFTER the skeleton copy:
 
 1. `edit metadata.json` — set extension + badge + defaultTitle
 2. `edit card.html` — minimal layout with IDs for dynamic elements

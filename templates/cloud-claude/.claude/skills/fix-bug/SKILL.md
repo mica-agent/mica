@@ -89,6 +89,51 @@ A single bug fix is typically inline work — the parent agent reproduces, diagn
 
 If `bug-fixer` is not registered as a subagent in your project (`agents/bug-fixer.md` doesn't exist), inline is your only option — note that in your reply if a delegation would have helped, so the user can decide whether to install the subagent.
 
+## Card runtime errors — "Failed to load dependency / Failed to load X"
+
+When the chat surfaces a `[card-error] Failed to load dependency: Failed to load <url-or-name>`, the diagnostic order matters. Skipping ahead to "what's wrong with the loading mechanism?" is the most expensive guess you can make — there's a whole architecture of card.html / metadata.json / CARD_SHIM to spelunk through, and the answer is usually upstream of all of it.
+
+**Diagnose in this order, not the other way around:**
+
+### 1. Is the URL reachable? (Tier 1 — cheapest)
+
+```bash
+curl -sI -L "<the exact URL from the error>" | head -1
+```
+
+If 404, the URL is wrong — fix `metadata.json`. Don't guess a replacement; look it up:
+
+- npm registry: `curl -s https://registry.npmjs.org/<pkg>` → `dist-tags.latest` + `versions[<latest>].main`
+- jsdelivr file index: `https://www.jsdelivr.com/package/npm/<pkg>` lists every file in the published tarball
+- For scoped packages, the path on unpkg is `unpkg.com/@scope/name@<version>/<file>` — easy to forget the `@scope/` part
+
+A 404 here resolves the bug. Stop, fix the URL, ask the user to refresh.
+
+### 2. Does the resource match the assumption? (Tier 2)
+
+If the URL returned 200 but the card still fails: the file loaded, but its contents don't match what the card expects. Common failure modes:
+
+- **Wrong global / namespace.** Card calls `L.terminator(...)` but the loaded library exposes `L.Terminator` (capital T), or `L.DayNightTerminator`. Fix: read the library's README, fix the call site in `card.js`. Do NOT change `metadata.json` — the URL is fine.
+- **Wrong version semantics.** Card calls `chart.update()` (Chart.js v3+) but `metadata.json` pinned `@2.x`. Fix: bump the version pin and re-run Tier 1 verification on the new URL.
+- **MIME type wrong.** Server returned 200 but `Content-Type: text/html` (e.g. you got an HTML 404 page from a different host). Fix: the URL is structurally wrong; back to step 1.
+
+For any of these, `WebFetch` the URL and grep the response body for the global the card calls (`grep -E "L\.terminator|L\.Terminator" leaflet.terminator.js`).
+
+### 3. Is the loading mechanism correct? (last resort)
+
+Only if Tier 1 and Tier 2 both pass — URL reachable, library exposes the expected surface — does the bug live in the card-class loading path. At that point read:
+
+- `.claude/skills/create-card-class/SKILL.md` § "FORBIDDEN in `card.html`" — the most common offender. If `card.html` contains `<script src="card.js"></script>`, `<link rel="stylesheet" href="card.css">`, or a `<!DOCTYPE>`/`<html>`/`<head>`/`<body>` wrapper, those are wrong; the server inlines `card.js`/`card.css` itself. The fix is to delete those tags, not to add them to `metadata.json.dependencies`.
+- The card class's `metadata.json.dependencies` listing — confirm only THIRD-PARTY scripts/styles are listed there. Adding `card.js` or `card.css` to dependencies is wrong; those are class-internal and resolve relative to the **instance file**, not the class directory.
+
+### Anti-pattern: re-read metadata.json hoping for clarity
+
+If the error says "Failed to load <url>", the URL it's failing on is exactly what's in `metadata.json`. Re-reading the file produces no new information. The model can fall into a loop: cat metadata.json → "looks right" → cat metadata.json again → loop until SDK kills the process. Break out: do `curl` first.
+
+### Time budget
+
+ONE round of `curl` + one fix to `metadata.json` (or one fix to the call site, or one fix to `card.html`). If the second attempt also fails, stop and ask the user — guessing a third URL is a bad use of context.
+
 ## What NOT to do
 
 - **Do NOT call `task-decomposer`.** That subagent is for build/refactor work that produces multi-component plans. A bug fix doesn't need a plan; it needs a focused fix.
