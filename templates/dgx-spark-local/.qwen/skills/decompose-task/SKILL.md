@@ -71,7 +71,11 @@ Steps:
 
    The decomposer may itself return `declined: parent can inline this work — ...` — that's a successful outcome confirming the gate. If you missed it, the decomposer catches it on its side. Drop the orchestrator path and inline the work yourself. **Don't re-invoke `task-decomposer` to force a plan.**
 
-3. **Read the design + plan** — `read_file canvas/decomposition.md` and `read_file canvas/plan.todo`. Decomposition.md is the canonical architecture doc (subcomponents, dependency graph, rejected seams, verification gates). Plan.todo is the dispatch queue with curated `Context:`/`Skip:` manifests per item. Confirm they align: every plan item should reference a `## Subcomponents § <name>` entry from decomposition.md.
+3. **Read the design + plan — and verify they're internally consistent.** `read_file canvas/decomposition.md` and `read_file canvas/plan.todo`. Decomposition.md is the canonical architecture doc (subcomponents, dependency graph, rejected seams, verification gates). Plan.todo is the dispatch queue with curated `Context:`/`Skip:` manifests per item.
+
+   **Critical consistency check before any dispatch:** read `decomposition.md § Decision`. **If it says "Decision: Inline" — STOP. Do NOT dispatch any plan.todo item.** A buggy or stale decomposer can write a "Decision: Inline" verdict AND a plan.todo full of `@component-coder` items in the same run. The Decision line is authoritative; plan.todo's `@component-coder` entries are an artifact bug if the verdict is Inline. In that case: drop the orchestrator path, invoke `create-card-class` skill (for card-class work) or do the edits inline directly. The `plan.todo` items become advisory — they tell you what the work is, but YOU do it inline, not via subagent dispatch.
+
+   Otherwise (Decision is Decompose, or there's no Decision line and plan.todo is sane): confirm they align — every plan item should reference a `## Subcomponents § <name>` entry from decomposition.md.
 
 4. **Surface the design to the user.** In your turn response: paste the decomposition.md content (or summarize it) so the user sees the architecture you're about to ship. Mention plan.todo for the queue. The user can interject by replying or by editing `decomposition.md` / `plan.todo` directly — both files are on canvas. Do NOT pause/wait artificially; finish your turn and dispatch on the next, OR continue dispatching now if the design is clear and the user gave a green light. The point is visibility, not a forced gate.
 
