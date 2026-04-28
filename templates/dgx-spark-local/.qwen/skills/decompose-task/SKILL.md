@@ -29,13 +29,24 @@ Examples that do NOT trigger:
 - "fix the addLayer bug in card.js" — bug, no plan needed. Use `fix-bug` inline.
 - "build a tightly coupled animation where data flow and rendering are wedded" — contract would become a partial implementation. Inline.
 
-**The decision rule has three axes — all must hold for decomposition to pay off:**
+## The decision rule — INLINE is the default
 
-1. **Logical decomposability.** Can you name the integration surface (DOM IDs, function signatures, data shapes, init order, lifecycle) with enough detail that two ignorant implementers would integrate? If the contract becomes a partial implementation, the work isn't decomposable — inline.
-2. **Parent's inline capacity is exceeded.** Estimate the work: how many files, how much existing code to read, how much new code to write. Compare against your spare context budget (the system prompt's budget block). If it fits inline, **inline wins regardless of decomposability** — contract overhead and subagent bootstrap cost never pay off when the parent could just do the work. Decompose only when the parent genuinely cannot hold the work.
-3. **Each subcomponent fits a single subagent's slot.** When you do decompose, each plan item must fit the executor's per-slot budget (input reads + output write + reasoning room). On a tighter context window this forces finer-grained subcomponents and a more verbose contract — because the contract has to carry more of the integration burden when the implementer can hold less in working memory.
+Before considering anything else, ask the **gate question**:
 
-**Model strength compounds across these axes.** A 7B local model may need to decompose a 4-file card class because the parent can't hold it AND each file has to split into smaller pieces because no subagent can hold a full card.js. A 200K-context cloud model holds the same card class trivially inline; the orchestrator pattern stays dormant. A 65K-Qwen sits in between: typical card classes fit inline (use `create-card-class`); large complex cards (200+ lines per file, multiple subsystems, large existing codebase) genuinely don't and benefit from contract-first decomposition. The decision adapts to your runtime budget, not to a fixed verb-shape rule.
+> **Can the parent (you) handle this inline in the current slot?**
+
+Estimate the work: how many files (existing reads + new writes), roughly how many bytes total, how much reasoning room you'll need across the turn's tool iterations. Compare against the parent's spare context budget from the runtime block.
+
+- **If the answer is YES, or even PROBABLY YES → inline. End decision.** Don't write a contract, don't dispatch a decomposer, don't produce decomposition.md / plan.todo. The orchestrator pattern's overhead (artifact writes, subagent bootstrap, dispatch round-trips, plan reconciliation) only pays off when the parent **cannot** inline — not when it merely **could** decompose.
+- **If the answer is NO** — the work would overflow your spare budget — only then check the two remaining axes. Both must hold for decomposition to be safe AND useful:
+  1. **Logical decomposability.** Can you name the integration surface (DOM IDs, function signatures, data shapes, init order, lifecycle) with enough detail that two ignorant implementers would integrate? If the contract becomes a partial implementation, the work isn't decomposable — push the user to scope it down so it fits inline rather than decompose anyway.
+  2. **Each subcomponent fits a single subagent's slot.** Reads + writes + reasoning room. On tighter context windows this forces finer subcomponents and a more verbose contract.
+
+**Why the gate is asymmetric.** "Could decompose" is a much weaker bar than "must decompose." Almost any non-trivial task has nameable seams in the abstract — that's not the question. The question is whether decomposition's overhead is justified by the parent's *actual incapacity* to do the work in one slot. It almost never is for single card classes, single-file edits, single bug fixes, single feature additions to existing code. It IS for multi-card-class greenfield builds, multi-module refactors against existing code, anything where the parent can foresee 7+ files of new writes plus comparable reads of existing code.
+
+**Default to inline. Treat decomposition as the exception, not the equal-path alternative.** When in doubt, inline. The cost of an inline build that turns out to be a hair too big is mid-turn pressure (which you can recover from); the cost of decomposition for work that fit inline is artifact ceremony, subagent dispatch round-trips, and a slower iteration loop the user feels on every back-and-forth. The visible-engineering-feel of decomposition.md / plan.todo / parallel dispatches is NOT a justification on its own — those artifacts are tools that pay rent only when the parent genuinely couldn't have shipped the work directly.
+
+**Model strength compounds.** A 7B local model overflows on a 4-file card class — decomposition is forced. A 200K-context cloud model holds even multi-card builds inline — decomposition is rarely correct there. A 65K-Qwen sits in between: typical card classes fit inline (use `create-card-class`); large complex cards (200+ lines per file across multiple subsystems plus heavy reads of existing code) genuinely don't. Read your runtime block; the gate question scales with what's actually configured.
 
 If you decide to delegate, the **first** thing you do is invoke `task-decomposer`. Light reads (the user's spec.md, a quick glance at canvas state) are fine before deciding — the prohibition against reading isn't dogma, it's a hedge for when context is genuinely tight. Use the budget block in your system prompt: if you have headroom for a 3-5KB context-gathering read before deciding, do it; if not, delegate without reading.
 
@@ -43,9 +54,22 @@ Steps:
 
 1. **Restate the ask** in one sentence. If genuinely ambiguous (the user said "build me a music player" with no other context), ask the clarifying question and stop. If the ask is clear enough to plan, continue.
 
-2. **Delegate the planning IMMEDIATELY** — call `task({ agent: "task-decomposer", prompt: "<the user's request, verbatim, plus any clarifying context they gave>" })`. **Make this your first tool call.** Do NOT read any files first — the decomposer reads the canvas itself. The decomposer writes/updates four artifacts: `canvas/spec.md`, `canvas/interfaces.md` (with named sections), `canvas/decomposition.md` (the design memory), `canvas/plan.todo` (with per-item `Context:` and `Skip:` manifests). It returns a one-line status.
+2. **Apply the gate question — does this fit inline?** Estimate the work against the parent's spare context budget per the runtime block. If yes-or-probably-yes, **stop here**: drop out of this skill, invoke `create-card-class` (for card-class work), `fix-bug` (for bugs), or just do the edits directly. The orchestrator pattern is NOT for tasks that fit inline; using it anyway costs you artifact ceremony, subagent dispatch round-trips, and a slower loop. **Worked examples that fail the gate (decomposition is wrong):**
 
-   The decomposer may return `declined: parent can inline this work — ...` — that's a successful outcome meaning the orchestrator pattern doesn't pay off here. Drop the orchestrator path and inline the work yourself (or invoke `create-card-class` skill for cards). Don't re-invoke `task-decomposer` to force a plan.
+   - "build a world clock card" — single card class, ~500 total lines across four files, fits inline on any reasonable model. Use `create-card-class`.
+   - "fix the addLayer bug" — single bug, single file, no plan needed. Use `fix-bug`.
+   - "add a city to the world clock" — instance-data edit + maybe a doc ask. Inline.
+   - "add a settings panel to the existing chat card" — feature addition to one existing card class, fits inline.
+
+   **Worked examples that pass the gate (decomposition pays):**
+
+   - "build me three card classes — chat, calendar, todo." Three independent units. Decompose.
+   - "refactor app.js + plugins.js + storage.js into a new module layout." Multi-module, integration surface is namable. Decompose.
+   - "build a complex card with map + terminator + controls + persistence + undo/redo + ~800 lines of card.js across multiple subsystems." Single card class but parent overflow risk on tight slots. Decompose IF runtime numbers say so.
+
+3. **If the gate says NO (decomposition is justified), delegate the planning** — call `task({ agent: "task-decomposer", prompt: "<the user's request, verbatim, plus any clarifying context they gave>" })`. Light pre-reads (user's spec.md, quick canvas glance) are fine before deciding; if budget is tight, skip them. The decomposer writes/updates four artifacts: `canvas/spec.md`, `canvas/interfaces.md` (with named sections), `canvas/decomposition.md` (the design memory), `canvas/plan.todo` (with per-item `Context:` and `Skip:` manifests). It returns a one-line status.
+
+   The decomposer may itself return `declined: parent can inline this work — ...` — that's a successful outcome confirming the gate. If you missed it, the decomposer catches it on its side. Drop the orchestrator path and inline the work yourself. **Don't re-invoke `task-decomposer` to force a plan.**
 
 3. **Read the design + plan** — `read_file canvas/decomposition.md` and `read_file canvas/plan.todo`. Decomposition.md is the canonical architecture doc (subcomponents, dependency graph, rejected seams, verification gates). Plan.todo is the dispatch queue with curated `Context:`/`Skip:` manifests per item. Confirm they align: every plan item should reference a `## Subcomponents § <name>` entry from decomposition.md.
 
