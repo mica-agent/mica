@@ -8,7 +8,7 @@ description: After writing or editing code, verify it works before moving on. Us
 After every code change, run the relevant verification BEFORE claiming done or moving to the next step:
 
 1. **Type-check** — `npx tsc --noEmit`. Required after any TypeScript edit.
-2. **Restart** — `bash scripts/restart.sh`. Required after any server change.
+2. **Restart** — required after any `server/*.ts` change. **Never run `scripts/restart.sh` or `scripts/stop.sh` yourself** — you live inside the backend's process tree; the script will SIGTERM you mid-tool-call and the restart will not complete. Ask the user inline: *"I edited `server/foo.ts` — can you run `scripts/restart.sh` from your shell?"* They're outside your process tree. (Card classes and project files hot-reload via the file watcher; no restart needed for those — skip this step.)
 3. **Hit the actual surface** that changed:
    - HTTP endpoint: `curl -s http://127.0.0.1:3002/api/<path>`
    - Card UI: ask the user to hard-refresh and confirm visible behavior. You cannot drive the browser.

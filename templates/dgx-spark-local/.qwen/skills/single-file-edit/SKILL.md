@@ -20,7 +20,7 @@ Default to file-by-file:
 If batching:
 - Make all edits
 - Run `npx tsc --noEmit`
-- Run `bash scripts/restart.sh` if any server file changed
+- If any `server/*.ts` file changed, **ask the user inline to restart** — never run `scripts/restart.sh` yourself; you're inside the backend's process tree and the script will SIGTERM you mid-tool-call. Card classes and project files hot-reload via the file watcher; no restart needed for those.
 - Report
 
 The local model loses track of multi-file changes mid-stream and writes inconsistent identifier names across files. Type-checks between edits catches this immediately instead of at the end.

@@ -650,7 +650,24 @@ Typical ladder AFTER the skeleton copy:
 5. events via `mica.on('file-changed', ...)` if the card needs to react
 6. CSS + polish
 
-Ship step 1, verify, then step 2. Do not one-shot a 200-line `card.js`. Run `bash scripts/restart.sh` after server changes; hard-refresh after frontend-only changes.
+Ship step 1, verify, then step 2. Do not one-shot a 200-line `card.js`. Card classes hot-reload via the file watcher — no restart needed. **Do NOT run `scripts/restart.sh` or `scripts/stop.sh`** — you run inside the backend's process tree and would SIGTERM yourself mid-tool-call. Hard-refresh the browser after frontend-only changes; ask the user to restart if you genuinely changed server-side code (`server/*.ts`).
+
+## Card class not appearing? Never restart — diagnose the registry instead
+
+If you've written `.mica/card-classes/<name>/{metadata.json,card.html,card.js,card.css}` and the class isn't showing up where you expect, **the file watcher already picked it up** — Mica hot-reloads card-class directories on disk change. The fix is never to restart the server.
+
+Common misdiagnoses, with the actual cause:
+
+| Symptom | Wrong fix | Real cause |
+|---|---|---|
+| `curl http://127.0.0.1:3002/api/card-classes` doesn't list `<name>` | "Server cache stale, restart" | The registry endpoint is **project-scoped**. `curl` without the `X-Mica-Project` header returns only built-in classes. To see project-scoped classes, query from inside a card with `mica.cardClasses.list()`, OR pass the header: `curl -H 'X-Mica-Project: <project>' .../api/card-classes`. |
+| Instance file `<root>/<name>.foo` renders as TXT badge | "Server didn't pick up the class, restart" | The `extension` field in `metadata.json` doesn't match the parent directory name. The Mica resolver maps file extensions directly to directory names (no dot in the directory). Fix the mismatch — see `enforceCardClassMetadata` rules. |
+| Card mounts as a blank box | "Class isn't registered, restart" | `card.html` rendered but `card.js` errored. Check the chat for a `[card-error]` broadcast. Usually a syntax error or a redeclared CARD_SHIM global (`container`/`mica`). |
+| Editing card.js doesn't update the running card | "Backend caching, restart" | The instance card needs a refresh — Mica reloads on next mount. Click off and back, OR make a no-op edit to the instance file to trigger the file-changed event. |
+
+**Why you must not restart:** the agent runs inside the qwen-code SDK process, which is a child of the Mica backend. `scripts/restart.sh` sends SIGTERM to the backend → SDK dies → agent dies → restart's `start.sh` phase never runs because its parent shell was killed too. End state: backend dead, frontend orphaned, no recovery without user intervention. The system blocks `scripts/(stop|restart)\.sh` at the shell layer for exactly this reason.
+
+If you genuinely believe a server-code change requires a restart, **ask the user inline**: *"I edited `server/foo.ts` — can you run `scripts/restart.sh` from your shell? I can't safely restart from inside the agent."* They're outside your process tree and can do it without losing the session.
 
 ## Debugging "Failed to load dependency: <url>" card-errors
 

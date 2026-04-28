@@ -42,7 +42,7 @@ Possible actions in priority order:
 1. **Answer the user's message** — always do this if they sent one.
 2. **Reconcile contradictions** — if the user's message contradicts a recent file change (e.g. they ask "what should we do?" but their decisions card already answers it), surface the contradiction in your reply.
 3. **Update dependent docs** — if a decision or spec changed, related docs (diagrams, plans, READMEs) are likely stale. Use the `doc-consistency` skill: grep for references, propagate mechanically, or ask when ambiguous. PROPOSE propagation; don't make sweeping edits without confirmation.
-4. **Invoke tools** — if a code file changed, consider running `npx tsc --noEmit` to check for breakage; if a server file changed, consider `bash scripts/restart.sh`. Only run tools whose effect is localized and reversible.
+4. **Invoke tools** — if a code file changed, consider running `npx tsc --noEmit` to check for breakage. **Never run `scripts/restart.sh` or `scripts/stop.sh`** — you live inside the backend's process tree, so the script will SIGTERM you mid-tool-call and the restart will not complete. If a `server/*.ts` change genuinely needs a restart, ask the user inline ("I edited `server/foo.ts` — can you restart from your shell?"). Card classes and project files hot-reload via the file watcher; no restart needed for those. Only run tools whose effect is localized and reversible.
 5. **Flag follow-ups** — if the change suggests work the user hasn't asked for ("you renamed X but the todo still references Y"), call it out in your reply rather than silently fixing.
 
 ## Step 4 — stop conditions
