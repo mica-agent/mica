@@ -117,6 +117,13 @@ record_child_pid() {
 }
 
 echo "Starting backend on port $BACKEND_PORT..."
+# QWEN_CODE_CLI_PATH points the @qwen-code/sdk at our wrapper (which prepends
+# --experimental-lsp before delegating to the bundled CLI). The SDK respects
+# this env var when resolving pathToQwenExecutable. This is the only way to
+# enable LSP for SDK-driven sessions: QueryOptions doesn't expose
+# experimentalLsp as of SDK v0.1.7, and the CLI default is `false`.
+# Comment out (or set to empty) to disable.
+export QWEN_CODE_CLI_PATH="${QWEN_CODE_CLI_PATH:-/workspaces/mica/scripts/qwen-lsp-wrapper.mjs}"
 # setsid + nohup so the server survives SIGHUP when the launching shell (which
 # may be short-lived — e.g. a non-interactive `bash scripts/restart.sh` from
 # an automation tool) exits. Without this, plain `&` backgrounded processes
