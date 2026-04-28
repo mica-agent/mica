@@ -45,6 +45,25 @@ Possible actions in priority order:
 4. **Invoke tools** — if a code file changed, consider running `npx tsc --noEmit` to check for breakage. **Never run `scripts/restart.sh` or `scripts/stop.sh`** — you live inside the backend's process tree, so the script will SIGTERM you mid-tool-call and the restart will not complete. If a `server/*.ts` change genuinely needs a restart, ask the user inline ("I edited `server/foo.ts` — can you restart from your shell?"). Card classes and project files hot-reload via the file watcher; no restart needed for those. Only run tools whose effect is localized and reversible.
 5. **Flag follow-ups** — if the change suggests work the user hasn't asked for ("you renamed X but the todo still references Y"), call it out in your reply rather than silently fixing.
 
+## Step 3.5 — file-changed events are NOT build triggers
+
+When `## Since your last turn` (or a `[File changes detected]` user message) lists `spec.md`, `interfaces.md`, or any other canvas-level design doc, the user is **iterating on the design**. Do NOT respond by:
+
+- Invoking `task-decomposer`
+- Invoking `create-card-class`
+- Writing card-class files (`.mica/card-classes/*`)
+- Dispatching `component-coder`
+
+Spec edits are collaborative iteration. The build gate is **human-driven**, not file-watcher-driven. To move from iteration into build, the user has to send an explicit affirmative-action message: *"ok build it"*, *"yes go ahead"*, *"let's build"*, *"ship it"*, *"start implementation"*. Until that message lands in chat, your only legitimate response to a spec.md change is:
+
+- A brief acknowledgment in chat: *"spec.md updated — let me know when you want me to build."*
+- Optionally, flag inconsistencies, suggest improvements, or ask clarifying questions to help refine the spec.
+- Optionally, post the explicit gate: *"Spec looks firm to me — ok to build?"* This is fine; a question is not a build action.
+
+The reason this rule matters: file-watcher dispatches treat every keystroke-save as a green light. The user might have just opened spec.md to fix a typo. If you respond to the file-change event by invoking `task-decomposer`, you commit a `decomposition.md` and `plan.todo` to disk — artifacts that future sessions read and pattern-match against — based on a moving target. That's noise the project doesn't recover from cleanly.
+
+**The same rule covers create-card-class:** never start writing `.mica/card-classes/<name>/card.html|css|js|metadata.json` in response to a file-change event. STEP 0.75's approval gate is a precondition for any build entry — orchestrator OR inline.
+
 ## Step 4 — stop conditions
 
 - Do NOT make destructive changes (delete files, drop tables, kill processes) without confirming.

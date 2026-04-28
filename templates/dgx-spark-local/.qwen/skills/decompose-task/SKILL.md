@@ -52,6 +52,19 @@ If you decide to delegate, the **first** thing you do is invoke `task-decomposer
 
 Steps:
 
+0. **Precondition: explicit user build approval.** Before applying the gate question or invoking task-decomposer, verify the user has explicitly approved the spec for implementation in this session. Approval signals:
+
+   - A direct user message with affirmative-action phrasing: *"ok build it"*, *"yes go ahead"*, *"let's build"*, *"ship it"*, *"start implementation"*, *"decompose this"*.
+   - A user reply to your own *"Drafted in spec.md — review and OK to build?"* approval gate (per STEP 0.75 of `create-card-class`).
+
+   **Do NOT invoke this skill if:**
+
+   - The trigger was a `[File changes detected]` event listing spec.md (the user is editing; not approving).
+   - The user's last message was a clarifying question, a critique, or more spec input.
+   - The spec is a one-line stub the user just updated; they're iterating, not approving.
+
+   **If approval is missing:** respond in chat with a brief acknowledgment of what changed, optionally surface inconsistencies, and post the explicit gate: *"Spec looks firm to me — ok to build?"* OR ask a clarifying question if the spec needs more shape. Then **wait**. Don't invoke this skill, don't dispatch task-decomposer, don't start writing card-class files until the user replies affirmatively. The build gate is human-driven, not file-watcher-driven.
+
 1. **Restate the ask** in one sentence. If genuinely ambiguous (the user said "build me a music player" with no other context), ask the clarifying question and stop. If the ask is clear enough to plan, continue.
 
 2. **Apply the gate question — does this fit inline?** Estimate the work against the parent's spare context budget per the runtime block. If yes-or-probably-yes, **stop here**: drop out of this skill, invoke `create-card-class` (for card-class work), `fix-bug` (for bugs), or just do the edits directly. The orchestrator pattern is NOT for tasks that fit inline; using it anyway costs you artifact ceremony, subagent dispatch round-trips, and a slower loop. **Worked examples that fail the gate (decomposition is wrong):**

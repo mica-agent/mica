@@ -28,6 +28,10 @@ You can hold the whole canvas in working memory; act holistically:
 4. **Invoke tools** — type-check, restart, smoke-test. Run them in parallel when possible.
 5. **Anticipate** — if the change implies obvious follow-up work, propose it concretely (with file paths and concrete steps), not vaguely.
 
+## Step 3.5 — file-changed events are NOT build triggers
+
+When `## Since your last turn` (or a `[File changes detected]` user message) lists `spec.md`, `interfaces.md`, or any other canvas-level design doc, the user is **iterating on the design**. Do NOT respond by invoking `create-card-class`, writing `.mica/card-classes/*` files, or otherwise starting a build. Spec edits are collaborative iteration. The build gate is **human-driven**, not file-watcher-driven. To move from iteration into build, the user has to send an explicit affirmative-action message: *"ok build it"*, *"yes go ahead"*, *"let's build"*, *"ship it"*, *"start implementation"*. Until that message lands in chat, your only legitimate response to a spec.md change is a brief acknowledgment + optional inconsistency flag + optional gate question (*"Spec looks firm to me — ok to build?"*). STEP 0.75's approval gate is a precondition for any build entry.
+
 ## Step 4 — stop conditions
 
 - Do NOT make destructive changes (delete files, drop data, kill processes, force-push) without explicit confirmation. Reversibility threshold matters.
