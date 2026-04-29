@@ -27,6 +27,19 @@ if (!process.argv.includes("--experimental-lsp")) {
   process.argv.splice(2, 0, "--experimental-lsp");
 }
 
+// Debug: log the final argv to a file so we can prove the wrapper is
+// in the call path. The SDK swallows stderr by default (only forwarded
+// when QueryOptions sets `debug` or `stderr` — Mica doesn't), so stderr
+// is /dev/null'd. Writing to a file is the reliable signal. Remove
+// after we've confirmed LSP is registering as a tool.
+import { appendFileSync } from "node:fs";
+try {
+  appendFileSync(
+    "/tmp/qwen-lsp-wrapper.log",
+    `[${new Date().toISOString()}] argv: ${JSON.stringify(process.argv)}\n`,
+  );
+} catch { /* never block agent start on debug-log failure */ }
+
 // Defer to the bundled CLI. ESM dynamic import handles its own arg
 // parsing on import-time-side-effect.
 await import(cliPath);

@@ -90,7 +90,7 @@ import { createSkillComposeHandler } from "./plugins/skillCompose.js";
 import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { registerGitEndpoints } from "./plugins/git.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
-import { enforceCardClassMetadata, enforceCardJsLint } from "./cardValidators.js";
+import { enforceCardClassMetadata, enforceCardJsLint, enforceCardClassPath, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 import {
   setActivityBroadcast,
@@ -1584,6 +1584,41 @@ function broadcastToProject(project: string, msg: Record<string, unknown>): numb
 fileWatcher.on("file-change", async (event: { type: string; filename: string; project: string }) => {
   console.log(`[file-watcher:${event.project}] ${event.type}: ${event.filename}`);
 
+  // Path enforcement: card-class-shaped files outside `.mica/card-classes/`
+  // bypass enforceCardClassMetadata + enforceCardJsLint (those only watch
+  // the `.mica/...` path). Catch the misplacement here so the agent gets a
+  // card-error broadcast pointing at the right move command.
+  if (event.type !== "deleted") {
+    enforceCardClassPath(event.filename, {
+      onError: (reason) => {
+        console.warn(`[card-class-path:${event.project}] ${reason}`);
+        broadcastToProject(event.project, {
+          type: "card-error",
+          filename: event.filename,
+          error: reason,
+        });
+      },
+    });
+  }
+
+  // Decomposition consistency: catch "Decision: Inline" + @component-coder
+  // dispatch items contradiction (tenet 12). Fires after any decomposition.md
+  // or plan.todo write — if both files exist and contradict, broadcast.
+  if (event.type !== "deleted") {
+    enforceDecompositionConsistency(event.filename, projectDir(event.project), {
+      onError: (reason) => {
+        console.warn(`[decomposition-check:${event.project}] ${reason}`);
+        broadcastToProject(event.project, {
+          type: "card-error",
+          filename: event.filename,
+          error: reason,
+        });
+      },
+    }).catch((err) => {
+      console.error(`[decomposition-check:${event.project}] failed:`, err);
+    });
+  }
+
   if (event.type === "deleted") {
     broadcastToProject(event.project, { type: "file-deleted", filename: event.filename });
     // Tear down any channel session keyed to this file (chat/claude/terminal/etc.).
@@ -1630,6 +1665,21 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // the chat card renders with a "Send to agent" button.
   if (event.type !== "deleted" && event.filename.endsWith("/metadata.json")) {
     const absPath = join(projectDir(event.project), event.filename);
+    // Tier-1 URL reachability: fetch each dependencies.scripts/styles URL
+    // and broadcast card-error if any 404 / fail. Runs in parallel with
+    // the metadata-shape check below — different validation, both fire.
+    enforceDependenciesReachable(absPath, {
+      onError: (reason) => {
+        console.warn(`[deps-reachable:${event.project}] ${reason}`);
+        broadcastToProject(event.project, {
+          type: "card-error",
+          filename: event.filename,
+          error: reason,
+        });
+      },
+    }).catch((err) => {
+      console.error(`[deps-reachable:${event.project}] failed:`, err);
+    });
     enforceCardClassMetadata(absPath, {
       // Auto-fix succeeded: framework already wrote the correct file. Log
       // server-side for trace/audit, but DON'T broadcast card-error — the

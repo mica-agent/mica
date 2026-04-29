@@ -16,7 +16,7 @@ is not yet built.
 
 ## How we build
 
-Nine engineering convictions shape every decision. Mirrored
+Sixteen engineering convictions shape every decision. Mirrored
 verbatim from ARCHITECTURE.md so the list lives in one canonical
 phrasing.
 
@@ -64,6 +64,50 @@ phrasing.
     the agent's side of the line — we don't build them. See
     DESIGN-DECISIONS.md §"Augmentation-layer boundary" for the
     full table and the reasoning.
+11. **Plan before building.** Cost of fixing wrong code is far
+    greater than the cost of correct planning. Specs, contracts,
+    and interface boundaries are decided and approved *before*
+    any code is written. This is the parent rationale for
+    tenets 8 and 9, and the justification for every gate we
+    ship. Skipping the plan to "just try something" inverts the
+    cost asymmetry.
+12. **Divide only when architecture and model both demand it.**
+    Decompose work into subagent dispatches only when (a) seams
+    are architecturally real — named integration boundaries,
+    distinct contracts another agent could implement without
+    reading the others' code — AND (b) the integrated whole
+    exceeds the model's reliable working set. If either gate
+    fails, work inline. Reusable design memory, narrative
+    cleanliness, and future flexibility are not gates.
+13. **Context is the budget.** Every line of skill prose, every
+    file read, every dispatch payload consumes the model's
+    working set. The skill suite itself is part of the model's
+    permanent system prompt — duplicating "read before writing"
+    across five skills directly burns the budget on which
+    adherence depends. Cut before adding. Curate at every
+    level: skill prose, dispatch context, file reads. The
+    dynamic counterpart to tenet 1's static design discipline.
+14. **Approval gates are user-driven, not file-driven.** A spec
+    save is not a build trigger. Humans control the moment a
+    build starts. File-watcher events propagate state; they
+    don't authorize action. Drives fresh-thread semantics,
+    decompose-task gating, and per-turn discipline.
+15. **Reuse before reinventing.** Before writing custom code,
+    check whether `mica.*` APIs, the agent SDK, or an
+    established library already does the job. If unsure between
+    "use the API" and "write our own", surface the option to the
+    user — don't silently roll your own. Tenet 10 is the
+    strongest specific case; the same discipline applies to
+    `mica.*` (host API) and to 3rd-party libraries.
+16. **Follow APIs as authored; validate before relying.** Once
+    an API is chosen, use signatures and shapes verbatim — don't
+    improvise method names that "look right" (`mica.read()` is
+    not a method; `mica.getContent()` is). For 3rd-party
+    endpoints — URLs, services, library entry points — verify
+    they exist and return the shape your code parses *before*
+    committing to the integration. Distinct from tenet 8: that
+    verifies the agent's *output*; this verifies the agent's
+    *inputs*.
 
 ## The containment model (files are files)
 

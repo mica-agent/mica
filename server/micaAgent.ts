@@ -594,6 +594,65 @@ export async function buildSubagentCanvasContext(
   return parts.join("\n\n");
 }
 
+/** Read each `.qwen/skills/<name>/SKILL.md` frontmatter and emit a directive
+ *  block listing them with names + descriptions. Restores the explicit
+ *  per-skill trigger guidance that was removed in commit 8c87ba1 (replaced
+ *  by abstract auto-discovery prose that local Qwen MoE doesn't honor).
+ *
+ *  This complements (doesn't duplicate) the SDK's own skill-tool description:
+ *  the SDK lists skills inside the Skill tool's <available_skills> block,
+ *  but local models reliably ignore that. Putting the same information
+ *  in the chat agent's own systemPrompt with explicit "match → invoke"
+ *  language is what made skill triggering work pre-8c87ba1. */
+async function buildAvailableSkillsPrompt(project: string | null): Promise<string> {
+  const skillsDir = join(getProjectDir(project), ".qwen", "skills");
+  const entries: Array<{ name: string; description: string }> = [];
+  try {
+    const dirents = await readdir(skillsDir, { withFileTypes: true });
+    for (const dirent of dirents) {
+      if (!dirent.isDirectory()) continue; // skip flat reference files like _conventions.md
+      const skillFile = join(skillsDir, dirent.name, "SKILL.md");
+      try {
+        const content = await readFile(skillFile, "utf-8");
+        // Frontmatter is `---\n<yaml>\n---` at file start. Simple regex parse —
+        // we only need `name` and `description`, both single-line strings.
+        const m = content.match(/^---\n([\s\S]*?)\n---/);
+        if (!m) continue;
+        const fm = m[1];
+        const nameMatch = fm.match(/^name:\s*(.+)$/m);
+        const descMatch = fm.match(/^description:\s*(.+(?:\n[ ]+.+)*)/m);
+        if (!nameMatch || !descMatch) continue;
+        const name = nameMatch[1].trim().replace(/^["']|["']$/g, "");
+        // Multi-line description support: YAML continuation lines start with
+        // 2+ spaces. Collapse those into a single-line string.
+        const description = descMatch[1]
+          .replace(/\n[ ]+/g, " ")
+          .trim()
+          .replace(/^["']|["']$/g, "");
+        entries.push({ name, description });
+      } catch {
+        // skill file missing or unreadable — skip silently
+      }
+    }
+  } catch {
+    return ""; // skills directory doesn't exist (e.g. project without template)
+  }
+
+  if (entries.length === 0) return "";
+
+  const skillLines = entries
+    .map((s) => `- **${s.name}** — ${s.description}`)
+    .join("\n");
+
+  return `## Available skills (mandatory when matched)
+
+When a user request matches one of the skills below, you MUST invoke it via the \`skill\` tool BEFORE any other action — before \`read_file\`, \`list_directory\`, \`write_file\`, anything. The skill body contains load-bearing procedural steps; noticing a skill is relevant and then free-forming the work anyway defeats the purpose. Match → invoke → follow.
+
+${skillLines}
+
+Match liberally — the trigger words in each description aren't exhaustive; use judgment for adjacent phrasings. If multiple skills match, prefer the most specific. If \`participate-fully\` is listed, read it at the start of EVERY turn to assess what changed.`;
+}
+
 export async function buildContext(
   agentFilename: string,
   project: string | null,
@@ -951,10 +1010,7 @@ When reacting to file changes:
 - Log decisions and actions taken to ${canvasRoot}/decisions.md
 - If you have questions, add them to your chat response AND create a todo item assigned to @human
 
-## Skills
-This project's skills are bundled by its template and live under \`.qwen/skills/<name>/SKILL.md\`. The Qwen SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.
-
-**Skills are mandatory when they match, not optional.** If a skill's description matches the user's request, you MUST invoke it via the \`skill\` tool BEFORE taking any other action — before \`read_file\`, before \`list_directory\`, before anything. Do not "think the skill would apply" and then proceed without it. Do not summarize what the skill would do instead of running it. The skill body contains load-bearing procedural steps; noticing the skill is relevant and then free-forming the work anyway defeats the purpose. Match → invoke → follow.
+${await buildAvailableSkillsPrompt(project)}
 
 ## Arc completion marker
 When a coherent arc of work ends — the user's task is done, or the conversation has reached a natural stopping point where starting fresh would not lose anything important — emit the literal marker \`<thread-state>arc-complete</thread-state>\` as the last line of your response. This is Mica's signal that the chat can reset its context cursor. Use it sparingly and only at genuine breaks (task finished, question answered, plan ratified). Do NOT emit it mid-task, after tool errors, or when the user is still iterating.
@@ -1481,6 +1537,22 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           prompt: promptWithHistory,
           options: {
             cwd: getProjectDir(sessionProject),
+            // Route through our LSP wrapper so --experimental-lsp is on. The SDK
+            // README claims QWEN_CODE_CLI_PATH is honored as auto-detect; in
+            // practice (verified against v0.1.7) that env var is not read by
+            // any code path — only documented. The pathToQwenExecutable
+            // option IS read, so we set it explicitly. Wrapper at
+            // scripts/qwen-lsp-wrapper.mjs prepends --experimental-lsp before
+            // delegating to the bundled CLI.
+            pathToQwenExecutable: "/workspaces/mica/scripts/qwen-lsp-wrapper.mjs",
+            // Forward CLI stderr to our log — temporarily unfiltered, to debug
+            // why LSP isn't surfacing as a tool. The SDK's ProcessTransport
+            // pipes stderr only when `debug` or `stderr` is set; without
+            // either, stderr is /dev/null'd. We want every line.
+            stderr: (msg: string) => {
+              const trimmed = msg.trim();
+              if (trimmed) console.log(`[qwen-stderr] ${trimmed.slice(0, 600)}`);
+            },
             // For local llama-server the model name is informational (server uses
             // the model loaded at startup). The legacy "openai:local" magic string
             // worked because llama-server ignores model. OpenRouter validates strictly,

@@ -290,7 +290,337 @@ export async function enforceCardClassMetadata(
         `Failed to auto-fix metadata.json extension mismatch (${bare} vs ${dirName}): ${(err as Error).message}`,
       );
     }
+    return; // The auto-fix re-triggers the file-watcher; field checks run next round.
   }
+
+  // ── Field-shape checks (extension is now correct) ─────────────
+  //
+  // Smoke test 3 (2026-04-29) showed agents writing package.json-shaped
+  // metadata.json: `{ "name": "...", "description": "...", "dependencies": {
+  // "three": "0.160.0" } }`. The extension/dir match held (or got auto-fixed
+  // above), but the card still rendered with `???` because `badge` was
+  // missing — and the dependencies shape was wrong, so external scripts
+  // never loaded. These checks catch the rest.
+
+  const fieldErrors: string[] = [];
+
+  if (typeof parsed.badge !== "string" || !parsed.badge.trim()) {
+    fieldErrors.push(
+      "missing required field `badge` — a 2-3 character mnemonic shown on the card chip (e.g. `\"badge\": \"CTR\"` for a counter). Without it, the canvas renders the card with `???`.",
+    );
+  }
+
+  if (typeof parsed.defaultTitle !== "string" || !parsed.defaultTitle.trim()) {
+    fieldErrors.push(
+      "missing required field `defaultTitle` — the human-readable card title (e.g. `\"defaultTitle\": \"Counter\"`). Without it, the title falls back to the raw filename.",
+    );
+  }
+
+  if (parsed.dependencies !== undefined) {
+    const deps = parsed.dependencies as unknown;
+    if (typeof deps !== "object" || deps === null || Array.isArray(deps)) {
+      fieldErrors.push(
+        "field `dependencies` must be an object with optional `scripts` and `styles` arrays (e.g. `\"dependencies\": { \"scripts\": [], \"styles\": [] }`). Got " + (Array.isArray(deps) ? "an array" : typeof deps) + ".",
+      );
+    } else {
+      const depsObj = deps as Record<string, unknown>;
+      const knownKeys = new Set(["scripts", "styles"]);
+      const unknownKeys = Object.keys(depsObj).filter((k) => !knownKeys.has(k));
+      const looksNpmShaped = unknownKeys.length > 0 &&
+        unknownKeys.every((k) => typeof depsObj[k] === "string");
+      if (looksNpmShaped) {
+        fieldErrors.push(
+          `field \`dependencies\` is npm-package-shaped (\`{ "${unknownKeys[0]}": "${String(depsObj[unknownKeys[0]])}" }\`). Mica's shape is \`{ "scripts": ["https://cdn.../lib.min.js"], "styles": ["https://cdn.../lib.css"] }\`. Replace each npm package with a verified CDN URL (run \`curl -sI -L "<url>" | head -1\` to confirm 200 before saving).`,
+        );
+      } else {
+        if (depsObj.scripts !== undefined && (!Array.isArray(depsObj.scripts) || depsObj.scripts.some((s) => typeof s !== "string"))) {
+          fieldErrors.push("field `dependencies.scripts` must be an array of URL strings.");
+        }
+        if (depsObj.styles !== undefined && (!Array.isArray(depsObj.styles) || depsObj.styles.some((s) => typeof s !== "string"))) {
+          fieldErrors.push("field `dependencies.styles` must be an array of URL strings.");
+        }
+      }
+    }
+  }
+
+  // Reject package.json-leak fields explicitly so the agent learns these
+  // aren't part of the Mica schema. We don't strip them (the file might be
+  // shared with non-Mica tooling), just surface the warning so the agent
+  // knows they're noise.
+  const packageJsonLeaks: string[] = [];
+  if (typeof parsed.name === "string") packageJsonLeaks.push("`name`");
+  if (typeof parsed.description === "string") packageJsonLeaks.push("`description`");
+  if (typeof parsed.version === "string") packageJsonLeaks.push("`version`");
+  if (packageJsonLeaks.length > 0) {
+    fieldErrors.push(
+      `metadata.json contains package.json-shaped fields (${packageJsonLeaks.join(", ")}) that Mica ignores. The Mica schema is: \`extension\`, \`badge\`, \`defaultTitle\`, \`primaryFile\` (optional), \`dependencies\` (optional, with \`scripts\`/\`styles\` arrays). Drop the package.json fields when next editing.`,
+    );
+  }
+
+  if (fieldErrors.length > 0) {
+    opts.onError?.(
+      `\`${dirName}/metadata.json\` schema check failed:\n  • ${fieldErrors.join("\n  • ")}`,
+    );
+  }
+}
+
+// ── Decomposition consistency (decomposition.md ↔ plan.todo) ───
+//
+// The task-decomposer's tenet-12 gate (see _conventions.md) says:
+// if either gate fails (no real seams OR fits in the parent's working
+// set), write NO artifacts and return `declined: parent can inline`.
+// Pre-Wave-1 prose let agents produce "Decision: Inline" + a plan.todo
+// with @component-coder items — operationally resolved in favor of the
+// dispatch queue, defeating the gate. Wave 1 prose collapsed the
+// "BUT not for these reasons" sprawl, but the contradiction is still
+// possible if a buggy/stale decomposer slips through. This validator
+// catches the contradiction at write time so the agent self-corrects
+// before subagents are dispatched.
+
+const DECOMPOSITION_FILE_RX = /(?:^|\/)decomposition\.md$/;
+const PLAN_TODO_FILE_RX = /(?:^|\/)(?:plan|tasks)\.todo$/;
+
+/** Fires after writes to decomposition.md or plan.todo. Reads both files
+ *  from the same directory and broadcasts a card-error if decomposition.md
+ *  declares Decision: Inline AND plan.todo has `@component-coder` items in
+ *  `## Active`. */
+export async function enforceDecompositionConsistency(
+  filename: string,
+  projectDirAbsolute: string,
+  opts: {
+    onError?: (reason: string) => void;
+  } = {},
+): Promise<void> {
+  const isDecomp = DECOMPOSITION_FILE_RX.test(filename);
+  const isPlan = PLAN_TODO_FILE_RX.test(filename);
+  if (!isDecomp && !isPlan) return;
+
+  const { dirname, join, basename } = await import("path");
+  const { readFile } = await import("fs/promises");
+
+  // Both files should live in the same directory (canvas root). Look for
+  // a sibling regardless of which one fired.
+  const dir = dirname(filename);
+  const decompPath = join(projectDirAbsolute, dir, "decomposition.md");
+  // The plan file naming convention is project-driven — try both common names.
+  const planCandidates = isPlan
+    ? [join(projectDirAbsolute, dir, basename(filename))]
+    : [join(projectDirAbsolute, dir, "plan.todo"), join(projectDirAbsolute, dir, "tasks.todo")];
+
+  const decompText = await readFile(decompPath, "utf-8").catch(() => null);
+  if (!decompText) return;
+
+  let planText: string | null = null;
+  for (const c of planCandidates) {
+    const t = await readFile(c, "utf-8").catch(() => null);
+    if (t) { planText = t; break; }
+  }
+  if (!planText) return;
+
+  // Detect "Decision: Inline" — match the heading + look at the next ~200
+  // chars for the verdict word. Tolerate variants ("Inline", "INLINE",
+  // "Decision: Inline.").
+  const decisionMatch = decompText.match(/##\s*Decision[^\n]*\n([\s\S]{0,300}?)(?=\n##\s|\n#\s|$)/i);
+  if (!decisionMatch) return;
+  const decisionBody = decisionMatch[1];
+  const isInline = /\bInline\b/i.test(decisionBody) && !/\bDecompose\b/i.test(decisionBody);
+  if (!isInline) return;
+
+  // Detect @component-coder items in `## Active`.
+  const activeMatch = planText.match(/##\s*Active[^\n]*\n([\s\S]*?)(?=\n##\s|$)/i);
+  if (!activeMatch) return;
+  const activeBody = activeMatch[1];
+  const hasComponentCoderItems = /@component-coder\b/i.test(activeBody);
+  if (!hasComponentCoderItems) return;
+
+  opts.onError?.(
+    "`decomposition.md` declares `Decision: Inline` but `plan.todo` has `@component-coder` items in `## Active` — these contradict. " +
+    "Per tenet 12, Inline means no subagent dispatch (write nothing, return `declined: parent can inline`). " +
+    "Fix one of:\n" +
+    "  • If the gate genuinely passes both (real seams AND whole exceeds parent's working set): change `decomposition.md` to `Decision: Decompose` with reasoning that satisfies both gates.\n" +
+    "  • If the gate fails: delete the `@component-coder` items from `plan.todo` (the parent will inline this work).\n" +
+    "Reusable design memory, narrative cleanliness, and future flexibility are not gates — see `_conventions.md` § Decomposition gates for the full procedure.",
+  );
+}
+
+// ── Dependency URL reachability (Tier 1) ──────────────────────
+//
+// The create-card-class skill mandates Tier-1 verification of every CDN
+// URL in metadata.json.dependencies BEFORE saving. Smoke test 5
+// (2026-04-29) showed the agent skipping this — picked stale Three.js
+// URLs from training priors, hit a runtime error, picked NEW stale
+// URLs (also 404), iterated without ever curling the URL. Each
+// iteration burns a turn and produces a broken card.
+//
+// This validator runs server-side after every metadata.json write:
+// fetches each declared URL with a short timeout, broadcasts a
+// card-error listing failures so the agent fixes them before the
+// browser ever loads the card. Results are cached briefly to avoid
+// re-fetching the same URL across rapid metadata edits.
+
+interface ReachabilityResult { ok: boolean; status: number; error?: string }
+const DEP_REACHABILITY_TTL_MS = 10 * 60 * 1000;
+const depReachabilityCache = new Map<string, { result: ReachabilityResult; checkedAt: number }>();
+
+async function checkUrlReachable(url: string, timeoutMs = 5000): Promise<ReachabilityResult> {
+  const cached = depReachabilityCache.get(url);
+  if (cached && Date.now() - cached.checkedAt < DEP_REACHABILITY_TTL_MS) {
+    return cached.result;
+  }
+
+  // Use HEAD where supported; some CDNs reject it, so fall back to a
+  // ranged GET that pulls only the first byte. Either way we just need
+  // the response status — the body content is checked elsewhere.
+  let result: ReachabilityResult;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(url, { method: "HEAD", redirect: "follow", signal: controller.signal });
+      // Some CDNs return 405/501 for HEAD; retry with ranged GET.
+      if (res.status === 405 || res.status === 501) {
+        res = await fetch(url, {
+          method: "GET",
+          headers: { Range: "bytes=0-0" },
+          redirect: "follow",
+          signal: controller.signal,
+        });
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    result = { ok: res.ok || res.status === 206, status: res.status };
+  } catch (err) {
+    const msg = (err as Error).message || String(err);
+    result = { ok: false, status: 0, error: msg };
+  }
+  depReachabilityCache.set(url, { result, checkedAt: Date.now() });
+  return result;
+}
+
+/** Fetches every URL in `dependencies.scripts` and `dependencies.styles`
+ *  and broadcasts a card-error listing any that don't return 200/206/3xx.
+ *  Runs after metadata.json writes; returns silently when the file is
+ *  unreadable or has no URL deps. */
+export async function enforceDependenciesReachable(
+  absolutePath: string,
+  opts: {
+    onError?: (reason: string) => void;
+  } = {},
+): Promise<void> {
+  const m = absolutePath.match(/\.mica\/card-classes\/([^/]+)\/metadata\.json$/);
+  if (!m) return;
+  const dirName = m[1];
+
+  const { readFile, stat: fstat } = await import("fs/promises");
+  let raw: string;
+  try {
+    const s = await fstat(absolutePath);
+    if (!s.isFile()) return;
+    raw = await readFile(absolutePath, "utf-8");
+  } catch {
+    return;
+  }
+
+  let parsed: { dependencies?: { scripts?: unknown; styles?: unknown } };
+  try {
+    parsed = JSON.parse(raw) as { dependencies?: { scripts?: unknown; styles?: unknown } };
+  } catch {
+    return; // JSON syntax errors are handled by enforceCardClassMetadata
+  }
+
+  const urls: Array<{ url: string; field: "scripts" | "styles" }> = [];
+  const deps = parsed.dependencies;
+  if (deps && typeof deps === "object") {
+    if (Array.isArray(deps.scripts)) {
+      for (const s of deps.scripts) {
+        if (typeof s === "string" && /^https?:\/\//.test(s)) {
+          urls.push({ url: s, field: "scripts" });
+        }
+      }
+    }
+    if (Array.isArray(deps.styles)) {
+      for (const s of deps.styles) {
+        if (typeof s === "string" && /^https?:\/\//.test(s)) {
+          urls.push({ url: s, field: "styles" });
+        }
+      }
+    }
+  }
+  if (urls.length === 0) return;
+
+  const results = await Promise.all(
+    urls.map(({ url, field }) => checkUrlReachable(url).then((r) => ({ url, field, ...r }))),
+  );
+  const failures = results.filter((r) => !r.ok);
+  if (failures.length === 0) return;
+
+  const failureLines = failures
+    .map((f) => {
+      const detail = f.status === 0 ? f.error || "fetch failed" : `HTTP ${f.status}`;
+      return `  • \`dependencies.${f.field}\`: ${f.url} — ${detail}`;
+    })
+    .join("\n");
+
+  opts.onError?.(
+    `\`${dirName}/metadata.json\` declares dependency URLs that don't resolve:\n${failureLines}\n\n` +
+    `Tier-1 verification (per the create-card-class skill) must pass BEFORE these go in metadata.json. ` +
+    `Common causes: wrong version, missing \`@scope/\` prefix, wrong subpath. Look up the real URL via:\n` +
+    `  • npm registry: \`curl -s https://registry.npmjs.org/<pkg>\` → \`dist-tags.latest\` + \`main\` field\n` +
+    `  • jsdelivr file index: \`https://www.jsdelivr.com/package/npm/<pkg>\` lists every file in the published tarball\n` +
+    `Note for Three.js specifically: \`examples/js/\` was removed after r147 (so OrbitControls etc. are not script-loadable in 0.149+). Pin to <= 0.147 if you need vanilla \`<script>\` use, or pick a different 3D library.`,
+  );
+}
+
+// ── Path enforcement (card-class outside .mica/card-classes/) ──
+//
+// Smoke test 3 (2026-04-29) showed an agent writing a full card class to
+// `card-classes/earth-moon-orbit/` (canvas root, no dot prefix) instead of
+// `.mica/card-classes/earth-moon-orbit/`. The Mica resolver only finds
+// project-scoped classes under `.mica/card-classes/` — files elsewhere are
+// invisible to the canvas, so instances render as plain TXT. Worse: both
+// `enforceCardClassMetadata` and `enforceCardJsLint` only fire on the
+// `.mica/...` path, so the misplaced files bypass all validation.
+//
+// This validator fires on the regular `file-change` event (not
+// `card-class-change`, which the file-watcher only emits for `.mica/`
+// paths) and broadcasts a card-error when it spots card-class-shaped
+// files outside the canonical location. The agent sees the error in
+// chat and moves the directory.
+
+const MISPLACED_CARD_CLASS_RX = /(?:^|\/)card-classes\/([^/]+)\/(card\.(?:js|html|css)|metadata\.json)$/;
+
+/** If `filename` looks like a card-class artifact (card.html/js/css or
+ *  metadata.json under any `card-classes/<ext>/`) but is NOT at the
+ *  canonical `.mica/card-classes/<ext>/` path, broadcast a deny reason. */
+export function enforceCardClassPath(
+  filename: string,
+  opts: {
+    onError?: (reason: string) => void;
+  } = {},
+): void {
+  // Skip the canonical path — `enforceCardClassMetadata` and
+  // `enforceCardJsLint` handle those.
+  if (filename.startsWith(".mica/card-classes/")) return;
+
+  const m = filename.match(MISPLACED_CARD_CLASS_RX);
+  if (!m) return;
+
+  const [, dirName, fileName] = m;
+  // Reconstruct the misplaced parent (everything up to and including
+  // `card-classes/<dirName>`) so the move command we suggest is exact.
+  const idx = filename.indexOf(`card-classes/${dirName}/${fileName}`);
+  const parentBeforeCardClasses = idx > 0 ? filename.slice(0, idx) : "";
+  const misplacedDir = `${parentBeforeCardClasses}card-classes/${dirName}`;
+
+  opts.onError?.(
+    `\`${filename}\` looks like a card-class file but is at the wrong path. ` +
+    `Card classes must live at \`.mica/card-classes/${dirName}/\` (with the leading dot — \`.mica\` is project-scoped). ` +
+    `The Mica resolver only finds card classes under \`.mica/card-classes/\`; files at \`${misplacedDir}/\` are invisible to the canvas and instances render as plain TXT. ` +
+    `Fix: \`mkdir -p .mica/card-classes && mv ${misplacedDir} .mica/card-classes/${dirName}\`. ` +
+    `(Mica's built-in card classes live at \`card-classes/\` inside the Mica repo itself — not inside your project. Project-scoped classes always go under \`.mica/\`.)`,
+  );
 }
 
 /** Extract the post-write content from a write tool's input, if available.
@@ -406,6 +736,42 @@ function _detectWrappedNotCalled(content: string): string | null {
   return null;
 }
 
+/** Detects card.js that's essentially the unmodified skeleton — the agent
+ *  copied the template but never replaced the placeholder behaviour.
+ *
+ *  Suppresses the broadcast for the transient post-`cp -r` state, where the
+ *  agent has just copied the skeleton and is still in spec-design phase
+ *  (no code added yet). Mirrors `enforceCardClassMetadata`'s placeholder
+ *  handling: that state is normal and brief, broadcasting it as a red
+ *  banner is spammy.
+ *
+ *  Fires the broadcast only when the agent has added substantive code
+ *  AROUND the skeleton placeholder without removing it — that's the real
+ *  failure mode (card.js with new logic but the placeholder render still
+ *  obscuring it). Skeleton card.js has ~3 lines of real code; once the
+ *  count exceeds ~5 and the markers are still there, the agent edited
+ *  around them. */
+function _detectUnmodifiedSkeleton(content: string): string | null {
+  const SKELETON_HEADER = "// Card class skeleton — edit this file, do NOT write it from scratch.";
+  const SKELETON_PLACEHOLDER = "bodyEl.textContent = content || '(empty)';";
+  if (!content.includes(SKELETON_HEADER) || !content.includes(SKELETON_PLACEHOLDER)) {
+    return null;
+  }
+  // Strip comments and count non-blank code lines. Skeleton has 3 real
+  // lines: the bodyEl querySelector, the await mica.getContent(), and the
+  // textContent assignment. Below ~5 we assume the file is still
+  // essentially the unmodified skeleton (transient).
+  const stripped = _stripCommentsAndStrings(content);
+  const codeLines = stripped
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (codeLines.length <= 5) {
+    return null; // unmodified skeleton — transient post-cp state, suppress
+  }
+  return "card.js still contains the skeleton's placeholder code (header comment + `bodyEl.textContent = content || '(empty)'`) AND has been edited with additional code. The card will mount but the placeholder render will still obscure your behavior. Per the create-card-class skill, the skeleton is the STARTING shape — REPLACE the placeholder lines with your logic, don't just edit around them. Specifically: remove the `bodyEl.textContent = content || '(empty)'` line and the typical-patterns comment block.";
+}
+
 function _detectParseError(content: string): string | null {
   // Mica's runtime wraps card.js in `(async function(mica,_c){…})()` — an
   // ASYNC function body. Use AsyncFunction (not the regular Function
@@ -462,6 +828,7 @@ export async function enforceCardJsLint(
     _detectInventedAPIs,
     _detectRedeclaredGlobals,
     _detectWrappedNotCalled,
+    _detectUnmodifiedSkeleton,
     _detectParseError,
   ];
 
