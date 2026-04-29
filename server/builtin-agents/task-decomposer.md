@@ -205,6 +205,17 @@ When you spot a planned item that violates these rules, refactor the plan first:
 
 If the project already used `tasks.todo` or similar, follow that convention. Otherwise default to `plan.todo`.
 
+### Row-iteration items (Shape-B fan-out, not build)
+
+If the user's request is "do the same check across N units" — rows in a table, files matched by glob, sources in a list, "for each X, do Y" — the right plan items are NOT `@component-coder` build items but Shape-B fan-out batches. The full dispatch mechanism is in the orchestrator's `participate-fully` Step 3.9 — the parent will read it. Your job is to emit the right plan.todo shape:
+
+- **Operation contract goes in a new canvas file** named `<verb>-task.md` (e.g. `verify-task.md`, `audit-task.md`, `refactor-task.md`, `research-task.md`) — NOT in `interfaces.md`. `interfaces.md` is for Shape-A contracts between distinct components; Shape-B has one shared operation across all batches. The contract holds: input-slice format, the per-unit operation, write-back target, scope fence, and formatting conventions.
+- **Plan items are batches**, not components. Format: `[ ] Verify rows 1–20 in canvas/data-sources.md per verify-task.md`. No `@component-coder` prefix; the parent dispatches generic `agent` calls.
+- **Sizing follows the same budget rule as the section above**: units × per-unit cost ≤ subagent total I/O ÷ 2.
+- **Each item names**: input file + explicit slice (row range, glob, sub-list) + `per <verb>-task.md`. Don't re-state the operation in the item — the contract file owns it.
+
+When the user's request mixes Shape-A and Shape-B (e.g. "build component X AND verify each row in this table"), emit both kinds of items in the same `plan.todo` — `@component-coder` items for the build, batch items for the iteration.
+
 ## Calling `run_shell_command` — REQUIRED parameters
 
 You rarely need shell. If you do (e.g. `wc -l` to size existing docs), `is_background` is **REQUIRED** on every call. Pass `false` for one-shots. Forgetting it deadlocks the SDK.

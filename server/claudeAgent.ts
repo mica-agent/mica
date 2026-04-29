@@ -485,6 +485,27 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
 
+    // Per-turn ephemeral-event buffer. See micaAgent.ts for the full rationale —
+    // mirrors the same pattern: intercept ctx.broadcast, push replayable events
+    // to a buffer, auto-clear on `assistant`/`error` (turn end). onAttach below
+    // replays the buffer to each newly-attached client after sending history.
+    // Late-joiners mid-turn see the in-flight events and reach the correct UI
+    // state; late-joiners between turns get history alone (buffer empty).
+    const currentTurnEvents: unknown[] = [];
+    const _origBroadcast = ctx.broadcast.bind(ctx);
+    function isReplayable(event: unknown): boolean {
+      if (typeof event !== "object" || event === null) return false;
+      const type = (event as { type?: string }).type;
+      return type === "thinking" || type === "progress" ||
+             type === "user_question" || type === "error";
+    }
+    ctx.broadcast = (data: unknown): void => {
+      _origBroadcast(data);
+      if (isReplayable(data)) currentTurnEvents.push(data);
+      const t = (data as { type?: string } | null)?.type;
+      if (t === "assistant" || t === "error") currentTurnEvents.length = 0;
+    };
+
     const cfg = await readCanvasConfig(sessionProject || undefined);
 
     // Register this session in the shared state (replaces any previous from StrictMode)
@@ -1051,6 +1072,12 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           readChatCursor(chatId, sessionProject),
         ]).then(([messages, cursor]) => {
           ctx.sendTo(clientId, { type: "history", messages, cursor });
+
+          // Replay current-turn ephemeral events if a turn is in flight.
+          // Same pattern as micaAgent.ts onAttach.
+          for (const event of currentTurnEvents) {
+            ctx.sendTo(clientId, event);
+          }
 
           // On first attach with no history, trigger initial project scan
           if (!initialScanDone && messages.length === 0) {

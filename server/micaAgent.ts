@@ -164,6 +164,18 @@ const DANGEROUS_BASH_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   // hot-reloaded by the file watcher; the agent never needs to restart Mica.
   { re: /\bscripts\/(stop|restart)\.sh\b/, reason: "Never run scripts/stop.sh or scripts/restart.sh from inside the agent — you run inside the backend, the script will SIGTERM you mid-tool-call and the restart will not complete. Card classes hot-reload via the file watcher; if a class seems missing, query mica.cardClasses.list() from a card or check that the directory is at .mica/card-classes/<name>/ with metadata.json." },
   { re: /\bscripts\/start\.sh\b/, reason: "scripts/start.sh would spawn a duplicate backend on a port already held by the running one. If you genuinely need a restart, ask the user — they're outside your process tree." },
+  // Card-class file placement: cp/mv/rsync targeting `card-classes/<name>` at
+  // the project root (without the `.mica/` prefix) is the canonical mistake.
+  // Card classes MUST live at `.mica/card-classes/<name>/`. The Mica resolver
+  // only finds them there; files at `<project>/card-classes/<name>/` are
+  // invisible to the canvas and instances render as plain TXT. This pre-block
+  // catches the cp/mv shape before it executes (zero burned turns); the
+  // file-watcher's wrong-location sub catches the same mistake one tool-call
+  // later if the agent gets there via direct write_file. The negative
+  // lookahead exempts commands that already include `.mica/card-classes/`
+  // somewhere — the self-fix `mv <project>/card-classes/X .mica/card-classes/X`
+  // and any cp/mv WITHIN `.mica/card-classes/` pass through unblocked.
+  { re: /\b(?:cp|mv|rsync)\b(?!.*\.mica\/card-classes\/).*\bcard-classes\/[^\/\s]+/, reason: "Card classes must live at `.mica/card-classes/<name>/` (with the leading dot — `.mica` is project-scoped). The Mica resolver only finds card classes there; `<project>/card-classes/<name>/` is invisible to the canvas. Use `cp -r <source> .mica/card-classes/<name>` instead. (Mica's built-in card classes live at `card-classes/` inside the Mica repo itself — not inside your project.)" },
 ];
 
 /**
@@ -1153,6 +1165,38 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     let queue: Array<string | { text: string; attach: string }> = [];
     let activeAbort: AbortController | null = null;
 
+    // Per-turn ephemeral-event buffer. A client joining mid-turn (second tab,
+    // refresh) gets the persisted chat history via onAttach, but the live
+    // events of the in-flight turn (thinking, progress, user_question, error)
+    // are emitted via ctx.broadcast and would otherwise be invisible to the
+    // late-joiner — the new tab would sit in "Ready" state until the agent
+    // finally lands an `assistant` event minutes later.
+    //
+    // Fix: intercept ctx.broadcast, mirror the call to live clients (via the
+    // captured original) AND push replayable events to a per-session buffer.
+    // Auto-clear on `assistant`/`error` (turn end) so the buffer is non-empty
+    // ONLY while a turn is in flight — late-joiners between turns get history
+    // alone, exactly as before. onAttach below replays the buffer to each
+    // newly-attached client after sending history.
+    //
+    // Filter: `user`/`assistant` are persisted to chat history; replaying
+    // them would dup the message bubbles. Only events without a chat-history
+    // counterpart are buffered.
+    const currentTurnEvents: unknown[] = [];
+    const _origBroadcast = ctx.broadcast.bind(ctx);
+    function isReplayable(event: unknown): boolean {
+      if (typeof event !== "object" || event === null) return false;
+      const type = (event as { type?: string }).type;
+      return type === "thinking" || type === "progress" ||
+             type === "user_question" || type === "error";
+    }
+    ctx.broadcast = (data: unknown): void => {
+      _origBroadcast(data);
+      if (isReplayable(data)) currentTurnEvents.push(data);
+      const t = (data as { type?: string } | null)?.type;
+      if (t === "assistant" || t === "error") currentTurnEvents.length = 0;
+    };
+
     // Read once at session start. If the user reconfigures canvasRoot/pinned
     // mid-session, this stays stale until the session is recreated (acceptable
     // — those are rare config changes).
@@ -1586,6 +1630,18 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             //     below (can detect + abort the turn via activeAbort,
             //     though can't prevent the in-flight tool call).
             permissionMode: "yolo" as const,
+            // Drop the SDK's background-task tools from the agent's surface.
+            // They ship as a triple (`agent` launches, `send_message` posts,
+            // `task_stop` cancels) intended for async tasks the agent monitors
+            // over multiple turns. Mica calls `agent` synchronously — the
+            // subagent runs inline and returns its result — so there is never
+            // a background task to message or cancel. Leaving them advertised
+            // tempts the model into hallucinating task IDs and burning turns
+            // (observed: 13 task_stop calls on fabricated IDs in one session,
+            // each returning TASK_STOP_NOT_FOUND, contributing to a 50-turn
+            // cap exhaustion / FatalTurnLimitedError exit-53). `agent` stays;
+            // only the async-management peers are excluded.
+            excludeTools: ["task_stop", "send_message"],
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
@@ -1594,32 +1650,42 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // tool, keeping the parent's context small. See plan:
             // /home/vscode/.claude/plans/joyful-honking-hinton.md
             ...(subagents.length > 0 ? { agents: subagents } : {}),
-            // SDK-hosted MCP server exposing `render_capture` — see
-            // buildRenderMcpServer above. Tool result returns the PNG inline
-            // (via MCP ImageContent) so the next LLM call can see it via
-            // Qwen3.6-35B-A3B's vision (mmproj-F16 loaded by llama-server).
-            // Only attach when the server built OK (project set AND SDK
-            // exports present); omitting is a safe no-op.
-            // createSdkMcpServer() already returns { type: "sdk", name, instance }
-            // — use the returned value directly as the mcpServers entry. Wrapping
-            // it again produces `{instance: <the config>}`, which the SDK then
-            // tries to .connect() and fails with "i.connect is not a function".
+            // MCP servers registered with the agent:
+            //
+            //   - "mica-render": SDK-hosted, exposes `render_capture`.
+            //     buildRenderMcpServer returns what createSdkMcpServer()
+            //     produces — { type: "sdk", name, instance }. Use it
+            //     directly; wrapping again produces `{ instance: <config> }`
+            //     which the SDK .connect()'s and fails with "i.connect is
+            //     not a function". Tool result returns the PNG inline (MCP
+            //     ImageContent) so the next LLM call sees it via Qwen3.6-35B-A3B's
+            //     vision (mmproj-F16 loaded by llama-server). Skipped when
+            //     project is unset or SDK exports are missing.
+            //
+            //   - "tavily": stdio MCP server (`npx tavily-mcp`) providing
+            //     `tavily-search`, `tavily-extract`, `tavily-crawl`, `tavily-map`.
+            //     Replaces qwen-code's built-in `web_search`, which was
+            //     removed upstream in CLI v0.15.2 (PR #3502, "MCP-based
+            //     approach"). The SDK still registers `web_fetch`, but it
+            //     can only summarize a known URL — without search, the
+            //     agent has no way to discover candidate URLs in the first
+            //     place. Skipped when TAVILY_API_KEY is unset.
             ...(() => {
-              const server = buildRenderMcpServer(sessionProject);
-              return server ? { mcpServers: { "mica-render": server } } : {};
+              const servers: Record<string, unknown> = {};
+              const renderServer = buildRenderMcpServer(sessionProject);
+              if (renderServer) servers["mica-render"] = renderServer;
+              if (process.env.TAVILY_API_KEY) {
+                servers["tavily"] = {
+                  command: "npx",
+                  args: ["-y", "tavily-mcp"],
+                  env: { TAVILY_API_KEY: process.env.TAVILY_API_KEY },
+                };
+              }
+              return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
             })(),
             env: {
               OPENAI_API_KEY: apiKey,
               OPENAI_BASE_URL: baseUrl,
-              // Forward web-search provider keys so qwen-code's built-in
-              // web_search / web_fetch tools actually work. Without these
-              // forwarded, the SDK reports "search is disabled - configure
-              // a provider in settings.json" and the agent falls back to
-              // its training prior for fact-finding (URL verification,
-              // library versions, etc.) — plausible-but-stale.
-              ...(process.env.TAVILY_API_KEY ? { TAVILY_API_KEY: process.env.TAVILY_API_KEY } : {}),
-              ...(process.env.DASHSCOPE_API_KEY ? { DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY } : {}),
-              ...(process.env.GOOGLE_AI_STUDIO ? { GOOGLE_AI_STUDIO: process.env.GOOGLE_AI_STUDIO } : {}),
             },
           },
         }) as AsyncIterable<Record<string, unknown>>;
@@ -2136,6 +2202,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           readChatCursor(chatId, sessionProject),
         ]).then(([messages, cursor]) => {
           ctx.sendTo(clientId, { type: "history", messages, cursor });
+
+          // Replay current-turn ephemeral events if a turn is in flight.
+          // The chat card's existing case handlers process replayed events
+          // identically to live ones — late-joiner transitions from "Ready"
+          // through "Thinking..." / progress / etc. to current state, then
+          // continues receiving live events as the turn proceeds.
+          for (const event of currentTurnEvents) {
+            ctx.sendTo(clientId, event);
+          }
 
           // On first attach with no history, trigger initial project scan
           if (!initialScanDone && messages.length === 0) {

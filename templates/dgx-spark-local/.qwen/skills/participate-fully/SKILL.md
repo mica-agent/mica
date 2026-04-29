@@ -61,6 +61,20 @@ Mica is an augmentation layer on coding agents. Token-aware chat-history trimmin
 
 Use signatures and shapes verbatim. `mica.read()` is hallucinated; `mica.getContent()` is real. ARCHITECTURE.md is the authority on `mica.*`; if a method isn't documented there, it doesn't exist. For 3rd-party endpoints (URLs, services, library entry points), verify they exist and return the shape your code parses *before* committing to the integration — one `curl` test before you write the parsing code is far cheaper than debugging a hallucinated URL after. See `_conventions.md` § API discipline.
 
+## Step 3.9 — fan out for independent N-unit work (tenet 13)
+
+Before iterating over a collection (rows in a table, files matched by glob, sources in a list, items in any "for each X, do Y" shape), estimate cumulative tool I/O: units × typical per-unit tool-result size. Compare against "Parent inline I/O budget after baseline" in the `## Detected runtime` banner.
+
+If estimated cost > ~50% of that budget AND units are independent (each unit's work doesn't depend on another unit's result), DO NOT iterate inline. Fan out. The mechanism has three parts:
+
+1. **Operation contract.** Write `canvas/<verb>-task.md` (e.g. `verify-task.md`, `audit-task.md`, `refactor-task.md`, `research-task.md`). Include: input-slice format, the per-unit operation, write-back target, scope fence (what NOT to touch), and formatting conventions. This is the iteration equivalent of `interfaces.md` — one shared operation governing every batch.
+
+2. **Queue.** Write or extend `canvas/plan.todo` with one item per batch. Sizing: units × per-unit cost ≤ subagent total I/O ÷ 2 (from runtime banner). Each item names input file + explicit slice + "per `<verb>-task.md`".
+
+3. **Dispatch.** For each batch, flip `[ ]` → `[~]` in plan.todo, then call `agent` with a short prompt: "Read `canvas/<verb>-task.md`. Apply to `<slice>`. Write findings per its write-back rules." The subagent reads the contract from canvas (cheap), works on its slice, edits canvas files in place. Flip `[~]` → `[x]` on success, `[~]` → `[!]` on failure. Dispatch strategy depends on the runtime banner's `Model:` field: when the model is **local** (llama-server-served), dispatch SEQUENTIALLY — concurrent batches share one GPU, so parallelism gives no latency win and the value of fan-out is purely context isolation. When the model is via **OpenRouter** (separate inference per request), default to PARALLEL dispatch — emit multiple `agent` calls in one message — for genuine latency wins.
+
+This is Shape-B fan-out (orchestration, not synthesis). Distinct from Shape-A (`decompose-task` skill), which produces a contract-driven BUILD with `decomposition.md` + `interfaces.md` + `component-coder` items. Use Shape-A only when seams are architecturally real per tenet 12; use Shape-B for any independent N-unit work regardless of domain. `analyze-repo` is an existing specialized Shape-B skill for codebase analysis (its operation contract is hardcoded). For ad-hoc cases (table verification, multi-source research, bulk refactor, cross-reference audit, multi-variant generation, bulk test generation, translation, per-card visual audit), author the operation contract on canvas per the three-part mechanism above.
+
 ## Step 4 — stop conditions
 
 - Do NOT make destructive changes (delete files, drop tables, kill processes) without confirming.

@@ -166,6 +166,69 @@ export class FileWatcher extends EventEmitter {
       translate: (_r) => null,
     });
 
+    // Wrong-location watcher — observes the COMMON misplacement
+    // `<projectDir>/card-classes/<name>/` (without the leading `.mica/`).
+    // The validator `enforceCardClassPath` (server/cardValidators.ts, wired
+    // in server/index.ts) needs file-change events to fire its card-error
+    // broadcast, but neither the canvas watcher (rooted at canvasRoot) nor
+    // the .mica/card-classes watcher above sees writes here. Without this
+    // sub, an agent can silently create card-class files at the wrong path
+    // and burn many turns debugging the resulting render failure (real
+    // case: smoke test 9 took ~20 turns to self-diagnose).
+    //
+    // Skip when canvasRoot is empty — the canvas watcher is then rooted
+    // at projectDir and already covers <projectDir>/card-classes/, so a
+    // second sub would double-emit through scheduleChange.
+    if (normalizedRoot !== "") {
+      const wrongLocationAbs = path.join(projectDir, "card-classes");
+      let wrongWatcher: fs.FSWatcher | null = null;
+
+      const installWrongLocationWatcher = (): void => {
+        if (wrongWatcher) return;
+        try {
+          wrongWatcher = fs.watch(wrongLocationAbs, { recursive: true }, (_eventType, reported) => {
+            if (!reported) return;
+            const rel = reported.split(path.sep).join("/");
+            const projectRelative = `card-classes/${rel}`;
+            this.scheduleChange(project, projectRelative);
+          });
+          wrongWatcher.on("error", (err: Error) => {
+            console.warn(`[file-watcher] ${project}: watch error on card-classes (wrong location):`, err.message);
+          });
+          subs.push({
+            watcher: wrongWatcher,
+            dir: wrongLocationAbs,
+            translate: (_r) => null,
+          });
+        } catch (err) {
+          console.warn(`[file-watcher] ${project}: failed to install wrong-location watcher:`, (err as Error).message);
+        }
+      };
+
+      if (fs.existsSync(wrongLocationAbs)) {
+        installWrongLocationWatcher();
+      } else {
+        // Lazy install: agent typically creates the wrong dir mid-session
+        // via `cp -r ... <project>/card-classes/<name>`. Watch project root
+        // non-recursively (bounded; no inotify-explosion risk) for the dir
+        // to appear, then install the recursive sub at that point.
+        const rootWatcher = fs.watch(projectDir, (_eventType, reported) => {
+          if (reported !== "card-classes") return;
+          if (!wrongWatcher && fs.existsSync(wrongLocationAbs)) {
+            installWrongLocationWatcher();
+          }
+        });
+        rootWatcher.on("error", (err: Error) => {
+          console.warn(`[file-watcher] ${project}: watch error on project root (lazy):`, err.message);
+        });
+        subs.push({
+          watcher: rootWatcher,
+          dir: projectDir,
+          translate: (_r) => null,
+        });
+      }
+    }
+
     // Pinned files outside canvasRoot — install a watcher per unique parent
     // directory, with a per-parent filter limited to that dir's pins. Lifted
     // into installPinnedWatch so refreshPinned() can also call it later.
