@@ -1,14 +1,15 @@
-// File browser card — list project files, preview on click, upload via
-// drag-drop, pin/unpin to canvas. Static: no channel, direct API calls
-// via the mica.* bridge.
+// File browser card — list PROJECT files (not just canvas), preview on
+// click, upload via drag-drop, pin/unpin to canvas. Static: no channel,
+// direct API calls via the mica.* bridge.
 //
 // State persisted to the card's own instance file (mica.filename) as JSON:
-//   { expanded: [folderPath, ...] }
-// Expand state survives reloads.
+//   { expanded: [folderPath, ...], showHidden: boolean }
+// Both expand-state and show-hidden survive reloads.
 
 const treeBodyEl = container.querySelector('#fb-tree-body');
 const treePaneEl = container.querySelector('#fb-tree');
 const refreshBtn = container.querySelector('#fb-refresh');
+const showHiddenInput = container.querySelector('#fb-show-hidden');
 const previewNameEl = container.querySelector('#fb-preview-name');
 const previewMetaEl = container.querySelector('#fb-preview-meta');
 const previewBodyEl = container.querySelector('#fb-preview-body');
@@ -29,11 +30,12 @@ const BINARY_EXTS = new Set([
 const PREVIEW_LINE_CAP = 200;
 const PREVIEW_BYTE_CAP = 500 * 1024;
 
-let entries = [];            // flat list from mica.files.list()
+let entries = [];            // flat list from mica.files.listAll()
 let pinned = new Set();      // filenames currently in canvas config.pinned
 let expanded = new Set();    // folder paths the user has opened
 let selected = null;         // currently-previewed file path
 let dropTarget = null;       // folder path the next drop will target (null = canvas root)
+let showHidden = false;      // toggle: surface .mica/.qwen/.claude (always hides .git, node_modules, etc.)
 
 function ext(path) {
   const dot = path.lastIndexOf('.');
@@ -51,13 +53,14 @@ function formatSize(n) {
   return (n / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
-// ── Persisted state (folder expansion) ──────────────────────────────
+// ── Persisted state (folder expansion + showHidden) ─────────────────
 async function loadState() {
   try {
     const raw = await mica.getContent();
     if (!raw || !raw.trim()) return;
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed.expanded)) expanded = new Set(parsed.expanded);
+    if (typeof parsed.showHidden === 'boolean') showHidden = parsed.showHidden;
   } catch (_) { /* fresh card, no state */ }
 }
 
@@ -66,15 +69,18 @@ function persistState() {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    const payload = JSON.stringify({ expanded: [...expanded] });
+    const payload = JSON.stringify({ expanded: [...expanded], showHidden });
     mica.files.write(mica.filename, payload).catch(() => { /* best effort */ });
   }, 400);
 }
 
 // ── Data loading ────────────────────────────────────────────────────
+// Project-wide listing (mica.files.listAll), not canvas-only — the file
+// browser is meant to surface the whole project, with optional hidden-file
+// reveal via the toggle in the header.
 async function loadData() {
   const [fileList, cfg] = await Promise.allSettled([
-    mica.files.list(),
+    mica.files.listAll({ showHidden }),
     fetch('/api/canvas/config').then((r) => r.json()),
   ]);
   if (fileList.status === 'fulfilled') entries = fileList.value || [];
@@ -226,10 +232,15 @@ async function showPreview(node) {
   previewBodyEl.innerHTML = '';
   previewBodyEl.classList.remove('fb-preview-empty');
 
+  // listAll returns project-relative paths; reads/urls use the leading-/
+  // project-root-absolute escape so canvas-relative resolution doesn't try
+  // to interpret these as canvas-rooted paths.
+  const absPath = '/' + node.path;
+
   if (IMAGE_EXTS.has(e)) {
     const img = window.document.createElement('img');
     img.className = 'fb-preview-img';
-    img.src = mica.files.url(node.path);
+    img.src = mica.files.url(absPath);
     img.alt = node.path;
     previewBodyEl.appendChild(img);
     return;
@@ -244,7 +255,7 @@ async function showPreview(node) {
   // NUL check. Cap the read so a huge file doesn't blow memory.
   let text;
   try {
-    text = await mica.files.read(node.path);
+    text = await mica.files.read(absPath);
   } catch (err) {
     previewBodyEl.textContent = 'Failed to read: ' + (err && err.message ? err.message : err);
     return;
@@ -283,7 +294,8 @@ function renderTextPreview(text) {
 function renderBinaryPreview(node) {
   const wrap = window.document.createElement('div');
   wrap.className = 'fb-preview-binary';
-  wrap.innerHTML = `Binary file — ${formatSize(node.size || 0)}<br/><a href="${mica.files.url(node.path)}" target="_blank" rel="noopener">Open in new tab</a>`;
+  const absPath = '/' + node.path;
+  wrap.innerHTML = `Binary file — ${formatSize(node.size || 0)}<br/><a href="${mica.files.url(absPath)}" target="_blank" rel="noopener">Open in new tab</a>`;
   previewBodyEl.appendChild(wrap);
 }
 
@@ -348,7 +360,10 @@ treePaneEl.addEventListener('drop', async (ev) => {
   const targetFolder = dropTarget || canvasRoot;
   dropTarget = null;
   for (const file of files) {
-    const target = targetFolder ? (targetFolder.replace(/\/$/, '') + '/' + file.name) : file.name;
+    // targetFolder is project-relative (from entries) or canvasRoot. Use the
+    // leading-/ project-root-absolute escape so canon doesn't canvas-relativize.
+    const projectRel = targetFolder ? (targetFolder.replace(/\/$/, '') + '/' + file.name) : file.name;
+    const target = '/' + projectRel;
     try {
       await mica.files.write(target, file);
     } catch (err) {
@@ -374,6 +389,15 @@ const unsubs = [
 
 refreshBtn.addEventListener('click', () => loadData());
 
+// Show-hidden toggle. Persisted alongside expand state so the choice
+// survives reloads. Re-fetches because /api/files needs the showHidden
+// query param to relax the dot-prefix filter server-side.
+showHiddenInput.addEventListener('change', () => {
+  showHidden = showHiddenInput.checked;
+  persistState();
+  loadData();
+});
+
 mica.onDestroy(() => {
   if (refreshTimer) clearTimeout(refreshTimer);
   if (persistTimer) clearTimeout(persistTimer);
@@ -382,5 +406,6 @@ mica.onDestroy(() => {
 
 // ── Boot ────────────────────────────────────────────────────────────
 await loadState();
+showHiddenInput.checked = showHidden;
 await loadCanvasRoot();
 await loadData();

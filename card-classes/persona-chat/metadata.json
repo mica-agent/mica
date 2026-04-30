@@ -1,0 +1,7 @@
+{
+  "extension": ".persona-chat",
+  "badge": "Persona",
+  "defaultTitle": "Persona Chat",
+  "handler": "llm-direct",
+  "dependencies": {}
+}

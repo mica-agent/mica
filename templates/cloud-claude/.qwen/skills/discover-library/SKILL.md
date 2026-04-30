@@ -1,6 +1,6 @@
 ---
 name: discover-library
-description: Triggers when designing the implementation of a recognizable subproblem that would otherwise need >30 lines of bespoke code — mapping, charting, drag-and-drop, geospatial math, syntax highlighting, animation, calendaring, terminal emulation, code editing, math typesetting, audio synthesis, file diffing, etc. Use during spec drafting (card-class builds), during plan writing (decomposed builds), and during bug fixes that would need substantial new logic. Output is a documented decision in spec.md § Subproblems and their solutions — "use X@version because Y" OR "no library fits because Z". Always verify the chosen CDN URL with curl before recording.
+description: Triggers when designing the implementation of a recognizable subproblem that would otherwise need >30 lines of bespoke code — mapping, charting, drag-and-drop, geospatial math, syntax highlighting, animation, calendaring, terminal emulation, code editing, math typesetting, audio synthesis, file diffing, etc. Use during spec drafting (card-class builds), during plan writing (decomposed builds), and during bug fixes that would need substantial new logic. Output is a documented decision somewhere on canvas — "use X@version because Y" OR "no library fits because Z". Always verify the chosen CDN URL with curl before recording.
 ---
 
 # Discover an existing library before designing custom
@@ -58,9 +58,20 @@ The URL has to be the EXACT string you'll commit to `metadata.json.dependencies.
 
 If a HEAD check 404s, fall back to the package's npm registry listing (`https://registry.npmjs.org/<pkg>`) for the actual `main` field, OR `https://www.jsdelivr.com/package/npm/<pkg>` which lists every file in the published tarball.
 
-### 4. Record the decision in spec.md
+### 4. Record the decision somewhere durable on canvas
 
-Append (or update) the `## Subproblems and their solutions` section in `canvas/spec.md` with one row per subproblem:
+The decision MUST land in a canvas file before any code that depends on it ships. Otherwise the next agent (or the next session of you) has no record of WHY this version was chosen and re-derives from scratch — possibly picking a different library or version. Three observed sessions on the same task ("3D animation of moon around earth") chose three different Three.js versions because none of them recorded the decision. The agent's curl-verification work was real but ephemeral.
+
+**Where to record** — pick the most appropriate existing file, in this priority order:
+
+1. **`canvas/spec.md` § Subproblems and their solutions** — preferred when a spec.md exists and the build is card-class-shaped. The decision is co-located with the build it informs.
+2. **`canvas/decisions.md`** — preferred when the project already has a `decisions.md` file (decision log convention) or when the decision spans multiple cards / multiple specs.
+3. **`canvas/interfaces.md` § Library versions** — preferred during decomposed builds via `task-decomposer`; subagents reading the interfaces contract see the version pin.
+4. **A new `canvas/library-decisions.md`** — only if none of the above exist. Don't proliferate decision-log files when one of (1)–(3) already covers the project.
+
+**Pick ONE location and stay consistent within a project.** If `decisions.md` already has library decisions, add to it; don't fork a new file just because spec.md is closer to the current edit.
+
+**The format is identical regardless of location** — a markdown table with one row per subproblem:
 
 ```markdown
 ## Subproblems and their solutions
@@ -73,11 +84,13 @@ Append (or update) the `## Subproblems and their solutions` section in `canvas/s
 | City list (9 fixed cities) | No library — static data | Hardcoded array, not a "library subproblem." |
 ```
 
+When recording in `decisions.md` instead of spec.md, prefix the section with the build it informs (e.g. `## Library decisions — earthquake-map card`) so multi-card projects keep their decisions sortable.
+
 ## Output shape — what counts as "done" with this skill
 
-A row in `## Subproblems and their solutions` for **every** recognizable subproblem the spec covers. No exceptions for "this one is simple" — record "no library — N lines bespoke" so reviewers can audit the choice.
+A row for **every** recognizable subproblem the spec covers, in whichever file you chose above. No exceptions for "this one is simple" — record "no library — N lines bespoke" so reviewers can audit the choice.
 
-If you skip the row, the user reviewing spec.md can't catch a wrong call: a missing entry reads like "agent didn't search," and they have to prompt you ("did you check for a library for X?"). The whole point of the row is to make the search visible.
+If you skip the row, the next session re-runs the search from scratch and may pick a different version. The whole point is to make the decision durable across sessions, not just visible in the current chat.
 
 ## When NOT to use this skill
 

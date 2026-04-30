@@ -87,10 +87,13 @@ import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, bu
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { fetchHandler } from "./plugins/micaFetch.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
-import { createLlmChatHandler } from "./plugins/llmChat.js";
+import { createLlmChatHandler, manifest as llmDirectManifest } from "./plugins/llmChat.js";
+import { createLlmAgentHandler, manifest as llmAgentManifest } from "./plugins/llmAgent.js";
+import { getManifests } from "./handlerManifest.js";
 import { createSkillComposeHandler } from "./plugins/skillCompose.js";
 import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { registerGitEndpoints } from "./plugins/git.js";
+import { createPingPongHandler } from "./plugins/pingPong.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata, enforceCardJsLint, enforceCardClassPath, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
 import { recordValidatorError, clearValidatorError, getPendingValidatorErrors, clearProjectValidatorErrors } from "./validatorErrorBuffer.js";
@@ -145,7 +148,7 @@ app.use((_req, res, next) => {
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
       "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
-      "connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:*",
+      "connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com",
       "img-src 'self' data: blob:",
       "font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     ].join("; ")
@@ -464,6 +467,15 @@ app.get("/api/card-classes", async (req, res) => {
   }
 
   res.json(classes);
+});
+
+// Channel-handler registry — each entry describes a built-in (or developer-
+// registered) handler that card classes can opt into via metadata.handler.
+// Authoring agents discover available handlers here instead of carrying
+// per-handler documentation in their permanent system prompt. Adding a new
+// plugin's manifest grows this endpoint, NOT the skill prose.
+app.get("/api/handlers", (_req, res) => {
+  res.json(getManifests());
 });
 
 // Render the canvas card (assembles card.html + card.css + card.js)
@@ -1032,11 +1044,17 @@ app.get("/api/files", async (req, res) => {
   try {
     const proj = getRequestProject(req) || undefined;
     const isCanvas = req.query.canvas === "true";
-    const files = isCanvas ? await listCanvasFiles(proj) : await listFiles(proj);
+    // `?showHidden=true` reveals dot-prefixed entries (Mica/agent state at
+    // .mica, .qwen, .claude). Build-noise dirs (.git, node_modules, etc.)
+    // stay filtered regardless. Only meaningful for project-wide listing
+    // (canvas list has its own canvas-scoped filter that ignores hidden by
+    // design). Used by the filebrowser card's "show hidden" toggle.
+    const showHidden = req.query.showHidden === "true";
+    const files = isCanvas ? await listCanvasFiles(proj) : await listFiles(proj, { showHidden });
     const tAfterList = Date.now();
     const decorated = await decorateBadges(files, proj || null);
     const tAfterBadges = Date.now();
-    console.log(`[timing] /files${isCanvas ? "?canvas=true" : ""} proj=${proj || "(none)"} files=${files.length} total=${tAfterBadges - t0}ms list=${tAfterList - t0}ms badges=${tAfterBadges - tAfterList}ms`);
+    console.log(`[timing] /files${isCanvas ? "?canvas=true" : ""}${showHidden ? "&showHidden=true" : ""} proj=${proj || "(none)"} files=${files.length} total=${tAfterBadges - t0}ms list=${tAfterList - t0}ms badges=${tAfterBadges - tAfterList}ms`);
     res.json(decorated);
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -1900,9 +1918,16 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
   channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
-  channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat
+  channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat (legacy binding)
   channelManager.registerHandler("skills", createSkillComposeHandler());  // .skills files -> collaborative SKILL.md authoring
   channelManager.registerHandler("canvas-back", createCanvasBackComposeHandler());  // .canvas-back files -> propose-then-apply canvas-back editor
+  channelManager.registerHandler("agent", createPingPongHandler());  // .agent files -> ping-pong LLM chat
+  // Reusable LLM handlers reachable via metadata.handler — card classes opt
+  // in by setting "handler": "llm-direct" or "llm-agent" in metadata.json.
+  // Manifests describe args + message shapes for authoring agents that
+  // discover handlers via GET /api/handlers.
+  channelManager.registerHandler("llm-direct", createLlmChatHandler(), llmDirectManifest);
+  channelManager.registerHandler("llm-agent", createLlmAgentHandler(), llmAgentManifest);
 
   // Start llama-server for local AI — unless disabled via env. The
   // MICA_DISABLE_LLAMA=1 escape hatch lets OpenRouter-only users skip

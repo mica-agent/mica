@@ -166,17 +166,18 @@ Available without import:
 | Global | Shape |
 |---|---|
 | `container` | this card's DOM element. `container.querySelector(...)` is scoped here |
-| `mica.filename` | instance file path (e.g. `"docs/my.counter"`) |
+| `mica.filename` | instance file name **canvas-relative** (e.g. `"my.counter"` — no `canvas/` prefix). Pinned files outside canvas surface with `../` (e.g. `"../docs/notes.md"`) |
 | `mica.windowId` | stable id for this browser **tab** |
 | `mica.cardId` | stable id for this card **instance** |
 | `mica.isSelfEcho(event)` | `(event) => boolean` — true if event was caused by THIS card writing |
 | `mica.getContent()` | `async () => string` — read the instance file |
-| `mica.files.list()` | `async () => [{ path, isFile, isFolder, size, modifiedAt }]` |
-| `mica.files.read(path)` | `async (path) => string` |
-| `mica.files.readBinary(path)` | `async (path) => ArrayBuffer` |
-| `mica.files.write(path, content)` | `async (path, content: string \| ArrayBuffer \| Uint8Array \| Blob \| File) => void` — auto-routes by type, parents auto-created |
-| `mica.files.delete(path)` | `async (path) => void` |
-| `mica.files.url(path)` | `(path) => string` — for `<img src>`, `<embed>`, downloads |
+| `mica.files.list()` | `async () => [{ path, isFile, isFolder, size, modifiedAt }]` — **canvas files only** (siblings + pinned) |
+| `mica.files.listAll()` | same shape, **project-wide** — includes `.mica/`, `.qwen/`, etc. Use only for debug/inspector cards |
+| `mica.files.read(path)` | `async (path) => string` — paths are **canvas-relative** (see Path addressing below) |
+| `mica.files.readBinary(path)` | `async (path) => ArrayBuffer` — canvas-relative path |
+| `mica.files.write(path, content)` | `async (path, content: string \| ArrayBuffer \| Uint8Array \| Blob \| File) => void` — canvas-relative path; auto-routes by type, parents auto-created |
+| `mica.files.delete(path)` | `async (path) => void` — canvas-relative path |
+| `mica.files.url(path)` | `(path) => string` — for `<img src>`, `<embed>`, downloads — canvas-relative path |
 | `mica.cardClasses.list()` | `async () => [{ name, builtIn, format }]` |
 | `mica.fetch(url, opts?)` | server-proxied HTTP — see § External HTTP |
 | `mica.on(event, cb)` | subscribe; events: `file-changed`, `file-created`, `file-deleted`, `layout-changed`, `card-error` |
@@ -189,6 +190,36 @@ The `mica.files.*` and `mica.cardClasses.*` namespaces are
 Proxy-guarded — calling a method that doesn't exist throws
 `TypeError: mica.files has no method 'X'. Known: ...`. To append:
 read → concat → write.
+
+### Path addressing
+
+Cards live on the canvas. All `mica.files.*` paths and `mica.filename`
+are **canvas-relative**, like a Unix shell with the canvas as `cwd`:
+
+| You write | Resolves to |
+|---|---|
+| `"foo.bar"` (bare) | `<canvasRoot>/foo.bar` — sibling card on the canvas |
+| `"sub/foo"` | `<canvasRoot>/sub/foo` — canvas subdirectory |
+| `"../foo"` | one level above canvas — pinned files, project root |
+| `"/foo"` | project-root absolute (rare; bypass canvas entirely) |
+| `"../.mica/X"` | reach into Mica's internal state (use at your own risk; schema may change between Mica versions) |
+
+Self-reference is prefix-free:
+```js
+const data = await mica.files.read(mica.filename);          // own instance file
+await mica.files.write(mica.filename, JSON.stringify(state)); // round-trip
+```
+
+Sibling-card reference is a bare name — no `canvas/` prefix to remember
+or hardcode. If a card's logic ever wants to construct a sibling path,
+the bare name IS the path:
+```js
+const referenced = await mica.files.read("test-dsm.data-source-monitor");
+```
+
+Event payloads (`file-changed`, `file-created`, `file-deleted`,
+`card-error`) carry `event.filename` already canvas-relative, so
+`event.filename === mica.filename` works for own-file filtering.
 
 `container` and `mica` are injected globals. **Do not redeclare
 them** with top-level `const`/`let` — the runtime wraps your
@@ -250,64 +281,52 @@ tab).
 ## Server-side channel handlers
 
 Some card classes need bidirectional duplex streams — terminal
-PTYs, streaming LLM completions, agent loops. Existing handlers
-(no work to use them):
+PTYs, streaming LLM completions, agent loops. Existing
+handlers wired to fixed extensions (no work to use them):
 
 | Card class | Handler | What it does |
 |---|---|---|
-| `.chat` | Qwen agent loop | Subagent dispatch + tools |
+| `.chat` | Qwen agent loop | Project-wide chat with skills + canvas baseline |
 | `.claude` | Claude Code agent loop | Same shape, Claude SDK |
 | `.terminal` | PTY (node-pty) | Terminal |
-| `.llm-chat` | Streaming chat | Reference impl for "just talk to an LLM" |
+| `.llm-chat` | Streaming chat | Generic LLM chat |
 | `.skills` | SKILL.md authoring | Propose / apply |
 | `.canvas-back` | canvas-back.md | Propose / apply |
 
-If your job overlaps, **reuse** that card class (tenet 15).
-Don't write a custom handler for what `.llm-chat` already covers.
+### LLM-driven card classes — **do NOT write a server plugin**
 
-If you genuinely need a custom handler — different streaming
-contract, server-side parsing, multi-step pipeline — two
-additions on top of the standard card class:
+Mica ships **reusable parameterized handlers** that any card class
+can opt into via `metadata.json`. Adding a new LLM-driven card
+class requires zero server code.
 
-**(1) `server/plugins/<name>.ts`** exports a factory:
+**The pattern:**
 
-```ts
-import type { ChannelHandler, SessionContext } from "../channelManager.js";
+1. **Discover.** `curl http://localhost:3002/api/handlers` returns
+   every reusable handler with its `name`, `description`,
+   `whenToUse`, `argsSchema`, `sendShapes`, `recvShapes`, and an
+   optional `examples` field with a copy-pasteable card.js
+   skeleton.
+2. **Pick** by `whenToUse`. If nothing fits, flag this to the
+   human — agents do not write server plugins.
+3. **Wire.** In your card class `metadata.json` set
+   `"handler": "<name>"`. In `card.js` call
+   `mica.openChannel("turn", args)` where `args` matches the
+   handler's `argsSchema`. Send/receive against `sendShapes` /
+   `recvShapes`.
+4. **Trust the schema.** Bad args fail at the channel boundary
+   with a structured error citing the failing path. Treat that
+   error as ground truth — fix the args, don't argue with it.
 
-export function create<Name>Handler() {
-  return async function factory(
-    _content: string,
-    _args: Record<string, unknown>,
-    ctx: SessionContext,
-  ): Promise<ChannelHandler> {
-    const history: Message[] = [];
-    return {
-      onAttach(clientId) {
-        ctx.sendTo(clientId, { type: "history", messages: history });
-      },
-      async onData(_clientId, data) {
-        // ctx.broadcast({ type: "delta", content: ... })
-      },
-      onDestroy() { /* session ended */ },
-    };
-  };
-}
-```
+**Working reference:** `card-classes/persona-chat/` is a complete
+example using `metadata.handler: "llm-direct"` — three small
+files, no server code, system prompt comes from the instance
+file content. Read it once for the shape; consult
+`/api/handlers` for everything else.
 
-**(2) Register in `server/index.ts`:**
-
-```ts
-channelManager.registerHandler("<class-name>", create<Name>Handler());
-```
-
-`<class-name>` = file extension without the leading dot. The
-server routes by extension, **not** by the string passed to
-`mica.openChannel(label, args)` — the label is decorative and
-most handlers ignore it.
-
-Reference: `card-classes/llm-chat/card.js` and
-`server/plugins/llmChat.ts` (~140 lines each side; canonical
-send/onData/history shape with abort and SSE parsing).
+The legacy `.llm-chat` and `.terminal` extensions and the heavy
+`.chat` / `.claude` agent cards stay routed by file extension as
+in the table above. The metadata.handler mechanism is additive
+and only kicks in when present.
 
 ## Worked example — counter card
 

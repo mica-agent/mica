@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 // TODO: Re-evaluate morphdom for preserving mounted library instances once
 // we add proper lifecycle coordination between React and widget scripts.
 import { getOrCreateBridge, windowId, type CanvasId } from "../api/micaSocket";
+import { canonicalizeCardPath, canvasRelative, getCanvasRoot } from "../api/canvasPaths";
 
 interface CardDependencies {
   scripts?: string[];
@@ -47,9 +48,10 @@ var document=new Proxy(_rd,{get:function(t,p){
   var v=t[p];return typeof v==='function'?v.bind(t):v;
 }});
 function _reportError(e){
-  fetch('/api/cards/'+encodeURIComponent(mica.filename)+'/error',
-    {method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({error:e.message||String(e)})}).catch(function(){});
+  // Route through mica.reportError so the bridge handles the URL with the
+  // proper project-relative filename. mica.filename is now canvas-relative
+  // (no canvasRoot prefix) and would 404 the card-error endpoint.
+  try{mica.reportError(e&&e.message?e.message:String(e));}catch(_){}
 }
 // _runCb: run a callback, reporting BOTH synchronous throws AND async
 // rejections (when the callback is async and returns a Promise). Card
@@ -101,6 +103,11 @@ interface Props {
 // Track globally loaded external scripts and stylesheets
 const loadedExternalScripts = new Set<string>();
 const loadedExternalStyles = new Set<string>();
+
+// canvasPaths helpers (canvasRelative, canonicalizeCardPath, getCanvasRoot)
+// live at src/api/canvasPaths.ts — shared with the React shell so card titles
+// and other display surfaces use the same canvas-relative semantics. Cards
+// see canvas-relative; the wire stays project-relative.
 
 /** Load a script into <head> (deduplicated). Returns a promise that resolves when loaded. */
 // Track in-flight script loads so concurrent callers wait on the same promise
@@ -203,6 +210,13 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
     const el = widgetRef.current;
     if (!el) return;
 
+    // ── Phase 0: Resolve canvasRoot for path canonicalization ──
+    // Cards address files canvas-relative; CardRuntime translates to
+    // project-relative before HTTP. canvasRoot is fetched once per project
+    // and cached for subsequent cards. Awaited before continueRender() so
+    // mica.filename and the files API are correct from script-start.
+    const canvasRootPromise = getCanvasRoot(project);
+
     // ── Phase 1: Preload declared dependencies ──────────────────
     // If the card class declared `export const dependencies`, load them
     // BEFORE injecting the HTML. This guarantees scripts and styles are
@@ -241,7 +255,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       }).catch(() => { /* best-effort; chat-card surfacing isn't critical-path */ });
     };
 
-    const continueRender = () => {
+    const continueRender = (canvasRoot: string) => {
       // ── Phase 2: Inject HTML ──────────────────────────────────
       el.innerHTML = html;
 
@@ -288,14 +302,13 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             newScript.textContent =
               `(function(){` +
               `const _m=document.currentScript.__mica;` +
-              `const _ph={'X-Mica-Project':_m.project||''};` +
               `(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
               `_m,document.currentScript.parentElement)` +
               `.catch(function(e){` +
               `console.error("[card-runtime] Script error in ${filename}:",e);` +
-              `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/error',` +
-              `{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_ph),` +
-              `body:JSON.stringify({error:(e&&e.message)||String(e)})}).catch(()=>{});` +
+              // Route through the bridge so the proper project-relative filename
+              // is used for the URL (mica.filename is canvas-relative now).
+              `try{_m.reportError((e&&e.message)||String(e));}catch(_){}` +
               `});` +
               `})()`;
             oldScript.remove();
@@ -375,14 +388,52 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         });
       };
 
+      // Canonicalize a card-supplied path (canvas-relative, with `..` and `/`
+      // escapes) to the project-relative path the server expects on the wire.
+      // See canonicalizeCardPath at module level for the rules. Throws if the
+      // resolved path escapes projectDir — caller's mica.files.* call rejects.
+      const canon = (p: string): string => canonicalizeCardPath(p, canvasRoot);
+
       const files = {
-        /** List all files and directories under the project.
-         *  `isFile` and `isFolder` are always opposites — both provided so you can
-         *  write whichever reads more naturally for your case. */
+        /** List CANVAS files only — direct children of canvasRoot plus any
+         *  pinned files. Returned `path` values are canvas-relative (bare names
+         *  for files inside canvas, `../foo` for pinned files outside). Pass
+         *  the returned path back to `mica.files.read` directly without any
+         *  prefix juggling.
+         *
+         *  For project-wide listing (rare — debug/audit cards), see `listAll`. */
         async list(): Promise<Array<{ path: string; isFile: boolean; isFolder: boolean; size: number; modifiedAt: string }>> {
-          const r = await fetch("/api/files", { headers: projectHeaders() });
+          const r = await fetch("/api/files?canvas=true", { headers: projectHeaders() });
           if (!r.ok) throw new Error(`mica.files.list: HTTP ${r.status}`);
           const raw = (await r.json()) as Array<{ name: string; type: string; size: number; modifiedAt: string }>;
+          return raw.map((f) => ({
+            path: canvasRelative(f.name, canvasRoot),
+            isFile: f.type === "file",
+            isFolder: f.type === "directory",
+            size: f.size,
+            modifiedAt: f.modifiedAt,
+          }));
+        },
+        /** Project-wide listing — includes files outside the canvas
+         *  (`.mica/`, `.qwen/`, `.claude/`, project-root configs, etc.).
+         *  Most cards want `list()`; reach for this only when you need
+         *  visibility beyond the canvas (debug cards, repo browsers).
+         *  Returned `path` values are canvas-relative (with `../` prefix
+         *  for files outside canvas), so they round-trip through `read`.
+         *
+         *  `opts.showHidden`: when true, reveals dot-prefixed entries
+         *  (`.mica/`, `.qwen/`, `.claude/`). Build-noise dirs like
+         *  `.git/`, `.next/`, `node_modules/` stay filtered regardless.
+         *  Default false (matches the historical filter shape). */
+        async listAll(opts: { showHidden?: boolean } = {}): Promise<Array<{ path: string; isFile: boolean; isFolder: boolean; size: number; modifiedAt: string }>> {
+          const url = opts.showHidden ? "/api/files?showHidden=true" : "/api/files";
+          const r = await fetch(url, { headers: projectHeaders() });
+          if (!r.ok) throw new Error(`mica.files.listAll: HTTP ${r.status}`);
+          const raw = (await r.json()) as Array<{ name: string; type: string; size: number; modifiedAt: string }>;
+          // Project-wide listing returns raw PROJECT-RELATIVE paths (canvas-
+          // relative is meaningless when the listing spans canvas + outside).
+          // Callers that want to read a file via mica.files.read() should prefix
+          // the path with "/" — the project-root-absolute escape handled by canon.
           return raw.map((f) => ({
             path: f.name,
             isFile: f.type === "file",
@@ -391,27 +442,33 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             modifiedAt: f.modifiedAt,
           }));
         },
-        /** Read a text file. */
+        /** Read a text file. Path is canvas-relative — bare names resolve
+         *  against canvasRoot; `../foo` escapes one level above canvas;
+         *  `/foo` is a project-root absolute. */
         async read(path: string): Promise<string> {
-          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { headers: projectHeaders() });
+          const p = canon(path);
+          const r = await fetch(`/api/files/${encodeURIComponent(p)}`, { headers: projectHeaders() });
           if (!r.ok) throw new Error(`mica.files.read(${path}): HTTP ${r.status}`);
           return r.text();
         },
-        /** Read a binary file as ArrayBuffer. */
+        /** Read a binary file as ArrayBuffer. Path is canvas-relative. */
         async readBinary(path: string): Promise<ArrayBuffer> {
-          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { headers: projectHeaders() });
+          const p = canon(path);
+          const r = await fetch(`/api/files/${encodeURIComponent(p)}`, { headers: projectHeaders() });
           if (!r.ok) throw new Error(`mica.files.readBinary(${path}): HTTP ${r.status}`);
           return r.arrayBuffer();
         },
-        /** Write a file. Accepts text (string) or binary (ArrayBuffer / TypedArray / Blob / File).
-         *  `source: mica.windowId` is auto-injected so file-changed events don't echo back to this card.
-         *  Parents are auto-created. Binary writes stream to disk (no size limit, constant memory). */
+        /** Write a file. Path is canvas-relative. Accepts text or binary.
+         *  `source: mica.windowId` is auto-injected so file-changed events
+         *  don't echo back to this card. Parents auto-created. Binary writes
+         *  stream to disk (no size limit, constant memory). */
         async write(
           path: string,
           content: string | ArrayBuffer | ArrayBufferView | Blob,
         ): Promise<void> {
+          const p = canon(path);
           if (typeof content === "string") {
-            const r = await fetch(`/api/files/${encodeURIComponent(path)}`, {
+            const r = await fetch(`/api/files/${encodeURIComponent(p)}`, {
               method: "PUT",
               headers: projectHeaders({ "Content-Type": "application/json" }),
               // Send both: `source` (windowId) for backward compat with existing
@@ -421,7 +478,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             });
             if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
           } else {
-            const url = `/api/files/${encodeURIComponent(path)}/upload?source=${encodeURIComponent(windowId)}&cardSource=${encodeURIComponent(sessionId)}`;
+            const url = `/api/files/${encodeURIComponent(p)}/upload?source=${encodeURIComponent(windowId)}&cardSource=${encodeURIComponent(sessionId)}`;
             const body = content instanceof Blob
               ? content
               : (content instanceof ArrayBuffer ? content : content.buffer);
@@ -429,16 +486,19 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             if (!r.ok) throw new Error(`mica.files.write(${path}): HTTP ${r.status}`);
           }
         },
-        /** Delete a file. */
+        /** Delete a file. Path is canvas-relative. */
         async delete(path: string): Promise<void> {
-          const r = await fetch(`/api/files/${encodeURIComponent(path)}`, { method: "DELETE", headers: projectHeaders() });
+          const p = canon(path);
+          const r = await fetch(`/api/files/${encodeURIComponent(p)}`, { method: "DELETE", headers: projectHeaders() });
           if (!r.ok && r.status !== 404) throw new Error(`mica.files.delete(${path}): HTTP ${r.status}`);
         },
-        /** Build a URL for inline use (e.g. `<img src={mica.files.url("docs/pic.png")}/>`).
-         *  Includes `?project=` so the URL works in contexts that can't send the
-         *  `X-Mica-Project` header (window.open new tabs, <img src>, etc.). */
+        /** Build a URL for inline use (e.g. `<img src={mica.files.url("pic.png")}/>`).
+         *  Path is canvas-relative. Includes `?project=` so the URL works in
+         *  contexts that can't send the `X-Mica-Project` header (window.open
+         *  new tabs, <img src>, etc.). */
         url(path: string): string {
-          return `/api/files/${encodeURIComponent(path)}?project=${encodeURIComponent(project)}`;
+          const p = canon(path);
+          return `/api/files/${encodeURIComponent(p)}?project=${encodeURIComponent(project)}`;
         },
       };
 
@@ -452,12 +512,43 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         },
       };
 
+      // Card-facing filename is canvas-relative — no canvasRoot prefix.
+      // Pinned files outside canvas surface with `../` escape (so the value
+      // round-trips through mica.files.read). Self-reference becomes:
+      //   await mica.files.read(mica.filename)
+      // — no prefix juggling regardless of project's canvasRoot config.
+      // The internal `filename` variable stays project-relative for
+      // wire-format calls (reportError, content fetch).
+      const cardFacingFilename = canvasRelative(filename, canvasRoot);
+
+      // Wrap baseBridge.on so cards see canvas-relative `filename` fields in
+      // event payloads — matches mica.filename. Without this, comparisons
+      // like `event.filename === mica.filename` (used by every reactive card
+      // class to filter its own file's events) silently break: event.filename
+      // arrives project-relative from the server, mica.filename is now
+      // canvas-relative. Translate at the bridge boundary so every card sees
+      // a consistent canvas-relative world.
+      const wrappedOn = (eventName: string, cb: (data: unknown) => void): (() => void) => {
+        return baseBridge.on(eventName, (data: unknown) => {
+          if (data && typeof data === "object" && "filename" in data) {
+            const obj = data as Record<string, unknown>;
+            const fn = obj.filename;
+            if (typeof fn === "string") {
+              cb({ ...obj, filename: canvasRelative(fn, canvasRoot) });
+              return;
+            }
+          }
+          cb(data);
+        });
+      };
+
       const micaBridge = {
         ...baseBridge,
         project,
         canvas,
-        filename,
+        filename: cardFacingFilename,
         windowId,
+        on: wrappedOn,
         /** Per-card-instance UUID. Stable across reloads (sidecar in
          *  `.mica/cards/<sanitized>.id.json`); same UUID used as the channel
          *  session key. Use `mica.isSelfEcho(event)` to skip your own writes
@@ -593,6 +684,12 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           // is scoped to the async IIFE). We explicitly pass
           // X-Mica-Project so the server broadcasts card-error events
           // to the right project.
+          // Hardcode the URLs with the project-relative filename from React
+          // closure (mica.filename is now canvas-relative — would 404 these
+          // endpoints). JSON.stringify on the URL string so any unusual
+          // characters in the filename get safely escaped into the JS literal.
+          const okUrlLit = JSON.stringify(`/api/cards/${encodeURIComponent(filename)}/ok`);
+          const errUrlLit = JSON.stringify(`/api/cards/${encodeURIComponent(filename)}/error`);
           newScript.textContent =
             `(function(){` +
             `const _m=document.currentScript.__mica;` +
@@ -600,11 +697,11 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             `(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
             `_m,document.currentScript.parentElement)` +
             `.then(function(){` +
-            `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/ok',{method:'POST',headers:_ph}).catch(function(){});` +
+            `fetch(${okUrlLit},{method:'POST',headers:_ph}).catch(function(){});` +
             `})` +
             `.catch(function(e){` +
             `console.error("[card-runtime] Script error in ${filename}:",e);` +
-            `fetch('/api/cards/'+encodeURIComponent(_m.filename)+'/error',` +
+            `fetch(${errUrlLit},` +
             `{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_ph),` +
             `body:JSON.stringify({error:(e&&e.message)||String(e)})}).catch(()=>{});` +
             `});` +
@@ -658,20 +755,22 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
     };
 
     // If there are declared dependencies, show loading skeleton, preload, then render.
-    // Otherwise, render immediately (backward compatible).
+    // Otherwise, render immediately (backward compatible). Either way, await
+    // canvasRoot first so mica.filename and the files API are correct from
+    // script-start; the fetch is per-project-cached and almost always free.
     if (declaredScripts.length > 0 || declaredStyles.length > 0) {
       setLoadingDeps(true);
-      preloadDeps().then(() => {
+      Promise.all([preloadDeps(), canvasRootPromise]).then(([, canvasRoot]) => {
         setLoadingDeps(false);
-        continueRender();
+        continueRender(canvasRoot);
       }).catch((err) => {
         console.error("[card-runtime] Dependency preload failed:", err);
         reportLoadError(err);
         setLoadingDeps(false);
-        continueRender();
+        canvasRootPromise.then((canvasRoot) => continueRender(canvasRoot));
       });
     } else {
-      continueRender();
+      canvasRootPromise.then((canvasRoot) => continueRender(canvasRoot));
     }
 
   }, [html, project, canvas, filename]);

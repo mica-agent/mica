@@ -11,6 +11,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import type { CanvasFile } from "../api/canvasFiles";
 import { fetchCardBack, saveCardBack, getFileUrl } from "../api/canvasFiles";
+import { canvasRelative } from "../api/canvasPaths";
 import CardRuntime from "./CardRuntime";
 
 interface RenderedCardData {
@@ -25,6 +26,12 @@ interface Props {
   /** Per-tab active project name. Threaded into every project-scoped API call. */
   project: string;
   file: CanvasFile;
+  /** The project's canvasRoot — used to compute the canvas-relative display
+   *  name for the card title. Empty string when canvas IS project root. The
+   *  canonical `file.name` stays project-relative (used as a key for drag,
+   *  edit, delete, and `/api/files/...` URLs); only the visible text gets
+   *  the canvasRoot stripped. */
+  canvasRoot: string;
   onEdit: () => void;
   onDelete: () => void;
   onUnpin?: () => void;
@@ -49,7 +56,12 @@ function getFileBadge(type: string): string {
   }
 }
 
-export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: Props) {
+export default function CardFrame({ project, file, canvasRoot, onEdit, onDelete, onUnpin }: Props) {
+  // Canvas-relative display name. The card's identity (file.name, used for
+  // drag/edit/delete/API routing) stays project-relative; only what the user
+  // sees in the title and footer label is prefix-stripped. Pinned files
+  // outside canvas surface with `../` to stay honest about their location.
+  const displayName = canvasRelative(file.name, canvasRoot);
   const [flipped, setFlipped] = useState(false);
   const [backContent, setBackContent] = useState("");
   const [backLoaded, setBackLoaded] = useState(false);
@@ -178,7 +190,7 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
       {/* Header */}
       <div className="wb-card-header">
         <span className="wb-card-type">{badge}</span>
-        <span className="wb-card-title">{file.name}</span>
+        <span className="wb-card-title" title={file.name}>{displayName}</span>
         <div className="wb-card-actions">
           {file.meta ? (
             <button
@@ -352,7 +364,7 @@ export default function CardFrame({ project, file, onEdit, onDelete, onUnpin }: 
 
       {/* Footer */}
       <div className="wb-card-footer">
-        <span className="wb-card-filename">{file.name}</span>
+        <span className="wb-card-filename" title={file.name}>{displayName}</span>
       </div>
 
       {/* Resize handle */}

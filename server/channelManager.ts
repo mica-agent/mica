@@ -11,7 +11,8 @@
  * States: registered -> active -> idle -> destroyed
  */
 
-import { readProjectFile, writeProjectFile, WORKSPACE_DIR } from "./files.js";
+import { readProjectFile, writeProjectFile, WORKSPACE_DIR, getCardClassMeta } from "./files.js";
+import { registerManifest, validateArgs, getManifest, getManifestNames, type HandlerManifest } from "./handlerManifest.js";
 import { join } from "path";
 
 // ── Types ──────────────────────────────────────────────────
@@ -89,9 +90,15 @@ export class ChannelManager {
     return `${project ?? "<workspace>"}|${filename}`;
   }
 
-  registerHandler(cardClass: string, factory: HandlerFactory): void {
+  registerHandler(cardClass: string, factory: HandlerFactory, manifest?: HandlerManifest): void {
     this.factories.set(cardClass, factory);
-    console.log(`[channel-mgr] Registered handler for: ${cardClass}`);
+    if (manifest) {
+      if (manifest.name !== cardClass) {
+        console.warn(`[channel-mgr] manifest.name "${manifest.name}" does not match registration key "${cardClass}" — using ${cardClass} for routing.`);
+      }
+      registerManifest({ ...manifest, name: cardClass });
+    }
+    console.log(`[channel-mgr] Registered handler for: ${cardClass}${manifest ? " (with manifest)" : ""}`);
   }
 
   hasHandler(cardClass: string): boolean {
@@ -224,10 +231,33 @@ export class ChannelManager {
     filename: string,
     args: Record<string, unknown>,
   ): Promise<Session> {
-    const cardClass = this.resolveCardClass(filename);
+    // Routing: if the card class declares `metadata.handler`, route to that
+    // built-in (or developer-registered custom plugin). Otherwise fall back
+    // to today's extension-keyed lookup. This is what lets card classes
+    // reach the parameterized llm-direct / llm-agent handlers without
+    // anyone writing server-side code.
+    const ext = this.resolveCardClass(filename);
+    const meta = await getCardClassMeta(ext, project);
+    const cardClass = meta.handler ?? ext;
     const factory = this.factories.get(cardClass);
     if (!factory) {
-      throw new Error(`No handler registered for: ${cardClass}`);
+      const available = getManifestNames();
+      const hint = available.length > 0
+        ? ` Available handlers: ${available.join(", ")}.`
+        : "";
+      throw new Error(`No handler registered for: ${cardClass}.${hint}`);
+    }
+
+    // If the routed handler ships a manifest, validate args at the channel
+    // boundary. Bad args fail fast with a structured error pointing at the
+    // failing schema path — the card surfaces it instead of debugging a
+    // downstream nullref.
+    const manifest = getManifest(cardClass);
+    if (manifest) {
+      const result = validateArgs(manifest, args);
+      if (!result.ok) {
+        throw new Error(`Invalid args for handler "${cardClass}": ${result.error}`);
+      }
     }
 
     let content = "";

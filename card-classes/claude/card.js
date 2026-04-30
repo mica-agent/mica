@@ -428,9 +428,10 @@ function hydrateFuelGauge() {
     items.reverse();
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
-      if (typeof it.baseline_tokens === "number" && it.baseline_tokens > 0) {
-        recentBaselines.push(it.baseline_tokens);
-      }
+      const peak = (typeof it.input_tokens === "number" && it.input_tokens > 0)
+        ? it.input_tokens
+        : (typeof it.baseline_tokens === "number" ? it.baseline_tokens : 0);
+      if (peak > 0) recentBaselines.push(peak);
       if (typeof it.context_window === "number" && it.context_window > 0) {
         lastContextWindow = it.context_window;
       }
@@ -543,7 +544,11 @@ ch.onData(function(data) {
         if (typeof data.cursor === "number") contextCursor = data.cursor;
         if (contextCursor !== prevCursor) applyCursorDisplay();
       }
-      updateFuelGauge(data.baselineTokens || 0, data.contextWindow || 0);
+      // Prefer the turn's PEAK input tokens over turn-start baseline. The
+      // SDK appends every tool result into each subsequent request and never
+      // shrinks the prompt — so peak tells you whether the turn brushed the
+      // ceiling, not just where it started.
+      updateFuelGauge(data.inputTokens || data.baselineTokens || 0, data.contextWindow || 0);
       lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(`${doneMsg} (${elapsedSec}s, ${stepCount} steps)`, "#3fb950", false);

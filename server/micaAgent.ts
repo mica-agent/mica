@@ -51,7 +51,7 @@ const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
 // llamaServer.ts. Passed to the chat card so it can render a live context-usage
 // footer — OpenRouter cards get the per-model value from SDK result.modelUsage
 // when present, falling back to this constant otherwise.
-const LOCAL_CTX_WINDOW = parseInt(process.env.LLAMA_CTX_SIZE || "65536", 10);
+const LOCAL_CTX_WINDOW = parseInt(process.env.LLAMA_CTX_SIZE || "131072", 10);
 
 /** Per-file size cap above which an intent doc is demoted from inlined-in-
  *  baseline to listing-only-with-abstract. Scales proportionally with the
@@ -1936,12 +1936,24 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         const arcComplete = ARC_COMPLETE_RE.test(resultText);
         if (arcComplete) resultText = resultText.replace(ARC_COMPLETE_RE, "").trim();
 
+        // The SDK's tool loop appends every tool result into the next request
+        // and never shrinks the prompt, so `usage.input_tokens` from the result
+        // event is the FINAL iteration's prompt size — i.e. the peak prompt
+        // pressure of the entire turn. Drive capacity off that, not the static
+        // baselineTokens which only measures the turn-START prompt and ignores
+        // the tool-loop accumulation. (Bug we hit: baseline read 75% while the
+        // mid-turn request was already 124% of cap and overflowing.)
+        const usageInput = typeof (usage as { input_tokens?: unknown })?.input_tokens === "number"
+          ? (usage as { input_tokens: number }).input_tokens
+          : 0;
+        const peakTokens = usageInput > 0 ? usageInput : baselineTokens;
+
         // Decide whether to advance the cursor. We advance only at genuine arc
         // breaks AND when capacity is tight enough (>80%) that the next turn
         // would benefit. Below 80% the cache-invalidation cost of advancing
         // isn't justified. Mid-arc advances never happen silently — those
         // surface as Clear/Spawn prompts in the UI at >95%.
-        const capacity = contextWindow > 0 ? baselineTokens / contextWindow : 0;
+        const capacity = contextWindow > 0 ? peakTokens / contextWindow : 0;
         let cursorAdvanced = false;
         let newCursor = cursor;
 
@@ -1994,7 +2006,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           return;
         }
 
-        console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
+        console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)} (peak ${peakTokens} / ${contextWindow})`);
         ctx.broadcast({
           type: "assistant",
           content: resultText,
@@ -2003,6 +2015,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           ...(usage ? { usage } : {}),
           ...(contextWindow > 0 ? { contextWindow } : {}),
           baselineTokens,
+          // Peak prompt-size during the turn (last tool-loop iteration). The
+          // chat card's fuel gauge prefers this over baselineTokens because
+          // baseline is the turn-START reading; this is the turn's high-water
+          // mark. Falls back to baseline if the SDK didn't report usage.
+          inputTokens: peakTokens,
           arcComplete,
           capacity,
           cursor: newCursor,

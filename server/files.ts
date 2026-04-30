@@ -46,7 +46,7 @@ export const CONTEXT_SOFT_CAP_CHARS = 100_000;
 // — their content lives elsewhere and shouldn't be dumped into the agent's
 // "Project Files" section.
 
-interface ClassMeta { badge: string; meta: boolean }
+interface ClassMeta { badge: string; meta: boolean; handler: string | null }
 const classMetaCache = new Map<string, ClassMeta>();
 
 export async function getCardClassMeta(ext: string, project: string | null | undefined): Promise<ClassMeta> {
@@ -62,16 +62,17 @@ export async function getCardClassMeta(ext: string, project: string | null | und
   for (const dir of candidates) {
     try {
       const raw = await readFile(join(dir, "metadata.json"), "utf-8");
-      const m = JSON.parse(raw) as { badge?: unknown; meta?: unknown };
+      const m = JSON.parse(raw) as { badge?: unknown; meta?: unknown; handler?: unknown };
       const out: ClassMeta = {
         badge: typeof m.badge === "string" ? m.badge : "",
         meta: m.meta === true,
+        handler: typeof m.handler === "string" && m.handler.length > 0 ? m.handler : null,
       };
       classMetaCache.set(cacheKey, out);
       return out;
     } catch { /* try next candidate */ }
   }
-  const empty: ClassMeta = { badge: "", meta: false };
+  const empty: ClassMeta = { badge: "", meta: false, handler: null };
   classMetaCache.set(cacheKey, empty);
   return empty;
 }
@@ -105,12 +106,21 @@ export const DEFAULT_CANVAS_ROOT = "canvas";
  *  gets authored. */
 export const DEFAULT_CANVAS_CLASS = "canvas";
 
-/** Directories and patterns to skip when listing files recursively. */
+/** Always-skip directories — build artifacts, VCS internals, package caches.
+ *  Filtered regardless of `showHidden`. Listing inside these is hostile to
+ *  the user (huge binary trees, generated files) and to the agent's context.
+ *  If a user genuinely wants to see `.git/objects` they can use a real
+ *  filesystem browser, not a Mica card.
+ *
+ *  Note: `.mica`, `.qwen`, `.claude` are deliberately NOT in this set —
+ *  they're hidden by the dot-prefix default-filter, but a `showHidden=true`
+ *  caller (the filebrowser card's "show hidden" toggle) reveals them. The
+ *  user inspects Mica's own state without it being a debug port into deep
+ *  internals like git objects. */
 const IGNORE_DIRS = new Set([
-  ".mica", ".git", ".svn", ".hg",
+  ".git", ".svn", ".hg",
   "node_modules", "__pycache__", ".venv", "venv",
   ".next", ".nuxt", "dist", "build", ".cache",
-  ".qwen",
 ]);
 
 /** File extensions to skip (binary/generated). */
@@ -578,16 +588,16 @@ export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
  * specific file lookups) should call getOrCreateCardId explicitly on the
  * filtered set.
  */
-export async function listFiles(project?: string): Promise<FileMeta[]> {
+export async function listFiles(project?: string, opts: { showHidden?: boolean } = {}): Promise<FileMeta[]> {
   const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
   if (!existsSync(root)) return [];
 
   const files: FileMeta[] = [];
-  await scanDir(root, root, files);
+  await scanDir(root, root, files, !!opts.showHidden);
   return files;
 }
 
-async function scanDir(dir: string, root: string, files: FileMeta[]): Promise<void> {
+async function scanDir(dir: string, root: string, files: FileMeta[], showHidden: boolean): Promise<void> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -596,13 +606,18 @@ async function scanDir(dir: string, root: string, files: FileMeta[]): Promise<vo
   }
 
   for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
+    // Default: hide dot-prefixed entries (Unix convention).
+    // showHidden=true reveals dot-prefixed entries including Mica/agent state
+    // dirs (.mica, .qwen, .claude — see REVEALABLE_DOT_DIRS) but does NOT
+    // affect the always-skip list (.git, .next, node_modules, etc.) which
+    // are build-noise the user never wants in a project file browser.
+    if (!showHidden && entry.name.startsWith(".")) continue;
+    if (IGNORE_DIRS.has(entry.name)) continue;
 
     const fullPath = join(dir, entry.name);
     const relPath = relative(root, fullPath);
 
     if (entry.isDirectory()) {
-      if (IGNORE_DIRS.has(entry.name)) continue;
       try {
         const dirStat = await stat(fullPath);
         files.push({
@@ -612,7 +627,7 @@ async function scanDir(dir: string, root: string, files: FileMeta[]): Promise<vo
           modifiedAt: dirStat.mtime.toISOString(),
         });
       } catch { /* skip unreadable */ }
-      await scanDir(fullPath, root, files);
+      await scanDir(fullPath, root, files, showHidden);
     } else if (entry.isFile()) {
       const ext = entry.name.substring(entry.name.lastIndexOf(".")).toLowerCase();
       if (IGNORE_EXTENSIONS.has(ext)) continue;

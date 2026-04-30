@@ -18,8 +18,13 @@ const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf";
 const MODEL_PATH = process.env.MODEL_PATH || "";
 // Per-slot context size. llama.cpp divides `--ctx-size` across slots, so to
 // give EACH slot this many tokens we pass -np × CTX_SIZE_PER_SLOT below.
-// Override with LLAMA_CTX_SIZE for tighter budgets.
-const CTX_SIZE_PER_SLOT = process.env.LLAMA_CTX_SIZE || "65536";
+// Override with LLAMA_CTX_SIZE for tighter budgets. 128K accommodates the
+// tool-loop accumulation (canvas baseline + history + tool results + thinking
+// blocks) that 64K was overflowing mid-turn — the chat card's fuel gauge
+// reports baseline tokens, but the SDK appends every tool result into each
+// subsequent request, so a turn doing heavy I/O can blow a 64K cap from a
+// "comfortable" baseline.
+const CTX_SIZE_PER_SLOT = process.env.LLAMA_CTX_SIZE || "131072";
 // Default 3 parallel slots so the chat agent can fan out subagent tasks on
 // the local llama-server without queueing. KV-cache cost for Qwen3.6's
 // hybrid Linear+Gated Delta Net architecture is small (~100-500 MiB/slot),

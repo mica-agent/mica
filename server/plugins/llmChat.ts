@@ -1,7 +1,12 @@
-// LLM Chat plugin — direct streaming chat with switchable models.
-// No agent tools — just conversation with the LLM via OpenAI-compatible API.
+// Direct LLM chat — streaming chat completions against an OpenAI-compatible
+// endpoint. The factory reads its configuration from `args` passed at
+// `mica.openChannel(fn, args)`, which lets a card class drive system prompt,
+// model, endpoint, and sampling without writing server-side code. Same code
+// path serves the legacy `.llm-chat` registration AND the new `llm-direct`
+// built-in (registered with a manifest in server/index.ts).
 
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
+import type { HandlerManifest } from "../handlerManifest.js";
 
 const LLM_PORTS: Record<string, number> = {
   coder: 8012,
@@ -18,19 +23,40 @@ interface ChatMessage {
   content: string | ContentBlock[];
 }
 
+interface DirectArgs {
+  systemPrompt?: string;
+  model?: string;
+  baseUrl?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
 export function createLlmChatHandler() {
   return async function llmChatFactory(
     _content: string,
-    _args: Record<string, unknown>,
+    args: Record<string, unknown>,
     ctx: SessionContext,
   ): Promise<ChannelHandler> {
+    const cfg: DirectArgs = {
+      systemPrompt: typeof args.systemPrompt === "string" ? args.systemPrompt : undefined,
+      model: typeof args.model === "string" ? args.model : undefined,
+      baseUrl: typeof args.baseUrl === "string" ? args.baseUrl : undefined,
+      temperature: typeof args.temperature === "number" ? args.temperature : 0.7,
+      maxTokens: typeof args.maxTokens === "number" ? args.maxTokens : 2048,
+    };
+
     const history: ChatMessage[] = [];
+    if (cfg.systemPrompt) {
+      history.push({ role: "system", content: cfg.systemPrompt });
+    }
     let activeAbort: AbortController | null = null;
 
     return {
       onAttach(clientId) {
-        // Send conversation history to reconnecting client
-        ctx.sendTo(clientId, { type: "history", messages: history });
+        // Send conversation history to reconnecting client. Strip the system
+        // message from the surface — cards display turns, not the prompt.
+        const visible = history.filter(m => m.role !== "system");
+        ctx.sendTo(clientId, { type: "history", messages: visible });
       },
 
       async onData(_clientId, data) {
@@ -43,39 +69,42 @@ export function createLlmChatHandler() {
 
         if (msg.type === "clear") {
           history.length = 0;
+          if (cfg.systemPrompt) history.push({ role: "system", content: cfg.systemPrompt });
           ctx.broadcast({ type: "history", messages: [] });
           return;
         }
 
         const userMessage = msg.message;
-        const userContent = msg.content;  // multimodal content blocks (image+text)
+        const userContent = msg.content;
         if (!userMessage && !userContent) return;
 
-        const modelKey = msg.model || "coder";
-        const port = LLM_PORTS[modelKey] || LLM_PORTS.coder;
+        // Per-message model override wins over the args default. Either way,
+        // an explicit baseUrl bypasses the LLM_PORTS table entirely.
+        const modelKey = msg.model || cfg.model || "coder";
+        const endpoint = cfg.baseUrl
+          ? `${cfg.baseUrl.replace(/\/$/, "")}/v1/chat/completions`
+          : `http://127.0.0.1:${LLM_PORTS[modelKey] || LLM_PORTS.coder}/v1/chat/completions`;
 
-        // Use content blocks if provided (multimodal), else plain text
         const messageForLlm: string | ContentBlock[] = userContent || userMessage || "";
         history.push({ role: "user", content: messageForLlm });
-        // Display: show text part to the user (image preview not shown in bubble — TODO)
         ctx.broadcast({ type: "user", content: userMessage || "[image]" });
         ctx.broadcast({ type: "thinking", model: modelKey });
 
         activeAbort = new AbortController();
 
         try {
-          const resp = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+          const resp = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               model: modelKey,
               messages: history,
-              max_tokens: 2048,
-              temperature: 0.7,
+              max_tokens: cfg.maxTokens,
+              temperature: cfg.temperature,
               stream: true,
               // Qwen3.6+ has thinking mode on by default — turn it off for direct chat
-              // so the model writes reply tokens immediately instead of burning the
-              // budget on reasoning. Templates that don't recognize the field ignore it.
+              // so the model writes reply tokens immediately. Templates that don't
+              // recognize the field ignore it.
               chat_template_kwargs: { enable_thinking: false },
             }),
             signal: activeAbort.signal,
@@ -136,3 +165,53 @@ export function createLlmChatHandler() {
     };
   };
 }
+
+export const manifest: HandlerManifest = {
+  name: "llm-direct",
+  version: "1.0.0",
+  description: "Streaming chat against an OpenAI-compatible endpoint with a fixed persona.",
+  whenToUse:
+    "Pick this when your card class needs streaming chat against a single model with a fixed system prompt — a persona, a focused assistant, an interactive helper. NOT for tool-using behavior (use llm-agent). NOT if you need the project-wide chat role with skills and canvas baseline (use the existing chat card).",
+  argsSchema: {
+    type: "object",
+    properties: {
+      systemPrompt: { type: "string", description: "System message prepended to every request. Defines the persona/role." },
+      model: { type: "string", description: "Model id. Default: 'coder'. Must be a key in LLM_PORTS or used with a custom baseUrl." },
+      baseUrl: { type: "string", description: "OpenAI-compatible base URL (without /v1). When set, bypasses the LLM_PORTS table and the model id is forwarded as-is." },
+      temperature: { type: "number", description: "Sampling temperature. Default: 0.7." },
+      maxTokens: { type: "number", description: "Max output tokens per turn. Default: 2048." },
+    },
+  },
+  sendShapes: {
+    type: "object",
+    description:
+      "What the card may send via channel.send(). Three message types: " +
+      "{ message: string, model?: string, content?: ContentBlock[] } for a user turn (model override is per-message); " +
+      "{ type: 'interrupt' } to abort the in-flight stream; " +
+      "{ type: 'clear' } to reset history (system prompt is preserved).",
+  },
+  recvShapes: {
+    type: "object",
+    description:
+      "What the card receives via channel.onData(). Event types: " +
+      "{ type: 'history', messages: [...] } on attach; " +
+      "{ type: 'user', content: string } user-turn echo; " +
+      "{ type: 'thinking', model: string } before tokens start; " +
+      "{ type: 'delta', content: string } per-token streaming; " +
+      "{ type: 'done', content: string, model: string } turn end; " +
+      "{ type: 'error', error: string } on failure.",
+  },
+  examples:
+    "// card.js skeleton\n" +
+    "const channel = mica.openChannel('turn', {\n" +
+    "  systemPrompt: 'You are a children\\'s storyteller. Reply in 2 short paragraphs.',\n" +
+    "  model: 'coder',\n" +
+    "});\n" +
+    "channel.onData((evt) => {\n" +
+    "  if (evt.type === 'delta') appendToBubble(evt.content);\n" +
+    "  if (evt.type === 'done') finishBubble(evt.content);\n" +
+    "  if (evt.type === 'error') showError(evt.error);\n" +
+    "});\n" +
+    "// to send: channel.send({ message: 'Tell me about a frog.' });\n" +
+    "// to abort:  channel.send({ type: 'interrupt' });\n",
+};

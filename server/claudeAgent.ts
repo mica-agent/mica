@@ -1011,7 +1011,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         const durationMs = tsEnd - tsStart;
         const ttftMs = firstTokenTs !== null ? firstTokenTs - tsStart : null;
 
-        console.log(`[claude-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)}`);
+        console.log(`[claude-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)} (peak ${inputTokens} / ${CLAUDE_CTX_WINDOW})`);
         ctx.broadcast({
           type: "assistant",
           content: resultText,
@@ -1019,7 +1019,10 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           filesChanged,
           ...(usage ? { usage } : {}),
           contextWindow: CLAUDE_CTX_WINDOW,
+          // baselineTokens kept for back-compat with card.js readers; inputTokens
+          // is the canonical "turn high-water mark" both agents now emit.
           baselineTokens: inputTokens,
+          inputTokens,
           arcComplete,
           capacity,
           cursor: newCursor,

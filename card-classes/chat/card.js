@@ -662,9 +662,13 @@ function hydrateFuelGauge() {
     items.reverse();
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
-      if (typeof it.baseline_tokens === "number" && it.baseline_tokens > 0) {
-        recentBaselines.push(it.baseline_tokens);
-      }
+      // Prefer input_tokens (the turn's peak, set from SDK usage) over
+      // baseline_tokens (turn-start). See the live-update path: peak is
+      // what tells you "did we get close to overflow."
+      const peak = (typeof it.input_tokens === "number" && it.input_tokens > 0)
+        ? it.input_tokens
+        : (typeof it.baseline_tokens === "number" ? it.baseline_tokens : 0);
+      if (peak > 0) recentBaselines.push(peak);
       if (typeof it.context_window === "number" && it.context_window > 0) {
         lastContextWindow = it.context_window;
       }
@@ -787,7 +791,12 @@ ch.onData(function(data) {
         if (typeof data.cursor === "number") contextCursor = data.cursor;
         if (contextCursor !== prevCursor) applyCursorDisplay();
       }
-      updateFuelGauge(data.baselineTokens || 0, data.contextWindow || 0);
+      // Prefer the turn's PEAK input tokens (last tool-loop iteration) over
+      // turn-start baseline. The SDK appends every tool result into each
+      // subsequent request and never shrinks the prompt — so a turn that
+      // started "comfortable" can finish at 124% of cap. The peak is what
+      // determines whether overflow happened or is about to.
+      updateFuelGauge(data.inputTokens || data.baselineTokens || 0, data.contextWindow || 0);
       lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(doneMsg, "#3fb950", false);
@@ -838,13 +847,13 @@ ch.onData(function(data) {
         if (inTok && inTok > 0) {
           parts.push("sent " + formatK(inTok) + " tok");
         }
-        // Baseline prompt size going into next turn's first LLM call — this
-        // IS comparable to contextWindow (single-call, not cumulative).
-        // Shows how much context you're starting with + headroom before the
-        // tool-loop accumulation that exceeded 65K before auto-compress.
-        if (data.baselineTokens && data.contextWindow && data.contextWindow > 0) {
-          const pct = Math.round((data.baselineTokens / data.contextWindow) * 100);
-          parts.push("next " + formatK(data.baselineTokens) + "/" + formatK(data.contextWindow) + " (" + pct + "%)");
+        // Peak prompt size during this turn (last tool-loop iteration) —
+        // single-call, comparable to contextWindow. This is the turn's
+        // high-water mark; the value that overflow checks against.
+        const peakTok = data.inputTokens || data.baselineTokens;
+        if (peakTok && data.contextWindow && data.contextWindow > 0) {
+          const pct = Math.round((peakTok / data.contextWindow) * 100);
+          parts.push("peak " + formatK(peakTok) + "/" + formatK(data.contextWindow) + " (" + pct + "%)");
         }
         // Cache hit: only meaningful for providers that return it (OpenRouter
         // does, local llama-server doesn't). Suppress when zero or missing.
