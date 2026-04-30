@@ -19,10 +19,17 @@ const statusLabel = container.querySelector("#chat-status-label");
 const statusMeta = container.querySelector("#chat-status-meta");
 const statusToggle = container.querySelector("#chat-status-toggle");
 const statusDetail = container.querySelector("#chat-status-detail");
-// Context meter + Clear/Spawn/Archive header actions
-const ctxMeterEl = container.querySelector("#chat-ctx-meter");
-const ctxMeterFill = container.querySelector("#chat-ctx-meter-fill");
-const ctxMeterLabel = container.querySelector("#chat-ctx-meter-label");
+// Fuel gauge (B — future: capacity trajectory) + header actions
+const fuelEl = container.querySelector("#chat-fuel");
+const fuelFill = fuelEl ? fuelEl.querySelector(".fuel-fill") : null;
+const fuelHeadroomLabel = container.querySelector("#chat-fuel-headroom");
+// Rolling buffer of recent turns' baseline_tokens for headroom projection.
+// Hydrated from /api/agent/turn-history on mount; appended on each assistant
+// event. Older entries drift out as new ones land. Cap modest to keep the
+// trend window short — long-ago turns aren't predictive.
+const FUEL_HISTORY_CAP = 5;
+const recentBaselines = [];
+let lastContextWindow = 0;
 const clearBtn = container.querySelector("#chat-clear-btn");
 const horizonBtn = container.querySelector("#chat-horizon-btn");
 const archiveBtn = container.querySelector("#chat-archive-btn");
@@ -85,6 +92,11 @@ function addDetailLine(text) {
 
 // Open channel to server agent
 const ch = mica.openChannel("agent_session");
+
+// Hydrate the fuel gauge's rolling buffer from recent turn history. Lets
+// the gauge project headroom immediately after a card refresh instead of
+// waiting for the first new assistant event.
+hydrateFuelGauge();
 
 // Poll LLM server status until ready, show progress in input placeholder
 var startupSummaryShown = false;
@@ -285,7 +297,7 @@ function maybeRenderHorizon() {
   }
 }
 
-function addMessage(role, content, agent, questions) {
+function addMessage(role, content, agent, questions, turnId) {
   if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === "center") {
     messagesEl.innerHTML = "";
   }
@@ -303,7 +315,13 @@ function addMessage(role, content, agent, questions) {
     msg.innerHTML = `<div style="color:#e6edf3;font-size:13px;line-height:1.5;">${escapeHtml(content)}</div>`;
   } else {
     msg.style.cssText = "align-self:flex-start;background:rgba(255,255,255,0.05);border-radius:12px 12px 12px 4px;padding:8px 12px;max-width:90%;";
-    const header = agent ? `<div style="color:${ACCENT};font-size:11px;font-weight:600;margin-bottom:4px;">${escapeHtml(agent)}</div>` : "";
+    // A — past, per-turn: when this assistant bubble has a turn_id, render
+    // a chevron next to the agent name. Click to expand a footer with chips
+    // (skills, subagents, tools, elapsed) + a "view snapshot" link to the
+    // captured rendered system prompt for this turn. Old chats lack
+    // turn_id → no chevron renders → footer unavailable (graceful no-op).
+    const chevron = turnId ? `<span class="chat-bubble-toggle" data-turn-id="${escapeHtml(turnId)}" title="Show turn details" style="cursor:pointer;color:#8b949e;font-size:13px;font-weight:600;margin-left:8px;padding:1px 5px;border-radius:3px;display:inline-block;line-height:1;transition:transform 120ms ease, background-color 120ms ease;">▸</span>` : "";
+    const header = agent ? `<div style="color:${ACCENT};font-size:11px;font-weight:600;margin-bottom:4px;">${escapeHtml(agent)}${chevron}</div>` : "";
     msg.innerHTML = `${header}<div class="chat-md" style="color:#e6edf3;font-size:13px;line-height:1.5;">${renderMarkdown(content)}</div>`;
     if (questions && questions.length > 0) {
       const buttonRows = window.document.createElement("div");
@@ -344,6 +362,88 @@ function addMessage(role, content, agent, questions) {
   messagesEl.appendChild(msg);
   scrollBottom();
 }
+
+// A — past, per-turn footer.
+//
+// Delegated click handler on the messages container: when a chevron is
+// clicked, fetch the turn record (skills, subagents, tool counts, duration)
+// and lazy-build a chip-strip footer below the bubble's content. Subsequent
+// clicks toggle visibility without re-fetching. The chevron rotates 90° on
+// expand. A "view snapshot" link in the footer opens the captured rendered
+// system prompt for that turn in a new browser tab.
+//
+// Lazy-built: most bubbles never expand, so the default cost is one chevron
+// + one delegated handler, not one footer per bubble.
+function formatChips(turn, subagents) {
+  const tc = turn.tool_calls || {};
+  const skillsList = Array.isArray(turn.skills_invoked) ? turn.skills_invoked : [];
+  const subList = Array.isArray(subagents) ? subagents : [];
+  // Top 3 tool names by count for the hover detail.
+  const toolEntries = Object.keys(tc).map(function(k) { return [k, tc[k]]; }).sort(function(a, b) { return b[1] - a[1]; });
+  const totalToolCalls = toolEntries.reduce(function(s, e) { return s + e[1]; }, 0);
+  const topTools = toolEntries.slice(0, 3).map(function(e) { return e[0] + " " + e[1]; }).join(" · ");
+  const skillsTitle = skillsList.length > 0 ? skillsList.join(", ") : "(none)";
+  const subsTitle = subList.length > 0
+    ? subList.map(function(s) { return s.subagent_name + " · " + Math.round(s.duration_ms / 100) / 10 + "s"; }).join("\n")
+    : "(none)";
+  const durationSec = turn.duration_ms ? Math.round(turn.duration_ms / 100) / 10 : 0;
+  // Text-only chips (no emoji per project style).
+  function chip(label, title) {
+    return '<span class="chat-turn-chip" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</span>';
+  }
+  const parts = [];
+  parts.push(chip(skillsList.length + " skills", skillsTitle));
+  parts.push(chip(subList.length + " subagents", subsTitle));
+  parts.push(chip(totalToolCalls + " tools", topTools || "(none)"));
+  parts.push(chip(durationSec + "s", "elapsed"));
+  return parts.join("");
+}
+
+messagesEl.addEventListener("click", function(e) {
+  const toggle = e.target.closest && e.target.closest(".chat-bubble-toggle");
+  if (!toggle) return;
+  e.stopPropagation();
+  const bubble = toggle.closest("[data-msg-index]");
+  if (!bubble) return;
+  const turnId = toggle.getAttribute("data-turn-id");
+  if (!turnId) return;
+  let footer = bubble.querySelector(".chat-turn-footer");
+  if (footer) {
+    // Toggle existing footer
+    const isHidden = footer.style.display === "none";
+    footer.style.display = isHidden ? "flex" : "none";
+    toggle.style.transform = isHidden ? "rotate(90deg)" : "rotate(0deg)";
+    return;
+  }
+  // First expand: fetch + build
+  toggle.textContent = "…";
+  fetch("/api/agent/turn-record/" + encodeURIComponent(mica.cardId) + "/" + encodeURIComponent(turnId), {
+    headers: projectHeaders(),
+  }).then(function(r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }).then(function(data) {
+    toggle.textContent = "▸";
+    toggle.style.transform = "rotate(90deg)";
+    footer = window.document.createElement("div");
+    footer.className = "chat-turn-footer";
+    footer.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;padding-top:6px;border-top:1px solid rgba(48,54,61,0.5);font-size:11px;color:#8b949e;";
+    const chipsHtml = formatChips(data.turn || {}, data.subagents || []);
+    // Pass project as a query param — opening in a new tab via <a target="_blank">
+    // strips the X-Mica-Project header that the fetch path sets via projectHeaders().
+    // Server's getRequestProject() accepts either header or ?project=.
+    const snapHref = "/api/agent/turn-snapshot/" + encodeURIComponent(mica.cardId) + "/" + encodeURIComponent(turnId)
+      + "?project=" + encodeURIComponent(mica.project || "");
+    footer.innerHTML = chipsHtml +
+      '<a class="chat-turn-snapshot-link" href="' + snapHref + '" target="_blank" rel="noopener" ' +
+      'style="color:#7c3aed;text-decoration:none;font-size:11px;margin-left:auto;" ' +
+      'title="Open the captured rendered system prompt for this turn">view snapshot →</a>';
+    bubble.appendChild(footer);
+  }).catch(function(err) {
+    toggle.textContent = "▸";
+    toggle.title = "Failed to load: " + err.message;
+  });
+});
 
 // Render an error bubble for a card-error WebSocket event. Distinct red-tinted
 // styling so it's not mistaken for a regular assistant message. The "Send to
@@ -476,29 +576,102 @@ function playChime() {
   } catch (e) { console.warn("[chime] threw:", e); }
 }
 
-// Update the context meter (fill width + color + label). Called on every
-// assistant turn (server broadcasts baselineTokens + contextWindow). Green
-// < 50%, amber 50–85%, red > 85%.
-function updateCtxMeter(baselineTokens, contextWindow) {
-  if (!baselineTokens || !contextWindow || contextWindow <= 0) {
-    ctxMeterEl.style.display = "none";
-    return;
+// Compact token count: 1234 → "1.2K", 65536 → "65K".
+function formatK(n) {
+  if (n < 1000) return String(n);
+  if (n < 10000) return (n / 1000).toFixed(1) + "K";
+  return Math.round(n / 1000) + "K";
+}
+
+// B (future) — fuel gauge with capacity trajectory.
+//
+// Renders the topbar gauge from a new baseline_tokens reading and the
+// rolling buffer of recent turns. The gauge is forward-looking: the
+// headroom number projects how many more turns fit before the context
+// window caps, based on the buffer's mean per-turn growth. Color zones
+// (green/amber/red) and tick marks at 50%/80% on the track distinguish
+// it visually from a flat progress bar.
+//
+// Inputs:
+//   - baselineTokens: this turn's baseline (from server's `assistant` event)
+//   - contextWindow:  the model's window (also from server)
+//
+// Side effects: pushes baselineTokens into recentBaselines (capped at
+// FUEL_HISTORY_CAP), then redraws.
+function updateFuelGauge(baselineTokens, contextWindow) {
+  if (typeof baselineTokens === "number" && baselineTokens > 0) {
+    recentBaselines.push(baselineTokens);
+    while (recentBaselines.length > FUEL_HISTORY_CAP) recentBaselines.shift();
   }
-  ctxMeterEl.style.display = "inline-flex";
-  const pct = Math.max(0, Math.min(100, Math.round((baselineTokens / contextWindow) * 100)));
-  ctxMeterFill.style.width = pct + "%";
+  if (typeof contextWindow === "number" && contextWindow > 0) lastContextWindow = contextWindow;
+  renderFuelGauge();
+}
+
+// Pure render from the rolling buffer + lastContextWindow. Split out so
+// the post-mount /turn-history hydration can call this once after seeding
+// the buffer without needing fresh server-side numbers.
+function renderFuelGauge() {
+  if (!fuelEl || !fuelFill) return;
+  const cw = lastContextWindow;
+  const latest = recentBaselines.length > 0 ? recentBaselines[recentBaselines.length - 1] : 0;
+  if (!latest || !cw || cw <= 0) { fuelEl.style.display = "none"; return; }
+  fuelEl.style.display = "inline-flex";
+  const pct = Math.max(0, Math.min(100, Math.round((latest / cw) * 100)));
+  fuelFill.style.width = pct + "%";
   let color = "#4ade80";       // green — comfortable
-  if (pct >= 85) color = "#f87171";
+  if (pct >= 80) color = "#f87171";
   else if (pct >= 50) color = "#fbbf24";
-  ctxMeterFill.style.background = color;
-  // Show "X/Y · Z%" so the user can read both absolute size and percentage
-  // at a glance. Colour the label to match the fill so it's unmistakable as
-  // a context indicator even in quick visual scans.
-  ctxMeterLabel.textContent = formatK(baselineTokens) + "/" + formatK(contextWindow) + " · " + pct + "%";
-  ctxMeterLabel.style.color = color;
-  ctxMeterLabel.title =
-    "Next turn's baseline prompt: " + formatK(baselineTokens) + " / " + formatK(contextWindow) +
-    " (" + pct + "% of context window)";
+  fuelFill.style.background = color;
+  // Headroom: mean per-turn growth across the buffer projected to the cap.
+  // Negative or zero growth (cursor advanced, baseline shrank) → "stable".
+  let headroomText = "";
+  let headroomTitle = "";
+  if (recentBaselines.length >= 2) {
+    const oldest = recentBaselines[0];
+    const delta = (latest - oldest) / (recentBaselines.length - 1);
+    if (delta > 0) {
+      const turnsToCap = Math.max(0, Math.floor((cw - latest) / delta));
+      headroomText = "~" + turnsToCap + " turns";
+      headroomTitle = "~" + turnsToCap + " turns to cap";
+    } else {
+      headroomText = "—";
+      headroomTitle = "headroom stable";
+    }
+  } else {
+    headroomText = "—";
+    headroomTitle = "tracking…";
+  }
+  fuelHeadroomLabel.textContent = formatK(latest) + "/" + formatK(cw) + " · " + headroomText;
+  fuelHeadroomLabel.style.color = color;
+  // Hover title: now / recent peaks / projection. Multi-line via \n; the
+  // browser renders title attribute newlines as line breaks in the tooltip.
+  const peakList = recentBaselines.map(formatK).join(", ");
+  fuelEl.title = "Now: " + formatK(latest) + "/" + formatK(cw) + " (" + pct + "%)\n"
+    + "Recent: " + peakList + "\n" + headroomTitle;
+}
+
+// Hydrate the rolling buffer from server-side turn history on mount so the
+// gauge can project trajectory immediately after a card refresh. Cheap GET;
+// failure is swallowed (gauge just stays hidden until the first live turn).
+function hydrateFuelGauge() {
+  fetch("/api/agent/turn-history/" + encodeURIComponent(mica.cardId) + "?limit=" + FUEL_HISTORY_CAP, {
+    headers: projectHeaders(),
+  }).then(function(r) { return r.json(); }).then(function(items) {
+    if (!Array.isArray(items) || items.length === 0) return;
+    // Server returns most-recent first; reverse so push order matches turn order.
+    items.reverse();
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (typeof it.baseline_tokens === "number" && it.baseline_tokens > 0) {
+        recentBaselines.push(it.baseline_tokens);
+      }
+      if (typeof it.context_window === "number" && it.context_window > 0) {
+        lastContextWindow = it.context_window;
+      }
+    }
+    while (recentBaselines.length > FUEL_HISTORY_CAP) recentBaselines.shift();
+    renderFuelGauge();
+  }).catch(function() { /* swallow — gauge stays hidden */ });
 }
 
 // Inline suggestion card offering Clear / Spawn buttons. Rendered after an
@@ -556,7 +729,7 @@ ch.onData(function(data) {
       messageIndex = 0;
       if (data.messages && data.messages.length > 0) {
         for (let i = 0; i < data.messages.length; i++) {
-          addMessage(data.messages[i].role, data.messages[i].content, data.messages[i].agent);
+          addMessage(data.messages[i].role, data.messages[i].content, data.messages[i].agent, undefined, data.messages[i].turn_id);
         }
       } else {
         messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Send a message to start the Qwen Code agent.</div>';
@@ -614,7 +787,7 @@ ch.onData(function(data) {
         if (typeof data.cursor === "number") contextCursor = data.cursor;
         if (contextCursor !== prevCursor) applyCursorDisplay();
       }
-      updateCtxMeter(data.baselineTokens || 0, data.contextWindow || 0);
+      updateFuelGauge(data.baselineTokens || 0, data.contextWindow || 0);
       lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(doneMsg, "#3fb950", false);
@@ -683,7 +856,7 @@ ch.onData(function(data) {
         statusMeta.textContent = parts.join(" · ");
         addDetailLine("Completed: " + parts.join(" · "));
       }
-      addMessage("assistant", data.content, data.agent || "Qwen", data.questions);
+      addMessage("assistant", data.content, data.agent || "Qwen", data.questions, data.turn_id);
       // Proactive Clear/Spawn suggestion at natural arc breaks when the
       // conversation is getting long. Green zone (<50%) never suggests; amber
       // with arc-complete shows a soft nudge; red always surfaces the choice.
@@ -867,7 +1040,8 @@ function clearCard(opts) {
     messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Conversation cleared. Send a message to start a new one.</div>';
     contextCursor = 0;
     messageIndex = 0;
-    ctxMeterEl.style.display = "none";
+    if (fuelEl) fuelEl.style.display = "none";
+    recentBaselines.length = 0;
     lastCapacity = 0;
   }).catch(function(err) {
     console.error("[chat] clear failed:", err);
@@ -1045,7 +1219,8 @@ const _unsubChatCleared = mica.on("chat-cleared", function(ev) {
   messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Conversation cleared.</div>';
   contextCursor = 0;
   messageIndex = 0;
-  ctxMeterEl.style.display = "none";
+  if (fuelEl) fuelEl.style.display = "none";
+  recentBaselines.length = 0;
   lastCapacity = 0;
 });
 mica.onDestroy(_unsubChatCleared);
@@ -1072,85 +1247,6 @@ stopBtn.addEventListener("click", function() {
 
 inputEl.addEventListener("keydown", function(e) {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-});
-
-// Context tooltip
-const ctxBtn = container.querySelector("#chat-ctx-btn");
-const ctxTooltip = container.querySelector("#chat-context-tooltip");
-const ctxFiles = container.querySelector("#chat-context-files");
-let ctxVisible = false;
-let ctxLoaded = false;
-
-function formatSize(chars) {
-  if (chars < 1024) return chars + " chars";
-  return (chars / 1024).toFixed(1) + "K chars";
-}
-
-// Compact token count: 1234 → "1.2K", 65536 → "65K".
-function formatK(n) {
-  if (n < 1000) return String(n);
-  if (n < 10000) return (n / 1000).toFixed(1) + "K";
-  return Math.round(n / 1000) + "K";
-}
-
-function loadContextInfo() {
-  ctxLoaded = false;
-  // Single source of truth: /api/agent/context-preview uses the same
-  // buildContext() the agent uses at turn time. Per-file sizes are the
-  // actual chars injected into the prompt (not raw disk bytes). Binaries
-  // are flagged. Prompt-level soft cap is reported so we can warn when
-  // the canvas has grown past what the model can comfortably hold.
-  const url = "/api/agent/context-preview?filename=" + encodeURIComponent(mica.filename);
-  fetch(url, { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(data) {
-    if (data.error) {
-      ctxFiles.textContent = "Failed to load: " + data.error;
-      return;
-    }
-    const files = data.files || [];
-    const extras = data.extras || [];
-    const promptSize = data.promptSizeChars || 0;
-    const tokens = data.estimatedTokens || Math.round(promptSize / 4);
-    const cap = data.softCapChars || 0;
-    const over = !!data.oversized;
-    const fileLines = files.map(function(f) {
-      if (f.binary) return f.name + '  <span style="color:#888">(binary, ' + (f.size || 0) + ' B)</span>';
-      if (f.unreadable) return f.name + '  <span style="color:#f87171">(unreadable)</span>';
-      return f.name + '  ' + formatSize(f.chars || 0);
-    });
-    const extraLines = extras.map(function(e) {
-      return e.name + '  ' + formatSize(e.chars || 0) + '  <span style="color:#888">(' + (e.kind || 'context') + ')</span>';
-    });
-    const header = '<div style="color:' + (over ? '#f59e0b' : '#4ade80') + ';margin-bottom:4px">'
-      + files.length + ' file' + (files.length === 1 ? '' : 's')
-      + (extras.length ? ' + ' + extras.length + ' context source' + (extras.length === 1 ? '' : 's') : '')
-      + ' · prompt ' + formatSize(promptSize) + ' (~' + tokens + ' tokens)'
-      + (over ? ' · <b>over ' + formatSize(cap) + ' cap — split large cards</b>' : '')
-      + '</div>';
-    ctxFiles.innerHTML = header
-      + extraLines.map(function(l) { return '<div>' + l + '</div>'; }).join('')
-      + fileLines.map(function(l) { return '<div>' + l + '</div>'; }).join('');
-    ctxLoaded = true;
-  }).catch(function() { ctxFiles.textContent = "Failed to load"; });
-}
-
-ctxBtn.addEventListener("click", function(e) {
-  e.stopPropagation();
-  ctxVisible = !ctxVisible;
-  ctxTooltip.style.display = ctxVisible ? "block" : "none";
-  // Always reload — the file list can change between opens (new card added,
-  // file deleted). The fetch is cheap; staleness is the worse failure mode.
-  if (ctxVisible) loadContextInfo();
-});
-
-ctxBtn.addEventListener("mouseenter", function() {
-  if (!ctxVisible) {
-    ctxTooltip.style.display = "block";
-    loadContextInfo();
-  }
-});
-
-ctxBtn.addEventListener("mouseleave", function() {
-  if (!ctxVisible) ctxTooltip.style.display = "none";
 });
 
 // ── Settings panel ─────────────────────────────────────────

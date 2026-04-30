@@ -20,6 +20,8 @@ import {
 } from "./subagents.js";
 import { markProjectActivity } from "./projectActivity.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
+import { writeSnapshot } from "./turnSnapshots.js";
+import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { z } from "zod";
@@ -235,6 +237,11 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   agent?: string;
+  /** Stable turn UUID, set when the assistant message is persisted at turn
+   *  end. Joins this history bubble to its `TurnRecord` and rendered-prompt
+   *  snapshot. Optional for back-compat with chats predating the per-turn
+   *  footer feature — old bubbles render with no chevron. */
+  turn_id?: string;
 }
 
 // Lazy-load the SDK
@@ -708,6 +715,35 @@ export async function buildContext(
         );
       }
     } catch { /* ignore */ }
+  }
+
+  // Validator errors that fired since the agent's last response. These come
+  // from `enforceCardClassPath` / `enforceCardClassMetadata` / `enforceCardJsLint`
+  // / `enforceDecompositionConsistency` / `enforceDependenciesReachable` —
+  // server/cardValidators.ts via the buffer in server/validatorErrorBuffer.ts.
+  // Without this section the agent would write a malformed file (e.g. wrong
+  // metadata.json schema), the validator would broadcast a card-error to the
+  // chat card frontend, the user would see it, but the agent — running inside
+  // the same turn — would NEVER see it. Result: agent declares "fix complete"
+  // while the validator's actionable diagnosis goes unread. Surfacing it here
+  // closes that feedback loop. Errors persist in the buffer until the file is
+  // rewritten (validator silence on the next save automatically clears).
+  if (project) {
+    const pendingErrors = getPendingValidatorErrors(project);
+    if (pendingErrors.length > 0) {
+      const errorLines = pendingErrors.map((e) =>
+        `### \`${e.filename}\`\n\n${e.error}`
+      );
+      parts.push(
+        `## Validator errors needing your attention\n\n` +
+        `The following file(s) failed validation since your last response. ` +
+        `These errors are from Mica's runtime validators (path/schema/lint/dependency-reachability) — ` +
+        `the user has ALREADY seen them in the chat card UI. ` +
+        `Fix each by rewriting the named file with the corrections the error message describes; ` +
+        `each rewrite re-runs the validator, so the buffer self-clears once the file is valid.\n\n` +
+        errorLines.join("\n\n"),
+      );
+    }
   }
 
   // 1. Instance-level AI context (per-card behavior instructions)
@@ -1288,6 +1324,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       const toolCallCounts: Record<string, number> = {};
       const subagentStarts = new Map<string, { name: string; tsStart: number }>();
       let subagentCount = 0;
+      // Names of skills explicitly invoked via the SDK's `skill` tool. The
+      // chat card's per-turn footer surfaces these by name (not just count).
+      const skillsInvoked: string[] = [];
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -1343,6 +1382,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
         const since = getLastTurnAt(ctx.filename);
         const context = await buildContext(ctx.filename, sessionProject, since, modelName);
+        // Capture the rendered system-prompt context for this turn so the chat
+        // card's per-turn footer can surface a "view snapshot" link. Sidecar
+        // file at `.mica/chats/<chatId>/snapshots/<turnId>.txt`. Fire-and-forget;
+        // failures are swallowed (snapshots are an observability nice-to-have).
+        void writeSnapshot(sessionProject, chatId, turnId, context);
 
         // Configure per-project subagent concurrency cap based on provider.
         // Local llama-server parallelism is bounded by its -np setting; OpenRouter
@@ -1767,6 +1811,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                       subagentStarts.set(taskId, { name: subName, tsStart: Date.now() });
                     }
                   }
+                  // Capture skill name when the SDK's `skill` tool fires.
+                  // Defensive multi-key extraction — exact key varies across
+                  // SDK versions. If the chip ever shows zero, log block.input
+                  // once and adjust the lookup.
+                  if (block.name === "skill") {
+                    const input = (block.input as Record<string, unknown>) || {};
+                    const skillName = String(
+                      input.skill_name ?? input.skill ?? input.name ?? ""
+                    );
+                    if (skillName) skillsInvoked.push(skillName);
+                  }
                   if (WRITE_TOOL_NAMES.has(block.name.toLowerCase())) {
                     filesChanged = true;
                     // Track the file so we ignore the resulting file-changed event,
@@ -1891,7 +1946,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         let newCursor = cursor;
 
         const updatedHistory = await loadHistory(chatId, sessionProject);
-        updatedHistory.push({ role: "assistant", content: resultText, agent: "Qwen" });
+        updatedHistory.push({ role: "assistant", content: resultText, agent: "Qwen", turn_id: turnId });
         await saveHistory(chatId, updatedHistory, sessionProject);
 
         if (arcComplete && capacity > 0.80) {
@@ -1931,6 +1986,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             capacity,
             subagent_count: subagentCount,
             tool_calls: toolCallCounts,
+            skills_invoked: skillsInvoked,
             files_changed: filesChanged ? 1 : 0,
             cursor_advanced: false,
             arc_complete: false,
@@ -1953,6 +2009,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           cursorAdvanced,
           durationMs,
           ...(ttftMs !== null ? { ttftMs } : {}),
+          turn_id: turnId,
         });
 
         void recordTurn(sessionProject, {
@@ -1971,6 +2028,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           capacity,
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
+          skills_invoked: skillsInvoked,
           files_changed: filesChanged ? 1 : 0,
           cursor_advanced: cursorAdvanced,
           arc_complete: arcComplete,
@@ -2007,6 +2065,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           capacity: 0,
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
+          skills_invoked: skillsInvoked,
           files_changed: 0,
           cursor_advanced: false,
           arc_complete: false,
@@ -2143,10 +2202,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           cursorAdvanced: false,
           durationMs: tsEnd - tsStart,
           ttftMs: firstTokenAt.t !== null ? firstTokenAt.t - requestStart : null,
+          turn_id: turnId,
         });
 
         const updatedHistory = await loadHistory(chatId, sessionProject);
-        updatedHistory.push({ role: "assistant", content: reply, agent: "Qwen" });
+        updatedHistory.push({ role: "assistant", content: reply, agent: "Qwen", turn_id: turnId });
         await saveHistory(chatId, updatedHistory, sessionProject);
 
         const usageObj = (data.usage ?? {}) as { prompt_tokens?: unknown; completion_tokens?: unknown };
@@ -2166,6 +2226,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           capacity: 0,
           subagent_count: 0,
           tool_calls: { attach_image: 1 },
+          skills_invoked: [],
           files_changed: 0,
           cursor_advanced: false,
           arc_complete: false,

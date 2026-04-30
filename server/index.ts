@@ -66,9 +66,11 @@ import {
   isLikelyBinary,
   CONTEXT_SOFT_CAP_CHARS,
   getCardClassMeta,
+  micaDir,
   type FileMeta,
   type CardSettings,
 } from "./files.js";
+import { readSnapshot } from "./turnSnapshots.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
 import { createReadStream, createWriteStream } from "fs";
 import mimeTypes from "mime-types";
@@ -91,6 +93,7 @@ import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { registerGitEndpoints } from "./plugins/git.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata, enforceCardJsLint, enforceCardClassPath, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
+import { recordValidatorError, clearValidatorError, getPendingValidatorErrors, clearProjectValidatorErrors } from "./validatorErrorBuffer.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 import {
   setActivityBroadcast,
@@ -297,6 +300,7 @@ app.put("/api/projects/:project/rename", async (req, res) => {
     // come back empty, the card looks confused).
     channelManager.destroyAllForProject(oldName);
     evictCardIdsForProject(oldName);
+    clearProjectValidatorErrors(oldName);
     await renameProject(oldName, newName);
     // Activity counters were keyed by the old name; clear them so they
     // don't appear under a stale identity if the old name is reused later.
@@ -317,6 +321,7 @@ app.delete("/api/projects/:project", async (req, res) => {
     }
     channelManager.destroyAllForProject(name);
     evictCardIdsForProject(name);
+    clearProjectValidatorErrors(name);
     await deleteProject(name);
     clearProjectActivity(name);
     broadcastProjectListChanged();
@@ -671,12 +676,30 @@ app.post("/api/cards/:filename/error", (req, res) => {
     const proj = getRequestProject(req);
     if (proj) {
       broadcastToProject(proj, { type: "card-error", filename, error });
+      // ALSO record into the validator-error buffer so the runtime error
+      // reaches the agent's prompt context on its next turn (same pipeline
+      // as schema/path/lint validators). Without this, the agent has no
+      // visibility into runtime errors a card.js throws — `mica.reportError`
+      // hits the user's UI but the agent flies blind, debugging via
+      // render_capture screenshots alone. Wiring runtime errors through
+      // the same buffer means when card.js throws "L is not defined" or
+      // similar, the agent sees the exact error message + filename on the
+      // next turn and can fix without the user having to retype it.
+      recordValidatorError(proj, filename, error);
     }
   }
   res.json({ ok: true });
 });
 
-app.post("/api/cards/:filename/ok", (_req, res) => {
+app.post("/api/cards/:filename/ok", (req, res) => {
+  // Card rendered (or re-rendered) without throwing — clear any prior
+  // runtime-error buffer entry for this file. Self-healing: the agent
+  // stops seeing the error in its next-turn prompt as soon as the card
+  // successfully renders, mirroring the validator-clear-on-rewrite
+  // semantics. Browser-side: CardRuntime POSTs /ok after a successful
+  // mount or re-render.
+  const proj = getRequestProject(req);
+  if (proj) clearValidatorError(proj, req.params.filename);
   res.json({ ok: true });
 });
 
@@ -890,6 +913,113 @@ app.get("/api/claude-agent/context-preview", async (req, res) => {
     const filename = String(req.query.filename || "");
     if (!filename) { res.status(400).json({ error: "filename required" }); return; }
     res.json(await buildCtxPreview(buildClaudeAgentContext, proj, filename));
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Per-turn detail for the chat card's expandable bubble footer.
+// Returns the matching TurnRecord plus joined SubagentRecords, read from
+// `.mica/metrics/{turns,subagents}.jsonl`. Defensive: chatId/turnId come
+// from the user's bubble, but we only ever read JSONL — no shell, no fs
+// writes, no traversal. 404 if the turn isn't found in either the live
+// or archived JSONLs (graceful for old chats predating the schema).
+app.get("/api/agent/turn-record/:chatId/:turnId", async (req, res) => {
+  try {
+    const proj = getRequestProject(req);
+    if (!proj) { res.status(400).json({ error: "project required" }); return; }
+    const { chatId, turnId } = req.params;
+    if (!/^[a-zA-Z0-9_-]+$/.test(chatId) || !/^[a-zA-Z0-9_-]+$/.test(turnId)) {
+      res.status(400).json({ error: "invalid id" }); return;
+    }
+    const metricsDir = join(micaDir(proj), "metrics");
+    let turn: unknown = null;
+    const subagents: unknown[] = [];
+    const turnsPath = join(metricsDir, "turns.jsonl");
+    if (existsSync(turnsPath)) {
+      const raw = await readFile(turnsPath, "utf-8");
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const rec = JSON.parse(line) as { turn_id?: string; chat_id?: string };
+          if (rec.turn_id === turnId && rec.chat_id === chatId) { turn = rec; break; }
+        } catch { /* skip unparseable */ }
+      }
+    }
+    const subagentsPath = join(metricsDir, "subagents.jsonl");
+    if (existsSync(subagentsPath)) {
+      const raw = await readFile(subagentsPath, "utf-8");
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const rec = JSON.parse(line) as { turn_id?: string };
+          if (rec.turn_id === turnId) subagents.push(rec);
+        } catch { /* skip */ }
+      }
+    }
+    if (!turn) { res.status(404).json({ error: "turn not found" }); return; }
+    res.json({ turn, subagents });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Captured rendered system prompt for one turn. Streams as text/plain so
+// the browser renders inline in a new tab (the card's "view snapshot" link
+// uses `target="_blank"`). 404 if the snapshot doesn't exist.
+app.get("/api/agent/turn-snapshot/:chatId/:turnId", async (req, res) => {
+  try {
+    const proj = getRequestProject(req);
+    if (!proj) { res.status(400).send("project required"); return; }
+    const { chatId, turnId } = req.params;
+    if (!/^[a-zA-Z0-9_-]+$/.test(chatId) || !/^[a-zA-Z0-9_-]+$/.test(turnId)) {
+      res.status(400).send("invalid id"); return;
+    }
+    const content = await readSnapshot(proj, chatId, turnId);
+    if (content === null) { res.status(404).send("snapshot not found"); return; }
+    res.type("text/plain; charset=utf-8");
+    res.setHeader("Content-Disposition", "inline");
+    res.send(content);
+  } catch (err) {
+    res.status(500).send((err as Error).message);
+  }
+});
+
+// Recent turn-history slice for the fuel gauge's headroom projection. The
+// card hydrates its rolling buffer from this on mount so the gauge can
+// project trajectory across recent turns even after a refresh. Returns a
+// minimal shape (turn_id + tokens) — full TurnRecord is fetched per-bubble
+// via /turn-record above.
+app.get("/api/agent/turn-history/:chatId", async (req, res) => {
+  try {
+    const proj = getRequestProject(req);
+    if (!proj) { res.status(400).json({ error: "project required" }); return; }
+    const { chatId } = req.params;
+    if (!/^[a-zA-Z0-9_-]+$/.test(chatId)) {
+      res.status(400).json({ error: "invalid id" }); return;
+    }
+    const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || "20"), 10) || 20));
+    const turnsPath = join(micaDir(proj), "metrics", "turns.jsonl");
+    const out: Array<{ turn_id: string; baseline_tokens: number; context_window: number; ts_end: number }> = [];
+    if (existsSync(turnsPath)) {
+      const raw = await readFile(turnsPath, "utf-8");
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const rec = JSON.parse(line) as { turn_id?: string; chat_id?: string; baseline_tokens?: number; context_window?: number; ts_end?: number };
+          if (rec.chat_id === chatId && typeof rec.turn_id === "string") {
+            out.push({
+              turn_id: rec.turn_id,
+              baseline_tokens: rec.baseline_tokens ?? 0,
+              context_window: rec.context_window ?? 0,
+              ts_end: rec.ts_end ?? 0,
+            });
+          }
+        } catch { /* skip */ }
+      }
+    }
+    out.sort((a, b) => b.ts_end - a.ts_end);
+    res.json(out.slice(0, limit));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -1584,6 +1714,19 @@ function broadcastToProject(project: string, msg: Record<string, unknown>): numb
 fileWatcher.on("file-change", async (event: { type: string; filename: string; project: string }) => {
   console.log(`[file-watcher:${event.project}] ${event.type}: ${event.filename}`);
 
+  // Clear any prior validator-error buffer entry for this file before
+  // re-running validators. Validators that emit errors will re-fill via
+  // recordValidatorError below; validators that pass leave the buffer
+  // empty, so a fix automatically clears the agent-visible error on its
+  // next turn (the buildContext injection reads from this buffer).
+  if (event.type !== "deleted") {
+    clearValidatorError(event.project, event.filename);
+  } else {
+    // File deleted — also wipe any error tied to it; no point telling the
+    // agent about a file that no longer exists.
+    clearValidatorError(event.project, event.filename);
+  }
+
   // Path enforcement: card-class-shaped files outside `.mica/card-classes/`
   // bypass enforceCardClassMetadata + enforceCardJsLint (those only watch
   // the `.mica/...` path). Catch the misplacement here so the agent gets a
@@ -1597,6 +1740,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
           filename: event.filename,
           error: reason,
         });
+        recordValidatorError(event.project, event.filename, reason);
       },
     });
   }
@@ -1613,6 +1757,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
           filename: event.filename,
           error: reason,
         });
+        recordValidatorError(event.project, event.filename, reason);
       },
     }).catch((err) => {
       console.error(`[decomposition-check:${event.project}] failed:`, err);
@@ -1656,6 +1801,13 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   console.log(`[file-watcher:${event.project}] card-class ${event.type}: ${event.filename}`);
   broadcastToProject(event.project, { type: "card-class-changed", filename: event.filename, change: event.type });
 
+  // Clear prior validator-error buffer entry before re-running validators.
+  // Same pattern as the file-change handler above. The card-class watcher
+  // emits separately from the canvas/wrong-loc watchers, so we clear here
+  // independently — a successful re-validation leaves the file's buffer
+  // entry empty (no stale error visible to the agent).
+  clearValidatorError(event.project, event.filename);
+
   // Post-write integrity check: the agent's canUseTool gate is dead under
   // permissionMode: "yolo", so `checkCardClassMetadataConsistency` can't
   // stop a bad metadata.json at write time. Enforce it here instead, on
@@ -1676,6 +1828,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
           filename: event.filename,
           error: reason,
         });
+        recordValidatorError(event.project, event.filename, reason);
       },
     }).catch((err) => {
       console.error(`[deps-reachable:${event.project}] failed:`, err);
@@ -1696,6 +1849,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
           filename: event.filename,
           error: reason,
         });
+        recordValidatorError(event.project, event.filename, reason);
       },
     }).catch((err) => {
       console.error(`[card-class-enforce:${event.project}] failed:`, err);
@@ -1717,6 +1871,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
           filename: event.filename,
           error: reason,
         });
+        recordValidatorError(event.project, event.filename, reason);
       },
     }).catch((err) => {
       console.error(`[card-js-lint:${event.project}] failed:`, err);

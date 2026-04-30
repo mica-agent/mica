@@ -8,6 +8,7 @@ import { join, relative, dirname, basename, sep } from "path";
 import { existsSync } from "fs";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
+import { archiveSnapshots } from "./turnSnapshots.js";
 
 const execAsync = promisify(execCb);
 
@@ -1026,10 +1027,62 @@ export async function archiveChat(
   await mkdir(archiveDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const archiveName = `${stamp}.json`;
+  const archiveStampBase = join(archiveDir, stamp);
   await writeFile(join(archiveDir, archiveName), raw, "utf-8");
   await writeFile(livePath, "[]", "utf-8");
   try { await unlink(cursorPath); } catch { /* ignore */ }
+
+  // Archive per-turn snapshots + filtered metrics alongside the chat JSON.
+  // Snapshots move to <archiveDir>/<stamp>-snapshots/. Turn/subagent records
+  // for the archived turn_ids get filtered out of the live JSONLs and
+  // copied into <archiveDir>/<stamp>-turns.jsonl + <stamp>-subagents.jsonl.
+  // All best-effort — failures don't break the chat clear.
+  try {
+    const archivedTurnIds = await archiveSnapshots(project ?? null, chatId, archiveStampBase);
+    if (archivedTurnIds.length > 0 && project) {
+      await archiveMetricsForTurns(project, archivedTurnIds, archiveStampBase);
+    }
+  } catch (err) {
+    console.warn(`[archive-chat] aux archive (snapshots/metrics) failed for ${chatId}:`, (err as Error).message);
+  }
+
   return archiveName;
+}
+
+/** Filter per-turn metric records into per-archive sidecars. Reads
+ *  `.mica/metrics/turns.jsonl` and `subagents.jsonl`, partitions each line
+ *  by whether its turn_id is in `turnIds`, writes the matching subset to
+ *  `<archiveStampBase>-turns.jsonl` / `-subagents.jsonl`, and rewrites the
+ *  live JSONLs without those lines. Idempotent on missing files. */
+async function archiveMetricsForTurns(
+  project: string,
+  turnIds: string[],
+  archiveStampBase: string,
+): Promise<void> {
+  const turnIdSet = new Set(turnIds);
+  const metricsDir = join(micaDir(project), "metrics");
+  for (const [filename, suffix] of [["turns.jsonl", "-turns.jsonl"], ["subagents.jsonl", "-subagents.jsonl"]] as const) {
+    const livePath = join(metricsDir, filename);
+    if (!existsSync(livePath)) continue;
+    let raw: string;
+    try { raw = await readFile(livePath, "utf-8"); } catch { continue; }
+    const lines = raw.split("\n");
+    const matched: string[] = [];
+    const kept: string[] = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const rec = JSON.parse(line) as { turn_id?: string };
+        if (rec.turn_id && turnIdSet.has(rec.turn_id)) matched.push(line);
+        else kept.push(line);
+      } catch {
+        kept.push(line); // unparseable; keep as-is
+      }
+    }
+    if (matched.length === 0) continue;
+    await writeFile(`${archiveStampBase}${suffix}`, matched.join("\n") + "\n", "utf-8");
+    await writeFile(livePath, kept.length > 0 ? kept.join("\n") + "\n" : "", "utf-8");
+  }
 }
 
 /** List archived conversations for one chat card, most recent first. */

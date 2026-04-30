@@ -29,7 +29,23 @@
 .chat-md strong { color: #fff; }
 .chat-md a { color: #58a6ff; }
 #chat-input:focus { border-color: rgba(124,58,237,0.5); }
-#chat-ctx-btn:hover, #chat-settings-btn:hover { color: #ccc; }
+#chat-settings-btn:hover { color: #ccc; }
+
+/* Per-turn footer (A — past): hidden behind a click on the bubble's chevron.
+   Lazy-built on first expand. Chips show what fired during this turn. */
+.chat-turn-footer { white-space: nowrap; }
+.chat-turn-chip {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: #8b949e;
+  cursor: help;
+}
+.chat-turn-chip:hover { background: rgba(255,255,255,0.08); }
+.chat-bubble-toggle:hover { color: #c9aef7; background: rgba(124,58,237,0.12); }
+.chat-turn-snapshot-link:hover { text-decoration: underline; }
 #chat-settings-model:focus, #chat-settings-key:focus { border-color: rgba(124,58,237,0.5); }
 #chat-settings-cancel:hover { background: rgba(255,255,255,0.04); }
 #chat-settings-save:hover:not(:disabled) { background: #6d28d9; }

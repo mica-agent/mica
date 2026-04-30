@@ -26,6 +26,11 @@ export interface TurnRecord {
   capacity: number;
   subagent_count: number;
   tool_calls: Record<string, number>;
+  /** Names of skills explicitly invoked via the SDK's `skill` tool this turn.
+   *  Distinct from `tool_calls.skill` (which only counts invocations) — this
+   *  preserves WHICH skills fired so the chat card's per-turn footer can
+   *  show "decompose-task, doc-consistency" instead of just "2 skills". */
+  skills_invoked: string[];
   files_changed: number;
   cursor_advanced: boolean;
   arc_complete: boolean;

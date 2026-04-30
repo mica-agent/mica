@@ -22,6 +22,8 @@ import {
   type ParsedSubagent,
 } from "./subagents.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
+import { writeSnapshot } from "./turnSnapshots.js";
+import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { markProjectActivity } from "./projectActivity.js";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
@@ -108,6 +110,11 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   agent?: string;
+  /** Stable turn UUID set when the assistant message is persisted at turn
+   *  end. Joins this history bubble to its `TurnRecord` and rendered-prompt
+   *  snapshot. Optional for back-compat with chats predating the per-turn
+   *  footer feature. */
+  turn_id?: string;
 }
 
 // Lazy-load the SDK
@@ -187,6 +194,29 @@ export async function buildContext(agentFilename: string, project: string | null
         );
       }
     } catch { /* ignore */ }
+  }
+
+  // Validator errors that fired since the agent's last response — see the
+  // micaAgent.ts equivalent for the full rationale. Closes the feedback loop
+  // between Mica's runtime validators and the agent's prompt context, so a
+  // malformed file the validator already diagnosed reaches the agent on its
+  // very next turn instead of waiting for the user to re-prompt.
+  if (project) {
+    const pendingErrors = getPendingValidatorErrors(project);
+    if (pendingErrors.length > 0) {
+      const errorLines = pendingErrors.map((e) =>
+        `### \`${e.filename}\`\n\n${e.error}`
+      );
+      parts.push(
+        `## Validator errors needing your attention\n\n` +
+        `The following file(s) failed validation since your last response. ` +
+        `These errors are from Mica's runtime validators (path/schema/lint/dependency-reachability) — ` +
+        `the user has ALREADY seen them in the chat card UI. ` +
+        `Fix each by rewriting the named file with the corrections the error message describes; ` +
+        `each rewrite re-runs the validator, so the buffer self-clears once the file is valid.\n\n` +
+        errorLines.join("\n\n"),
+      );
+    }
   }
 
   // 1. Instance-level AI context (per-card behavior instructions)
@@ -574,6 +604,9 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       const toolCallCounts: Record<string, number> = {};
       const subagentStarts = new Map<string, { name: string; tsStart: number }>();
       let subagentCount = 0;
+      // Names of skills explicitly invoked via the SDK's `Skill` tool. The
+      // chat card's per-turn footer surfaces these by name.
+      const skillsInvoked: string[] = [];
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -589,6 +622,10 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       try {
         const since = getLastTurnAt(ctx.filename);
         const context = await buildContext(ctx.filename, sessionProject, since);
+        // Capture rendered system-prompt snapshot for the per-turn footer's
+        // "view snapshot" link. Sidecar at .mica/chats/<chatId>/snapshots/
+        // <turnId>.txt; fire-and-forget.
+        void writeSnapshot(sessionProject, chatId, turnId, context);
 
         // Inject recent chat history into the prompt so the agent has conversational
         // continuity. Without this, each turn is a goldfish — the SDK's `query()`
@@ -837,6 +874,17 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
                     );
                     subagentStarts.set(block.id, { name: subName, tsStart: Date.now() });
                   }
+                  // Capture skill name when the SDK's `Skill` tool fires.
+                  // Defensive multi-key extraction — Claude Code SDK uses
+                  // `skill` or `name`; if zero ever shows up consistently,
+                  // log block.input once for `block.name === "Skill"`.
+                  if (block.name === "Skill") {
+                    const input = (block.input as Record<string, unknown>) || {};
+                    const skillName = String(
+                      input.skill_name ?? input.skill ?? input.name ?? ""
+                    );
+                    if (skillName) skillsInvoked.push(skillName);
+                  }
                   ctx.broadcast({
                     type: "progress",
                     tool: block.name,
@@ -949,7 +997,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         let newCursor = cursor;
 
         const updatedHistory = await loadHistory(chatId, sessionProject);
-        updatedHistory.push({ role: "assistant", content: resultText, agent: "Claude" });
+        updatedHistory.push({ role: "assistant", content: resultText, agent: "Claude", turn_id: turnId });
         await saveHistory(chatId, updatedHistory, sessionProject);
 
         if (arcComplete && capacity > 0.80) {
@@ -978,6 +1026,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           cursorAdvanced,
           durationMs,
           ...(ttftMs !== null ? { ttftMs } : {}),
+          turn_id: turnId,
         });
 
         void recordTurn(sessionProject, {
@@ -996,6 +1045,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           capacity,
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
+          skills_invoked: skillsInvoked,
           files_changed: filesChanged ? 1 : 0,
           cursor_advanced: cursorAdvanced,
           arc_complete: arcComplete,
@@ -1031,6 +1081,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           capacity: 0,
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
+          skills_invoked: skillsInvoked,
           files_changed: 0,
           cursor_advanced: false,
           arc_complete: false,

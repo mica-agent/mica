@@ -12,10 +12,13 @@ const statusLabel = container.querySelector("#chat-status-label");
 const statusMeta = container.querySelector("#chat-status-meta");
 const statusToggle = container.querySelector("#chat-status-toggle");
 const statusDetail = container.querySelector("#chat-status-detail");
-// Context meter + Clear/Spawn/Archive header actions (see chat card for rationale).
-const ctxMeterEl = container.querySelector("#chat-ctx-meter");
-const ctxMeterFill = container.querySelector("#chat-ctx-meter-fill");
-const ctxMeterLabel = container.querySelector("#chat-ctx-meter-label");
+// Fuel gauge (B — future: capacity trajectory). See chat card for rationale.
+const fuelEl = container.querySelector("#chat-fuel");
+const fuelFill = fuelEl ? fuelEl.querySelector(".fuel-fill") : null;
+const fuelHeadroomLabel = container.querySelector("#chat-fuel-headroom");
+const FUEL_HISTORY_CAP = 5;
+const recentBaselines = [];
+let lastContextWindow = 0;
 const clearBtn = container.querySelector("#chat-clear-btn");
 const spawnBtn = container.querySelector("#chat-spawn-btn");
 const archiveBtn = container.querySelector("#chat-archive-btn");
@@ -78,6 +81,9 @@ function addDetailLine(text) {
 
 // Open channel to server agent
 const ch = mica.openChannel("agent_session");
+
+// Hydrate fuel gauge buffer from recent turn history on mount.
+hydrateFuelGauge();
 
 // Claude Code uses the cloud — no local model-loading status to poll.
 inputEl.placeholder = 'Ask Claude Code...';
@@ -193,7 +199,7 @@ function maybeRenderHorizon() {
   }
 }
 
-function addMessage(role, content, agent, questions) {
+function addMessage(role, content, agent, questions, turnId) {
   if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === "center") {
     messagesEl.innerHTML = "";
   }
@@ -208,7 +214,9 @@ function addMessage(role, content, agent, questions) {
     msg.innerHTML = `<div style="color:#e6edf3;font-size:13px;line-height:1.5;">${escapeHtml(content)}</div>`;
   } else {
     msg.style.cssText = "align-self:flex-start;background:rgba(255,255,255,0.05);border-radius:12px 12px 12px 4px;padding:8px 12px;max-width:90%;";
-    const header = agent ? `<div style="color:${ACCENT};font-size:11px;font-weight:600;margin-bottom:4px;">${escapeHtml(agent)}</div>` : "";
+    // A — past, per-turn footer chevron. See chat card for full design.
+    const chevron = turnId ? `<span class="chat-bubble-toggle" data-turn-id="${escapeHtml(turnId)}" title="Show turn details" style="cursor:pointer;color:#8b949e;font-size:13px;font-weight:600;margin-left:8px;padding:1px 5px;border-radius:3px;display:inline-block;line-height:1;transition:transform 120ms ease, background-color 120ms ease;">▸</span>` : "";
+    const header = agent ? `<div style="color:${ACCENT};font-size:11px;font-weight:600;margin-bottom:4px;">${escapeHtml(agent)}${chevron}</div>` : "";
     msg.innerHTML = `${header}<div class="chat-md" style="color:#e6edf3;font-size:13px;line-height:1.5;">${renderMarkdown(content)}</div>`;
     if (questions && questions.length > 0) {
       const buttonRows = window.document.createElement("div");
@@ -247,6 +255,75 @@ function addMessage(role, content, agent, questions) {
   messagesEl.appendChild(msg);
   scrollBottom();
 }
+
+// A — past, per-turn footer (delegated click handler). See chat card for
+// full rationale. Lazy-builds the chip strip + snapshot link on first
+// expand; toggles visibility on subsequent clicks without re-fetching.
+function formatChips(turn, subagents) {
+  const tc = turn.tool_calls || {};
+  const skillsList = Array.isArray(turn.skills_invoked) ? turn.skills_invoked : [];
+  const subList = Array.isArray(subagents) ? subagents : [];
+  const toolEntries = Object.keys(tc).map(function(k) { return [k, tc[k]]; }).sort(function(a, b) { return b[1] - a[1]; });
+  const totalToolCalls = toolEntries.reduce(function(s, e) { return s + e[1]; }, 0);
+  const topTools = toolEntries.slice(0, 3).map(function(e) { return e[0] + " " + e[1]; }).join(" · ");
+  const skillsTitle = skillsList.length > 0 ? skillsList.join(", ") : "(none)";
+  const subsTitle = subList.length > 0
+    ? subList.map(function(s) { return s.subagent_name + " · " + Math.round(s.duration_ms / 100) / 10 + "s"; }).join("\n")
+    : "(none)";
+  const durationSec = turn.duration_ms ? Math.round(turn.duration_ms / 100) / 10 : 0;
+  function chip(label, title) {
+    return '<span class="chat-turn-chip" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</span>';
+  }
+  const parts = [];
+  parts.push(chip(skillsList.length + " skills", skillsTitle));
+  parts.push(chip(subList.length + " subagents", subsTitle));
+  parts.push(chip(totalToolCalls + " tools", topTools || "(none)"));
+  parts.push(chip(durationSec + "s", "elapsed"));
+  return parts.join("");
+}
+
+messagesEl.addEventListener("click", function(e) {
+  const toggle = e.target.closest && e.target.closest(".chat-bubble-toggle");
+  if (!toggle) return;
+  e.stopPropagation();
+  const bubble = toggle.closest("[data-msg-index]");
+  if (!bubble) return;
+  const turnId = toggle.getAttribute("data-turn-id");
+  if (!turnId) return;
+  let footer = bubble.querySelector(".chat-turn-footer");
+  if (footer) {
+    const isHidden = footer.style.display === "none";
+    footer.style.display = isHidden ? "flex" : "none";
+    toggle.style.transform = isHidden ? "rotate(90deg)" : "rotate(0deg)";
+    return;
+  }
+  toggle.textContent = "…";
+  fetch("/api/agent/turn-record/" + encodeURIComponent(mica.cardId) + "/" + encodeURIComponent(turnId), {
+    headers: projectHeaders(),
+  }).then(function(r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }).then(function(data) {
+    toggle.textContent = "▸";
+    toggle.style.transform = "rotate(90deg)";
+    footer = window.document.createElement("div");
+    footer.className = "chat-turn-footer";
+    footer.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;padding-top:6px;border-top:1px solid rgba(48,54,61,0.5);font-size:11px;color:#8b949e;";
+    const chipsHtml = formatChips(data.turn || {}, data.subagents || []);
+    // Pass project as a query param — opening in a new tab via <a target="_blank">
+    // strips the X-Mica-Project header. Server's getRequestProject() accepts either.
+    const snapHref = "/api/agent/turn-snapshot/" + encodeURIComponent(mica.cardId) + "/" + encodeURIComponent(turnId)
+      + "?project=" + encodeURIComponent(mica.project || "");
+    footer.innerHTML = chipsHtml +
+      '<a class="chat-turn-snapshot-link" href="' + snapHref + '" target="_blank" rel="noopener" ' +
+      'style="color:#7c3aed;text-decoration:none;font-size:11px;margin-left:auto;" ' +
+      'title="Open the captured rendered system prompt for this turn">view snapshot →</a>';
+    bubble.appendChild(footer);
+  }).catch(function(err) {
+    toggle.textContent = "▸";
+    toggle.title = "Failed to load: " + err.message;
+  });
+});
 
 function setStatus(text, dot, pulsing) {
   statusBar.style.display = "block";
@@ -296,23 +373,71 @@ function playChime() {
   } catch (_) { /* audio unavailable */ }
 }
 
-function updateCtxMeter(baselineTokens, contextWindow) {
-  if (!baselineTokens || !contextWindow || contextWindow <= 0) {
-    ctxMeterEl.style.display = "none";
-    return;
+// B (future) — fuel gauge with capacity trajectory. See chat card for the
+// full design rationale. Pushes baselineTokens into rolling buffer, redraws.
+function updateFuelGauge(baselineTokens, contextWindow) {
+  if (typeof baselineTokens === "number" && baselineTokens > 0) {
+    recentBaselines.push(baselineTokens);
+    while (recentBaselines.length > FUEL_HISTORY_CAP) recentBaselines.shift();
   }
-  ctxMeterEl.style.display = "inline-flex";
-  const pct = Math.max(0, Math.min(100, Math.round((baselineTokens / contextWindow) * 100)));
-  ctxMeterFill.style.width = pct + "%";
+  if (typeof contextWindow === "number" && contextWindow > 0) lastContextWindow = contextWindow;
+  renderFuelGauge();
+}
+
+function renderFuelGauge() {
+  if (!fuelEl || !fuelFill) return;
+  const cw = lastContextWindow;
+  const latest = recentBaselines.length > 0 ? recentBaselines[recentBaselines.length - 1] : 0;
+  if (!latest || !cw || cw <= 0) { fuelEl.style.display = "none"; return; }
+  fuelEl.style.display = "inline-flex";
+  const pct = Math.max(0, Math.min(100, Math.round((latest / cw) * 100)));
+  fuelFill.style.width = pct + "%";
   let color = "#4ade80";
-  if (pct >= 85) color = "#f87171";
+  if (pct >= 80) color = "#f87171";
   else if (pct >= 50) color = "#fbbf24";
-  ctxMeterFill.style.background = color;
-  ctxMeterLabel.textContent = formatK(baselineTokens) + "/" + formatK(contextWindow) + " · " + pct + "%";
-  ctxMeterLabel.style.color = color;
-  ctxMeterLabel.title =
-    "This turn's input: " + formatK(baselineTokens) + " / " + formatK(contextWindow) +
-    " (" + pct + "% of context window)";
+  fuelFill.style.background = color;
+  let headroomText = "";
+  let headroomTitle = "";
+  if (recentBaselines.length >= 2) {
+    const oldest = recentBaselines[0];
+    const delta = (latest - oldest) / (recentBaselines.length - 1);
+    if (delta > 0) {
+      const turnsToCap = Math.max(0, Math.floor((cw - latest) / delta));
+      headroomText = "~" + turnsToCap + " turns";
+      headroomTitle = "~" + turnsToCap + " turns to cap";
+    } else {
+      headroomText = "—";
+      headroomTitle = "headroom stable";
+    }
+  } else {
+    headroomText = "—";
+    headroomTitle = "tracking…";
+  }
+  fuelHeadroomLabel.textContent = formatK(latest) + "/" + formatK(cw) + " · " + headroomText;
+  fuelHeadroomLabel.style.color = color;
+  const peakList = recentBaselines.map(formatK).join(", ");
+  fuelEl.title = "Now: " + formatK(latest) + "/" + formatK(cw) + " (" + pct + "%)\n"
+    + "Recent: " + peakList + "\n" + headroomTitle;
+}
+
+function hydrateFuelGauge() {
+  fetch("/api/agent/turn-history/" + encodeURIComponent(mica.cardId) + "?limit=" + FUEL_HISTORY_CAP, {
+    headers: projectHeaders(),
+  }).then(function(r) { return r.json(); }).then(function(items) {
+    if (!Array.isArray(items) || items.length === 0) return;
+    items.reverse();
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (typeof it.baseline_tokens === "number" && it.baseline_tokens > 0) {
+        recentBaselines.push(it.baseline_tokens);
+      }
+      if (typeof it.context_window === "number" && it.context_window > 0) {
+        lastContextWindow = it.context_window;
+      }
+    }
+    while (recentBaselines.length > FUEL_HISTORY_CAP) recentBaselines.shift();
+    renderFuelGauge();
+  }).catch(function() { /* swallow */ });
 }
 
 function addContextSuggestion(text, opts) {
@@ -365,7 +490,7 @@ ch.onData(function(data) {
       messageIndex = 0;
       if (data.messages && data.messages.length > 0) {
         for (let i = 0; i < data.messages.length; i++) {
-          addMessage(data.messages[i].role, data.messages[i].content, data.messages[i].agent);
+          addMessage(data.messages[i].role, data.messages[i].content, data.messages[i].agent, undefined, data.messages[i].turn_id);
         }
       } else {
         messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Send a message to start Claude Code.</div>';
@@ -418,12 +543,12 @@ ch.onData(function(data) {
         if (typeof data.cursor === "number") contextCursor = data.cursor;
         if (contextCursor !== prevCursor) applyCursorDisplay();
       }
-      updateCtxMeter(data.baselineTokens || 0, data.contextWindow || 0);
+      updateFuelGauge(data.baselineTokens || 0, data.contextWindow || 0);
       lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(`${doneMsg} (${elapsedSec}s, ${stepCount} steps)`, "#3fb950", false);
       addDetailLine(`Completed in ${elapsedSec}s with ${stepCount} steps`);
-      addMessage("assistant", data.content, data.agent || "Claude");
+      addMessage("assistant", data.content, data.agent || "Claude", undefined, data.turn_id);
       if (data.arcComplete && lastCapacity >= 0.80) {
         addContextSuggestion(
           "Arc complete. This conversation is at " + Math.round(lastCapacity * 100) +
@@ -482,72 +607,6 @@ inputEl.addEventListener("keydown", function(e) {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 
-// Context tooltip
-const ctxBtn = container.querySelector("#chat-ctx-btn");
-const ctxTooltip = container.querySelector("#chat-context-tooltip");
-const ctxFiles = container.querySelector("#chat-context-files");
-let ctxVisible = false;
-let ctxLoaded = false;
-
-function formatSize(chars) {
-  if (chars < 1024) return chars + " chars";
-  return (chars / 1024).toFixed(1) + "K chars";
-}
-
-const _projectHeaders = { "X-Mica-Project": (typeof mica !== "undefined" && mica.project) || "" };
-
-function loadContextInfo() {
-  const url = "/api/claude-agent/context-preview?filename=" + encodeURIComponent(mica.filename);
-  fetch(url, { headers: _projectHeaders }).then(function(r) { return r.json(); }).then(function(data) {
-    if (data.error) {
-      ctxFiles.textContent = "Failed to load: " + data.error;
-      return;
-    }
-    const files = data.files || [];
-    const extras = data.extras || [];
-    const promptSize = data.promptSizeChars || 0;
-    const tokens = data.estimatedTokens || Math.round(promptSize / 4);
-    const cap = data.softCapChars || 0;
-    const over = !!data.oversized;
-    const fileLines = files.map(function(f) {
-      if (f.binary) return f.name + '  <span style="color:#888">(binary, ' + (f.size || 0) + ' B)</span>';
-      if (f.unreadable) return f.name + '  <span style="color:#f87171">(unreadable)</span>';
-      return f.name + '  ' + formatSize(f.chars || 0);
-    });
-    const extraLines = extras.map(function(e) {
-      return e.name + '  ' + formatSize(e.chars || 0) + '  <span style="color:#888">(' + (e.kind || 'context') + ')</span>';
-    });
-    const header = '<div style="color:' + (over ? '#f59e0b' : '#4ade80') + ';margin-bottom:4px">'
-      + files.length + ' file' + (files.length === 1 ? '' : 's')
-      + (extras.length ? ' + ' + extras.length + ' context source' + (extras.length === 1 ? '' : 's') : '')
-      + ' · prompt ' + formatSize(promptSize) + ' (~' + tokens + ' tokens)'
-      + (over ? ' · <b>over ' + formatSize(cap) + ' cap — split large cards</b>' : '')
-      + '</div>';
-    ctxFiles.innerHTML = header
-      + extraLines.map(function(l) { return '<div>' + l + '</div>'; }).join('')
-      + fileLines.map(function(l) { return '<div>' + l + '</div>'; }).join('');
-    ctxLoaded = true;
-  }).catch(function() { ctxFiles.textContent = "Failed to load"; });
-}
-
-ctxBtn.addEventListener("click", function(e) {
-  e.stopPropagation();
-  ctxVisible = !ctxVisible;
-  ctxTooltip.style.display = ctxVisible ? "block" : "none";
-  if (ctxVisible && !ctxLoaded) loadContextInfo();
-});
-
-ctxBtn.addEventListener("mouseenter", function() {
-  if (!ctxVisible) {
-    ctxTooltip.style.display = "block";
-    if (!ctxLoaded) loadContextInfo();
-  }
-});
-
-ctxBtn.addEventListener("mouseleave", function() {
-  if (!ctxVisible) ctxTooltip.style.display = "none";
-});
-
 // ── Clear / Spawn / Archive browser ────────────────────────
 
 function clearCard(opts) {
@@ -566,7 +625,8 @@ function clearCard(opts) {
     messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Conversation cleared. Send a message to start a new one.</div>';
     contextCursor = 0;
     messageIndex = 0;
-    ctxMeterEl.style.display = "none";
+    if (fuelEl) fuelEl.style.display = "none";
+    recentBaselines.length = 0;
     lastCapacity = 0;
   }).catch(function(err) { console.error("[claude] clear failed:", err); });
 }
@@ -695,7 +755,8 @@ const _unsubChatCleared = mica.on("chat-cleared", function(ev) {
   messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Conversation cleared.</div>';
   contextCursor = 0;
   messageIndex = 0;
-  ctxMeterEl.style.display = "none";
+  if (fuelEl) fuelEl.style.display = "none";
+  recentBaselines.length = 0;
   lastCapacity = 0;
 });
 mica.onDestroy(_unsubChatCleared);
