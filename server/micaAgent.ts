@@ -1950,6 +1950,16 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "thinking") {
                   const t = block.thinking || "";
                   console.log(`[mica-agent] THINKING block (${t.length} chars): ${t.slice(0, 120).replace(/\n/g, " ")}...`);
+                  // Subagent-context thinking → strip the live activity line
+                  // for the matching panel. Truncate to 80 chars; display-only.
+                  if (ptid && t) {
+                    ctx.broadcast({
+                      type: "subagent_event",
+                      tool_use_id: ptid,
+                      kind: "thinking",
+                      summary: t.slice(0, 80).replace(/\n/g, " "),
+                    });
+                  }
                 }
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[mica-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
@@ -1959,6 +1969,18 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     tool: block.name,
                     description: describeToolUse(block.name, block.input || {}),
                   });
+                  // Subagent-context tool_use → also broadcast subagent_event
+                  // so the chat card's strip can show "X is running tavily_search".
+                  // Fires IN ADDITION to progress; chat card decides what to
+                  // show in the parent-activity ticker vs the subagent strip.
+                  if (ptid) {
+                    ctx.broadcast({
+                      type: "subagent_event",
+                      tool_use_id: ptid,
+                      kind: "tool_use",
+                      description: describeToolUse(block.name, block.input || {}),
+                    });
+                  }
                   // Track outstanding subagent tasks so the concurrency counter
                   // decrements when they finish. SDK tags each tool_use with an
                   // `id` we'll match against the tool_result. Qwen's tool name
@@ -1977,6 +1999,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                         "unknown"
                       );
                       subagentStarts.set(taskId, { name: subName, tsStart: Date.now() });
+                      // Subagent visibility broadcast (server side of the chat
+                      // card's strip + status badge). Pairs with subagent_event
+                      // (per parent_tool_use_id'd message) and subagent_finished
+                      // (on tool_result OR drain). See plan: "Subagent visibility".
+                      const desc = String((input as Record<string, unknown>).description || "");
+                      ctx.broadcast({
+                        type: "subagent_started",
+                        tool_use_id: taskId,
+                        agent_type: subName,
+                        description: desc,
+                      });
                     }
                   }
                   // Capture skill name when the SDK's `skill` tool fires.
@@ -2041,6 +2074,27 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                       ts_end: tsEnd,
                       duration_ms: tsEnd - start.tsStart,
                     });
+                    // Subagent visibility: matched a known start → broadcast
+                    // finished with the result text as summary. Status is
+                    // "failed" if the SDK marked the result as is_error,
+                    // else "done". Truncate summary to 120 chars for the
+                    // strip; the full text is in the chat card's transcript
+                    // already (the parent's tool_result block).
+                    const isErr = Boolean((block as { is_error?: boolean }).is_error);
+                    const resultContent = (block as { content?: unknown }).content;
+                    let summary = "";
+                    if (typeof resultContent === "string") {
+                      summary = resultContent;
+                    } else if (Array.isArray(resultContent)) {
+                      const first = resultContent.find((c) => (c as { type?: string }).type === "text") as { text?: string } | undefined;
+                      summary = first?.text || "";
+                    }
+                    ctx.broadcast({
+                      type: "subagent_finished",
+                      tool_use_id: block.tool_use_id,
+                      status: isErr ? "failed" : "done",
+                      summary: summary.slice(0, 120).replace(/\n/g, " "),
+                    });
                   }
                 }
               }
@@ -2082,8 +2136,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // Drain any outstanding subagent tasks from the concurrency counter.
         // Normal flow decrements per-task as tool_results arrive; this covers
         // the SDK-error / abort path where some tasks never got their result.
+        // Also broadcast subagent_finished:failed for each so the chat card's
+        // strip transitions out of the "running" state instead of spinning
+        // forever after a parent abort.
         if (sessionProject && outstandingSubagentTasks.size > 0) {
-          for (const _id of outstandingSubagentTasks) endSubagentTask(sessionProject);
+          for (const id of outstandingSubagentTasks) {
+            endSubagentTask(sessionProject);
+            ctx.broadcast({
+              type: "subagent_finished",
+              tool_use_id: id,
+              status: "failed",
+              summary: "(parent turn aborted before subagent returned)",
+            });
+            subagentStarts.delete(id);
+          }
           outstandingSubagentTasks.clear();
         }
 
