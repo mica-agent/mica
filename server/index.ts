@@ -1632,6 +1632,21 @@ const wsCardChannels = new Map<WebSocket, Map<string, string>>();
 // Per-WS subscribed project (one project per tab). Used by broadcastToProject
 // to fan out file events only to interested clients.
 const wsProjects = new Map<WebSocket, string>();
+// Per-WS short id for log readability — answers "is the same tab toggling
+// projects, or are these different tabs?". Assigned on connection. See
+// reportSubscriptionState() below.
+const wsIds = new WeakMap<WebSocket, number>();
+let nextWsId = 1;
+function reportSubscriptionState(reason: string): void {
+  const watched = fileWatcher.watchedProjects();
+  const perTab = Array.from(wsProjects.entries())
+    .map(([w, p]) => `ws#${wsIds.get(w) ?? "?"}=${p}`)
+    .join(", ");
+  console.log(
+    `[ws-state ${reason}] ws_count=${wsProjects.size} watching=${watched.length} ` +
+    `[${watched.join(", ")}] tabs=[${perTab}]`,
+  );
+}
 
 const channelManager = new ChannelManager();
 
@@ -1641,6 +1656,7 @@ wss.on("error", (err) => {
 
 wss.on("connection", (ws) => {
   wsClients.add(ws);
+  wsIds.set(ws, nextWsId++);
 
   const cleanupWsChannels = () => {
     wsClients.delete(ws);
@@ -1660,6 +1676,7 @@ wss.on("connection", (ws) => {
       wsChannels.delete(ws);
     }
     wsCardChannels.delete(ws);
+    reportSubscriptionState(`disconnect ws#${wsIds.get(ws) ?? "?"}`);
   };
 
   ws.on("close", cleanupWsChannels);
@@ -1700,7 +1717,7 @@ wss.on("connection", (ws) => {
         } catch (err) {
           console.error(`[ws] subscribe-project ${proj} failed:`, (err as Error).message);
         }
-        console.log(`[ws] client subscribed to project: ${proj} (now watching: ${fileWatcher.watchedProjects().join(", ")})`);
+        reportSubscriptionState(`subscribe ws#${wsIds.get(ws) ?? "?"}→${proj}${prev ? ` (was ${prev})` : ""}`);
         break;
       }
 
@@ -1709,7 +1726,7 @@ wss.on("connection", (ws) => {
         if (!prev) break;
         wsProjects.delete(ws);
         fileWatcher.releaseProject(prev);
-        console.log(`[ws] client unsubscribed from project: ${prev}`);
+        reportSubscriptionState(`unsubscribe ws#${wsIds.get(ws) ?? "?"} from ${prev}`);
         break;
       }
 
