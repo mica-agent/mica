@@ -602,7 +602,9 @@ function renderSubagentStrip() {
   }
   const lines = [];
   const now = Date.now();
-  for (const s of subagentStates.values()) {
+  const all = Array.from(subagentStates.values());
+  for (let i = 0; i < all.length; i++) {
+    const s = all[i];
     const elapsed = Math.round((now - s.startTs) / 1000);
     const stalled = s.status === "running" && (now - s.lastEventTs > SUBAGENT_STALL_MS);
     const icon = s.status === "running"
@@ -611,9 +613,16 @@ function renderSubagentStrip() {
     const color = stalled
       ? "#fbbf24"
       : (s.status === "running" ? "#a78bfa" : (s.status === "done" ? "#3fb950" : "#f87171"));
+    // Tree connector visualizes "child of parent's most recent action".
+    // ├─ for non-last, └─ for last. Combined with the strip's left
+    // border + extra left-padding (in card.html), the relationship is
+    // unambiguous: the indent says "below the parent," the connector
+    // says "this is one of N children," and the icon says state.
+    const connector = (i === all.length - 1) ? "&#9492;&#9472;" : "&#9500;&#9472;";  // └─ : ├─
     const activity = (s.lastActivity || "starting...").slice(0, 80);
     lines.push(
       '<div style="color:' + color + ';">' +
+        '<span style="color:#6e7681;">' + connector + '</span> ' +
         icon + " <span style=\"font-weight:600;\">" + escapeHtml(s.agent_type) + "</span> " +
         "<span style=\"color:#6e7681;\">(" + elapsed + "s)</span> &mdash; " +
         escapeHtml(activity) +
