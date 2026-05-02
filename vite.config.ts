@@ -25,6 +25,25 @@ export default defineConfig({
         target: `http://localhost:${BACKEND_PORT}`,
         changeOrigin: true,
         timeout: 120000,
+        // Catch upstream errors (parse errors, dropped connections,
+        // backend crashes mid-response) so an unhandled `error` event
+        // on the proxy/response doesn't escalate to an uncaughtException
+        // and kill the entire dev server. Without this, ANY malformed
+        // response from /api crashes vite. See incident 2026-05-01:
+        // backend's GET /api/files/:filename had a Content-Length /
+        // stream-bytes race that produced "Data after `Connection: close`",
+        // which crashed vite.
+        configure: (proxy) => {
+          proxy.on('error', (err, _req, res) => {
+            console.error('[vite proxy] /api error:', err.message)
+            if (res && !res.headersSent) {
+              res.writeHead(502, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: 'proxy_error', message: err.message }))
+            } else if (res && !res.writableEnded) {
+              res.end()
+            }
+          })
+        },
       },
       '/ws': {
         target: `ws://localhost:${BACKEND_PORT}`,

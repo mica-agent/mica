@@ -8,6 +8,8 @@
 
 const treeBodyEl = container.querySelector('#fb-tree-body');
 const treePaneEl = container.querySelector('#fb-tree');
+const resizerEl = container.querySelector('#fb-resizer');
+const rootEl = container.querySelector('#fb-root');
 const refreshBtn = container.querySelector('#fb-refresh');
 const showHiddenInput = container.querySelector('#fb-show-hidden');
 const previewNameEl = container.querySelector('#fb-preview-name');
@@ -36,6 +38,7 @@ let expanded = new Set();    // folder paths the user has opened
 let selected = null;         // currently-previewed file path
 let dropTarget = null;       // folder path the next drop will target (null = canvas root)
 let showHidden = false;      // toggle: surface .mica/.qwen/.claude (always hides .git, node_modules, etc.)
+let treeWidth = null;        // px width of tree pane; null = use CSS default (40%); set by drag
 
 function ext(path) {
   const dot = path.lastIndexOf('.');
@@ -61,6 +64,7 @@ async function loadState() {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed.expanded)) expanded = new Set(parsed.expanded);
     if (typeof parsed.showHidden === 'boolean') showHidden = parsed.showHidden;
+    if (typeof parsed.treeWidth === 'number' && parsed.treeWidth > 0) treeWidth = parsed.treeWidth;
   } catch (_) { /* fresh card, no state */ }
 }
 
@@ -69,7 +73,7 @@ function persistState() {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    const payload = JSON.stringify({ expanded: [...expanded], showHidden });
+    const payload = JSON.stringify({ expanded: [...expanded], showHidden, treeWidth });
     mica.files.write(mica.filename, payload).catch(() => { /* best effort */ });
   }, 400);
 }
@@ -398,14 +402,87 @@ showHiddenInput.addEventListener('change', () => {
   loadData();
 });
 
+// ── Resizable tree pane ─────────────────────────────────────────────
+// Drag the vertical handle between tree and preview to resize. Width is
+// stored as px, persisted with expand-state, and clamped to a reasonable
+// range relative to the card's current width on each drag (so the user
+// can't drag the tree wider than the card or down to invisibility).
+function applyTreeWidth() {
+  if (!treePaneEl) return;
+  if (typeof treeWidth === 'number' && treeWidth > 0) {
+    treePaneEl.style.flex = '0 0 ' + treeWidth + 'px';
+  } else {
+    treePaneEl.style.flex = '';  // fall back to CSS default (40%)
+  }
+}
+applyTreeWidth();
+
+if (resizerEl && rootEl) {
+  let startX = 0;
+  let startWidth = 0;
+  let rootWidth = 0;
+  let activePointerId = null;
+
+  // Pointer events with setPointerCapture — required because the canvas
+  // card class (parent shell) listens for pointerdown on its freeform layer
+  // to initiate card drag/resize. Without capture-on-the-resizer, the
+  // canvas would receive the gesture and our mousemove listener would
+  // never fire. stopPropagation on pointerdown prevents the canvas's own
+  // pointerdown handler from matching and starting a card-level drag.
+  function onMove(ev) {
+    if (ev.pointerId !== activePointerId) return;
+    const dx = ev.clientX - startX;
+    // Clamp: at least 140px (matches CSS min-width); at most rootWidth - 200px
+    // so the preview pane keeps room for the header + a sliver of body.
+    const max = Math.max(200, rootWidth - 200);
+    treeWidth = Math.max(140, Math.min(max, startWidth + dx));
+    applyTreeWidth();
+  }
+  function onUp(ev) {
+    if (ev.pointerId !== activePointerId) return;
+    try { resizerEl.releasePointerCapture(activePointerId); } catch (_) { /* already released */ }
+    activePointerId = null;
+    resizerEl.removeEventListener('pointermove', onMove);
+    resizerEl.removeEventListener('pointerup', onUp);
+    resizerEl.removeEventListener('pointercancel', onUp);
+    document.body.classList.remove('fb-resizing');
+    resizerEl.classList.remove('is-dragging');
+    persistState();
+  }
+  resizerEl.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();  // Don't let the canvas's pointerdown handler claim this gesture.
+    activePointerId = ev.pointerId;
+    startX = ev.clientX;
+    startWidth = treePaneEl.getBoundingClientRect().width;
+    rootWidth = rootEl.getBoundingClientRect().width;
+    document.body.classList.add('fb-resizing');
+    resizerEl.classList.add('is-dragging');
+    try { resizerEl.setPointerCapture(activePointerId); } catch (_) { /* old browser */ }
+    resizerEl.addEventListener('pointermove', onMove);
+    resizerEl.addEventListener('pointerup', onUp);
+    resizerEl.addEventListener('pointercancel', onUp);
+  });
+  // Double-click resets to the CSS default — quick escape if a drag went weird.
+  resizerEl.addEventListener('dblclick', (ev) => {
+    ev.stopPropagation();
+    treeWidth = null;
+    applyTreeWidth();
+    persistState();
+  });
+}
+
 mica.onDestroy(() => {
   if (refreshTimer) clearTimeout(refreshTimer);
   if (persistTimer) clearTimeout(persistTimer);
   for (const u of unsubs) u();
+  // Failsafe: if the card is destroyed mid-drag, clear the global cursor.
+  document.body.classList.remove('fb-resizing');
 });
 
 // ── Boot ────────────────────────────────────────────────────────────
 await loadState();
 showHiddenInput.checked = showHidden;
+applyTreeWidth();  // Apply persisted width AFTER loadState populated treeWidth.
 await loadCanvasRoot();
 await loadData();

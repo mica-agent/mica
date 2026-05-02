@@ -52,6 +52,7 @@ import {
   evictCardIdsForProject,
   readCardSettings,
   writeCardSettings,
+  canonicalizeCardPath,
   readOpenRouterKey,
   writeOpenRouterKey,
   archiveChat,
@@ -72,7 +73,7 @@ import {
 } from "./files.js";
 import { readSnapshot } from "./turnSnapshots.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
-import { createReadStream, createWriteStream } from "fs";
+import { createWriteStream } from "fs";
 import mimeTypes from "mime-types";
 import { join } from "path";
 import { existsSync } from "fs";
@@ -93,9 +94,8 @@ import { getManifests } from "./handlerManifest.js";
 import { createSkillComposeHandler } from "./plugins/skillCompose.js";
 import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { registerGitEndpoints } from "./plugins/git.js";
-import { createPingPongHandler } from "./plugins/pingPong.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
-import { enforceCardClassMetadata, enforceCardJsLint, enforceCardClassPath, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
+import { enforceCardClassMetadata, enforceCardJsLint, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
 import { recordValidatorError, clearValidatorError, getPendingValidatorErrors, clearProjectValidatorErrors } from "./validatorErrorBuffer.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 import {
@@ -108,13 +108,55 @@ import {
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
 
+// ── Child-process reaper ─────────────────────────────────────
+// On graceful shutdown OR after an uncaughtException, give spawned
+// children (notably the qwen-code/sdk CLI subprocess per chat session)
+// `graceMs` to exit on their own (their parents have already issued
+// abort()); SIGKILL anyone still alive. Without this, children orphan
+// to PID 1 and hold llama-server `-np` slots indefinitely.
+async function reapChildProcesses(graceMs: number): Promise<void> {
+  const { execSync } = await import("node:child_process");
+  const pgrepChildren = (): number[] => {
+    try {
+      return execSync(`pgrep -P ${process.pid}`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map(Number)
+        .filter((n) => Number.isInteger(n) && n > 0);
+    } catch {
+      return []; // pgrep returns non-zero if no children — that's the success case
+    }
+  };
+
+  const start = Date.now();
+  while (Date.now() - start < graceMs) {
+    if (pgrepChildren().length === 0) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  const survivors = pgrepChildren();
+  for (const pid of survivors) {
+    console.warn(`[shutdown] SIGKILLing surviving child pid=${pid}`);
+    try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
+}
+
 // ── Global error handlers ────────────────────────────────────
 process.on("unhandledRejection", (reason) => {
   console.error("[UNHANDLED REJECTION]", reason);
 });
 process.on("uncaughtException", (err) => {
   console.error("[UNCAUGHT EXCEPTION]", err.message);
-  setTimeout(() => process.exit(1), 1000);
+  // Reap orphaned SDK CLI subprocesses before exiting. Without this,
+  // qwen-code/sdk CLI children orphan to PID 1 and live forever, holding
+  // llama-server slots and ~50-100MB RAM each. Async-bounded by the
+  // 1.5s grace window inside reapChildProcesses; remaining 500ms before
+  // exit covers any stragglers.
+  setTimeout(async () => {
+    await reapChildProcesses(1500);
+    process.exit(1);
+  }, 0);
 });
 
 // Install signal traps EARLY so a kill during llama-server boot still leaves
@@ -529,12 +571,28 @@ app.get("/api/canvas-card", async (req, res) => {
 // the key itself — only `{ hasKey }` — so the client can render a "Key set ✓"
 // indicator without exposing the secret.
 
+// Cards send their canvas-relative `mica.filename` (e.g. "qwen.chat" with no
+// canvasRoot prefix) when reading/writing their settings. The agent reads
+// settings later via the project-relative SessionContext filename
+// (e.g. "canvas/qwen.chat"). Canonicalize incoming paths to project-relative
+// here so save/load both land on the same sidecar regardless of which form
+// the client sent.
+async function canonicalizeSettingsPath(rawPath: string, project: string | undefined): Promise<string> {
+  const cfg = await readCanvasConfig(project);
+  return canonicalizeCardPath(rawPath, cfg.canvasRoot);
+}
+
 app.get("/api/cards/settings", async (req, res) => {
   const path = (req.query.path as string | undefined)?.trim();
   if (!path) { res.status(400).json({ error: "missing ?path=<filename>" }); return; }
   const proj = getRequestProject(req) || undefined;
-  const settings = await readCardSettings(proj, path);
-  res.json(settings);
+  try {
+    const canonical = await canonicalizeSettingsPath(path, proj);
+    const settings = await readCardSettings(proj, canonical);
+    res.json(settings);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
 });
 
 app.put("/api/cards/settings", async (req, res) => {
@@ -546,8 +604,13 @@ app.put("/api/cards/settings", async (req, res) => {
   const model = typeof body.model === "string" ? body.model.trim() : "";
   const settings: CardSettings = { provider };
   if (model) settings.model = model;
-  await writeCardSettings(proj, path, settings);
-  res.json({ ok: true, settings });
+  try {
+    const canonical = await canonicalizeSettingsPath(path, proj);
+    await writeCardSettings(proj, canonical, settings);
+    res.json({ ok: true, settings });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
 });
 
 app.get("/api/openrouter-key", async (req, res) => {
@@ -698,6 +761,20 @@ app.post("/api/cards/:filename/error", (req, res) => {
       // similar, the agent sees the exact error message + filename on the
       // next turn and can fix without the user having to retype it.
       recordValidatorError(proj, filename, error);
+      // ALSO broadcast as a `progress` event so the chat card's step list
+      // shows the error inline with the agent's other actions. Without this,
+      // mid-turn errors only surface as bubbles in the chat (the agent's
+      // step list is silent), and the user has no live evidence the system
+      // is registering the error. Description is prefixed with ⚠ so it's
+      // visually distinct from agent tool calls. The buildContext-time
+      // broadcast at micaAgent.ts handles errors that pre-exist a turn;
+      // this one handles errors that fire during a turn.
+      const errorPreview = error.slice(0, 120).replace(/\n/g, " ");
+      broadcastToProject(proj, {
+        type: "progress",
+        tool: "card-error",
+        description: `⚠ ${filename}: ${errorPreview}`,
+      });
     }
   }
   res.json({ ok: true });
@@ -1261,11 +1338,21 @@ app.get("/api/files/:filename", async (req, res) => {
       res.status(404).json({ error: "Not a file" });
       return;
     }
+    // Use res.sendFile rather than manual createReadStream(filePath).pipe(res):
+    // the manual approach declared Content-Length from a prior fsStat, so any
+    // mid-pipe write to the file (debounced agent edits, peer-tab saves) made
+    // the body bytes diverge from the declared length, producing a malformed
+    // HTTP response that crashed vite's dev-server proxy ("Data after
+    // `Connection: close`"; incident 2026-05-01). res.sendFile handles
+    // stat + Content-Length + streaming + stream-error events as one atomic
+    // unit, so headers always match the bytes actually emitted.
     const contentType = mimeTypes.lookup(filename) || "application/octet-stream";
-    res.setHeader("Content-Type", contentType as string);
-    res.setHeader("Content-Length", fileStat.size);
-    res.setHeader("Last-Modified", fileStat.mtime.toUTCString());
-    createReadStream(filePath).pipe(res);
+    res.type(contentType as string);
+    res.sendFile(filePath, (err) => {
+      if (err && !res.headersSent) {
+        res.status(500).json({ error: err.message });
+      }
+    });
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });
   }
@@ -1656,7 +1743,11 @@ wss.on("connection", (ws) => {
 
           const cardClass = channelManager.resolveCardClass(fname);
 
-          if (channelManager.hasHandler(cardClass)) {
+          // Don't pre-check hasHandler — the actual routing considers
+          // metadata.handler (e.g. "llm-agent"), which createSession
+          // resolves. Let createSession throw the proper error if no
+          // handler is found after metadata resolution.
+          {
             const cardKey = `${sessionId}#${fn}`;
             if (!wsCardChannels.has(ws)) wsCardChannels.set(ws, new Map());
             const cardMap = wsCardChannels.get(ws)!;
@@ -1670,8 +1761,6 @@ wss.on("connection", (ws) => {
             if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
             wsChannels.get(ws)!.add(cid);
             cardMap.set(cardKey, cid);
-          } else {
-            throw new Error(`No channel handler for "${cardClass}"`);
           }
         } catch (err) {
           console.error(`[ws] channel_open error:`, (err as Error).message);
@@ -1745,23 +1834,11 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
     clearValidatorError(event.project, event.filename);
   }
 
-  // Path enforcement: card-class-shaped files outside `.mica/card-classes/`
-  // bypass enforceCardClassMetadata + enforceCardJsLint (those only watch
-  // the `.mica/...` path). Catch the misplacement here so the agent gets a
-  // card-error broadcast pointing at the right move command.
-  if (event.type !== "deleted") {
-    enforceCardClassPath(event.filename, {
-      onError: (reason) => {
-        console.warn(`[card-class-path:${event.project}] ${reason}`);
-        broadcastToProject(event.project, {
-          type: "card-error",
-          filename: event.filename,
-          error: reason,
-        });
-        recordValidatorError(event.project, event.filename, reason);
-      },
-    });
-  }
+  // (former enforceCardClassPath wired here — retired. Path enforcement is
+  // now structural via the mica-card-class MCP tools in
+  // server/plugins/cardClassTools.ts. Tools own paths/shape by construction;
+  // the regex-based wrong-path detector kept enumerating new failure shapes
+  // without catching the next one. See git log for the rationale.)
 
   // Decomposition consistency: catch "Decision: Inline" + @component-coder
   // dispatch items contradiction (tenet 12). Fires after any decomposition.md
@@ -1921,7 +1998,6 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat (legacy binding)
   channelManager.registerHandler("skills", createSkillComposeHandler());  // .skills files -> collaborative SKILL.md authoring
   channelManager.registerHandler("canvas-back", createCanvasBackComposeHandler());  // .canvas-back files -> propose-then-apply canvas-back editor
-  channelManager.registerHandler("agent", createPingPongHandler());  // .agent files -> ping-pong LLM chat
   // Reusable LLM handlers reachable via metadata.handler — card classes opt
   // in by setting "handler": "llm-direct" or "llm-agent" in metadata.json.
   // Manifests describe args + message shapes for authoring agents that
@@ -1963,8 +2039,15 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   _earlySignalLogger = null;
   const shutdown = async (sig: NodeJS.Signals | "manual") => {
     console.log(`\n[shutdown] received ${sig} — stopping...`);
-    channelManager.destroyAll();
+    channelManager.destroyAll();   // sends activeAbort.abort() per session
     fileWatcher.stopAll();
+    // Wait for SDK CLI subprocesses to exit gracefully (the SDK turns
+    // abort() into SIGTERM internally), then SIGKILL any stragglers.
+    // Without this, process.exit(0) below races the async kill chain
+    // and any in-flight subprocesses orphan to PID 1, accumulating leaks
+    // across restart cycles. See incident: zombies from Apr 23 found alive
+    // 9+ days later, holding llama-server -np slots + ~50-100MB RAM each.
+    await reapChildProcesses(3000);
     await stopLlamaServer();
     process.exit(0);
   };

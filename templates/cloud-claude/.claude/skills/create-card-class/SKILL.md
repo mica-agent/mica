@@ -133,6 +133,8 @@ Until the placeholders are gone, the resolver compares
 in `card.html`. External libraries go in
 `metadata.json.dependencies.scripts`/`.styles`.
 
+**Dependencies — invoke `discover-library` FIRST.** If your card needs ANY external library (Three.js, Chart.js, Leaflet, D3, anything), your next action is to invoke the `discover-library` skill BEFORE writing card.js or metadata.json. The skill does the curl-verification, picks a working CDN URL, and records the decision on canvas. Don't write CDN URLs from memory — it's how stale versions, ESM-only URLs that don't load in card.js's classic-script context, and hallucinated paths sneak in. One curl-verified UMD URL beats three rounds of "Failed to load dependency" debugging.
+
 ### `metadata.json`
 
 ```json
@@ -440,6 +442,40 @@ SDK kills it.
 
 Time budget: ONE round of curl + one metadata edit. If the
 second URL also 404s, stop and ask the user.
+
+### `render_capture` screenshot is black for WebGL / Three.js cards
+
+`render_capture` uses `html2canvas` browser-side, which reads
+`<canvas>` content via `canvas.toDataURL()`. WebGL contexts
+(Three.js, regl, raw WebGL) return blank from `toDataURL` unless
+**`preserveDrawingBuffer: true`** was set when the WebGL context
+was created. Default is `false` for performance — the GPU is
+free to discard the back buffer after compositing. Result:
+captures come back transparent / black even when the user sees
+the scene rendering correctly on screen.
+
+Fix: when constructing the renderer, pass the flag.
+
+```js
+const renderer = new THREE.WebGLRenderer({
+  canvas: canvasEl,
+  antialias: true,
+  preserveDrawingBuffer: true,  // required for render_capture
+});
+```
+
+Same rule applies to any library that wraps WebGL (`regl`,
+`PixiJS` in WebGL mode, `Babylon.js`) — find the equivalent
+`preserveDrawingBuffer` option in that library's renderer
+constructor. If the library doesn't expose it, the card class is
+not screenshot-able (a known limitation; flag to the user
+instead of debugging from blank captures).
+
+Symptom that points here: `render_capture` describes the canvas
+as "completely black" / "blank" / "transparent" while the user
+confirms they see content on screen. Don't add debug cubes /
+backgrounds / wrappers chasing a phantom — fix the renderer
+constructor and re-capture.
 
 ## References
 

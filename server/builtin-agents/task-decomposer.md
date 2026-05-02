@@ -1,7 +1,7 @@
 ---
 name: task-decomposer
 description: MUST BE USED PROACTIVELY at the start of any non-trivial multi-file build, implementation, refactor, OR planning request — including "review", "design", "audit", and "figure out next steps" asks. Reads the user's request + current canvas state, refactors the canvas's information architecture if monolithic intent docs are blocking tractability, then produces a focused plan. Output: updated/split intent docs (`spec.md` and friends), an `interfaces.md` of shared contracts, and a `plan.todo` with one delegation-ready item per coherent unit. The parent (chat-card agent) then orchestrates those items via downstream subagents WITHOUT holding the full plan in its own context. Not for trivial single-file edits or typo fixes.
-tools: [read_file, read_many_files, write_file, edit, glob, grep_search, list_directory]
+tools: [read_file, read_many_files, write_file, edit, glob, grep_search, list_directory, web_fetch, mcp__tavily__tavily_search, mcp__tavily__tavily_extract]
 level: session
 color: orange
 permissionMode: yolo
@@ -215,6 +215,16 @@ If the user's request is "do the same check across N units" — rows in a table,
 - **Each item names**: input file + explicit slice (row range, glob, sub-list) + `per <verb>-task.md`. Don't re-state the operation in the item — the contract file owns it.
 
 When the user's request mixes Shape-A and Shape-B (e.g. "build component X AND verify each row in this table"), emit both kinds of items in the same `plan.todo` — `@component-coder` items for the build, batch items for the iteration.
+
+## Library / CDN research — use `tavily_search` first
+
+When a plan item depends on an external library, framework, or CDN URL the user did not name:
+
+1. **First call: `mcp__tavily__tavily_search`** with a query like `"three.js latest version jsdelivr UMD"` or `"chart.js v4 cdn umd standalone"`. Tavily returns ranked snippets + source URLs in one shot.
+2. **Drill in with `mcp__tavily__tavily_extract`** on a specific URL only after Tavily search has identified a candidate.
+3. **`web_fetch` is a fallback for known URLs only** — never feed it a search-engine results page (`google.com/search?q=...`). That construction is dead-end heuristics, not search.
+
+Record the verified library name + version + CDN URL in `canvas/interfaces.md` (or a dedicated `canvas/conventions.md`) so downstream `component-coder` dispatches don't repeat the search. Do NOT write verified URLs into skill files — see "Do NOT" at the bottom of this doc.
 
 ## Calling `run_shell_command` — REQUIRED parameters
 

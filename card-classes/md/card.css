@@ -120,17 +120,27 @@
 
 .md-delta-popover {
   display: none;
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 4px;
-  /* Hover-bridge UX was fragile (cursor crossing the gap between trigger
-     and body, plus z-stacking issues with the toastui editor's content
-     stealing pointer events). Switched to click-to-toggle via
-     .is-open class set by card.js. */
+  /* Fixed positioning + portaled to document.body (see card.js) so the
+     popover escapes:
+       1. .card-markdown-editor's overflow:hidden clip rect, and
+       2. .wb-panzoom-inner's will-change:transform — which would make
+          that element a containing block for fixed-positioned descendants,
+          dragging the popover off-screen as the canvas pans/zooms.
+     Top/left are set dynamically by card.js from the trigger's bounding
+     rect (see _positionPopover). z-index above everything else. */
+  position: fixed;
+  z-index: 10000;
+  /* Portaling to body detaches us from the badge's font-family. Without an
+     explicit font here the popover inherits document defaults (serif italic
+     in Chromium dark UA) and looks nothing like the rest of the card.
+     Re-state the same stack used on .md-delta-badge so the popover blends
+     into the host UI regardless of where it physically renders. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1;
 }
 
-.md-delta-badge.is-open .md-delta-popover {
+.md-delta-popover.is-open {
   display: block;
 }
 

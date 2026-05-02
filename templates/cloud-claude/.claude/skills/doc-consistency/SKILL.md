@@ -1,6 +1,6 @@
 ---
 name: doc-consistency
-description: Keep docs and the code they describe in sync. Fires (a) before writing or editing a spec, plan, design doc, diagram, decision note, README, etc., AND (b) before or after editing CODE that a doc describes (e.g., a card class's card.js/html/css/metadata.json when the canvas has a spec.md). Checks sibling docs for alignment, propagates user-observable behavior changes from code back to spec, asks when contradictions surface.
+description: Keep docs and the code they describe in sync. Triggers when editing a spec/design/decisions doc, OR when editing code (card.js/html/css/metadata.json) that a doc describes. Propagate user-observable behavior changes back to the doc in the same turn.
 ---
 
 # Keep related docs consistent

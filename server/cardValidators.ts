@@ -573,55 +573,14 @@ export async function enforceDependenciesReachable(
   );
 }
 
-// ── Path enforcement (card-class outside .mica/card-classes/) ──
-//
-// Smoke test 3 (2026-04-29) showed an agent writing a full card class to
-// `card-classes/earth-moon-orbit/` (canvas root, no dot prefix) instead of
-// `.mica/card-classes/earth-moon-orbit/`. The Mica resolver only finds
-// project-scoped classes under `.mica/card-classes/` — files elsewhere are
-// invisible to the canvas, so instances render as plain TXT. Worse: both
-// `enforceCardClassMetadata` and `enforceCardJsLint` only fire on the
-// `.mica/...` path, so the misplaced files bypass all validation.
-//
-// This validator fires on the regular `file-change` event (not
-// `card-class-change`, which the file-watcher only emits for `.mica/`
-// paths) and broadcasts a card-error when it spots card-class-shaped
-// files outside the canonical location. The agent sees the error in
-// chat and moves the directory.
-
-const MISPLACED_CARD_CLASS_RX = /(?:^|\/)card-classes\/([^/]+)\/(card\.(?:js|html|css)|metadata\.json)$/;
-
-/** If `filename` looks like a card-class artifact (card.html/js/css or
- *  metadata.json under any `card-classes/<ext>/`) but is NOT at the
- *  canonical `.mica/card-classes/<ext>/` path, broadcast a deny reason. */
-export function enforceCardClassPath(
-  filename: string,
-  opts: {
-    onError?: (reason: string) => void;
-  } = {},
-): void {
-  // Skip the canonical path — `enforceCardClassMetadata` and
-  // `enforceCardJsLint` handle those.
-  if (filename.startsWith(".mica/card-classes/")) return;
-
-  const m = filename.match(MISPLACED_CARD_CLASS_RX);
-  if (!m) return;
-
-  const [, dirName, fileName] = m;
-  // Reconstruct the misplaced parent (everything up to and including
-  // `card-classes/<dirName>`) so the move command we suggest is exact.
-  const idx = filename.indexOf(`card-classes/${dirName}/${fileName}`);
-  const parentBeforeCardClasses = idx > 0 ? filename.slice(0, idx) : "";
-  const misplacedDir = `${parentBeforeCardClasses}card-classes/${dirName}`;
-
-  opts.onError?.(
-    `\`${filename}\` looks like a card-class file but is at the wrong path. ` +
-    `Card classes must live at \`.mica/card-classes/${dirName}/\` (with the leading dot — \`.mica\` is project-scoped). ` +
-    `The Mica resolver only finds card classes under \`.mica/card-classes/\`; files at \`${misplacedDir}/\` are invisible to the canvas and instances render as plain TXT. ` +
-    `Fix: \`mkdir -p .mica/card-classes && mv ${misplacedDir} .mica/card-classes/${dirName}\`. ` +
-    `(Mica's built-in card classes live at \`card-classes/\` inside the Mica repo itself — not inside your project. Project-scoped classes always go under \`.mica/\`.)`,
-  );
-}
+// (former enforceCardClassPath retired. The regex-based wrong-path detector
+// kept enumerating new failure shapes without catching the next one — every
+// new project found a new shape (smoke test 3 hit `card-classes/<x>/` at
+// canvas root; world clock hit `canvas/<x>.card/`; the regex caught one and
+// missed the other). Path enforcement is now structural via mica_create_class
+// in server/plugins/cardClassTools.ts: the agent expresses intent and the
+// framework owns the path. The set of "wrong paths" becomes empty by
+// construction, not by enumeration.)
 
 /** Extract the post-write content from a write tool's input, if available.
  *  Returns null for partial-edit tools (edit_file with old_string/new_string)
@@ -800,6 +759,30 @@ function _detectParseError(content: string): string | null {
  *  its next turn. Mirrors `enforceCardClassMetadata`'s shape: file-watcher
  *  driven, post-write, can't BLOCK the write but the post-write feedback loop
  *  is fast enough that the user rarely sees the bad card. */
+/** Pure content-only lint: takes the proposed card.js text, returns the
+ *  first lint error or null. Used by both the post-write file-watcher
+ *  validator (enforceCardJsLint) and the pre-write tool gate
+ *  (mica_edit_class_file). Identical detector chain so post-write and
+ *  pre-write paths agree on what's a lint failure. */
+export function lintCardJsContent(content: string): string | null {
+  // Run checks in priority order. First hit wins so the most specific
+  // message reaches the agent (e.g. "you have an export" beats the generic
+  // parse-error fallback that triggers on the same file).
+  const checks: Array<(c: string) => string | null> = [
+    _detectModuleSyntax,
+    _detectInventedAPIs,
+    _detectRedeclaredGlobals,
+    _detectWrappedNotCalled,
+    _detectUnmodifiedSkeleton,
+    _detectParseError,
+  ];
+  for (const check of checks) {
+    const reason = check(content);
+    if (reason) return reason;
+  }
+  return null;
+}
+
 export async function enforceCardJsLint(
   absolutePath: string,
   opts: {
@@ -820,23 +803,6 @@ export async function enforceCardJsLint(
     return; // deleted / unreadable — nothing to lint
   }
 
-  // Run checks in priority order. First hit wins so the most specific
-  // message reaches the agent (e.g. "you have an export" beats the generic
-  // parse-error fallback that triggers on the same file).
-  const checks: Array<(c: string) => string | null> = [
-    _detectModuleSyntax,
-    _detectInventedAPIs,
-    _detectRedeclaredGlobals,
-    _detectWrappedNotCalled,
-    _detectUnmodifiedSkeleton,
-    _detectParseError,
-  ];
-
-  for (const check of checks) {
-    const reason = check(content);
-    if (reason) {
-      opts.onError?.(`\`${dirName}/card.js\` lint failed: ${reason}`);
-      return;
-    }
-  }
+  const reason = lintCardJsContent(content);
+  if (reason) opts.onError?.(`\`${dirName}/card.js\` lint failed: ${reason}`);
 }

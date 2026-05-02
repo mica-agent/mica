@@ -204,6 +204,13 @@ export async function buildContext(agentFilename: string, project: string | null
   if (project) {
     const pendingErrors = getPendingValidatorErrors(project);
     if (pendingErrors.length > 0) {
+      // Direct evidence of agent receiving validator/runtime errors. See
+      // micaAgent.ts comment at the same site — buffer→prompt path is
+      // otherwise unobservable, so we log per-error for auditability.
+      const filenames = pendingErrors.map((e) => e.filename).join(", ");
+      const previews = pendingErrors.map((e) => `${e.filename}: ${e.error.slice(0, 80).replace(/\n/g, " ")}`).join(" | ");
+      console.log(`[buildContext:${project}] (claude) injected ${pendingErrors.length} validator/runtime error(s) into next-turn prompt: ${filenames}`);
+      console.log(`[buildContext:${project}] (claude) error previews: ${previews}`);
       const errorLines = pendingErrors.map((e) =>
         `### \`${e.filename}\`\n\n${e.error}`
       );
@@ -347,34 +354,23 @@ You execute shell commands inside the same container that runs Mica itself. Thes
 
 If you need to test a web app the user is building, launch it on a DIFFERENT port (e.g. 9000, 9090) — don't use 5173 or 3002. If a port conflict happens, use a different port rather than killing anything.`);
 
-  // Default behavior (if no agent card back provides instructions)
-  parts.push(`## Your Role
-You are a team member on this project, not a tool. You collaborate with the human — you don't just execute orders.
-
-IMPORTANT: You MUST follow these rules. Never skip them.
-
-1. **NEVER create files without confirming first.** Before writing ANY code or creating ANY file, describe what you plan to build, what it will and won't support, and ask "Should I go ahead?" Wait for a "yes" before writing.
-
-2. **Flag limitations upfront.** If what the user asks for can't be fully implemented with the available APIs, say so BEFORE building. Example: "Our file API only handles text — a file uploader won't support images or binaries. Want me to build a text-only version, or should we discuss alternatives?"
-
-3. **No incomplete implementations.** Don't build something you know is broken or incomplete. If you can't do it right, say why and ask what the user prefers instead.
-
-4. **Explain trade-offs.** If there are multiple approaches, briefly present options and recommend one with reasoning.
-
-5. **Flag uncertainty.** If you're unsure about something, say so. Don't guess.
-
-6. **Use established libraries.** When building card classes, prefer well-known CDN libraries over hand-coding. Examples: Chart.js for charts, FullCalendar for calendars, Sortable.js for drag-and-drop lists, CodeMirror for code editing, Leaflet for maps. Add them via metadata.json dependencies. Don't reinvent what a library already does well.
-
-## Default Behavior
-When reacting to file changes:
-- Evaluate what actions should be taken
-- Check for @agent tasks in todo files
-- Update dependent docs if needed
-- Log decisions and actions taken to ${canvasRoot}/decisions.md
-- If you have questions, add them to your chat response AND create a todo item assigned to @human
-
-## Skills
+  parts.push(`## Skills
 This project's skills are bundled by its template and live under \`.claude/skills/<name>/SKILL.md\`. The Claude Code SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.
+
+## Asking the user a question
+
+When you need information from the user — a clarification, a design decision, an approval — invoke the \`AskUserQuestion\` tool. Do NOT write a question into a plain-text response and rely on the user to read and reply.
+
+Why: \`AskUserQuestion\` renders an interactive dialog in the chat card. The user clicks an option (or types a free answer) and Mica routes the response back deterministically. A question in plain text becomes a message the user has to read, scroll back to, and answer free-form — slower for them and ambiguous for you.
+
+Rules:
+- **Use \`AskUserQuestion\` for ANY question requiring a user reply.** Clarifications, approvals, choices.
+- **Provide \`options\` when the answer space is finite.** Two-to-five options; each is a complete, self-contained answer.
+- **Omit \`options\` for open-ended questions.** Still use the tool — the dialog signals "I'm waiting" clearly.
+- **One invocation can carry multiple questions** via the \`questions\` array.
+- **End your turn after invoking.** Mica returns a deny-message; the user's next chat message is the answer.
+
+The only time it's OK to ask in plain text is rhetorical or framing-level ("This raises the question of whether..."), where no user reply is actually needed.
 
 ## Arc completion marker
 When a coherent arc of work ends — the user's task is done, or the conversation has reached a natural stopping point where starting fresh would not lose anything important — emit the literal marker \`<thread-state>arc-complete</thread-state>\` as the last line of your response. This is Mica's signal that the chat can reset its context cursor. Use it sparingly and only at genuine breaks (task finished, question answered, plan ratified). Do NOT emit it mid-task, after tool errors, or when the user is still iterating.
@@ -397,11 +393,56 @@ Each chat card on the canvas is meant to hold one ongoing conversation about one
 
 function describeToolUse(name: string, input: Record<string, unknown>): string {
   if (!input) return name;
-  const n = name.toLowerCase().replace(/[_-]/g, "");
+  // Strip MCP server prefix if present.
+  const bareName = name.replace(/^mcp__[^_]+(?:-[^_]+)*__/, "");
+  const n = bareName.toLowerCase().replace(/[_-]/g, "");
   const filePath = String(input.file_path || input.filePath || input.path || input.file || "");
   const fileName = filePath.split("/").pop() || "";
   const cmd = String(input.command || input.cmd || input.script || "");
 
+  // Skill — surface which skill is being invoked.
+  if (n === "skill") {
+    const skill = String(input.skill || input.name || "");
+    return skill ? `skill: ${skill}` : "skill";
+  }
+  // Subagent dispatch (Claude SDK uses "Task" or "Agent").
+  if (bareName === "Task" || bareName === "Agent" || bareName === "agent" || bareName === "task") {
+    const subagent = String(input.subagent_type || input.agent || "");
+    const desc = String(input.description || "").slice(0, 60);
+    if (subagent && desc) return `subagent: ${subagent} (${desc})`;
+    if (subagent) return `subagent: ${subagent}`;
+    if (desc) return `subagent: ${desc}`;
+    return "subagent dispatch";
+  }
+  // Web fetch / search.
+  if (n === "webfetch" || n === "fetch") {
+    const url = String(input.url || input.link || "");
+    return url ? `web_fetch: ${url.slice(0, 100)}` : "web_fetch";
+  }
+  if (n === "websearch") {
+    const q = String(input.query || input.q || "");
+    return q ? `web_search: ${q.slice(0, 80)}` : "web_search";
+  }
+  // Mica card-class tools.
+  if (n === "micacreateclass") return `create class: ${String(input.name || "")}`.trim();
+  if (n === "micaeditclassfile") {
+    const cls = String(input.class || "");
+    const file = String(input.file || "");
+    return cls && file ? `edit class: ${cls}/${file}` : cls ? `edit class: ${cls}` : "edit class file";
+  }
+  if (n === "micacreatecardinstance") {
+    const ext = String(input.class_extension || "");
+    const fn = String(input.filename || "");
+    return ext && fn ? `create instance: ${fn}${ext}` : "create card instance";
+  }
+  if (n === "micadeleteclass") return `delete class: ${String(input.name || "")}`.trim();
+  if (n === "micadeletecardinstance") return `delete instance: ${String(input.filename || "")}`.trim();
+  if (n === "micalistclasses") return "list card classes";
+  // Render capture.
+  if (n === "rendercapture") {
+    const fn = String(input.filename || "");
+    return fn ? `screenshot: ${fn}` : "screenshot";
+  }
   // Shell/bash
   if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
     const firstLine = cmd.split("\n")[0].slice(0, 120);
@@ -621,6 +662,25 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
       try {
         const since = getLastTurnAt(ctx.filename);
+
+        // Surface validator/runtime errors entering this turn as a step in
+        // the chat-card progress feed (see micaAgent.ts comment at the same
+        // site for full rationale).
+        if (sessionProject) {
+          const incomingErrors = getPendingValidatorErrors(sessionProject);
+          if (incomingErrors.length > 0) {
+            const files = Array.from(new Set(incomingErrors.map((e) => e.filename)));
+            const desc = incomingErrors.length === 1
+              ? `Received error from ${files[0]}`
+              : `Received ${incomingErrors.length} errors from ${files.length === 1 ? files[0] : `${files.length} files`}`;
+            ctx.broadcast({
+              type: "progress",
+              tool: "validator-errors",
+              description: desc,
+            });
+          }
+        }
+
         const context = await buildContext(ctx.filename, sessionProject, since);
         // Capture rendered system-prompt snapshot for the per-turn footer's
         // "view snapshot" link. Sidecar at .mica/chats/<chatId>/snapshots/
@@ -662,7 +722,15 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             historyBlock = `Conversation so far (most recent last):\n\n${lines.join("\n\n")}\n\n---\n\nCurrent message:\n`;
           }
         }
-        const promptWithHistory = historyBlock + message;
+        // Per-turn nudge: prepended above the user message because the model
+        // pays attention to text adjacent to the user input more reliably than
+        // to buried system-prompt rules. ~30-token cost per turn.
+        const TURN_NUDGE = `[Turn discipline reminder, apply BEFORE coding]
+1. If this turn will edit non-doc files (card.js/html/css, .ts, .py, .json), the relevant describing doc(s) must already describe the change — update them FIRST in this same turn, even if the user's intent feels obvious. The framework cannot detect doc/code drift after the fact.
+2. If \`participate-fully\` is in your skills list, invoke it before any other tool call to assess what changed.
+
+`;
+        const promptWithHistory = TURN_NUDGE + historyBlock + message;
 
         console.log(`[claude-agent] Query: ${message.slice(0, 100)}... (context: ${context.length} chars, history: ${historyBlock.length} chars)`);
 
@@ -842,9 +910,12 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
         let resultText = "";
         let filesChanged = false;
-        // Final turn usage from the SDK's `result` event. Shape: { input_tokens, output_tokens, ... }.
-        // Forwarded to the client so the chat card can compute tokens/sec from elapsed time.
+        // Final turn usage from the SDK's `result` event. CUMULATIVE across
+        // every LLM call in the tool loop — NOT the last-request prompt size.
+        // For the gauge use peakIterationInput (tracked per assistant event).
         let usage: Record<string, unknown> | null = null;
+        // Per-iteration peak prompt size (max input_tokens across assistant events).
+        let peakIterationInput = 0;
 
         // Track in-flight subagent invocations by tool_use_id for concurrency
         // accounting (see micaAgent.ts for matching logic / rationale).
@@ -856,6 +927,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           if (evtType === "assistant" && evt.message) {
             // First assistant event = proxy for time-to-first-token (prefill done).
             if (firstTokenTs === null) firstTokenTs = Date.now();
+            // Per-iteration prompt size — running max becomes the gauge reading.
+            const msgUsage = (evt.message as { usage?: { input_tokens?: number } }).usage;
+            if (msgUsage && typeof msgUsage.input_tokens === "number" && msgUsage.input_tokens > peakIterationInput) {
+              peakIterationInput = msgUsage.input_tokens;
+            }
             const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; input?: Record<string, unknown>; id?: string }> };
             if (msg.content) {
               for (const block of msg.content) {
@@ -986,12 +1062,16 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         const arcComplete = ARC_COMPLETE_RE.test(resultText);
         if (arcComplete) resultText = resultText.replace(ARC_COMPLETE_RE, "").trim();
 
-        // Claude SDK usage reports input_tokens for the turn; we don't have a
-        // per-model context window surfaced here, so use a conservative cap.
+        // Peak prompt pressure across the turn = max(per-iteration input_tokens),
+        // captured from each `assistant` SDK event above. The result event's
+        // usage.input_tokens is CUMULATIVE across iterations and would read
+        // 200%+ on multi-tool-round turns; the gauge needs the per-iteration peak.
         const CLAUDE_CTX_WINDOW = 200000;
-        const inputTokens = (usage && typeof (usage as { input_tokens?: unknown }).input_tokens === "number")
-          ? (usage as { input_tokens: number }).input_tokens
-          : 0;
+        const inputTokens = peakIterationInput > 0
+          ? peakIterationInput
+          : (usage && typeof (usage as { input_tokens?: unknown }).input_tokens === "number"
+              ? (usage as { input_tokens: number }).input_tokens
+              : 0);
         const capacity = inputTokens / CLAUDE_CTX_WINDOW;
         let cursorAdvanced = false;
         let newCursor = cursor;
@@ -1152,6 +1232,13 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         if (msg.type === "interrupt") {
           if (activeAbort) {
             try { activeAbort.abort(); } catch { /* ignore */ }
+          }
+          // Drop messages typed while the agent was busy. Otherwise the
+          // finally block dequeues and fires the next turn after stop —
+          // surprising given that "stop" naturally means "stop everything."
+          if (queue.length > 0) {
+            console.log(`[claude-agent] interrupt: dropping ${queue.length} queued message(s)`);
+            queue.length = 0;
           }
           return;
         }

@@ -1,6 +1,6 @@
 ---
 name: discover-library
-description: Triggers when designing the implementation of a recognizable subproblem that would otherwise need >30 lines of bespoke code — mapping, charting, drag-and-drop, geospatial math, syntax highlighting, animation, calendaring, terminal emulation, code editing, math typesetting, audio synthesis, file diffing, etc. Use during spec drafting (card-class builds), during plan writing (decomposed builds), and during bug fixes that would need substantial new logic. Output is a documented decision somewhere on canvas — "use X@version because Y" OR "no library fits because Z". Always verify the chosen CDN URL with curl before recording.
+description: Invoke before designing or writing any component that does work beyond DOM-glue (anything that computes, formats, transforms, animates, draws, parses, talks to a service, or performs domain math — dates, time zones, sun/moon position, geo distance, color, audio, charts, drag-drop, calendaring, syntax highlighting, file diffing, etc.). Mica should not be reluctant to take on a dependency — if a library exists and is verifiable, use it. The skill takes <30 seconds (search → curl-verify) and produces a documented decision on canvas either way ("use X@version because Y" OR "no library fits because Z"). Library is the default; bespoke is the exception that requires a documented "no library fits" decision.
 ---
 
 # Discover an existing library before designing custom
@@ -38,7 +38,7 @@ One query per subproblem. The top maintained candidate is usually the right answ
 
 - It solves THIS specific subproblem (not adjacent — read the API summary).
 - It's actively maintained (last commit/release within ~12 months).
-- It ships to a CDN you can use (unpkg, jsdelivr — module-bundlers don't help in card classes).
+- It ships a UMD-formatted bundle on cdn.jsdelivr.net (every npm package has a jsDelivr URL by default; the pattern is `https://cdn.jsdelivr.net/npm/<pkg>@<version>/<dist-path>`). UMD exposes the library as a window global, callable directly from card.js without imports. Look up the canonical `<dist-path>` in the package's README.
 - The API surface is what you'd want to call (`L.terminator()` is one line; some libraries demand a 50-line builder pattern).
 
 If the top candidate fails any of these, look at the second candidate. Stop after two — three or more candidates means the search query was too vague or the subproblem is genuinely bespoke.

@@ -1,6 +1,6 @@
 ---
 name: analyze-repo
-description: CODEBASE ANALYSIS. When the user asks to analyze, explore, understand, survey, read through, or map out any codebase, source directory, `src/`, repo, or repository — INVOKE THIS SKILL FIRST, before any `read_file` or `list_directory` calls. Applies to the current project's own source, any sub-directory inside it, or an external cloned repo. Produces bounded canvas cards plus `.mica/repo-analysis/<repo>/` detail. NEVER reads codebases inline — always delegates per-module to subagents. Triggers on phrases like "analyze the code", "analyze the src directory", "understand this codebase", "map out the repo", "explore the source".
+description: Codebase analysis — "analyze the code", "understand this repo", "map out src/", explore an external cloned repo. INVOKE FIRST before any read_file or list_directory. Always delegates per-module to subagents; never reads codebases inline.
 ---
 
 # Analyze a codebase

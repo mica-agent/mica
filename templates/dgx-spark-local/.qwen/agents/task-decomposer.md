@@ -1,7 +1,7 @@
 ---
 name: task-decomposer
 description: Invoked when the parent decides decomposition pays off — both gates of tenet 12 are satisfied (real architectural seams AND integrated whole exceeds the parent's working set). Also invoked for explicit planning-shaped asks (review / design / "decompose this for me") so a contract and design memory land on canvas. Produces FOUR artifacts: (1) intent docs (`spec.md` and friends, possibly split if monolithic), (2) `interfaces.md` — the FROZEN contract with named sections, (3) `decomposition.md` — design memory naming subcomponents + dependency graph + verification gates, (4) `plan.todo` — file-granularity items with per-item `Context:` and `Skip:` manifests. Prior decomposition.md is UPDATED, not rewritten. Returns a one-line status; the parent orchestrates from the artifacts. Not for trivial single-file edits, single card classes, single bug fixes, or genuinely tightly coupled work where the contract becomes a partial implementation.
-tools: [read_file, read_many_files, write_file, edit, glob, grep_search, list_directory, web_search, web_fetch]
+tools: [read_file, read_many_files, write_file, edit, glob, grep_search, list_directory, web_fetch, mcp__tavily__tavily_search, mcp__tavily__tavily_extract]
 level: session
 color: orange
 permissionMode: yolo
@@ -297,6 +297,16 @@ Keep under 100 chars. The parent reads the artifacts you wrote — it doesn't ne
 - Do NOT delete content during a refactor — every paragraph in the original lands somewhere in the new files.
 - Do NOT reorganize on every turn. Once split, the next turn just adds to the relevant focused doc.
 - Do NOT edit `.qwen/skills/` or `.claude/skills/` SKILL.md files — those are project-shared infrastructure. Project-specific information (verified URLs, library versions, recurring patterns) goes in `canvas/interfaces.md` or a dedicated `canvas/conventions.md`.
+
+## Library / CDN research — `tavily_search` first
+
+When a plan item depends on an external library, framework, or CDN URL the user did not name:
+
+1. First call: `mcp__tavily__tavily_search` with a focused query (e.g. `"three.js latest version jsdelivr UMD"`). Returns ranked snippets + source URLs.
+2. Drill in with `mcp__tavily__tavily_extract` on a specific URL once a candidate is identified.
+3. `web_fetch` is a fallback for known URLs only — NEVER feed it `google.com/search?q=...`. Search-engine results pages return rendered chrome, not the data you need.
+
+Record the verified library name + version + CDN URL in `canvas/interfaces.md` (or a dedicated `canvas/conventions.md`). Do NOT write verified URLs into skill files.
 
 ## `run_shell_command` parameters
 

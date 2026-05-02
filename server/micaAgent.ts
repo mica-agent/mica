@@ -10,6 +10,7 @@ import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFrom
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
+import { buildCardClassMcpServer } from "./plugins/cardClassTools.js";
 import {
   loadProjectSubagents,
   configureConcurrency,
@@ -257,6 +258,10 @@ async function getQuery() {
       _query = (mod as { query: typeof _query }).query;
       _tool = (mod as { tool: unknown }).tool;
       _createSdkMcpServer = (mod as { createSdkMcpServer: unknown }).createSdkMcpServer;
+      // Bind the SDK helpers into the card-class tools module so it can build
+      // its MCP server when the first agent turn fires.
+      const { bindSdk } = await import("./plugins/cardClassTools.js");
+      bindSdk(_tool, _createSdkMcpServer);
     } catch (err) {
       console.error("[mica-agent] Failed to load @qwen-code/sdk:", (err as Error).message);
       throw new Error("@qwen-code/sdk not available");
@@ -273,16 +278,16 @@ function buildRenderMcpServer(sessionProject: string | null): unknown | null {
   const captureToolDef = _tool(
     "render_capture",
     "Capture a PNG screenshot of a card as it is currently rendered on the " +
-    "canvas AND ATTACH THE IMAGE to the tool result so you can look at it " +
-    "directly. You HAVE vision capability on this model (Qwen3.6-35B-A3B " +
-    "with mmproj loaded) — when this tool returns, the screenshot is visible " +
-    "to you as an image attached to the tool result. Do NOT say 'I can't " +
-    "view images' after calling this; describe what you see, including " +
-    "colors, layout, specific text visible in the image, and whether the " +
-    "card rendered correctly. Use this after building or editing a card " +
-    "class to visually verify it works. The browser tab must be open to " +
-    "the project's canvas. The filename is the canvas-root-relative path " +
-    "of the card instance file (e.g. 'canvas/my-widget.burndown'), not " +
+    "canvas, then return a TEXT verification report describing what's in the " +
+    "image. The server runs the screenshot through llama-server's vision " +
+    "encoder (mmproj) directly and returns a 5-15 line description as the " +
+    "tool result — layout, colors, visible text, anything that looks broken " +
+    "or missing. You receive TEXT, not an image (the SDK's tool_result " +
+    "channel doesn't carry image data through to the model — that's why the " +
+    "server captions on your behalf). Use this after building or editing a " +
+    "card class to verify it rendered correctly. The browser tab must be " +
+    "open to the project's canvas. The filename is the canvas-root-relative " +
+    "path of the card instance file (e.g. 'canvas/my-widget.burndown'), not " +
     "the card class directory.",
     { filename: z.string().describe("Canvas-root-relative path of the instance file (e.g. 'canvas/my.burndown')") },
     async (args: { filename: string }) => {
@@ -290,18 +295,62 @@ function buildRenderMcpServer(sessionProject: string | null): unknown | null {
         const result = await captureCard(sessionProject, args.filename);
         const png = await fsReadFile(result.path);
         const base64 = png.toString("base64");
+
+        // Caption the image via a direct llama-server call (NOT through the
+        // SDK). Same pattern as processImageMessage's user-attachment flow
+        // (which works in production via the chat card's 📷 button) — the
+        // SDK strips MCP image blocks from tool_result content, so we have
+        // to do the vision-bearing call ourselves and return text.
+        //
+        // Bypassing the SDK here is intentional and contained: the model
+        // is the same qwen3-vl-local llama-server is loaded with; we're
+        // just talking to it directly because the SDK's openai-compatible
+        // tool_result type is text-only.
+        let caption = "";
+        try {
+          const llamaUrl = LLAMA_URL.replace(/\/v1$/, "");
+          const captionRes = await fetch(`${llamaUrl}/v1/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "qwen3-vl-local",
+              max_tokens: 400,
+              messages: [
+                {
+                  role: "system",
+                  content:
+                    "You are verifying a rendered Mica card class. Describe what's actually visible in the attached image — layout, colors, visible text, anything that looks broken, missing, clipped, or wrong. Look for: red error banners, blank/empty regions, overlapping elements, illegible text, missing markers/icons. Describe the IMAGE, not the source code. 5-15 lines of plain text, no markdown.",
+                },
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: `Verification of ${args.filename}: describe what you see.` },
+                    { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } },
+                  ],
+                },
+              ],
+            }),
+          });
+          if (captionRes.ok) {
+            const data = await captionRes.json() as {
+              choices?: Array<{ message?: { content?: string } }>;
+            };
+            caption = data.choices?.[0]?.message?.content?.trim() || "";
+          } else {
+            caption = `(captioning failed: llama-server returned ${captionRes.status})`;
+          }
+        } catch (capErr) {
+          caption = `(captioning failed: ${(capErr as Error).message})`;
+        }
+
         return {
-          content: [
-            {
-              type: "text",
-              text:
-                `The screenshot is attached to this tool result as an image. ` +
-                `Look at the attached image and describe what you actually see ` +
-                `— colors, layout, rendered text, whether anything is clipped or broken. ` +
-                `File: ${args.filename} (${result.width}×${result.height}, ${Math.round(result.bytes / 1024)} KiB, saved to ${result.relativePath}).`,
-            },
-            { type: "image", data: base64, mimeType: "image/png" },
-          ],
+          content: [{
+            type: "text",
+            text:
+              `Render verification of ${args.filename} ` +
+              `(${result.width}×${result.height}, ${Math.round(result.bytes / 1024)} KiB, ` +
+              `saved to ${result.relativePath}):\n\n${caption || "(no description returned)"}`,
+          }],
         };
       } catch (err) {
         return {
@@ -451,51 +500,10 @@ function formatListingEntry(name: string, sizeBytes: number, meta: { title: stri
  *  the spec-generation failure mode where the parent would write a spec
  *  that has the card calling LLM endpoints directly. */
 const MICA_API_REFERENCE_BLOCK =
-  `## Available mica.* APIs — prefer these over browser-direct equivalents\n\n` +
-  `When you write specs (task-decomposer) or implement card classes (component-coder), default to these Mica-provided primitives. They're injected by CARD_SHIM into every card class's runtime, alongside \`container\` (the card's root DOM node). Reach for browser globals only when no mica.* equivalent exists.\n\n` +
-  `**Identity & lifecycle**\n` +
-  `- \`mica.cardId\` — stable per-instance UUID (per file)\n` +
-  `- \`mica.filename\` — the card's instance file path\n` +
-  `- \`mica.windowId\` — per-tab id (NOT per-card; use cardId for instance state)\n` +
-  `- \`mica.onDestroy(cb)\` — cleanup on unmount; pair every \`addEventListener\`, \`setInterval\`, \`ResizeObserver\` etc. with this\n` +
-  `- \`mica.refresh()\` — reload the card; cheaper alternatives are usually preferred (in-place DOM patches)\n` +
-  `- \`mica.isSelfEcho(event)\` — true if event was caused by THIS card writing; use to break write-loops on \`file-changed\`\n\n` +
-  `**Canvas-native persistence — use INSTEAD of localStorage / IndexedDB / sessionStorage**\n` +
-  `- \`mica.getContent()\` → \`Promise<string>\` — read this card's instance file; called once at mount\n` +
-  `- \`mica.files.read(path)\` → \`Promise<string>\` — read any project file\n` +
-  `- \`mica.files.readBinary(path)\` → \`Promise<ArrayBuffer>\` — binary read\n` +
-  `- \`mica.files.write(path, content)\` → \`Promise<void>\` — text or binary; auto-routes by content type; SSE-broadcasts \`file-changed\` to peer windows\n` +
-  `- \`mica.files.list()\` → file metadata array\n` +
-  `- \`mica.files.delete(path)\` / \`mica.files.url(path)\` (URL for \`<img src>\` etc.)\n\n` +
-  `Why prefer these over browser storage: canvas files survive browser-data clear, sync cross-tab via the file watcher, are git-trackable, and are visible to the user as cards. IndexedDB/localStorage data is invisible to Mica and lost on browser reset.\n\n` +
-  `**HTTP — use INSTEAD of \`fetch()\` for cross-origin / public APIs**\n` +
-  `- \`mica.fetch(url, opts?)\` → \`Promise<{ status, headers, body, durationMs, errorCode? }>\` — server-proxied, bypasses CORS, blocks private/loopback IPs (SSRF protection), 120 req/60s rate limit per project, 10MB response cap, 60s max timeout. Always resolves; check \`errorCode\` then \`status\`.\n\n` +
-  `Use direct \`fetch()\` ONLY for same-origin Mica-internal endpoints (e.g. \`/api/llm/status\`). For external APIs, RSS, etc.: \`mica.fetch\`.\n\n` +
-  `**LLM / agent access — NEVER call llama-server, OpenRouter, or any LLM endpoint directly**\n\n` +
-  `Cards do not own LLM endpoints, API keys, or streaming protocol. LLM access is mediated by a SERVER-SIDE channel handler that the card opens via \`mica.openChannel\`. Three patterns, in order of how custom you need to be:\n\n` +
-  `1. **Drop a \`.llm-chat\` card on the canvas** — out-of-the-box streaming chat with a model switcher, no system prompt customization. The card class is already implemented (\`card-classes/llm-chat/\`) and registers \`channelManager.registerHandler("llm-chat", createLlmChatHandler())\` on the server. Use this when the user's need is "let me chat with an LLM" with no domain logic.\n` +
-  `2. **Drop a \`.chat\` card** — full Qwen/Claude agent SDK with subagents, tools, file ops. Heavyweight; use when the conversation needs the agent loop (e.g., a chat that helps the user build). System prompt comes from canvas-back + skills.\n` +
-  `3. **Build a custom card class with a paired server handler** — for domain-specific contracts (custom system prompt, structured response parsing, retrieval, multi-step pipelines). Requires both: (a) the card class files (card.html/js/css/metadata.json), AND (b) a server plugin at \`server/plugins/<name>.ts\` exporting a factory, AND (c) a registration line in \`server/index.ts\`: \`channelManager.registerHandler("<class-name>", create<Name>Handler())\`. Reference implementations: \`server/plugins/llmChat.ts\` (simple chat completion) and \`server/plugins/pty.ts\` (terminal). The card opens its channel with \`mica.openChannel(<any-string>, args?)\` — the routing key is the CARD's file extension, not the string argument (which is decorative, passed to the factory's \`_args\`).\n\n` +
-  `**Existing channel-handler card classes** (already registered, ready to use):\n` +
-  `- \`.chat\` → full Qwen agent SDK loop\n` +
-  `- \`.claude\` → Claude Code agent SDK loop\n` +
-  `- \`.terminal\` → PTY (node-pty)\n` +
-  `- \`.llm-chat\` → direct LLM streaming chat (OpenAI-compatible, switchable models)\n` +
-  `- \`.skills\` → collaborative SKILL.md authoring (propose/apply)\n` +
-  `- \`.canvas-back\` → propose-then-apply canvas-back.md edits\n\n` +
-  `**Anti-pattern (the spec-generation failure mode):** writing a spec that says "the card calls llama-server at \`/v1/chat/completions\` via \`fetch\`" or "use \`mica.fetch\` for the LLM call (with a note that \`mica.fetch\` blocks loopback)." Both are wrong — the card never calls LLM endpoints. If the spec implies it does, you've misframed the architecture; revise to "card opens \`mica.openChannel\`; server handler at \`server/plugins/<name>.ts\` owns the LLM call."\n\n` +
-  `**Channel API shape** (when you do call \`mica.openChannel\`):\n` +
-  `- \`const ch = mica.openChannel(label, args?)\` — open duplex stream\n` +
-  `- \`ch.send(msg)\` — push a message; server receives via \`onData(clientId, data)\`\n` +
-  `- \`ch.onData(cb)\` — receive server broadcasts (event types defined by handler)\n` +
-  `- \`ch.onClose(cb)\` — server closed the channel\n` +
-  `- \`ch.close()\` — client closes; pair with \`mica.onDestroy(() => ch.close())\`\n\n` +
-  `**Events & cross-card communication**\n` +
-  `- \`mica.on(event, cb)\` → unsubscribe fn. Events: \`file-changed\`, \`file-created\`, \`file-deleted\`, \`layout-changed\`, \`card-error\`. Always pair with \`mica.onDestroy(unsub)\`.\n` +
-  `- \`mica.reportError(message)\` → surfaces a "Ask agent to fix" bubble in chat cards across the project. Use in catch blocks for errors the user should know about.\n\n` +
-  `**Card-class introspection**\n` +
-  `- \`mica.cardClasses.list()\` → registered classes; check before defining a new one (extension may already be handled).\n\n` +
-  `For a fuller reference (parameter shapes, edge cases), read the \`create-card-class\` skill in \`.qwen/skills/create-card-class/SKILL.md\` (or \`.claude/skills/...\`). Don't paste its content into your specs verbatim — point at it.`;
+  `## Mica APIs — discover, don't memorize\n\n` +
+  `Cards run inside a CARD_SHIM that injects \`mica.*\` (files, openChannel, on, fetch, getContent, onDestroy, etc.) and \`container\` (the root DOM node). Specs and card.js code that bypass this — \`fetch('/api/files/...')\`, \`localStorage\`, direct calls to llama-server / OpenRouter — are wrong. Cards NEVER own LLM endpoints; LLM access is server-side via channel handlers reached through \`mica.openChannel\`.\n\n` +
+  `**Before writing any spec or card.js:** invoke the \`create-card-class\` skill. Its body is the canonical reference for the \`mica.*\` surface (parameter shapes, edge cases, anti-patterns). Don't paraphrase from memory.\n\n` +
+  `**Before writing any LLM-driven card class:** \`curl http://localhost:3002/api/handlers\` returns the live registry of reusable channel handlers (llm-direct, llm-agent, plus any others) with their \`name\`, \`whenToUse\`, \`argsSchema\`, and example card.js. Pick by \`whenToUse\`, declare \`"handler": "<name>"\` in your card class metadata.json, pass args via \`mica.openChannel\`. No server plugin required; agents do not write server code.`;
 
 /** Canvas baseline injected into every subagent's systemPrompt so the
  *  subagent starts with the same project awareness as the parent (canvas-back,
@@ -731,6 +739,15 @@ export async function buildContext(
   if (project) {
     const pendingErrors = getPendingValidatorErrors(project);
     if (pendingErrors.length > 0) {
+      // Direct evidence of agent receiving validator/runtime errors. The
+      // buffer→prompt path is otherwise unobservable (the assembled system
+      // prompt isn't logged) and we'd have to infer agent awareness from
+      // behavior. Log per-error so the path "card-error broadcast → buffer
+      // → next-turn prompt" can be audited end-to-end.
+      const filenames = pendingErrors.map((e) => e.filename).join(", ");
+      const previews = pendingErrors.map((e) => `${e.filename}: ${e.error.slice(0, 80).replace(/\n/g, " ")}`).join(" | ");
+      console.log(`[buildContext:${project}] injected ${pendingErrors.length} validator/runtime error(s) into next-turn prompt: ${filenames}`);
+      console.log(`[buildContext:${project}] error previews: ${previews}`);
       const errorLines = pendingErrors.map((e) =>
         `### \`${e.filename}\`\n\n${e.error}`
       );
@@ -898,63 +915,26 @@ export async function buildContext(
       const hasDecomposer = agents.some((a) => a.name === "task-decomposer");
       const hasComponentCoder = agents.some((a) => a.name === "component-coder");
       const lines: string[] = [
-        `## You are an Orchestrator`,
+        `## Subagents available for delegation`,
         ``,
-        `For non-trivial multi-file work, you do not write code yourself — you read the canvas plan, dispatch each component to a specialized Subagent, and mark items complete. This is the ONLY way to build multi-file features inside the local model's 65K context slot. Inline implementation runs out of context around the 7th–10th \`write_file\` and the turn errors mid-stream.`,
-        ``,
-        `Each Subagent runs in its own context window. It reads what it needs from canvas on demand and returns a short summary. Your parent context (this turn) keeps the plan and the summaries, never the file contents.`,
-        ``,
-        `**To invoke a Subagent**, write a request in your turn response using natural language naming the agent. Example phrasings (these patterns trigger SDK routing):`,
-        `- "Have the component-coder Subagent implement \`src/email_monitor.py\` per ${canvasRoot}/spec.md § Email Monitor."`,
-        `- "Use the task-decomposer Subagent to plan: <user's request verbatim>"`,
-        ``,
-        `Available Subagents:`,
       ];
       for (const a of agents) {
         lines.push(`- **${a.name}**: ${a.description}`);
       }
-      lines.push(``, `## Orchestrator workflow (MANDATORY for non-trivial requests)`, ``);
       if (hasDecomposer && hasComponentCoder) {
+        // Thin pointer to the full orchestrator workflow, which lives in the
+        // decompose-task skill body. Saves ~1.5K prompt tokens vs inlining the
+        // workflow on every turn — the model only loads it when it actually
+        // enters orchestrator mode. The trigger guidance + skip rules are kept
+        // here at prompt level because the model needs them to decide whether
+        // to invoke the skill in the first place.
         lines.push(
-          `**RULE 0: For non-trivial requests, your FIRST tool call MUST be \`task-decomposer\`. Not \`read_file\`. Not \`list_directory\`. Not \`glob\`. The decomposer.**`,
           ``,
-          `If you read project files first to "get a comprehensive understanding," you have already lost the context game. The decomposer reads what it needs in its own slot; your slot stays free for dispatching subagents and tracking progress. Reading 10 files inline burns the budget the decomposer was supposed to spend for you.`,
+          `**For non-trivial multi-file or planning-shaped work — your FIRST tool call MUST be the \`decompose-task\` skill.** Its body has the full orchestrator workflow: gates (tenets 12 & 14), dispatch shape, per-item \`[ ]\`→\`[~]\`→\`[x]\` lifecycle, failure-mode handling, and verification stages. Don't read project files inline first; the decomposer reads what it needs in its own slot. Reading 10 files inline burns the budget the decomposer should spend for you.`,
           ``,
-          `Trigger this workflow whenever the user's request is **multi-file work OR planning-shaped work**, regardless of phrasing. All of these are orchestrator-mode:`,
+          `Triggers: build / implement / create / refactor / restructure / review / design / audit / "figure out next steps" / "plan how we'd add Z" / "assess the codebase" — even when paired with file references ("the spec", "the design docs"). The temptation to read-first on these is the failure mode.`,
           ``,
-          `- Building / implementing / creating: "build X", "implement Y", "create Z"`,
-          `- Refactoring / restructuring: "refactor X into Y", "split this into modules"`,
-          `- **Reviewing or planning** (these are NOT just-read-and-answer asks): "review the spec and figure out next steps", "design X", "audit Y", "what's the best implementation path", "plan how we'd add Z", "assess the codebase", "determine the best path forward"`,
-          `- Extending / adding features: "add X to the app", "extend Y to support Z"`,
-          `- ANY user message that contains "review", "design", "audit", "figure out", "best path", "next steps", "plan how" — even when paired with project-file references like "the spec" or "the design docs"`,
-          ``,
-          `**The temptation to read first is the failure mode.** Resist it. The user's words can sound like they want analysis ("review the spec") but the right next action is delegation, not reading. Trust that the decomposer will read carefully — that's its job.`,
-          ``,
-          `Steps:`,
-          ``,
-          `1. **Restate** the ask in one sentence. If genuinely ambiguous, ask the clarifying question and stop.`,
-          `2. **Delegate the planning IMMEDIATELY** — invoke \`task-decomposer\` with the user's request verbatim. **This is your first tool call.** It writes \`${canvasRoot}/spec.md\`, \`${canvasRoot}/interfaces.md\`, and \`${canvasRoot}/plan.todo\` in its own context slot, returns a one-line status. You do not plan inline.`,
-          `3. **Read \`${canvasRoot}/plan.todo\`** — each \`## Active\` line is one delegation-ready item naming a subagent (\`@component-coder\`) and a spec section.`,
-          `4. **Show the user** the plan items so they can edit \`plan.todo\` before execution if they want.`,
-          `5. **Per-item lifecycle: \`[ ]\` → \`[~]\` → \`[x]\` (or \`[!]\`).** For each plan item, in this order:`,
-          `   - **Before dispatching:** \`edit\` plan.todo to flip the item's marker from \`[ ]\` to \`[~]\` (in-progress). The .todo card renders this as a pulsing dot — the user sees what you're working on.`,
-          `   - **Dispatch:** invoke \`component-coder\` with the plan item's text verbatim.`,
-          `   - **On successful return:** \`edit\` plan.todo to flip \`[~]\` to \`[x]\` (done).`,
-          `   - **On failure return** (component-coder responds \`failed: ...\`): \`edit\` plan.todo to flip \`[~]\` to \`[!]\` (failed). User sees a red marker and can intervene; the .todo card lets them click \`!\` to reset to \`[ ]\` for retry.`,
-          `   - Independent items can be dispatched in parallel — but EACH gets its own \`[~]\` flip BEFORE its dispatch and its own \`[x]\` / \`[!]\` flip AFTER its return.`,
-          `   **Do NOT batch updates.** The .todo card watches its own file and re-renders per save. Per-item edits become live UI progress (pending → in-progress → done). Batching loses that visibility AND loses work if you hit overflow before the flush.`,
-          `6. **Iterate** until \`## Active\` has no \`[ ]\` or \`[~]\` items left. Summarize what shipped — without including file contents.`,
-          ``,
-          `**SKIP this workflow** ONLY for these narrow cases:`,
-          `- typo fixes (renaming a variable, fixing a misspelling)`,
-          `- single-config tweaks (changing one setting in one config file)`,
-          `- narrowly-scoped Q&A like "what does function foo() do in src/x.js" (one read, one answer — the answer is the deliverable)`,
-          ``,
-          `**Spec / architecture / canvas-back / interfaces revisions are NOT skip-eligible — even when only one file is touched.** A spec rewrite that touches multiple sections, or any edit informed by architectural guidance the user just shipped, is planning-shaped work. Delegate to \`task-decomposer\`. The "single-file" language is about scope of CONSEQUENCE (does this affect downstream code?), not literal file count. A spec rewrite affects every subagent that reads it — high consequence — delegate it.`,
-          ``,
-          `**Multi-section edits in one file are NOT "single-file edits."** If you'd touch 3+ sections of one file, or rewrite >50 lines of one file, or apply architectural guidance to one file, it's planning-shaped. Delegate.`,
-          ``,
-          `**SKIP this workflow** if the user explicitly says "just do it directly" / "don't bother with subagents" / "this is small". Respect their override.`,
+          `Skip ONLY for: typo fixes, single-config tweaks, or narrow Q&A about one function. Spec / interfaces / canvas-back revisions are NOT skip-eligible — they're planning-shaped because they affect every downstream subagent. Multi-section edits in one file are NOT "single-file edits". If the user explicitly says "just do it directly", respect that.`,
         );
       } else {
         // Fallback: project doesn't have the orchestrator subagents installed.
@@ -1032,33 +1012,20 @@ You CAN see images. This runtime loads Qwen3.6-35B-A3B with its vision encoder (
 
 The \`render_capture\` tool (MCP server \`mica-render\`) returns a screenshot of a rendered canvas card with the image attached. Use it to visually verify card work and report what you actually see in the pixels.`);
 
-  // Default behavior (if no agent card back provides instructions)
-  parts.push(`## Your Role
-You are a team member on this project, not a tool. You collaborate with the human — you don't just execute orders.
+  parts.push(`## Asking the user a question
 
-IMPORTANT: You MUST follow these rules. Never skip them.
+When you need information from the user — a clarification, a design decision, an approval — invoke the \`ask_user_question\` tool. Do NOT write a question into a plain-text response and rely on the user to read and reply.
 
-1. **NEVER create files without confirming first.** Before writing ANY code or creating ANY file, describe what you plan to build, what it will and won't support, and ask "Should I go ahead?" Wait for a "yes" before writing.
+Why: \`ask_user_question\` renders an interactive dialog in the chat card. The user clicks an option (or types a free answer) and Mica routes the response back deterministically. A question in plain text becomes a message the user has to read, scroll back to, and answer free-form — slower for them and ambiguous for you (their reply might address the question OR something else).
 
-2. **Flag limitations upfront.** If what the user asks for can't be fully implemented with the available APIs, say so BEFORE building. Example: "Our file API only handles text — a file uploader won't support images or binaries. Want me to build a text-only version, or should we discuss alternatives?"
+Rules:
+- **Use \`ask_user_question\` for ANY question requiring a user reply.** This includes "Should I proceed?", "Which option do you prefer?", "Is X what you meant?", clarifications about ambiguous requests, approval gates before destructive actions.
+- **Provide \`options\` when the answer space is finite.** Two-to-five options is ideal; the user clicks. Each option should be a complete, self-contained answer ("Use Three.js OrbitControls" not just "Yes").
+- **Omit \`options\` for genuinely open-ended questions.** The user types a free response. Still use the tool — the dialog signals "I'm waiting for your input" clearly.
+- **One \`ask_user_question\` invocation can carry multiple questions** via the \`questions\` array. Use this when you have several related decisions to gather at once. Don't fire serial tools.
+- **After invoking, end your turn.** Mica returns a deny-message confirming the question was shown; do NOT call additional tools after that. The user's next chat message IS the answer.
 
-3. **No incomplete implementations.** Don't build something you know is broken or incomplete. If you can't do it right, say why and ask what the user prefers instead.
-
-4. **Explain trade-offs.** If there are multiple approaches, briefly present options and recommend one with reasoning.
-
-5. **Flag uncertainty.** If you're unsure about something, say so. Don't guess.
-
-6. **Use established libraries.** When building card classes, prefer well-known CDN libraries over hand-coding. Examples: Chart.js for charts, FullCalendar for calendars, Sortable.js for drag-and-drop lists, CodeMirror for code editing, Leaflet for maps. Add them via metadata.json dependencies. Don't reinvent what a library already does well.
-
-## Default Behavior
-When reacting to file changes:
-- Evaluate what actions should be taken
-- Check for @agent tasks in todo files
-- Update dependent docs if needed
-- Log decisions and actions taken to ${canvasRoot}/decisions.md
-- If you have questions, add them to your chat response AND create a todo item assigned to @human
-
-${await buildAvailableSkillsPrompt(project)}
+The only time it's OK to ask in plain text is rhetorical or framing-level ("This raises the question of whether we should..."), where you don't actually need the user to reply.
 
 ## Arc completion marker
 When a coherent arc of work ends — the user's task is done, or the conversation has reached a natural stopping point where starting fresh would not lose anything important — emit the literal marker \`<thread-state>arc-complete</thread-state>\` as the last line of your response. This is Mica's signal that the chat can reset its context cursor. Use it sparingly and only at genuine breaks (task finished, question answered, plan ratified). Do NOT emit it mid-task, after tool errors, or when the user is still iterating.
@@ -1081,11 +1048,67 @@ Each chat card on the canvas is meant to hold one ongoing conversation about one
 
 function describeToolUse(name: string, input: Record<string, unknown>): string {
   if (!input) return name;
-  const n = name.toLowerCase().replace(/[_-]/g, "");
+  // Strip MCP server prefix (e.g. `mcp__mica-card-class__mica_create_class`
+  // → `mica_create_class`) so name-matching logic below sees the bare name.
+  const bareName = name.replace(/^mcp__[^_]+(?:-[^_]+)*__/, "");
+  const n = bareName.toLowerCase().replace(/[_-]/g, "");
   const filePath = String(input.file_path || input.filePath || input.path || input.file || "");
   const fileName = filePath.split("/").pop() || "";
   const cmd = String(input.command || input.cmd || input.script || "");
 
+  // Skill tool — surface which skill is being invoked.
+  if (n === "skill") {
+    const skill = String(input.skill || input.name || "");
+    return skill ? `skill: ${skill}` : "skill";
+  }
+  // Subagent dispatch — surface the subagent name + short description.
+  if (bareName === "agent" || bareName === "task" || bareName === "Task" || bareName === "Agent") {
+    const subagent = String(input.subagent_type || input.agent || "");
+    const desc = String(input.description || "").slice(0, 60);
+    if (subagent && desc) return `subagent: ${subagent} (${desc})`;
+    if (subagent) return `subagent: ${subagent}`;
+    if (desc) return `subagent: ${desc}`;
+    return "subagent dispatch";
+  }
+  // Web fetch — surface the URL (truncated).
+  if (n === "webfetch" || n === "fetch") {
+    const url = String(input.url || input.link || "");
+    return url ? `web_fetch: ${url.slice(0, 100)}` : "web_fetch";
+  }
+  // Web search — surface the query.
+  if (n === "websearch") {
+    const q = String(input.query || input.q || "");
+    return q ? `web_search: ${q.slice(0, 80)}` : "web_search";
+  }
+  // Mica card-class tools — surface the class name + file when relevant.
+  if (n === "micacreateclass") {
+    const cls = String(input.name || "");
+    return cls ? `create class: ${cls}` : "create class";
+  }
+  if (n === "micaeditclassfile") {
+    const cls = String(input.class || "");
+    const file = String(input.file || "");
+    return cls && file ? `edit class: ${cls}/${file}` : cls ? `edit class: ${cls}` : "edit class file";
+  }
+  if (n === "micacreatecardinstance") {
+    const ext = String(input.class_extension || "");
+    const fn = String(input.filename || "");
+    return ext && fn ? `create instance: ${fn}${ext}` : "create card instance";
+  }
+  if (n === "micadeleteclass") {
+    return `delete class: ${String(input.name || "")}`.trim();
+  }
+  if (n === "micadeletecardinstance") {
+    return `delete instance: ${String(input.filename || "")}`.trim();
+  }
+  if (n === "micalistclasses") {
+    return "list card classes";
+  }
+  // Render capture — surface which card.
+  if (n === "rendercapture") {
+    const fn = String(input.filename || "");
+    return fn ? `screenshot: ${fn}` : "screenshot";
+  }
   // Shell/bash
   if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
     const firstLine = cmd.split("\n")[0].slice(0, 120);
@@ -1112,9 +1135,19 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   if (n.includes("list") || n === "ls") {
     return `List ${filePath || "files"}`;
   }
+  // Todo write (qwen built-in)
+  if (n === "todowrite") {
+    const todos = (input.todos as Array<{ content?: string }> | undefined) || [];
+    if (todos.length > 0) {
+      const inProgress = todos.find((t) => (t as { status?: string }).status === "in_progress");
+      if (inProgress?.content) return `todo: ${inProgress.content.slice(0, 80)}`;
+      return `todo (${todos.length} item${todos.length === 1 ? "" : "s"})`;
+    }
+    return "todo update";
+  }
   // Fallback — show tool name + any useful input
   const hint = cmd ? `: ${cmd.split("\n")[0].slice(0, 60)}` : fileName ? `: ${fileName}` : "";
-  return `${name}${hint}`;
+  return `${bareName}${hint}`;
 }
 
 // -- Channel handler factory --
@@ -1300,6 +1333,23 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // history scrolls; safer to require a fresh read).
       const readFilesThisTurn = new Set<string>();
 
+      // Per-turn working-set map: tracks read_file calls so we can dedup
+      // re-reads of the same path with unchanged mtime. The SDK accumulates
+      // every tool_result block in the running prompt — re-reading a file
+      // re-injects its full content into the next iteration's prompt, even
+      // though the prior content is still in context. This map intercepts
+      // the second read in canUseTool and returns a brief "already in your
+      // working set" stub, saving N×fileSize tokens of prompt growth.
+      //
+      // Map key: absolute file path (resolved). Value: { mtime, iter, full }.
+      // mtime mismatch → re-allow (file edited since prior read).
+      // Partial read with offset/limit → currently NOT deduped (different
+      // ranges legitimately request different bytes).
+      // After write_file/edit on the path, the entry is removed so the next
+      // read sees the post-write content.
+      const workingSetReads = new Map<string, { mtime: number; iter: number; full: boolean }>();
+      let canUseToolIter = 0;
+
       // Per-turn direct-write cap. After this many direct file writes, further
       // write attempts are denied with a hint that REDIRECTS the agent to the
       // `task` tool (delegation). This is the hard enforcement layer behind
@@ -1381,6 +1431,29 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
 
         const since = getLastTurnAt(ctx.filename);
+
+        // Surface validator/runtime errors entering this turn as a step in
+        // the chat-card's progress feed. The errors flow through the buffer
+        // into the agent's prompt below; this broadcast just makes the
+        // injection visible to the user — they see "[N] Received X
+        // validator/runtime errors" in the step list, confirming the agent
+        // received the same errors that surfaced in the bubble UI without
+        // the user needing to manually escalate.
+        if (sessionProject) {
+          const incomingErrors = getPendingValidatorErrors(sessionProject);
+          if (incomingErrors.length > 0) {
+            const files = Array.from(new Set(incomingErrors.map((e) => e.filename)));
+            const desc = incomingErrors.length === 1
+              ? `Received error from ${files[0]}`
+              : `Received ${incomingErrors.length} errors from ${files.length === 1 ? files[0] : `${files.length} files`}`;
+            ctx.broadcast({
+              type: "progress",
+              tool: "validator-errors",
+              description: desc,
+            });
+          }
+        }
+
         const context = await buildContext(ctx.filename, sessionProject, since, modelName);
         // Capture the rendered system-prompt context for this turn so the chat
         // card's per-turn footer can surface a "view snapshot" link. Sidecar
@@ -1455,7 +1528,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             historyBlock = `Conversation so far (most recent last):\n\n${lines.join("\n\n")}\n\n---\n\nCurrent message:\n`;
           }
         }
-        const promptWithHistory = historyBlock + message;
+        // Per-turn nudge: prepended above the user message because the model
+        // reliably ignores buried system-prompt rules but pays attention to
+        // text adjacent to the actual user input. Same lever pattern we use
+        // for participate-fully compliance — fresh text wins over distant
+        // directives. ~30-token cost per turn; cheap insurance.
+        const TURN_NUDGE = `[Turn discipline reminder, apply BEFORE coding]
+1. If this turn will edit non-doc files (card.js/html/css, .ts, .py, .json), the relevant describing doc(s) must already describe the change — update them FIRST in this same turn, even if the user's intent feels obvious. The framework cannot detect doc/code drift after the fact.
+2. If \`participate-fully\` is in your skills list, invoke it before any other tool call to assess what changed.
+
+`;
+        const promptWithHistory = TURN_NUDGE + historyBlock + message;
 
         // Baseline size of the prompt the SDK will send on the first LLM call
         // of this turn (before any tool-loop accumulation). context includes
@@ -1504,6 +1587,62 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           } else if (toolName === "read_many_files") {
             const paths = (input.paths as string[]) || [];
             for (const p of paths) if (p) readFilesThisTurn.add(p);
+          }
+
+          // Working-set dedup for read_file. If the agent calls read_file on
+          // a path it already read this turn AND the file's mtime hasn't
+          // changed since, deny with a stub pointing at the prior tool_result.
+          // The prior content is still in context — re-reading just bloats the
+          // running prompt with a duplicate copy. Saves K×fileSize tokens
+          // per re-read.
+          //
+          // Skipped when:
+          //   - offset/limit specified (different range = legitimately new content)
+          //   - file mtime changed since the recorded read (file was edited)
+          //   - prior entry was a partial read (full read should be allowed)
+          //   - stat fails (file deleted / permissions) — let the read proceed
+          //     and surface its own error
+          canUseToolIter++;
+          if (toolName === "read_file" || toolName === "Read") {
+            const rawPath = pathFromReadInput(input);
+            const offset = (input as { offset?: unknown }).offset;
+            const limit = (input as { limit?: unknown }).limit;
+            const isPartial = typeof offset === "number" || typeof limit === "number";
+            if (rawPath && !isPartial) {
+              try {
+                const { stat } = await import("fs/promises");
+                const { resolve } = await import("path");
+                const abs = resolve(rawPath);
+                const s = await stat(abs);
+                const prior = workingSetReads.get(abs);
+                if (prior && prior.full && prior.mtime === s.mtimeMs) {
+                  return {
+                    behavior: "deny" as const,
+                    message:
+                      `"${abs}" is already in your working set (read at iteration ${prior.iter}, ` +
+                      `mtime unchanged since). The prior tool_result for this read is still in your ` +
+                      `context — refer to that content rather than re-reading. Re-reads are only ` +
+                      `useful after a write_file/edit on this path; otherwise the prior content is ` +
+                      `the current truth. To force a fresh read pass an offset/limit (different range).`,
+                  };
+                }
+                // Allow + record. We don't know yet if the read will succeed,
+                // but the file exists per the stat above; record proactively.
+                workingSetReads.set(abs, { mtime: s.mtimeMs, iter: canUseToolIter, full: true });
+              } catch { /* stat failed — let the read proceed and produce its own error */ }
+            }
+          }
+          // Invalidate working-set entry on writes so subsequent reads of the
+          // post-write content are allowed. write_file (full replacement) and
+          // edit (partial mutation) both change the file's mtime.
+          if (toolName === "write_file" || toolName === "edit" || toolName === "Write" || toolName === "Edit") {
+            const wp = (input as { file_path?: unknown }).file_path;
+            if (typeof wp === "string") {
+              try {
+                const { resolve } = await import("path");
+                workingSetReads.delete(resolve(wp));
+              } catch { /* ignore */ }
+            }
           }
 
           // Subagent concurrency. SDK invokes subagents via the "task" tool;
@@ -1625,18 +1764,31 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           prompt: promptWithHistory,
           options: {
             cwd: getProjectDir(sessionProject),
-            // Route through our LSP wrapper so --experimental-lsp is on. The SDK
-            // README claims QWEN_CODE_CLI_PATH is honored as auto-detect; in
-            // practice (verified against v0.1.7) that env var is not read by
-            // any code path — only documented. The pathToQwenExecutable
-            // option IS read, so we set it explicitly. Wrapper at
-            // scripts/qwen-lsp-wrapper.mjs prepends --experimental-lsp before
-            // delegating to the bundled CLI.
-            pathToQwenExecutable: "/workspaces/mica/scripts/qwen-lsp-wrapper.mjs",
-            // Forward CLI stderr to our log — temporarily unfiltered, to debug
-            // why LSP isn't surfacing as a tool. The SDK's ProcessTransport
-            // pipes stderr only when `debug` or `stderr` is set; without
-            // either, stderr is /dev/null'd. We want every line.
+            // LSP integration removed 2026-05-01. Previously routed through
+            // scripts/qwen-lsp-wrapper.mjs to inject `--experimental-lsp` and
+            // surface LSP tools (goToDefinition, findReferences, diagnostics,
+            // workspaceDiagnostics, codeActions, etc.) into the agent's tool
+            // set. Removed because the agent never invoked any LSP tool across
+            // observed sessions (e.g. moon3: 0 LSP calls out of 82 tool uses)
+            // — the ~200 prompt tokens advertising the LSP surface were paid
+            // every turn for zero ROI. Syntax checks for card.js are handled
+            // by the subagent's `node -e vm.compileFunction(...)` step, which
+            // catches the same parse-level errors LSP would.
+            //
+            // Revive (~15 min, restore wrapper from git + add this line back)
+            // if any of:
+            //   - a cross-file refactor task underperforms grep+edit and
+            //     `findReferences` / `codeActions` would clearly do better
+            //   - we ship a card-classes globals shim (e.g. `mica.d.ts`
+            //     declaring `mica` and `container`) so LSP diagnostics on
+            //     card.js stop being noise
+            //   - a server-side TS workflow wants push-style
+            //     `workspaceDiagnostics` instead of `tsc --noEmit`
+            // Without the shim, do NOT revive for card.js — false positives on
+            // every `mica.*` reference make the signal unusable.
+            //
+            // Forward CLI stderr to our log. Independent of LSP — useful for
+            // any qwen-side error surfaced via stderr.
             stderr: (msg: string) => {
               const trimmed = msg.trim();
               if (trimmed) console.log(`[qwen-stderr] ${trimmed.slice(0, 600)}`);
@@ -1707,17 +1859,29 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             //     project is unset or SDK exports are missing.
             //
             //   - "tavily": stdio MCP server (`npx tavily-mcp`) providing
-            //     `tavily-search`, `tavily-extract`, `tavily-crawl`, `tavily-map`.
-            //     Replaces qwen-code's built-in `web_search`, which was
-            //     removed upstream in CLI v0.15.2 (PR #3502, "MCP-based
-            //     approach"). The SDK still registers `web_fetch`, but it
-            //     can only summarize a known URL — without search, the
-            //     agent has no way to discover candidate URLs in the first
-            //     place. Skipped when TAVILY_API_KEY is unset.
+            //     `tavily_search`, `tavily_extract`, `tavily_crawl`,
+            //     `tavily_map`, `tavily_research` (underscores; tavily-mcp
+            //     v0.2.x renamed from hyphens). SDK-qualified tool names:
+            //     `mcp__tavily__tavily_search`, etc. Replaces qwen-code's
+            //     built-in `web_search`, which was removed upstream in CLI
+            //     v0.15.2 (PR #3502, "MCP-based approach"). The SDK still
+            //     registers `web_fetch`, but it can only summarize a known
+            //     URL — without search, the agent has no way to discover
+            //     candidate URLs in the first place. Subagents that need
+            //     library/CDN research must allowlist
+            //     `mcp__tavily__tavily_search` (and usually
+            //     `mcp__tavily__tavily_extract`) explicitly in their
+            //     frontmatter `tools:` field — the SDK filters MCP tools
+            //     per-subagent. Skipped when TAVILY_API_KEY is unset.
             ...(() => {
               const servers: Record<string, unknown> = {};
               const renderServer = buildRenderMcpServer(sessionProject);
               if (renderServer) servers["mica-render"] = renderServer;
+              // mica-card-class: structured CRUD for card classes + instances.
+              // Replaces hand-constructed write_file calls that recurringly
+              // landed at wrong paths. See server/plugins/cardClassTools.ts.
+              const cardClassServer = buildCardClassMcpServer(sessionProject);
+              if (cardClassServer) servers["mica-card-class"] = cardClassServer;
               if (process.env.TAVILY_API_KEY) {
                 servers["tavily"] = {
                   command: "npx",
@@ -1737,8 +1901,18 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         let resultText = "";
         let filesChanged = false;
         // Final turn usage from the SDK's `result` event. Shape: { input_tokens, output_tokens, ... }.
-        // Forwarded verbatim to the client so the chat card can compute tokens/sec from elapsed time.
+        // CRITICAL: input_tokens here is CUMULATIVE across every LLM call in the
+        // tool loop (20 tool rounds = 20 prompt sends summed). It is NOT the
+        // last-request prompt size and must NOT be used for the fuel gauge —
+        // a 20-iteration turn easily reads "300% of context window" if we do.
+        // For the gauge we track peakIterationInput separately below.
         let usage: Record<string, unknown> | null = null;
+        // Per-iteration input_tokens, captured from each `assistant` SDK event's
+        // message.usage. The SDK emits assistant messages between tool rounds;
+        // each carries the prompt size of THAT iteration's request. The running
+        // max across the turn is the true "peak prompt pressure" — the number
+        // the gauge should display.
+        let peakIterationInput = 0;
         let contextWindow: number = provider === "openrouter" ? 0 : LOCAL_CTX_WINDOW;
         // SDK error result detection: when llama-server / OpenRouter returns a
         // 400 (e.g. context overflow), the SDK emits a result event with
@@ -1776,6 +1950,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           if (evtType === "assistant" && evt.message) {
             // First assistant event = proxy for time-to-first-token (prefill done).
             if (firstTokenTs === null) firstTokenTs = Date.now();
+            // Per-iteration prompt size — track the running max so the post-turn
+            // gauge reads peak prompt pressure (not the cumulative sum that
+            // result.usage.input_tokens carries).
+            const msgUsage = (evt.message as { usage?: { input_tokens?: number } }).usage;
+            if (msgUsage && typeof msgUsage.input_tokens === "number" && msgUsage.input_tokens > peakIterationInput) {
+              peakIterationInput = msgUsage.input_tokens;
+            }
             const msg = evt.message as { content?: Array<{ type: string; name?: string; text?: string; thinking?: string; input?: Record<string, unknown> }> };
             if (msg.content) {
               for (const block of msg.content) {
@@ -1936,17 +2117,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         const arcComplete = ARC_COMPLETE_RE.test(resultText);
         if (arcComplete) resultText = resultText.replace(ARC_COMPLETE_RE, "").trim();
 
-        // The SDK's tool loop appends every tool result into the next request
-        // and never shrinks the prompt, so `usage.input_tokens` from the result
-        // event is the FINAL iteration's prompt size — i.e. the peak prompt
-        // pressure of the entire turn. Drive capacity off that, not the static
-        // baselineTokens which only measures the turn-START prompt and ignores
-        // the tool-loop accumulation. (Bug we hit: baseline read 75% while the
-        // mid-turn request was already 124% of cap and overflowing.)
-        const usageInput = typeof (usage as { input_tokens?: unknown })?.input_tokens === "number"
-          ? (usage as { input_tokens: number }).input_tokens
-          : 0;
-        const peakTokens = usageInput > 0 ? usageInput : baselineTokens;
+        // Peak prompt pressure across the turn = max(per-iteration input_tokens)
+        // captured from each `assistant` SDK event above. NOT the cumulative
+        // sum that result.usage.input_tokens reports. Falls back to baseline
+        // if no assistant events carried usage (early errors, abort).
+        const peakTokens = peakIterationInput > 0 ? peakIterationInput : baselineTokens;
 
         // Decide whether to advance the cursor. We advance only at genuine arc
         // breaks AND when capacity is tight enough (>80%) that the next turn
@@ -2309,6 +2484,16 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         if (msg.type === "interrupt") {
           if (activeAbort) {
             try { activeAbort.abort(); } catch { /* ignore */ }
+          }
+          // Drop any messages the user typed while the agent was busy.
+          // Without this, "stop" aborts the current turn but the next
+          // queued message fires automatically in the finally block —
+          // surprising behavior given that "stop" naturally reads as
+          // "stop everything." The user can re-send if they actually
+          // wanted that message processed.
+          if (queue.length > 0) {
+            console.log(`[mica-agent] interrupt: dropping ${queue.length} queued message(s)`);
+            queue.length = 0;
           }
           return;
         }

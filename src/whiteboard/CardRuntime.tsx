@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 // morphdom removed — innerHTML replacement is safer with React's lifecycle.
 // TODO: Re-evaluate morphdom for preserving mounted library instances once
 // we add proper lifecycle coordination between React and widget scripts.
-import { getOrCreateBridge, windowId, type CanvasId } from "../api/micaSocket";
+import { getOrCreateBridge, windowId, on as onSocketEvent, type CanvasId } from "../api/micaSocket";
 import { canonicalizeCardPath, canvasRelative, getCanvasRoot } from "../api/canvasPaths";
 
 interface CardDependencies {
@@ -203,6 +203,44 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
   const bridge = getOrCreateBridge(sessionId, project, canvas, filename);
   const activeCallsRef = useRef(0);
   const [loadingDeps, setLoadingDeps] = useState(false);
+
+  // Visible error overlay — surfaces card-error broadcasts as a red banner
+  // ON the card itself. Two purposes:
+  //   1. User sees the failure spatially co-located with what's broken
+  //      (no need to look at separate chat-card bubbles).
+  //   2. render_capture's html2canvas pass picks up the banner; the agent's
+  //      caption then describes "card has a red error banner reading X" —
+  //      which means the error reaches the agent through the same visual
+  //      feedback channel as everything else, no separate prompt-injection
+  //      mechanism needed.
+  // Cleared automatically when the card class is rewritten (mtime change →
+  // CardRuntime re-renders → effect below resets) or when the user dismisses.
+  const [currentError, setCurrentError] = useState<string | null>(null);
+
+  // Subscribe to card-error events for THIS card's filename. The server
+  // broadcasts a card-error every time `mica.reportError` fires (or a card.js
+  // throw is caught) — we filter by filename so each card only shows its own
+  // errors. Note the filename match is project-relative (server uses the
+  // path POSTed by reportError, which is the React closure's `filename`,
+  // already project-relative).
+  useEffect(() => {
+    const unsub = onSocketEvent("card-error", (data) => {
+      const evt = data as { filename?: string; error?: string };
+      if (evt && evt.filename === filename && typeof evt.error === "string") {
+        setCurrentError(evt.error);
+      }
+    });
+    return unsub;
+  }, [filename]);
+
+  // Auto-clear the error banner when the card content changes (the agent
+  // edited card.js / metadata.json — a fresh attempt is coming). The next
+  // render either succeeds (banner stays cleared) or re-fires the same/new
+  // error (banner re-appears). Without this the banner persists forever
+  // showing a stale message even after the agent fixes the bug.
+  useEffect(() => {
+    setCurrentError(null);
+  }, [html]);
 
   // Render on mount or when html changes. Re-injects HTML and re-executes scripts.
   // Does NOT destroy sessions — channels survive via bridge dedup.
@@ -776,12 +814,58 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
   }, [html, project, canvas, filename]);
 
   return (
-    <div ref={outerRef} className="card-runtime" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+    <div ref={outerRef} className="card-runtime" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, position: "relative" }}>
       {loadingDeps && (
         <div className="card-deps-loading">
           <div className="card-deps-skeleton" />
           <div className="card-deps-skeleton card-deps-skeleton--short" />
           <div className="card-deps-skeleton card-deps-skeleton--med" />
+        </div>
+      )}
+      {currentError && (
+        // Red error banner overlaid at the top of the card. Visible to the
+        // user AND to render_capture's html2canvas — the agent's caption
+        // picks up the banner text as "the card has a red error banner
+        // reading X," which is its evidence that the error fired. Click
+        // the × to dismiss; auto-clears on next card re-render.
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 100,
+            background: "rgba(220, 38, 38, 0.95)",
+            color: "#fff",
+            padding: "6px 28px 6px 10px",
+            fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+            fontSize: 12,
+            lineHeight: 1.4,
+            borderBottom: "1px solid rgba(0,0,0,0.3)",
+            boxShadow: "0 2px 4px rgba(0,0,0,0.4)",
+            wordBreak: "break-word",
+          }}
+        >
+          <strong style={{ marginRight: 6 }}>⚠ Card error:</strong>
+          <span>{currentError.slice(0, 400)}</span>
+          <button
+            onClick={() => setCurrentError(null)}
+            aria-label="Dismiss error"
+            style={{
+              position: "absolute",
+              top: 4,
+              right: 4,
+              background: "transparent",
+              border: "none",
+              color: "rgba(255,255,255,0.85)",
+              fontSize: 16,
+              lineHeight: 1,
+              cursor: "pointer",
+              padding: "2px 6px",
+            }}
+          >
+            ×
+          </button>
         </div>
       )}
       {/* Widget HTML is injected into this div via innerHTML — kept separate

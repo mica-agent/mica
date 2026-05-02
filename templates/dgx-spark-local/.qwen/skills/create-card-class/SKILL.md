@@ -98,22 +98,55 @@ the gate on library-using cards produces stale-prior URLs and
 broken integrations; the iteration cost dwarfs the spec-drafting
 cost.
 
-## Step 2 — Copy the skeleton, edit in place
+## Step 2a — Run `discover-library` for every subproblem BEFORE writing code
 
-```bash
-cp -r /workspaces/mica/templates/_card-class-skeleton .mica/card-classes/<your-name>
+Before invoking `mica_create_class`, list the things the card actually does and run `discover-library` once per subproblem. Library is the default; bespoke is the exception that requires a documented "no library fits" decision.
+
+A "subproblem" is anything beyond plain DOM-glue: date / time-zone math, sun/moon position, geo distance, animation, charting, drag-drop, syntax highlighting, audio, color manipulation, calendaring, file diffing, parsing — anything that computes or transforms a value. If your spec mentions "compute X" or "render Y" or "format Z," each X/Y/Z gets a discover-library pass.
+
+Skipping this step is the recurring failure mode where the card.js ships ~300 lines of hand-rolled algorithms (Julian-date math, simplified solar calculators, geographic projections) that a 5-line library call replaces. Mica should not be reluctant to take on a dependency: discover-library's curl-verify guarantees the URL works and the bundle is UMD; once verified, the dependency cost is just a script tag in metadata.json.
+
+The skill documents its decision on canvas (spec.md / decisions.md / interfaces.md depending on project layout — see the skill body). When you next call `mica_create_class`, pull the verified scripts/styles URLs from those decisions into the call's `scripts` / `styles` arrays.
+
+## Step 2b — Use `mica_create_class` to author the class atomically
+
+Card classes are authored via the `mica_create_class` tool, NOT raw `write_file`.
+The tool owns the directory location, name shape, and `metadata.json` schema —
+the framework cannot place files at wrong paths or with wrong metadata when
+you go through the tool. Raw `write_file` to `.mica/card-classes/...` is
+reserved for *editing existing* class files; class creation is exclusively
+through this tool.
+
+```
+mica_create_class({
+  name: "world-clock",                  // dir name; lowercase + dashes only, no dots
+  badge: "WCK",                         // 1-4 char abbreviation
+  defaultTitle: "World Clock",
+  scripts: ["https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"],
+  styles:  ["https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"],
+  card_html: "<div class=\"card-world-clock\">...</div>",
+  card_js:   "(function(){ ... })();",
+  card_css:  ".card-world-clock { ... }",  // optional
+})
 ```
 
-Then `edit` the four files to replace `REPLACE_ME` placeholders
-and add behavior. Verify zero placeholders remain:
+Returns `{ ok: true, dir: ".mica/card-classes/world-clock/", paths: { ... } }`.
 
-```bash
-grep -nR "REPLACE_ME" .mica/card-classes/<your-name>/
-# expect: no output
-```
+If a card.js or card.html is too large to send inline cleanly, omit it from
+the call — the tool writes a minimal stub and returns the canonical path.
+Then use `write_file` against that path to fill in the real content. (The
+path-/name-/metadata-shape problems are already solved by this point.)
 
-Until the placeholders are gone, the resolver compares
-`extension` to the directory name and the card never loads.
+Companion tools:
+- `mica_edit_class_file({ class, file: "card.js"|"card.html"|"card.css", content?, old_string?, new_string? })` — edit a class file with PRE-WRITE lint. For card.js, the lint that catches top-level redeclaration of CARD_SHIM globals (`mica`, `container`), ESM `import`/`export`, and other common mistakes runs BEFORE the write. Lint failures come back as a same-turn tool error so you can fix and retry without burning a card-error broadcast cycle. Use this INSTEAD of `write_file`/`edit` when modifying class files.
+- `mica_create_card_instance({ class_extension, filename })` — creates an
+  instance on the canvas at the right path.
+- `mica_delete_card_instance({ filename })`
+- `mica_delete_class({ name, force? })`
+- `mica_list_classes()` — see what's registered before creating.
+
+For dependencies, ALWAYS invoke `discover-library` first (see "Dependencies"
+below).
 
 ## Reference: file roles and globals
 
@@ -132,6 +165,8 @@ Until the placeholders are gone, the resolver compares
 `<link rel="stylesheet" href="card.css">` or `<!DOCTYPE>`/`<html>`
 in `card.html`. External libraries go in
 `metadata.json.dependencies.scripts`/`.styles`.
+
+**Dependencies — invoke `discover-library` FIRST.** If your card needs ANY external library (Three.js, Chart.js, Leaflet, D3, anything), your next action is to invoke the `discover-library` skill BEFORE writing card.js or metadata.json. The skill does the curl-verification, picks a working CDN URL, and records the decision on canvas. Don't write CDN URLs from memory — it's how stale versions, ESM-only URLs that don't load in card.js's classic-script context, and hallucinated paths sneak in. One curl-verified UMD URL beats three rounds of "Failed to load dependency" debugging.
 
 ### `metadata.json`
 
@@ -440,6 +475,40 @@ SDK kills it.
 
 Time budget: ONE round of curl + one metadata edit. If the
 second URL also 404s, stop and ask the user.
+
+### `render_capture` screenshot is black for WebGL / Three.js cards
+
+`render_capture` uses `html2canvas` browser-side, which reads
+`<canvas>` content via `canvas.toDataURL()`. WebGL contexts
+(Three.js, regl, raw WebGL) return blank from `toDataURL` unless
+**`preserveDrawingBuffer: true`** was set when the WebGL context
+was created. Default is `false` for performance — the GPU is
+free to discard the back buffer after compositing. Result:
+captures come back transparent / black even when the user sees
+the scene rendering correctly on screen.
+
+Fix: when constructing the renderer, pass the flag.
+
+```js
+const renderer = new THREE.WebGLRenderer({
+  canvas: canvasEl,
+  antialias: true,
+  preserveDrawingBuffer: true,  // required for render_capture
+});
+```
+
+Same rule applies to any library that wraps WebGL (`regl`,
+`PixiJS` in WebGL mode, `Babylon.js`) — find the equivalent
+`preserveDrawingBuffer` option in that library's renderer
+constructor. If the library doesn't expose it, the card class is
+not screenshot-able (a known limitation; flag to the user
+instead of debugging from blank captures).
+
+Symptom that points here: `render_capture` describes the canvas
+as "completely black" / "blank" / "transparent" while the user
+confirms they see content on screen. Don't add debug cubes /
+backgrounds / wrappers chasing a phantom — fix the renderer
+constructor and re-capture.
 
 ## References
 

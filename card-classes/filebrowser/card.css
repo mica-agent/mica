@@ -8,15 +8,50 @@
 }
 
 .fb-tree {
+  /* Width is set via inline style by card.js (persisted in instance file).
+     The default below is the initial value before persisted state loads. */
   flex: 0 0 40%;
-  min-width: 180px;
-  max-width: 50%;
+  min-width: 140px;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #30363d;
   outline: none;
   position: relative;
   overflow: hidden;
+}
+
+/* Vertical drag handle between tree and preview. Renders as a thin column
+   with a slightly thicker hit-area (4px wide visual + 4px padding on each
+   side via ::before for easier grabbing). Cursor flips to col-resize on
+   hover so users discover the affordance. */
+.fb-resizer {
+  flex: 0 0 4px;
+  background: #30363d;
+  cursor: col-resize;
+  position: relative;
+  user-select: none;
+  transition: background 120ms ease;
+}
+.fb-resizer::before {
+  /* Pseudo-element widens the hit zone without widening the visible bar. */
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+.fb-resizer:hover,
+.fb-resizer.is-dragging {
+  background: #5b6470;
+}
+/* While dragging, suppress text selection and force col-resize cursor
+   over the whole document — otherwise the cursor flickers when it briefly
+   leaves the resizer mid-drag. */
+.fb-resizer.is-dragging,
+body.fb-resizing,
+body.fb-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .fb-tree-header {

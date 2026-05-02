@@ -167,27 +167,67 @@ console.info('[md-delta] mount', {
   diffLib: typeof Diff !== 'undefined',
 });
 
-// Click-to-toggle popover. Replaces the old :hover/`:focus-within` CSS
-// trigger, which broke when the popover overlapped the toastui editor's
-// content (its stacking context stole pointer events; the popover was
-// visually behind the markdown text and couldn't be hovered or clicked).
-if (triggerEl && badgeEl) {
+// Click-to-toggle popover. The popover is PORTALED to document.body to
+// escape two things in the ancestor chain:
+//   1. .card-markdown-editor's `overflow: hidden` (clips children).
+//   2. .wb-panzoom-inner's `will-change: transform` — which makes that
+//      element a containing block for `position: fixed` descendants, so
+//      naive `position: fixed` on the popover would still anchor INSIDE
+//      the panzoom subtree (and follow pan/zoom transforms off-screen).
+// Body has neither problem; the popover renders at viewport coordinates
+// computed from the trigger's bounding rect.
+//
+// Toggle uses `is-open` class directly on the popoverEl (not on badgeEl)
+// because the popover is no longer a descendant of badgeEl — the CSS
+// descendant selector wouldn't match.
+const popoverEl = container.querySelector('.md-delta-popover');
+if (popoverEl) {
+  document.body.appendChild(popoverEl);
+  mica.onDestroy(function() {
+    if (popoverEl.parentNode === document.body) document.body.removeChild(popoverEl);
+  });
+}
+
+function _positionPopover() {
+  if (!triggerEl || !popoverEl) return;
+  const rect = triggerEl.getBoundingClientRect();
+  // Right-align the popover to the trigger's right edge; place 4px below.
+  // 360px is the popover-body's intrinsic width (from card.css).
+  popoverEl.style.top = (rect.bottom + 4) + 'px';
+  popoverEl.style.left = (rect.right - 360) + 'px';
+}
+if (triggerEl && badgeEl && popoverEl) {
   triggerEl.addEventListener('click', function(ev) {
     ev.stopPropagation();
-    badgeEl.classList.toggle('is-open');
+    const willOpen = !popoverEl.classList.contains('is-open');
+    if (willOpen) _positionPopover();
+    popoverEl.classList.toggle('is-open');
+  });
+  // Reposition on scroll/resize while open — the trigger moves; the popover
+  // must follow. No-op when closed.
+  const _reposition = function() {
+    if (popoverEl.classList.contains('is-open')) _positionPopover();
+  };
+  window.addEventListener('scroll', _reposition, true);
+  window.addEventListener('resize', _reposition);
+  mica.onDestroy(function() {
+    window.removeEventListener('scroll', _reposition, true);
+    window.removeEventListener('resize', _reposition);
   });
   // Close on outside click. Listening on document with capture=false is
   // fine because triggerEl's handler stops propagation, so this fires
   // only for clicks elsewhere. Clicks on popover items also bubble here,
-  // so check whether the click originated inside the badge before closing.
+  // so check whether the click originated inside the trigger or popover.
   document.addEventListener('click', function(ev) {
-    if (!badgeEl.classList.contains('is-open')) return;
-    if (!badgeEl.contains(ev.target)) badgeEl.classList.remove('is-open');
+    if (!popoverEl.classList.contains('is-open')) return;
+    if (!triggerEl.contains(ev.target) && !popoverEl.contains(ev.target)) {
+      popoverEl.classList.remove('is-open');
+    }
   });
   // Esc closes too.
   document.addEventListener('keydown', function(ev) {
-    if (ev.key === 'Escape' && badgeEl.classList.contains('is-open')) {
-      badgeEl.classList.remove('is-open');
+    if (ev.key === 'Escape' && popoverEl.classList.contains('is-open')) {
+      popoverEl.classList.remove('is-open');
     }
   });
 }

@@ -324,6 +324,59 @@ function cardIdKey(project: string | null | undefined, filename: string): string
   return `${project ?? "<workspace>"}|${filename}`;
 }
 
+/** Server-side mirror of src/api/canvasPaths.ts canonicalizeCardPath. Translates
+ *  a card-supplied (canvas-relative) path to the project-relative path the
+ *  server stores on the wire / in sidecars. Used at endpoints that take a
+ *  card-provided path and need to look up server-side state — sidecar reads,
+ *  card-error reports, settings save/load.
+ *
+ *  Convention (Unix-CWD model with canvas as cwd):
+ *    bare name "foo.bar"      → "<canvasRoot>/foo.bar"
+ *    sub path  "sub/foo"      → "<canvasRoot>/sub/foo"
+ *    escape    "../foo"       → one level above canvas
+ *    absolute  "/foo"         → project-root absolute (slash stripped)
+ *
+ *  Idempotent on already-project-relative paths: if the input starts with
+ *  `<canvasRoot>/`, it's returned as-is. Lets callers be defensive: pass
+ *  whatever the client sent, get a canonical form back.
+ */
+export function canonicalizeCardPath(rawPath: string, canvasRoot: string): string {
+  if (typeof rawPath !== "string" || !rawPath) {
+    throw new Error("canonicalizeCardPath: path must be a non-empty string");
+  }
+  const path = rawPath.replace(/\\/g, "/");
+  if (path.startsWith("/")) {
+    const stripped = path.slice(1);
+    if (stripped.includes("..")) {
+      throw new Error(`canonicalizeCardPath: leading-slash path "${rawPath}" cannot also contain ..`);
+    }
+    return stripped;
+  }
+  // Already project-relative if it starts with <canvasRoot>/. Idempotent.
+  if (canvasRoot && (path === canvasRoot || path.startsWith(canvasRoot + "/"))) {
+    return path;
+  }
+  const baseParts = canvasRoot ? canvasRoot.split("/").filter(Boolean) : [];
+  const parts = path.split("/");
+  const result = [...baseParts];
+  for (const p of parts) {
+    if (p === "..") {
+      if (result.length === 0) {
+        throw new Error(`canonicalizeCardPath: path "${rawPath}" escapes the project root`);
+      }
+      result.pop();
+    } else if (p === "." || p === "") {
+      // skip
+    } else {
+      result.push(p);
+    }
+  }
+  if (result.length === 0) {
+    throw new Error(`canonicalizeCardPath: path "${rawPath}" resolves to project root with no filename`);
+  }
+  return result.join("/");
+}
+
 function cardIdSidecarPath(project: string | null | undefined, filename: string): string {
   const sanitized = filename.replace(/\//g, "_");
   return join(micaDir(project ?? undefined), "cards", `${sanitized}.id.json`);

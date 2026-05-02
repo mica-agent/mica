@@ -1,7 +1,7 @@
 ---
 name: component-coder
 description: Use this Subagent to write or extend ONE FILE per dispatch — `card.html`, `card.css`, `card.js`, one module, one script. Each plan item is scoped to a single file the subagent owns end-to-end; coordination with peer files happens by reading the prior subagents' actual outputs, not by sharing in-flight state. Invoked by the parent (chat-card agent) after `task-decomposer` has produced a `plan.todo` of file-granularity items in dependency order. Inside one file's slot, the subagent reads the spec section, reads peer files already produced by prior dispatches, writes the target file, runs artifact-appropriate verification (parse-as-function-body for card.js, ID cross-check for card.html ↔ card.js), reports back. NOT for cross-cutting refactors across many existing files in one shot — that's a parent-side concern. NOT for "implement the day/night feature" (a feature spans HTML+CSS+JS; that's one card class spanning 3-4 sequential file dispatches, not one component-coder dispatch).
-tools: [read_file, read_many_files, write_file, edit, run_shell_command, glob, grep_search, list_directory]
+tools: [read_file, read_many_files, write_file, edit, run_shell_command, glob, grep_search, list_directory, web_fetch, mcp__tavily__tavily_search, mcp__tavily__tavily_extract, mcp__mica-card-class__mica_create_class, mcp__mica-card-class__mica_edit_class_file, mcp__mica-card-class__mica_list_classes]
 level: session
 color: blue
 permissionMode: yolo
@@ -99,6 +99,18 @@ For full mica.* parameter shapes, the `create-card-class` skill has the table; `
 - One function/class/endpoint per coherent unit. If the task actually needs two components, return and recommend the parent split.
 - Prefer small focused diffs. Single `write_file` for new files; `edit` for narrow additions.
 - No destructive shell commands (rm, force-push, db migrations). Read-only shell is fine.
+
+### Card class files — use the Mica tools, NOT write_file
+
+If your task is to write or edit any of `metadata.json`, `card.html`, `card.js`, `card.css` for a Mica card class, use the Mica MCP tools — NOT raw `write_file` or `edit`. The framework owns the directory location, the file naming, and the metadata.json schema; raw `write_file` with a hand-constructed path is the recurring failure mode where files land at `card-classes/<x>/` (project root) instead of `.mica/card-classes/<x>/` and the canvas resolver never finds them.
+
+- **Creating a new card class** (or recovering one with missing/corrupt metadata): `mica_create_class({ name, badge?, defaultTitle?, scripts?, styles?, card_html?, card_js?, card_css? })`. Only `name` is required. Idempotent — safe to retry.
+- **Editing an existing class file** (card.js / card.html / card.css): `mica_edit_class_file({ class, file, content?, old_string?, new_string? })`. Pre-write lint runs same-turn — for card.js, top-level `var mica`/`var container`, `import`/`export`, and other CARD_SHIM-incompatible patterns are caught and rejected BEFORE the file is written, with the error in your tool result so you can fix and retry.
+- **Listing what's already registered**: `mica_list_classes()`.
+
+If your task prompt names a file path like `card-classes/world-clock/card.js`, treat the path as advisory — the class name is `world-clock`, the file is `card.js`. Call `mica_create_class({ name: "world-clock", ... })` first if the class doesn't exist, then `mica_edit_class_file({ class: "world-clock", file: "card.js", content: "..." })`. The path the tool writes to is `.mica/card-classes/world-clock/card.js` — the canonical location.
+
+`write_file` and `edit` remain valid for non-card-class files (canvas docs, project source, etc.).
 
 ## Verification
 

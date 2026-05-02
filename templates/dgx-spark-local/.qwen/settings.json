@@ -1,8 +1,8 @@
 {
   "model": {
-    "maxSessionTurns": 50,
+    "maxSessionTurns": 100,
     "generationConfig": {
-      "contextWindowSize": 65536,
+      "contextWindowSize": 131072,
       "enableCacheControl": true,
       "samplingParams": {
         "temperature": 0.6,

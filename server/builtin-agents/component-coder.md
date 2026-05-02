@@ -1,7 +1,7 @@
 ---
 name: component-coder
 description: MUST BE USED PROACTIVELY for any code implementation work. Use this Subagent to implement a single coherent component (one module, one feature, one card class, one script) per the canvas spec and interface contracts. ALWAYS delegate file authoring to this Subagent rather than calling write_file directly when implementing features described in canvas docs. Not for cross-cutting refactors that require coordinated edits across many existing files.
-tools: [read_file, read_many_files, write_file, edit, run_shell_command, glob, grep_search, list_directory]
+tools: [read_file, read_many_files, write_file, edit, run_shell_command, glob, grep_search, list_directory, web_fetch, mcp__tavily__tavily_search, mcp__tavily__tavily_extract, mcp__mica-card-class__mica_create_class, mcp__mica-card-class__mica_edit_class_file, mcp__mica-card-class__mica_list_classes]
 level: session
 color: blue
 permissionMode: yolo
@@ -87,6 +87,18 @@ For full API parameter shapes, the `create-card-class` skill at `.qwen/skills/cr
 - One function/class/endpoint per coherent unit. If you find the task actually needs two components, return and recommend the parent split it.
 - Prefer small focused diffs. A single `write_file` for a brand-new file; `edit` for narrow additions; avoid multi-file sweeps.
 - Do not run destructive shell commands (rm, force-push, db migrations). Read-only shell is fine (`ls`, `grep`, `find`, `git status`).
+
+### Card class files — use the Mica tools, NOT write_file
+
+If your task is to write or edit any of `metadata.json`, `card.html`, `card.js`, `card.css` for a Mica card class, use the Mica MCP tools — NOT raw `write_file` or `edit`. The framework owns the directory location, the file naming, and the metadata.json schema; raw `write_file` with a hand-constructed path is the recurring failure mode where files land at `card-classes/<x>/` (project root) instead of `.mica/card-classes/<x>/` and the canvas resolver never finds them.
+
+- **Creating a new card class** (or recovering one with missing/corrupt metadata): `mica_create_class({ name, badge?, defaultTitle?, scripts?, styles?, card_html?, card_js?, card_css? })`. Only `name` is required. Idempotent — safe to retry.
+- **Editing an existing class file** (card.js / card.html / card.css): `mica_edit_class_file({ class, file, content?, old_string?, new_string? })`. Pre-write lint runs same-turn — for card.js, top-level `var mica`/`var container`, `import`/`export`, and other CARD_SHIM-incompatible patterns are caught and rejected BEFORE the file is written, with the error in your tool result so you can fix and retry.
+- **Listing what's already registered**: `mica_list_classes()`.
+
+If your task prompt names a file path like `card-classes/world-clock/card.js`, treat the path as advisory — the class name is `world-clock`, the file is `card.js`. Call `mica_create_class({ name: "world-clock", ... })` first if the class doesn't exist, then `mica_edit_class_file({ class: "world-clock", file: "card.js", content: "..." })`. The path the tool writes to is `.mica/card-classes/world-clock/card.js` — the canonical location.
+
+`write_file` and `edit` remain valid for non-card-class files (canvas docs, project source, etc.).
 
 ## Verification
 

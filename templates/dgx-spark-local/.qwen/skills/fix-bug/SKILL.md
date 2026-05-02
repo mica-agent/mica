@@ -1,6 +1,6 @@
 ---
 name: fix-bug
-description: Triggers on bug-shaped requests — "fix the X bug", "Y is broken", "Z doesn't work", "the … is wrong", "regression in …", "error in …", "this is producing the wrong …", "investigate why …". Tells the agent how to handle a bug fix: reproduce, find root cause (not symptom), apply the minimal change, verify, and update docs only if user-visible behavior changed. Includes a routing rule for inline vs delegating to a `bug-fixer` subagent based on scope, not model identity.
+description: Bug-shaped requests — "fix X", "Y is broken", "Z doesn't work", "wrong …", "regression in …", "investigate why …". Reproduce → root cause (not symptom) → minimal change → verify → update docs only if user-visible behavior changed.
 ---
 
 # Fix the bug — discipline before code
