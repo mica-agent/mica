@@ -54,14 +54,22 @@ let lastContextWindow = 0;
 // fuel-gauge rolling buffer.
 const subagentStates = new Map();
 // Stalled threshold = "no event broadcast in N ms → mark stalled."
-// 120s tolerates normal local-Qwen inference latency: between two
-// subagent assistant messages the model can think for 60-180s without
-// yielding anything (qwen SDK waits for the complete message; partial
-// streaming would change this but adds WS volume on parallel dispatch).
-// 30s was too aggressive — flagged every long-prompt decompose-task as
-// stalled. 120s catches genuine SDK deadlocks / network drops without
-// the false-positive rate.
-const SUBAGENT_STALL_MS = 120_000;
+// Tuning history (all observed against local Qwen 35B):
+//   30s   — flagged every long-prompt decompose-task. False positive.
+//   120s  — flagged component-coder mid-build (its 'Read spec.md' event
+//           fired at 31s, then model thought for 200+s producing the
+//           build response; 120s timer tripped well before the next
+//           assistant event arrived).
+//   240s  — current. Tolerates a 4-minute model-thinking gap between
+//           subagent assistant events. Local Qwen on a saturated
+//           subagent prompt (decomposition memory + spec + interfaces +
+//           per-component context) can take 3-5 minutes to produce its
+//           next assistant message; the SDK doesn't yield mid-inference
+//           without `includePartialMessages: true`. 4 minutes of TRUE
+//           silence remains a strong signal of stuck (SDK deadlock,
+//           orphaned subprocess, network drop). Genuine stalls still
+//           caught; routine inference doesn't trip it.
+const SUBAGENT_STALL_MS = 240_000;
 const subagentStripEl = container.querySelector("#chat-subagent-strip");
 const clearBtn = container.querySelector("#chat-clear-btn");
 const horizonBtn = container.querySelector("#chat-horizon-btn");
@@ -893,7 +901,17 @@ ch.onData(function(data) {
       statusDetail.innerHTML = "";
       addDetailLine("Starting...");
       setStatus("Thinking...", ACCENT, true);
-      elapsedTimer = setInterval(function() { elapsedSec++; updateMeta(); }, 1000);
+      // Tick every second: bumps the parent's elapsed timer + recomputes
+      // the status badge (so the stalled marker can transition without
+      // requiring an external event) + re-renders the subagent strip
+      // (so per-subagent elapsed counters stay current — they were
+      // freezing at the last subagent_event snapshot, e.g. "(31s)" while
+      // 200+ seconds had actually passed since the last broadcast).
+      elapsedTimer = setInterval(function() {
+        elapsedSec++;
+        updateMeta();
+        if (subagentStates.size > 0) renderSubagentStrip();
+      }, 1000);
       break;
     case "progress":
       if (data.description) {
