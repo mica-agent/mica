@@ -10,7 +10,7 @@
 // from the root canvas component to kick it off per-project.
 
 import html2canvas from "html2canvas";
-import { on } from "../api/micaSocket";
+import { on, getCaptureHook } from "../api/micaSocket";
 
 const API_BASE = import.meta.env.VITE_MICA_API || "";
 
@@ -66,6 +66,48 @@ async function handleRequest(project: string, req: ScreenshotRequest): Promise<v
 
   // Grace period for the card's init async to settle.
   await new Promise((r) => setTimeout(r, STABILIZATION_DELAY_MS));
+
+  // Check for a card-registered capture hook BEFORE falling back to
+  // html2canvas. Required for WebGL cards (Three.js, regl, PixiJS in
+  // WebGL mode, Babylon) where html2canvas → canvas.toDataURL() returns
+  // blank unless the WebGL context was created with
+  // preserveDrawingBuffer: true. The hook lets the card render
+  // on-demand and produce a dataURL inside the same frame, so
+  // preserveDrawingBuffer becomes optional. See
+  // src/api/micaSocket.ts → captureHooks for the registry mechanics.
+  const hook = getCaptureHook(filename);
+  if (hook) {
+    const HOOK_TIMEOUT_MS = 5000;
+    try {
+      const dataUrl = await Promise.race<string>([
+        Promise.resolve(hook()),
+        new Promise<string>((_, rej) =>
+          setTimeout(() => rej(new Error(`onCapture hook timed out after ${HOOK_TIMEOUT_MS}ms`)), HOOK_TIMEOUT_MS),
+        ),
+      ]);
+      if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) {
+        throw new Error(`onCapture returned non-dataURL (got ${typeof dataUrl})`);
+      }
+      const body = JSON.stringify({ data: dataUrl });
+      try {
+        const res = await fetch(uploadUrl, { method: "POST", headers, body });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "(no body)");
+          console.error(`[screenshotClient] hook upload failed: ${res.status} ${res.statusText} — ${text}`);
+        } else {
+          console.log(`[screenshotClient] uploaded hook capture ${captureId} for ${filename}`);
+        }
+      } catch (err) {
+        console.error(`[screenshotClient] hook upload error:`, err);
+      }
+      return;
+    } catch (err) {
+      console.warn(
+        `[screenshotClient] onCapture hook for ${filename} failed (${(err as Error).message}); falling back to html2canvas`,
+      );
+      // Fall through to html2canvas.
+    }
+  }
 
   let canvas: HTMLCanvasElement;
   try {

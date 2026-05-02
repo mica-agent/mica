@@ -471,6 +471,24 @@ export function destroyBridgeFor(sessionId: string): void {
   bridges.delete(sessionId);
 }
 
+// Per-card capture hooks, keyed by filename. Cards register via
+// `mica.onCapture(cb)` to provide their own screenshot path. The
+// screenshot pipeline (src/whiteboard/screenshotClient.ts) checks this
+// map BEFORE falling back to html2canvas. Used by WebGL/Three.js cards
+// where html2canvas → toDataURL returns blank unless the renderer was
+// constructed with `preserveDrawingBuffer: true`. Hook lets the card
+// render-on-demand and produce a dataURL inside the same frame.
+//
+// Cleanup is automatic — the registration pushes a destroy callback
+// onto the bridge that removes the entry when the card unmounts.
+const captureHooks = new Map<string, () => string | Promise<string>>();
+
+/** Look up a card's registered onCapture callback, if any. Used by the
+ *  screenshot pipeline. Returns undefined if the card didn't register. */
+export function getCaptureHook(filename: string): (() => string | Promise<string>) | undefined {
+  return captureHooks.get(filename);
+}
+
 /**
  * Create a scoped mica bridge for a specific widget instance.
  *
@@ -529,6 +547,27 @@ export function createBridge(sessionId: string, project: string, canvas: CanvasI
     /** Register a cleanup callback for re-render/unmount. */
     onDestroy: (fn: () => void) => {
       destroyCallbacks.push(fn);
+    },
+    /** Register a snapshot callback for `render_capture`. The callback
+     *  returns a PNG dataURL (or a Promise resolving to one). The screenshot
+     *  pipeline calls this BEFORE falling back to html2canvas — required for
+     *  WebGL cards (Three.js, regl, PixiJS in WebGL mode, Babylon, etc.)
+     *  because html2canvas → `canvas.toDataURL()` returns blank unless the
+     *  WebGL context was created with `preserveDrawingBuffer: true`.
+     *
+     *  Inside the callback, the card class controls when to render. Typical
+     *  Three.js usage:
+     *    `mica.onCapture(() => { renderer.render(scene, camera); return canvasEl.toDataURL("image/png"); });`
+     *
+     *  Last writer wins per filename; cleanup is automatic on card unmount.
+     *  The pipeline applies a 5s timeout and falls back to html2canvas if
+     *  the callback throws or times out.
+     */
+    onCapture: (cb: () => string | Promise<string>) => {
+      captureHooks.set(filename, cb);
+      destroyCallbacks.push(() => {
+        if (captureHooks.get(filename) === cb) captureHooks.delete(filename);
+      });
     },
     /** Run onDestroy callbacks and hard-close all channels. */
     _runDestroy: () => {

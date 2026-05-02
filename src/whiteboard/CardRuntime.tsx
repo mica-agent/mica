@@ -870,8 +870,16 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       )}
       {/* Widget HTML is injected into this div via innerHTML — kept separate
           from React-managed children to avoid NotFoundError when React tries
-          to reconcile nodes that innerHTML has destroyed. */}
-      <div ref={widgetRef} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }} />
+          to reconcile nodes that innerHTML has destroyed.
+          `position: relative` makes this the positioning context for any
+          card-side absolute-positioned children (so `position: absolute`
+          inside card.js anchors here, not at the page root).
+          `overflow: hidden` clips children that exceed the card's bounds —
+          a structural guarantee that cards cannot escape their frame
+          regardless of card.js's layout choices. Cards that genuinely need
+          to extend past their bounds (rare, e.g. dropdown menus) can
+          override `overflow: visible` from card.css. */}
+      <div ref={widgetRef} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, position: "relative", overflow: "hidden" }} />
     </div>
   );
 }

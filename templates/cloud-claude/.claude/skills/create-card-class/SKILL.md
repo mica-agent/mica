@@ -445,31 +445,53 @@ second URL also 404s, stop and ask the user.
 
 ### `render_capture` screenshot is black for WebGL / Three.js cards
 
-`render_capture` uses `html2canvas` browser-side, which reads
-`<canvas>` content via `canvas.toDataURL()`. WebGL contexts
-(Three.js, regl, raw WebGL) return blank from `toDataURL` unless
-**`preserveDrawingBuffer: true`** was set when the WebGL context
-was created. Default is `false` for performance — the GPU is
-free to discard the back buffer after compositing. Result:
-captures come back transparent / black even when the user sees
-the scene rendering correctly on screen.
+`render_capture` defaults to `html2canvas`, which reads `<canvas>`
+content via `canvas.toDataURL()`. WebGL contexts (Three.js, regl,
+PixiJS in WebGL mode, Babylon, raw WebGL) return blank from
+`toDataURL` because the GPU discards the back buffer after compositing
+unless preserved. Result: captures come back transparent / black
+even when the user sees the scene rendering correctly on screen.
 
-Fix: when constructing the renderer, pass the flag.
+**Preferred fix — register `mica.onCapture(cb)`.** The shim
+exposes a snapshot hook that the screenshot pipeline calls *before*
+falling back to `html2canvas`. Inside the callback, render
+on-demand and return a dataURL. No `preserveDrawingBuffer` flag
+needed; the pipeline accepts whatever you produce.
+
+```js
+mica.onCapture(() => {
+  // Render once at capture time so the back buffer is current.
+  renderer.render(scene, camera);
+  return canvasEl.toDataURL("image/png");
+});
+```
+
+The hook is per-card, automatically cleaned up on unmount, and
+applies a 5-second timeout. If the callback throws or times out
+the pipeline falls back to `html2canvas` and you get the blank-
+canvas symptom anyway, so make the body fast and synchronous
+(or at least quick to resolve). Works for any rendering tech —
+OffscreenCanvas, regl, Babylon, video elements, anything that
+can produce a dataURL.
+
+**Fallback fix (if for some reason you don't register `onCapture`):**
+construct the WebGL renderer with `preserveDrawingBuffer: true`.
+This keeps the back buffer readable so html2canvas's toDataURL
+returns the last frame.
 
 ```js
 const renderer = new THREE.WebGLRenderer({
   canvas: canvasEl,
   antialias: true,
-  preserveDrawingBuffer: true,  // required for render_capture
+  preserveDrawingBuffer: true,  // fallback for non-hook capture
 });
 ```
 
-Same rule applies to any library that wraps WebGL (`regl`,
-`PixiJS` in WebGL mode, `Babylon.js`) — find the equivalent
-`preserveDrawingBuffer` option in that library's renderer
-constructor. If the library doesn't expose it, the card class is
-not screenshot-able (a known limitation; flag to the user
-instead of debugging from blank captures).
+Symptom that points here: `render_capture` describes the canvas
+as "completely black" / "blank" / "transparent" while the user
+confirms they see content on screen. Don't add debug cubes /
+backgrounds / wrappers chasing a phantom — register the hook (or
+flip the flag) and re-capture.
 
 Symptom that points here: `render_capture` describes the canvas
 as "completely black" / "blank" / "transparent" while the user
