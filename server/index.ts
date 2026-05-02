@@ -1781,8 +1781,33 @@ wss.on("connection", (ws) => {
             cardMap.set(cardKey, cid);
           }
         } catch (err) {
-          console.error(`[ws] channel_open error:`, (err as Error).message);
-          ws.send(JSON.stringify({ type: "error", id, error: (err as Error).message }));
+          const errMsg = (err as Error).message;
+          console.error(`[ws] channel_open error:`, errMsg);
+          ws.send(JSON.stringify({ type: "error", id, error: errMsg }));
+          // Surface to the agent's feedback loop too: the client gets a WS
+          // error event (which the card.js may or may not log), but without
+          // also broadcasting card-error + recording validator-error the
+          // CHAT AGENT can't see this. We hit a real cost from this on
+          // 2026-05-03: a card was missing metadata.handler="process" and
+          // the framework rejected channel_open 9 times across many turns
+          // while the agent debugged CSS in the dark. The error message
+          // even names the fix ("Available handlers: ..., process") — but
+          // it never reached the agent's prompt.
+          //
+          // Now: same path as runtime errors via /api/cards/:filename/error.
+          // card-error broadcast + validator buffer entry. Agent reads it
+          // on its next turn's buildContext injection and can act.
+          const proj = wsProjects.get(ws);
+          const fname = filename;
+          if (proj && fname) {
+            broadcastToProject(proj, { type: "card-error", filename: fname, error: errMsg });
+            broadcastToProject(proj, {
+              type: "progress",
+              tool: "channel-open-error",
+              description: `⚠ ${fname}: ${errMsg.slice(0, 120).replace(/\n/g, " ")}`,
+            });
+            recordValidatorError(proj, fname, errMsg);
+          }
         }
         break;
       }

@@ -326,40 +326,124 @@ handlers wired to fixed extensions (no work to use them):
 | `.skills` | SKILL.md authoring | Propose / apply |
 | `.canvas-back` | canvas-back.md | Propose / apply |
 
-### LLM-driven card classes — **do NOT write a server plugin**
+### Reusable handlers — **do NOT write a server plugin**
 
 Mica ships **reusable parameterized handlers** that any card class
-can opt into via `metadata.json`. Adding a new LLM-driven card
-class requires zero server code.
+can opt into via `metadata.json`. Adding a new card class that
+needs server-side capability requires zero server code in most
+common cases.
 
-**The pattern:**
+**Two reusable handlers are most relevant for new card classes:**
+
+| Handler | What it gives you | When to pick |
+|---|---|---|
+| `llm-direct` | Streaming chat against an LLM with a fixed system prompt + per-turn user message. Handler manages the streaming round-trip. | LLM-driven cards: persona-chat, summarizer, single-purpose assistant. |
+| `process` | Spawn a long-lived subprocess; bidirectional stdin/stdout/stderr; lifecycle-driven start/stop. | Wrapping CLI tools (nvidia-smi, ffmpeg, autoresearch), language servers, daemons, polling tasks. |
+
+**The pattern (same for both):**
 
 1. **Discover.** `curl http://localhost:3002/api/handlers` returns
    every reusable handler with its `name`, `description`,
-   `whenToUse`, `argsSchema`, `sendShapes`, `recvShapes`, and an
-   optional `examples` field with a copy-pasteable card.js
-   skeleton.
+   `whenToUse`, `argsSchema`, `sendShapes`, `recvShapes`. Read
+   `whenToUse` to pick.
 2. **Pick** by `whenToUse`. If nothing fits, flag this to the
    human — agents do not write server plugins.
 3. **Wire.** In your card class `metadata.json` set
    `"handler": "<name>"`. In `card.js` call
-   `mica.openChannel("turn", args)` where `args` matches the
-   handler's `argsSchema`. Send/receive against `sendShapes` /
-   `recvShapes`.
+   `mica.openChannel("session", args)` and send/receive
+   per `sendShapes` / `recvShapes`.
 4. **Trust the schema.** Bad args fail at the channel boundary
    with a structured error citing the failing path. Treat that
    error as ground truth — fix the args, don't argue with it.
 
-**Working reference:** `card-classes/persona-chat/` is a complete
-example using `metadata.handler: "llm-direct"` — three small
-files, no server code, system prompt comes from the instance
-file content. Read it once for the shape; consult
+**Critical reminder — `metadata.handler` is required when you use
+a reusable handler.** Without the field, the framework auto-routes
+to a handler matching the card class extension; if none exists,
+channel_open fails with "No handler registered for: <ext>.
+Available handlers: ..." (the error names the fix). The recurring
+gotcha: `mica_create_class` accepts a `handler` parameter — pass
+it explicitly when the card needs a reusable handler.
+
+#### LLM-driven cards — `metadata.handler: "llm-direct"`
+
+`card-classes/persona-chat/` is a complete working reference —
+three small files, no server code, system prompt comes from the
+instance file content. Read once for the shape; consult
 `/api/handlers` for everything else.
 
-The legacy `.llm-chat` and `.terminal` extensions and the heavy
-`.chat` / `.claude` agent cards stay routed by file extension as
-in the table above. The metadata.handler mechanism is additive
-and only kicks in when present.
+#### Long-running subprocess cards — `metadata.handler: "process"`
+
+The `process` handler is **lifecycle-driven**: the subprocess is
+NOT spawned at channel-open time. Card opens the channel first
+(no required args), then sends a `start` message with the
+command + args + cwd + env when it's ready. This lets the same
+channel survive multiple start/stop cycles and lets the card
+load per-instance config before invoking.
+
+**Card.js shape (canonical):**
+
+```js
+const ch = mica.openChannel("session");  // no args at open time
+let running = false;
+
+ch.onData((msg) => {
+  if (msg.type === "idle")     { /* nothing running yet — show Start UI */ }
+  if (msg.type === "started")  { running = true;  /* show pid, set status running */ }
+  if (msg.type === "stdout")   { /* append msg.data to log pane */ }
+  if (msg.type === "stderr")   { /* append msg.data with stderr styling */ }
+  if (msg.type === "exit")     { running = false; /* code, signal */ }
+  if (msg.type === "error")    { /* spawn or runtime error — surface to user */ }
+});
+
+function start() {
+  ch.send({
+    type: "start",
+    command: "nvidia-smi",
+    args: ["--query-gpu=...", "-l", "1"],
+    cwd: "/workspaces/.cache/<tool>",          // optional; defaults to project root
+    env: { "MY_KEY": "${MY_KEY}" },             // optional; ${VAR} interpolated
+  });
+}
+
+function stop() { ch.send({ type: "signal", signal: "SIGTERM" }); }
+
+mica.onDestroy(() => { try { ch.close(); } catch {} });
+```
+
+**Common patterns:**
+
+- **Tool data → chart.** Subprocess emits CSV/JSON to stdout; card parses each `stdout` event, appends to a chart's data series.
+- **Persistent service.** `start` once, send periodic `input` messages with line-delimited commands; receive responses on `stdout`.
+- **Restart on config change.** When the user changes the instance file, send `signal` + wait for `exit` event + send fresh `start` with new args.
+
+**On attach (page reload, second tab opens the card):** the
+handler emits `{type: "idle"}` if no subprocess is running, OR
+replays scrollback (`stdout` data) + a fresh `started` event if
+one is. Card UI just appends — no special-case "scrollback"
+handling needed.
+
+**Don't:**
+- Don't spawn at openChannel time. The handler doesn't accept
+  command/args/cwd in openChannel args. Use `start` messages.
+- Don't send another `start` while the subprocess is running.
+  Send `signal`, wait for `exit`, then `start` again. Two-stage
+  restart.
+- Don't use this for stateless tool calls the agent should
+  invoke directly. Those go in `<project>/.mica/tools.json` for
+  the cli-mcp adapter (see `add-third-party-tool` skill). The
+  process handler is for stateful, persistent subprocesses
+  driven by card UI.
+
+**Failure mode to recognize:** if you see a card-error broadcast
+of "No handler registered for: <your-extension>", the
+`metadata.handler` field is missing. The error message tells you
+the available handlers — pick the right one, set the field, save
+metadata.json, retry.
+
+The legacy `.llm-chat` / `.terminal` / `.chat` / `.claude`
+extensions stay routed by file extension as in the table above.
+The `metadata.handler` mechanism is additive and only kicks in
+when present.
 
 ## Worked example — counter card
 
