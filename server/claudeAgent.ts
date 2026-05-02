@@ -396,6 +396,9 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   // Strip MCP server prefix if present.
   const bareName = name.replace(/^mcp__[^_]+(?:-[^_]+)*__/, "");
   const n = bareName.toLowerCase().replace(/[_-]/g, "");
+  // MCP-prefixed tools skip the substring heuristics below — see micaAgent.ts
+  // for the full rationale (over-match on names like google_books_search).
+  const isMcp = name.startsWith("mcp__");
   const filePath = String(input.file_path || input.filePath || input.path || input.file || "");
   const fileName = filePath.split("/").pop() || "";
   const cmd = String(input.command || input.cmd || input.script || "");
@@ -443,35 +446,49 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
     const fn = String(input.filename || "");
     return fn ? `screenshot: ${fn}` : "screenshot";
   }
-  // Shell/bash
-  if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
-    const firstLine = cmd.split("\n")[0].slice(0, 120);
-    return firstLine ? `$ ${firstLine}` : `Running command`;
+  // Substring heuristics for SDK built-ins. Skipped for MCP tools so an
+  // MCP tool with "search" / "read" / etc. in its name doesn't get mis-
+  // labeled as a filesystem search.
+  if (!isMcp) {
+    if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
+      const firstLine = cmd.split("\n")[0].slice(0, 120);
+      return firstLine ? `$ ${firstLine}` : `Running command`;
+    }
+    // File read
+    if (n.includes("read") || n === "cat" || n === "viewfile") {
+      return `Read ${fileName || "file"}`;
+    }
+    // File write
+    if (n.includes("write") || n.includes("create") || n === "savefile") {
+      return `Write ${fileName || "file"}`;
+    }
+    // File edit
+    if (n.includes("edit") || n.includes("patch") || n.includes("replace")) {
+      return `Edit ${fileName || "file"}`;
+    }
+    // Search/grep
+    if (n.includes("grep") || n.includes("search") || n.includes("glob") || n.includes("find")) {
+      const pattern = String(input.pattern || input.query || input.regex || "");
+      return pattern ? `Search: ${pattern.slice(0, 60)}` : `Searching files`;
+    }
+    // List files
+    if (n.includes("list") || n === "ls") {
+      return `List ${filePath || "files"}`;
+    }
   }
-  // File read
-  if (n.includes("read") || n === "cat" || n === "viewfile") {
-    return `Read ${fileName || "file"}`;
+  // Fallback — show tool name + any useful input. For MCP tools that
+  // didn't match a specific rule above, surface the first string-valued
+  // input field as a hint (typically a query or url).
+  let hint = cmd ? `: ${cmd.split("\n")[0].slice(0, 60)}` : fileName ? `: ${fileName}` : "";
+  if (!hint) {
+    for (const [, v] of Object.entries(input)) {
+      if (typeof v === "string" && v.length > 0 && v.length <= 200) {
+        hint = `: ${v.slice(0, 60)}`;
+        break;
+      }
+    }
   }
-  // File write
-  if (n.includes("write") || n.includes("create") || n === "savefile") {
-    return `Write ${fileName || "file"}`;
-  }
-  // File edit
-  if (n.includes("edit") || n.includes("patch") || n.includes("replace")) {
-    return `Edit ${fileName || "file"}`;
-  }
-  // Search/grep
-  if (n.includes("grep") || n.includes("search") || n.includes("glob") || n.includes("find")) {
-    const pattern = String(input.pattern || input.query || input.regex || "");
-    return pattern ? `Search: ${pattern.slice(0, 60)}` : `Searching files`;
-  }
-  // List files
-  if (n.includes("list") || n === "ls") {
-    return `List ${filePath || "files"}`;
-  }
-  // Fallback — show tool name + any useful input
-  const hint = cmd ? `: ${cmd.split("\n")[0].slice(0, 60)}` : fileName ? `: ${fileName}` : "";
-  return `${name}${hint}`;
+  return `${bareName}${hint}`;
 }
 
 // -- Channel handler factory --

@@ -1056,6 +1056,14 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   // → `mica_create_class`) so name-matching logic below sees the bare name.
   const bareName = name.replace(/^mcp__[^_]+(?:-[^_]+)*__/, "");
   const n = bareName.toLowerCase().replace(/[_-]/g, "");
+  // Was this an MCP-prefixed tool? If so, the substring heuristics below
+  // (n.includes("search"), n.includes("read"), etc.) over-match — e.g. an
+  // mcp tool named google_books_search would get labeled "Search: ..."
+  // even though it's an HTTP API call, not a filesystem search. Skip those
+  // heuristics for MCP-prefixed tools and let them fall through to the
+  // generic "<bareName>: <hint>" fallback. Specific MCP tools (mica_create_class
+  // etc.) still match their explicit rules above the heuristic block.
+  const isMcp = name.startsWith("mcp__");
   const filePath = String(input.file_path || input.filePath || input.path || input.file || "");
   const fileName = filePath.split("/").pop() || "";
   const cmd = String(input.command || input.cmd || input.script || "");
@@ -1114,30 +1122,36 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
     return fn ? `screenshot: ${fn}` : "screenshot";
   }
   // Shell/bash
-  if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
-    const firstLine = cmd.split("\n")[0].slice(0, 120);
-    return firstLine ? `$ ${firstLine}` : `Running command`;
-  }
-  // File read
-  if (n.includes("read") || n === "cat" || n === "viewfile") {
-    return `Read ${fileName || "file"}`;
-  }
-  // File write
-  if (n.includes("write") || n.includes("create") || n === "savefile") {
-    return `Write ${fileName || "file"}`;
-  }
-  // File edit
-  if (n.includes("edit") || n.includes("patch") || n.includes("replace")) {
-    return `Edit ${fileName || "file"}`;
-  }
-  // Search/grep
-  if (n.includes("grep") || n.includes("search") || n.includes("glob") || n.includes("find")) {
-    const pattern = String(input.pattern || input.query || input.regex || "");
-    return pattern ? `Search: ${pattern.slice(0, 60)}` : `Searching files`;
-  }
-  // List files
-  if (n.includes("list") || n === "ls") {
-    return `List ${filePath || "files"}`;
+  // The substring heuristics below apply to SDK BUILT-IN tools (read_file,
+  // write_file, grep_search, glob, etc.). MCP-prefixed tools skip them and
+  // fall through to the generic fallback — they have arbitrary names like
+  // google_books_search that shouldn't be conflated with filesystem search.
+  if (!isMcp) {
+    if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
+      const firstLine = cmd.split("\n")[0].slice(0, 120);
+      return firstLine ? `$ ${firstLine}` : `Running command`;
+    }
+    // File read
+    if (n.includes("read") || n === "cat" || n === "viewfile") {
+      return `Read ${fileName || "file"}`;
+    }
+    // File write
+    if (n.includes("write") || n.includes("create") || n === "savefile") {
+      return `Write ${fileName || "file"}`;
+    }
+    // File edit
+    if (n.includes("edit") || n.includes("patch") || n.includes("replace")) {
+      return `Edit ${fileName || "file"}`;
+    }
+    // Search/grep
+    if (n.includes("grep") || n.includes("search") || n.includes("glob") || n.includes("find")) {
+      const pattern = String(input.pattern || input.query || input.regex || "");
+      return pattern ? `Search: ${pattern.slice(0, 60)}` : `Searching files`;
+    }
+    // List files
+    if (n.includes("list") || n === "ls") {
+      return `List ${filePath || "files"}`;
+    }
   }
   // Todo write (qwen built-in)
   if (n === "todowrite") {
@@ -1149,8 +1163,19 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
     }
     return "todo update";
   }
-  // Fallback — show tool name + any useful input
-  const hint = cmd ? `: ${cmd.split("\n")[0].slice(0, 60)}` : fileName ? `: ${fileName}` : "";
+  // Fallback — show tool name + any useful input. For MCP tools that
+  // didn't match a specific rule above, fall back to the first string-
+  // valued input field as a hint (typically a query, url, or similar
+  // identifier that's more informative than just the tool name).
+  let hint = cmd ? `: ${cmd.split("\n")[0].slice(0, 60)}` : fileName ? `: ${fileName}` : "";
+  if (!hint) {
+    for (const [, v] of Object.entries(input)) {
+      if (typeof v === "string" && v.length > 0 && v.length <= 200) {
+        hint = `: ${v.slice(0, 60)}`;
+        break;
+      }
+    }
+  }
   return `${bareName}${hint}`;
 }
 
