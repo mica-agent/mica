@@ -28,128 +28,144 @@ const SCROLLBACK_SIZE = 16_000;  // bytes; covers ~200 lines of typical log outp
 export function createProcessHandler() {
   return async function processHandlerFactory(
     _content: string,
-    args: Record<string, unknown>,
+    _initialArgs: Record<string, unknown>,
     ctx: SessionContext,
   ): Promise<ChannelHandler> {
-    const command = String(args.command || "");
-    const cmdArgs = Array.isArray(args.args) ? (args.args as string[]).map(String) : [];
-    const cwdArg = args.cwd ? String(args.cwd) : null;
-    const envArg = (args.env && typeof args.env === "object")
-      ? (args.env as Record<string, string>)
-      : {};
-
-    if (!command) {
-      console.error(`[process] ${ctx.filename}: missing 'command' arg`);
-      ctx.broadcast({ type: "error", error: "process channel requires 'command' arg" });
-      return {
-        onData() { /* no-op; channel is dead */ },
-        onDestroy() { /* no-op */ },
-      };
-    }
-
-    // Default cwd is the project root, matching the .terminal pattern.
-    // Cards that need a different cwd (e.g., autoresearch installed in
-    // /workspaces/.cache/autoresearch) override via the cwd arg.
-    const cwd = cwdArg ?? (ctx.project ? join(WORKSPACE_DIR, ctx.project) : WORKSPACE_DIR);
-
-    // Resolve ${VAR} env interpolation against backend's process.env.
-    // Same shape as the cli-mcp adapter and the qwen SDK's settings.json.
-    const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-    for (const [k, v] of Object.entries(envArg)) {
-      env[k] = String(v).replace(/\$\{([A-Z0-9_]+)\}/g, (_m, name) => process.env[name] ?? "");
-    }
-
-    let proc: ChildProcess;
-    try {
-      proc = spawn(command, cmdArgs, {
-        cwd,
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch (err) {
-      const msg = (err as Error).message;
-      console.error(`[process] ${ctx.filename}: spawn failed: ${msg}`);
-      ctx.broadcast({ type: "error", error: `spawn failed: ${msg}` });
-      return {
-        onData() {},
-        onDestroy() {},
-      };
-    }
-
-    console.log(`[process] ${ctx.filename}: spawned ${command} ${cmdArgs.join(" ")} (pid=${proc.pid}, cwd=${cwd})`);
-    ctx.broadcast({ type: "started", pid: proc.pid, command, args: cmdArgs, cwd });
-
-    // Scrollback buffer for late-joining clients (browser tab reload, second
-    // tab opens the same card). Stdout + stderr are interleaved in the buffer
-    // — same as the user would see if they were watching the process directly.
+    // Lifecycle-driven: the subprocess is NOT spawned on channel-open.
+    // The card sends { type: "start", command, args, cwd, env } when it's
+    // ready (after loading config, after user clicks Start, etc.). This
+    // lets the channel survive across multiple start/stop cycles without
+    // recreating the session, and lets the card update config at runtime.
+    //
+    // State held by the closure: the current subprocess (or null), and a
+    // scrollback buffer of recent output so late-joining clients catch up.
+    let proc: ChildProcess | null = null;
+    let lastConfig: { command: string; args: string[]; cwd: string } | null = null;
     let scrollback = "";
+
     function appendScrollback(data: string): void {
       scrollback = (scrollback + data).slice(-SCROLLBACK_SIZE);
     }
 
-    proc.stdout?.on("data", (d: Buffer) => {
-      const text = d.toString();
-      appendScrollback(text);
-      ctx.broadcast({ type: "stdout", data: text });
-    });
-    proc.stderr?.on("data", (d: Buffer) => {
-      const text = d.toString();
-      appendScrollback(text);
-      ctx.broadcast({ type: "stderr", data: text });
-    });
-    proc.on("exit", (code, signal) => {
-      console.log(`[process] ${ctx.filename}: exited (code=${code}, signal=${signal})`);
-      ctx.broadcast({ type: "exit", code, signal });
-    });
-    proc.on("error", (err) => {
-      console.error(`[process] ${ctx.filename}: subprocess error: ${err.message}`);
-      ctx.broadcast({ type: "error", error: err.message });
-    });
+    function startProcess(args: Record<string, unknown>): void {
+      // Refuse if already running. Card should send `signal` first, wait for
+      // exit event, then start again.
+      if (proc && proc.exitCode === null && !proc.killed) {
+        ctx.broadcast({ type: "error", error: "subprocess already running; stop it first" });
+        return;
+      }
+
+      const command = String(args.command || "");
+      if (!command) {
+        ctx.broadcast({ type: "error", error: "start requires 'command' field" });
+        return;
+      }
+      const cmdArgs = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];
+      const cwdArg = args.cwd ? String(args.cwd) : null;
+      const envArg = (args.env && typeof args.env === "object")
+        ? (args.env as Record<string, string>)
+        : {};
+      const cwd = cwdArg ?? (ctx.project ? join(WORKSPACE_DIR, ctx.project) : WORKSPACE_DIR);
+
+      const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+      for (const [k, v] of Object.entries(envArg)) {
+        env[k] = String(v).replace(/\$\{([A-Z0-9_]+)\}/g, (_m, name) => process.env[name] ?? "");
+      }
+
+      let spawned: ChildProcess;
+      try {
+        spawned = spawn(command, cmdArgs, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+      } catch (err) {
+        const msg = (err as Error).message;
+        console.error(`[process] ${ctx.filename}: spawn failed: ${msg}`);
+        ctx.broadcast({ type: "error", error: `spawn failed: ${msg}` });
+        return;
+      }
+
+      proc = spawned;
+      lastConfig = { command, args: cmdArgs, cwd };
+      // Reset scrollback on each fresh start. Old run's output is no longer
+      // relevant once a new subprocess begins.
+      scrollback = "";
+      console.log(`[process] ${ctx.filename}: spawned ${command} ${cmdArgs.join(" ")} (pid=${spawned.pid}, cwd=${cwd})`);
+      ctx.broadcast({ type: "started", pid: spawned.pid, command, args: cmdArgs, cwd });
+
+      spawned.stdout?.on("data", (d: Buffer) => {
+        const text = d.toString();
+        appendScrollback(text);
+        ctx.broadcast({ type: "stdout", data: text });
+      });
+      spawned.stderr?.on("data", (d: Buffer) => {
+        const text = d.toString();
+        appendScrollback(text);
+        ctx.broadcast({ type: "stderr", data: text });
+      });
+      spawned.on("exit", (code, signal) => {
+        console.log(`[process] ${ctx.filename}: exited (code=${code}, signal=${signal})`);
+        ctx.broadcast({ type: "exit", code, signal });
+        if (proc === spawned) proc = null;
+      });
+      spawned.on("error", (err) => {
+        console.error(`[process] ${ctx.filename}: subprocess error: ${err.message}`);
+        ctx.broadcast({ type: "error", error: err.message });
+      });
+    }
 
     return {
-      onAttach(clientId, _args) {
-        // Late joiner — replay the recent buffer so they have context. The
-        // type is "stdout" (not a separate "scrollback" type) so the card
-        // doesn't need special-case handling — just append to the log pane
-        // like any other output.
-        if (scrollback) {
-          ctx.sendTo(clientId, { type: "stdout", data: scrollback });
+      onAttach(clientId, _attachArgs) {
+        // Late joiner — give them the current state. If a subprocess is
+        // running, replay scrollback + a started event. If not, just an
+        // idle marker so the card UI can show "ready to start."
+        if (proc && lastConfig) {
+          if (scrollback) ctx.sendTo(clientId, { type: "stdout", data: scrollback });
+          ctx.sendTo(clientId, { type: "started", pid: proc.pid, ...lastConfig });
+        } else {
+          ctx.sendTo(clientId, { type: "idle" });
         }
-        ctx.sendTo(clientId, { type: "started", pid: proc.pid, command, args: cmdArgs, cwd });
       },
 
       onData(_clientId, data) {
-        const msg = data as { type?: string; data?: string; signal?: NodeJS.Signals };
+        const msg = data as {
+          type?: string;
+          data?: string;
+          signal?: NodeJS.Signals;
+          command?: string;
+          args?: string[];
+          cwd?: string;
+          env?: Record<string, string>;
+        };
 
-        if (msg.type === "input" && typeof msg.data === "string") {
-          // Forward stdin to the subprocess. Useful for tools that read
-          // commands line-by-line from stdin (REPLs, language servers).
-          try { proc.stdin?.write(msg.data); } catch (err) {
+        if (msg.type === "start") {
+          // Fresh subprocess with the args from the message itself.
+          startProcess(msg as Record<string, unknown>);
+        } else if (msg.type === "input" && typeof msg.data === "string") {
+          // Forward to subprocess stdin (REPLs, language servers, tools that
+          // accept JSONL on stdin).
+          try { proc?.stdin?.write(msg.data); } catch (err) {
             console.warn(`[process] ${ctx.filename}: stdin write failed: ${(err as Error).message}`);
           }
         } else if (msg.type === "signal") {
-          // Card-side abort / interrupt. signal defaults to SIGTERM; cards
-          // can pass SIGINT / SIGKILL / etc. for tool-specific shutdowns.
-          const sig = msg.signal ?? "SIGTERM";
-          try { proc.kill(sig); } catch { /* already gone */ }
+          // Card-side stop. Default SIGTERM; cards can override.
+          if (proc) {
+            const sig = msg.signal ?? "SIGTERM";
+            try { proc.kill(sig); } catch { /* already gone */ }
+          }
         } else if (msg.type === "close_stdin") {
-          // For tools that need EOF on stdin to start processing.
-          try { proc.stdin?.end(); } catch { /* already closed */ }
+          try { proc?.stdin?.end(); } catch { /* already closed */ }
         }
       },
 
       onDestroy() {
-        // Card unmounted / channel torn down — terminate the subprocess.
-        // Two-stage shutdown: SIGTERM first to let the tool clean up
-        // (write final logs, flush buffers), then SIGKILL after a short
-        // grace if it's still alive. Mirrors the SDK lifecycle teardown
-        // shipped earlier today (server/micaAgent.ts q.close() pattern).
-        console.log(`[process] ${ctx.filename}: destroying session (pid=${proc.pid})`);
-        try { proc.kill("SIGTERM"); } catch { /* already gone */ }
+        // Card unmounted / channel torn down. Terminate any running subprocess
+        // with the two-stage SIGTERM-then-SIGKILL pattern.
+        if (!proc) return;
+        const target = proc;
+        console.log(`[process] ${ctx.filename}: destroying session (pid=${target.pid})`);
+        try { target.kill("SIGTERM"); } catch { /* already gone */ }
         setTimeout(() => {
-          if (proc.exitCode === null && !proc.killed) {
+          if (target.exitCode === null && !target.killed) {
             console.warn(`[process] ${ctx.filename}: SIGKILL after grace`);
-            try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+            try { target.kill("SIGKILL"); } catch { /* already gone */ }
           }
         }, 1500);
       },
@@ -175,30 +191,27 @@ export const manifest: HandlerManifest = {
     "mica.fetch from card.js).",
   argsSchema: {
     type: "object",
-    properties: {
-      command: { type: "string", description: "Path or PATH-resolvable name of the binary to spawn (e.g., 'python', '/usr/bin/uv', 'node')." },
-      args: { type: "array", items: { type: "string" }, description: "Argv to pass to the command. Default: []." },
-      cwd: { type: "string", description: "Working directory for the spawned process. Default: project root. Override for tools installed outside the project (e.g., /workspaces/.cache/autoresearch)." },
-      env: { type: "object", description: "Extra environment variables for the process. Backend's process.env is the base; these override. ${VAR} interpolation against backend env is supported." },
-    },
-    required: ["command"],
+    description: "openChannel takes no required args. The subprocess is spawned only after the card sends a { type: 'start', command, args, cwd, env } message — see sendShapes. This lets the card load per-instance config (e.g. from its instance file) and then start, and lets the same channel survive multiple start/stop cycles without reopening.",
+    properties: {},
   },
   sendShapes: {
     type: "object",
     description:
       "What the card may send via channel.send(): " +
+      "{ type: 'start', command: string, args?: string[], cwd?: string, env?: object } to spawn the subprocess (only one running at a time per session); " +
       "{ type: 'input', data: string } to write to the subprocess's stdin; " +
-      "{ type: 'signal', signal?: 'SIGTERM'|'SIGKILL'|'SIGINT'|... } to terminate (default SIGTERM); " +
-      "{ type: 'close_stdin' } to send EOF to the subprocess's stdin (some tools need this to start processing).",
+      "{ type: 'signal', signal?: 'SIGTERM'|'SIGKILL'|'SIGINT'|... } to terminate the running subprocess (default SIGTERM); " +
+      "{ type: 'close_stdin' } to send EOF to the subprocess's stdin.",
   },
   recvShapes: {
     type: "object",
     description:
       "What the card receives via channel.onData(). Event types: " +
-      "{ type: 'started', pid, command, args, cwd } when the subprocess spawns; " +
+      "{ type: 'idle' } on attach when no subprocess is running yet (card-side prompt: 'click Start'); " +
+      "{ type: 'started', pid, command, args, cwd } when a subprocess spawns (and on attach if one is currently running); " +
       "{ type: 'stdout', data: string } per-chunk stdout (also replayed as scrollback on attach); " +
       "{ type: 'stderr', data: string } per-chunk stderr; " +
-      "{ type: 'exit', code, signal } when the subprocess exits; " +
+      "{ type: 'exit', code, signal } when the subprocess exits (channel survives — card can send another 'start' to spawn fresh); " +
       "{ type: 'error', error: string } on spawn or runtime errors.",
   },
 };
