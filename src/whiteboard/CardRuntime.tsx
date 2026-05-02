@@ -41,10 +41,36 @@ var fetch=function(input,init){
   return _origFetch(input,init);
 };
 var _rd=window.document;
+var _origDAEL=_rd.addEventListener.bind(_rd);
+var _origDREL=_rd.removeEventListener.bind(_rd);
+// Tracks (originalFn → wrappedFn) so document.removeEventListener can find
+// the wrapped function the shim actually registered. Without this, a card
+// that does `document.removeEventListener('keydown', myFn)` would silently
+// fail (myFn was never registered — its wrapped form was). Cards rarely
+// remove explicitly because cleanup auto-fires from mica.onDestroy, but
+// the path needs to work for the cards that DO.
+var _docListenerMap=new Map();
 var document=new Proxy(_rd,{get:function(t,p){
   if(p==='querySelector')return function(s){return _c.querySelector(s)};
   if(p==='querySelectorAll')return function(s){return _c.querySelectorAll(s)};
   if(p==='getElementById')return function(id){return _c.querySelector('#'+CSS.escape(id))};
+  if(p==='addEventListener')return function(evt,fn,o){
+    // Wrap, register, and push a cleanup so listeners auto-detach on card
+    // unmount. Without this, cards that did `document.addEventListener(
+    // 'keydown', ...)` leaked across re-renders/unmounts; pressing a key
+    // fired stale handlers from cards that no longer exist on the canvas.
+    // Mirrors the window.addEventListener wrap below — this closes the
+    // parallel gap for document-level listeners.
+    var w=_runCb(fn);
+    _docListenerMap.set(fn,w);
+    _origDAEL(evt,w,o);
+    _cleanups.push(function(){_origDREL(evt,w,o);_docListenerMap.delete(fn);});
+  };
+  if(p==='removeEventListener')return function(evt,fn,o){
+    var w=_docListenerMap.get(fn);
+    if(w){_origDREL(evt,w,o);_docListenerMap.delete(fn);}
+    else{_origDREL(evt,fn,o);}
+  };
   var v=t[p];return typeof v==='function'?v.bind(t):v;
 }});
 function _reportError(e){

@@ -263,6 +263,37 @@ script in a closure and the redeclaration produces a hard
 mica.* table and use exact signatures (tenet 16); when a method
 isn't listed, it doesn't exist.
 
+### Event listeners — prefer `container`, the shim handles cleanup
+
+For DOM events, attach to `container` (or one of its descendants)
+whenever possible, NOT `document` or `window`:
+
+```js
+container.addEventListener('keydown', onKey);   // ✓ scoped, auto-cleaned
+container.querySelector('#btn').addEventListener('click', onClick);  // ✓
+```
+
+The shim auto-cleans listeners attached via `window.addEventListener`,
+`document.addEventListener`, `setInterval`, `setTimeout`, and
+`requestAnimationFrame` — they all unregister when the card unmounts.
+If you must use `document` or `window` (e.g., a global keyboard
+shortcut, or a non-bubbling event you can't catch from `container`),
+just use them — the shim wraps them transparently.
+
+What you should NOT do: attach via `_rd.addEventListener(...)` or
+some other direct reference that bypasses the shim. Anything that
+escapes the shim's wrap leaks across re-renders and accumulates a
+stack of stale listeners over the page's lifetime — a real failure
+mode that caused "weird keyboard behavior" until the shim was
+extended to cover `document` listeners (2026-05-02). Don't get
+clever; just use `document` / `window` / `container` directly.
+
+If you have a callback you specifically need to clean up at a
+different time than card unmount, use `mica.onDestroy(unsubFn)`
+to register the cleanup, OR keep the unsubscribe handle and call
+it explicitly when needed (e.g., the cleanup pattern at
+[card.js:411](#L411) below).
+
 ## External HTTP via `mica.fetch(url, opts)`
 
 Cards cannot hit most public APIs directly — CORS blocks them.
