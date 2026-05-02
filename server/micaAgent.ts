@@ -1233,6 +1233,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     // image-bearing turns. The drain handler below branches on shape.
     let queue: Array<string | { text: string; attach: string }> = [];
     let activeAbort: AbortController | null = null;
+    // The current turn's SDK query handle. Tracked so the interrupt
+    // path (user clicks stop, or session destroy) can call q.interrupt()
+    // + q.close() — the canonical lifecycle methods per
+    // node_modules/@qwen-code/sdk/README.md "Query Handle Methods".
+    // Without this, only abortController.abort() was being called, which
+    // triggers SIGTERM-only via the SDK's killChildProcess. Empirically
+    // insufficient: SDK CLI subprocesses survived stop clicks and kept
+    // pumping requests to llama-server, with no SIGKILL escalation. See
+    // 2026-05-02 incident — orphan PID 1705048 with active TCP connection
+    // to :8012 hours after the user clicked stop.
+    let activeQuery: { interrupt: () => Promise<void>; close: () => Promise<void>; isClosed: () => boolean } | null = null;
 
     // Per-turn ephemeral-event buffer. A client joining mid-turn (second tab,
     // refresh) gets the persisted chat history via onAttach, but the live
@@ -1884,6 +1895,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             },
           },
         }) as AsyncIterable<Record<string, unknown>>;
+        // Track the query handle so the interrupt path can call q.interrupt()
+        // + q.close() — the SDK's canonical lifecycle methods. The SDK
+        // returns an iterable that's also a Query handle with these methods;
+        // see node_modules/@qwen-code/sdk/dist/index.d.ts:839-876.
+        activeQuery = q as unknown as { interrupt: () => Promise<void>; close: () => Promise<void>; isClosed: () => boolean };
 
         let resultText = "";
         let filesChanged = false;
@@ -2141,6 +2157,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
 
         activeAbort = null;
+        // Tear down the SDK transport explicitly. The for-await drain
+        // doesn't always trigger the SDK's child-process cleanup; q.close()
+        // is the canonical end-of-session signal. SIGTERM, then SIGKILL
+        // after timeout. Without this, even a normally-ended turn could
+        // leave the qwen-code CLI subprocess alive holding a llama-server
+        // slot until the next backend restart.
+        if (activeQuery) {
+          const q = activeQuery;
+          activeQuery = null;
+          try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
+        }
 
         // Drain any outstanding subagent tasks from the concurrency counter.
         // Normal flow decrements per-task as tool_results arrive; this covers
@@ -2290,6 +2317,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
       } catch (err) {
         activeAbort = null;
+        // Same SDK transport teardown as the success path. The catch fires
+        // on AbortError (user clicked stop), provider errors, or SDK
+        // protocol failures — in any case, close the query so the CLI
+        // subprocess doesn't outlive this turn.
+        if (activeQuery) {
+          const q = activeQuery;
+          activeQuery = null;
+          try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
+        }
         const errMsg = (err as Error).message || String(err);
         // Empty response = model had nothing to say (common for reactive events)
         if (errMsg.includes("empty response")) {
@@ -2547,6 +2583,25 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           if (activeAbort) {
             try { activeAbort.abort(); } catch { /* ignore */ }
           }
+          // Use the SDK's canonical interrupt + close lifecycle methods.
+          // abortController.abort() alone triggers the SDK's killChildProcess
+          // (SIGTERM only, no SIGKILL escalation); empirically the qwen-code
+          // CLI subprocess does NOT exit on SIGTERM mid-llama-server-request,
+          // leaving an orphan with an active TCP connection to :8012 that
+          // keeps pumping requests after the user stopped. q.interrupt()
+          // sends a control message via stdin asking for graceful cancel;
+          // q.close() then tears down the transport (SIGTERM, then SIGKILL
+          // after timeout). See SDK docs README.md "Query Handle Methods".
+          if (activeQuery) {
+            const q = activeQuery;
+            q.interrupt().catch(() => { /* CLI may already be torn down */ });
+            // Hard-close after a 1s grace so q.interrupt() has a chance to
+            // land cleanly. If interrupt did its job, q.close() is a no-op
+            // (isClosed guard skips it); otherwise it forces SIGTERM/SIGKILL.
+            setTimeout(() => {
+              try { if (!q.isClosed()) q.close().catch(() => {}); } catch {}
+            }, 1000);
+          }
           // Drop any messages the user typed while the agent was busy.
           // Without this, "stop" aborts the current turn but the next
           // queued message fires automatically in the finally block —
@@ -2589,6 +2644,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       onDestroy() {
         if (activeAbort) {
           try { activeAbort.abort(); } catch { /* ignore */ }
+        }
+        // Force-close the SDK transport on session destroy (file deleted,
+        // channel torn down). Same reasoning as the interrupt path: abort
+        // alone leaves the CLI subprocess running.
+        if (activeQuery) {
+          const q = activeQuery;
+          activeQuery = null;
+          try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
         }
         if (sessionState.coalesceTimer) clearTimeout(sessionState.coalesceTimer);
         activeSessions.delete(ctx.filename);

@@ -555,6 +555,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     let busy = false;
     let queue: string[] = [];
     let activeAbort: AbortController | null = null;
+    // Track current Claude SDK query handle so interrupt/destroy paths can
+    // call q.interrupt() + q.close() — the canonical lifecycle methods.
+    // Same rationale as micaAgent.ts: abort alone leaves the SDK CLI
+    // subprocess alive holding state. See micaAgent comment for details.
+    let activeQuery: { interrupt: () => Promise<void>; close: () => Promise<void>; isClosed: () => boolean } | null = null;
 
     // Per-turn ephemeral-event buffer. See micaAgent.ts for the full rationale —
     // mirrors the same pattern: intercept ctx.broadcast, push replayable events
@@ -907,6 +912,10 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             },
           },
         }) as AsyncIterable<Record<string, unknown>>;
+        // Track query handle for interrupt/close. Same lifecycle pattern
+        // as micaAgent.ts. Claude Agent SDK's Query type exposes the same
+        // interrupt/close/isClosed shape.
+        activeQuery = q as unknown as { interrupt: () => Promise<void>; close: () => Promise<void>; isClosed: () => boolean };
 
         let resultText = "";
         let filesChanged = false;
@@ -1034,6 +1043,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         }
 
         activeAbort = null;
+        if (activeQuery) {
+          const q = activeQuery;
+          activeQuery = null;
+          try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
+        }
 
         // Drain any outstanding subagent tasks from the concurrency counter
         // (error / abort path). See micaAgent.ts for the same safety.
@@ -1136,6 +1150,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
       } catch (err) {
         activeAbort = null;
+        if (activeQuery) {
+          const q = activeQuery;
+          activeQuery = null;
+          try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
+        }
         const errMsg = (err as Error).message || String(err);
         // Empty response = model had nothing to say (common for reactive events)
         if (errMsg.includes("empty response")) {
@@ -1233,6 +1252,16 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           if (activeAbort) {
             try { activeAbort.abort(); } catch { /* ignore */ }
           }
+          // SDK lifecycle methods — see micaAgent.ts comment for the full
+          // rationale. Same pattern: q.interrupt() (graceful) + queued
+          // q.close() (force teardown of CLI subprocess).
+          if (activeQuery) {
+            const q = activeQuery;
+            q.interrupt().catch(() => {});
+            setTimeout(() => {
+              try { if (!q.isClosed()) q.close().catch(() => {}); } catch {}
+            }, 1000);
+          }
           // Drop messages typed while the agent was busy. Otherwise the
           // finally block dequeues and fires the next turn after stop —
           // surprising given that "stop" naturally means "stop everything."
@@ -1264,6 +1293,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       onDestroy() {
         if (activeAbort) {
           try { activeAbort.abort(); } catch { /* ignore */ }
+        }
+        if (activeQuery) {
+          const q = activeQuery;
+          activeQuery = null;
+          try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
         }
         if (sessionState.coalesceTimer) clearTimeout(sessionState.coalesceTimer);
         activeSessions.delete(ctx.filename);
