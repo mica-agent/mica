@@ -1964,15 +1964,24 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[mica-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
                   toolCallCounts[block.name] = (toolCallCounts[block.name] || 0) + 1;
-                  ctx.broadcast({
-                    type: "progress",
-                    tool: block.name,
-                    description: describeToolUse(block.name, block.input || {}),
-                  });
-                  // Subagent-context tool_use → also broadcast subagent_event
-                  // so the chat card's strip can show "X is running tavily_search".
-                  // Fires IN ADDITION to progress; chat card decides what to
-                  // show in the parent-activity ticker vs the subagent strip.
+                  // Parent-context tool_use → progress event (drives the chat
+                  // card's live status line + step count). Subagent-context
+                  // tool_use (ptid non-empty) → subagent_event ONLY (drives
+                  // the strip). Without the !ptid guard, every subagent tool
+                  // call counted toward the parent's stepCount and painted
+                  // the parent's status line, producing visible duplication
+                  // ("Write decomposition.md" appearing in both the top
+                  // status row AND the subagent strip; "7 steps" reflecting
+                  // subagent calls that didn't belong to the parent's count).
+                  if (!ptid) {
+                    ctx.broadcast({
+                      type: "progress",
+                      tool: block.name,
+                      description: describeToolUse(block.name, block.input || {}),
+                    });
+                  }
+                  // Subagent-context tool_use → broadcast subagent_event so
+                  // the chat card's strip can show "X is running tavily_search".
                   if (ptid) {
                     ctx.broadcast({
                       type: "subagent_event",

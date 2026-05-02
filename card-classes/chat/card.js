@@ -53,7 +53,15 @@ let lastContextWindow = 0;
 // Cleared on assistant turn-end + on cursor-advance — same lifecycle as the
 // fuel-gauge rolling buffer.
 const subagentStates = new Map();
-const SUBAGENT_STALL_MS = 30_000;
+// Stalled threshold = "no event broadcast in N ms → mark stalled."
+// 120s tolerates normal local-Qwen inference latency: between two
+// subagent assistant messages the model can think for 60-180s without
+// yielding anything (qwen SDK waits for the complete message; partial
+// streaming would change this but adds WS volume on parallel dispatch).
+// 30s was too aggressive — flagged every long-prompt decompose-task as
+// stalled. 120s catches genuine SDK deadlocks / network drops without
+// the false-positive rate.
+const SUBAGENT_STALL_MS = 120_000;
 const subagentStripEl = container.querySelector("#chat-subagent-strip");
 const clearBtn = container.querySelector("#chat-clear-btn");
 const horizonBtn = container.querySelector("#chat-horizon-btn");
