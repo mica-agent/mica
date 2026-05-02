@@ -22,13 +22,23 @@ const statusDetail = container.querySelector("#chat-status-detail");
 // Fuel gauge (B — future: capacity trajectory) + header actions
 const fuelEl = container.querySelector("#chat-fuel");
 const fuelFill = fuelEl ? fuelEl.querySelector(".fuel-fill") : null;
+const fuelBaselineMarker = fuelEl ? fuelEl.querySelector(".fuel-baseline-marker") : null;
 const fuelHeadroomLabel = container.querySelector("#chat-fuel-headroom");
-// Rolling buffer of recent turns' baseline_tokens for headroom projection.
-// Hydrated from /api/agent/turn-history on mount; appended on each assistant
-// event. Older entries drift out as new ones land. Cap modest to keep the
-// trend window short — long-ago turns aren't predictive.
+// Rolling buffers for the gauge. `recentBaselines` is misnamed for legacy
+// reasons — it actually stores the turn's PEAK input_tokens (last tool-loop
+// iteration), not the turn-start baseline. Drives the fill width + headroom
+// projection. `recentBaselinesActual` is the parallel buffer for the actual
+// turn-start baseline (canvas-back + skills + history + user message,
+// pre-tool-loop) — drives the visible marker on the track that shows where
+// the prompt naturally starts. Gap between marker and fill = how much the
+// turn's tool calls accumulated.
+//
+// Hydrated from /api/agent/turn-history on mount (peaks only — the endpoint
+// doesn't return baseline today); appended on each live assistant event.
+// Cap modest: long-ago turns aren't predictive.
 const FUEL_HISTORY_CAP = 5;
 const recentBaselines = [];
+const recentBaselinesActual = [];
 let lastContextWindow = 0;
 const clearBtn = container.querySelector("#chat-clear-btn");
 const horizonBtn = container.querySelector("#chat-horizon-btn");
@@ -585,23 +595,30 @@ function formatK(n) {
 
 // B (future) — fuel gauge with capacity trajectory.
 //
-// Renders the topbar gauge from a new baseline_tokens reading and the
-// rolling buffer of recent turns. The gauge is forward-looking: the
-// headroom number projects how many more turns fit before the context
-// window caps, based on the buffer's mean per-turn growth. Color zones
-// (green/amber/red) and tick marks at 50%/80% on the track distinguish
-// it visually from a flat progress bar.
+// Renders the topbar gauge from new (peak, baseline) readings and the
+// rolling buffer of recent turns. The gauge shows TWO datapoints from
+// the latest turn:
+//   - Fill (colored bar 0→peak) — how much was actually sent at the
+//     turn's high-water mark. Color zones flag overflow risk.
+//   - Marker (vertical line at baseline%) — where the prompt naturally
+//     starts (canvas-back + skills + chat history + user message,
+//     pre-tool-loop). Gap between marker and fill = tool-call accumulation.
+// The headroom projection still uses peak (since that's what determines
+// when the next turn overflows).
 //
 // Inputs:
-//   - baselineTokens: this turn's baseline (from server's `assistant` event)
-//   - contextWindow:  the model's window (also from server)
-//
-// Side effects: pushes baselineTokens into recentBaselines (capped at
-// FUEL_HISTORY_CAP), then redraws.
-function updateFuelGauge(baselineTokens, contextWindow) {
-  if (typeof baselineTokens === "number" && baselineTokens > 0) {
-    recentBaselines.push(baselineTokens);
+//   - peakTokens:     turn's peak input_tokens (last tool-loop iteration)
+//   - baselineTokens: turn-start baseline (pre-tool-loop). May be 0 if
+//                     the caller doesn't have it (hydration path).
+//   - contextWindow:  the model's window (from server)
+function updateFuelGauge(peakTokens, baselineTokens, contextWindow) {
+  if (typeof peakTokens === "number" && peakTokens > 0) {
+    recentBaselines.push(peakTokens);
     while (recentBaselines.length > FUEL_HISTORY_CAP) recentBaselines.shift();
+  }
+  if (typeof baselineTokens === "number" && baselineTokens > 0) {
+    recentBaselinesActual.push(baselineTokens);
+    while (recentBaselinesActual.length > FUEL_HISTORY_CAP) recentBaselinesActual.shift();
   }
   if (typeof contextWindow === "number" && contextWindow > 0) lastContextWindow = contextWindow;
   renderFuelGauge();
@@ -622,6 +639,23 @@ function renderFuelGauge() {
   if (pct >= 80) color = "#f87171";
   else if (pct >= 50) color = "#fbbf24";
   fuelFill.style.background = color;
+  // Baseline marker: vertical line at baseline%, hidden if no baseline
+  // available (e.g. hydration path with peak-only history). Marker color
+  // stays white-ish regardless of fill color — it represents "where
+  // the prompt naturally starts," independent of overflow risk.
+  const latestBaseline = recentBaselinesActual.length > 0
+    ? recentBaselinesActual[recentBaselinesActual.length - 1]
+    : 0;
+  let baselinePct = 0;
+  if (fuelBaselineMarker) {
+    if (latestBaseline > 0) {
+      baselinePct = Math.max(0, Math.min(100, Math.round((latestBaseline / cw) * 100)));
+      fuelBaselineMarker.style.left = baselinePct + "%";
+      fuelBaselineMarker.style.opacity = "1";
+    } else {
+      fuelBaselineMarker.style.opacity = "0";
+    }
+  }
   // Headroom: mean per-turn growth across the buffer projected to the cap.
   // Negative or zero growth (cursor advanced, baseline shrank) → "stable".
   let headroomText = "";
@@ -643,11 +677,15 @@ function renderFuelGauge() {
   }
   fuelHeadroomLabel.textContent = formatK(latest) + "/" + formatK(cw) + " · " + headroomText;
   fuelHeadroomLabel.style.color = color;
-  // Hover title: now / recent peaks / projection. Multi-line via \n; the
-  // browser renders title attribute newlines as line breaks in the tooltip.
+  // Hover title: peak / baseline / recent peaks / projection. Multi-line
+  // via \n; the browser renders title attribute newlines as line breaks.
   const peakList = recentBaselines.map(formatK).join(", ");
-  fuelEl.title = "Now: " + formatK(latest) + "/" + formatK(cw) + " (" + pct + "%)\n"
-    + "Recent: " + peakList + "\n" + headroomTitle;
+  let title = "Peak: " + formatK(latest) + " / " + formatK(cw) + " (" + pct + "%)\n";
+  if (latestBaseline > 0) {
+    title += "Baseline: " + formatK(latestBaseline) + " (" + baselinePct + "%)\n";
+  }
+  title += "Recent peaks: " + peakList + "\n" + headroomTitle;
+  fuelEl.title = title;
 }
 
 // Hydrate the rolling buffer from server-side turn history on mount so the
@@ -792,11 +830,16 @@ ch.onData(function(data) {
         if (contextCursor !== prevCursor) applyCursorDisplay();
       }
       // Prefer the turn's PEAK input tokens (last tool-loop iteration) over
-      // turn-start baseline. The SDK appends every tool result into each
-      // subsequent request and never shrinks the prompt — so a turn that
-      // started "comfortable" can finish at 124% of cap. The peak is what
-      // determines whether overflow happened or is about to.
-      updateFuelGauge(data.inputTokens || data.baselineTokens || 0, data.contextWindow || 0);
+      // turn-start baseline for the fill — the SDK appends every tool
+      // result into each subsequent request and never shrinks the prompt,
+      // so a turn that started "comfortable" can finish at 124% of cap.
+      // The peak is what determines whether overflow happened or is about
+      // to. Baseline goes alongside as the marker on the track.
+      updateFuelGauge(
+        data.inputTokens || data.baselineTokens || 0,
+        data.baselineTokens || 0,
+        data.contextWindow || 0,
+      );
       lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(doneMsg, "#3fb950", false);
@@ -1110,6 +1153,16 @@ function advanceHorizon() {
       contextCursor = data.cursor;
       applyCursorDisplay();
     }
+    // Cursor advance archives prior messages out of the next turn's
+    // prompt baseline. The fuel gauge's rolling buffers still hold the
+    // pre-archive numbers, so it would keep showing "full" until a new
+    // turn pushes fresh data. Reset both buffers + hide the gauge so
+    // the UI honestly reflects "we don't know the new state until the
+    // next turn lands." Mirrors the chat-cleared handler in the Claude
+    // card.
+    recentBaselines.length = 0;
+    recentBaselinesActual.length = 0;
+    if (fuelEl) fuelEl.style.display = "none";
   }).catch(function(err) {
     console.error("[chat] advance-cursor failed:", err);
     window.alert("Could not advance horizon: " + (err && err.message ? err.message : "unknown"));
@@ -1243,6 +1296,15 @@ const _unsubCursorAdvanced = mica.on("cursor-advanced", function(ev) {
   if (typeof ev.cursor !== "number" || ev.cursor <= contextCursor) return;
   contextCursor = ev.cursor;
   applyCursorDisplay();
+  // Same reset as advanceHorizon's local-trigger path: archived messages
+  // won't be in the next turn's baseline, so the gauge's rolling buffers
+  // are stale. Clear both and hide until the next turn provides accurate
+  // data. Covers the cross-window case (advance triggered in tab A, this
+  // is tab B) AND the agent-driven case (arc-complete marker advances
+  // the cursor server-side without going through advanceHorizon).
+  recentBaselines.length = 0;
+  recentBaselinesActual.length = 0;
+  if (fuelEl) fuelEl.style.display = "none";
 });
 mica.onDestroy(_unsubCursorAdvanced);
 

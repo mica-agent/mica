@@ -13,11 +13,16 @@ const statusMeta = container.querySelector("#chat-status-meta");
 const statusToggle = container.querySelector("#chat-status-toggle");
 const statusDetail = container.querySelector("#chat-status-detail");
 // Fuel gauge (B — future: capacity trajectory). See chat card for rationale.
+// recentBaselines is misnamed — stores PEAK input_tokens; recentBaselinesActual
+// stores the turn-start baseline. The gap between them on the gauge shows
+// how much tool-result accumulation happened during the turn.
 const fuelEl = container.querySelector("#chat-fuel");
 const fuelFill = fuelEl ? fuelEl.querySelector(".fuel-fill") : null;
+const fuelBaselineMarker = fuelEl ? fuelEl.querySelector(".fuel-baseline-marker") : null;
 const fuelHeadroomLabel = container.querySelector("#chat-fuel-headroom");
 const FUEL_HISTORY_CAP = 5;
 const recentBaselines = [];
+const recentBaselinesActual = [];
 let lastContextWindow = 0;
 const clearBtn = container.querySelector("#chat-clear-btn");
 const spawnBtn = container.querySelector("#chat-spawn-btn");
@@ -374,11 +379,16 @@ function playChime() {
 }
 
 // B (future) — fuel gauge with capacity trajectory. See chat card for the
-// full design rationale. Pushes baselineTokens into rolling buffer, redraws.
-function updateFuelGauge(baselineTokens, contextWindow) {
-  if (typeof baselineTokens === "number" && baselineTokens > 0) {
-    recentBaselines.push(baselineTokens);
+// full design rationale. Pushes (peak, baseline) into rolling buffers,
+// redraws fill from peak with a marker at baseline.
+function updateFuelGauge(peakTokens, baselineTokens, contextWindow) {
+  if (typeof peakTokens === "number" && peakTokens > 0) {
+    recentBaselines.push(peakTokens);
     while (recentBaselines.length > FUEL_HISTORY_CAP) recentBaselines.shift();
+  }
+  if (typeof baselineTokens === "number" && baselineTokens > 0) {
+    recentBaselinesActual.push(baselineTokens);
+    while (recentBaselinesActual.length > FUEL_HISTORY_CAP) recentBaselinesActual.shift();
   }
   if (typeof contextWindow === "number" && contextWindow > 0) lastContextWindow = contextWindow;
   renderFuelGauge();
@@ -396,6 +406,21 @@ function renderFuelGauge() {
   if (pct >= 80) color = "#f87171";
   else if (pct >= 50) color = "#fbbf24";
   fuelFill.style.background = color;
+  // Baseline marker — vertical line at baseline%, hidden when no baseline
+  // is available (hydration path with peak-only history).
+  const latestBaseline = recentBaselinesActual.length > 0
+    ? recentBaselinesActual[recentBaselinesActual.length - 1]
+    : 0;
+  let baselinePct = 0;
+  if (fuelBaselineMarker) {
+    if (latestBaseline > 0) {
+      baselinePct = Math.max(0, Math.min(100, Math.round((latestBaseline / cw) * 100)));
+      fuelBaselineMarker.style.left = baselinePct + "%";
+      fuelBaselineMarker.style.opacity = "1";
+    } else {
+      fuelBaselineMarker.style.opacity = "0";
+    }
+  }
   let headroomText = "";
   let headroomTitle = "";
   if (recentBaselines.length >= 2) {
@@ -416,8 +441,12 @@ function renderFuelGauge() {
   fuelHeadroomLabel.textContent = formatK(latest) + "/" + formatK(cw) + " · " + headroomText;
   fuelHeadroomLabel.style.color = color;
   const peakList = recentBaselines.map(formatK).join(", ");
-  fuelEl.title = "Now: " + formatK(latest) + "/" + formatK(cw) + " (" + pct + "%)\n"
-    + "Recent: " + peakList + "\n" + headroomTitle;
+  let title = "Peak: " + formatK(latest) + " / " + formatK(cw) + " (" + pct + "%)\n";
+  if (latestBaseline > 0) {
+    title += "Baseline: " + formatK(latestBaseline) + " (" + baselinePct + "%)\n";
+  }
+  title += "Recent peaks: " + peakList + "\n" + headroomTitle;
+  fuelEl.title = title;
 }
 
 function hydrateFuelGauge() {
@@ -544,11 +573,14 @@ ch.onData(function(data) {
         if (typeof data.cursor === "number") contextCursor = data.cursor;
         if (contextCursor !== prevCursor) applyCursorDisplay();
       }
-      // Prefer the turn's PEAK input tokens over turn-start baseline. The
-      // SDK appends every tool result into each subsequent request and never
-      // shrinks the prompt — so peak tells you whether the turn brushed the
-      // ceiling, not just where it started.
-      updateFuelGauge(data.inputTokens || data.baselineTokens || 0, data.contextWindow || 0);
+      // Prefer the turn's PEAK input tokens over turn-start baseline for
+      // the fill — peak tells you whether the turn brushed the ceiling.
+      // Baseline goes alongside as the marker on the track.
+      updateFuelGauge(
+        data.inputTokens || data.baselineTokens || 0,
+        data.baselineTokens || 0,
+        data.contextWindow || 0,
+      );
       lastCapacity = typeof data.capacity === "number" ? data.capacity : 0;
       const doneMsg = data.filesChanged ? "Canvas updated" : "Done";
       setStatus(`${doneMsg} (${elapsedSec}s, ${stepCount} steps)`, "#3fb950", false);
@@ -632,6 +664,7 @@ function clearCard(opts) {
     messageIndex = 0;
     if (fuelEl) fuelEl.style.display = "none";
     recentBaselines.length = 0;
+    recentBaselinesActual.length = 0;
     lastCapacity = 0;
   }).catch(function(err) { console.error("[claude] clear failed:", err); });
 }
@@ -762,6 +795,7 @@ const _unsubChatCleared = mica.on("chat-cleared", function(ev) {
   messageIndex = 0;
   if (fuelEl) fuelEl.style.display = "none";
   recentBaselines.length = 0;
+  recentBaselinesActual.length = 0;
   lastCapacity = 0;
 });
 mica.onDestroy(_unsubChatCleared);
