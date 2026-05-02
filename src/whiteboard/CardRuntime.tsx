@@ -43,24 +43,25 @@ var fetch=function(input,init){
 var _rd=window.document;
 var _origDAEL=_rd.addEventListener.bind(_rd);
 var _origDREL=_rd.removeEventListener.bind(_rd);
-// Tracks (originalFn → wrappedFn) so document.removeEventListener can find
-// the wrapped function the shim actually registered. Without this, a card
-// that does `document.removeEventListener('keydown', myFn)` would silently
-// fail (myFn was never registered — its wrapped form was). Cards rarely
-// remove explicitly because cleanup auto-fires from mica.onDestroy, but
-// the path needs to work for the cards that DO.
+// _docListenerMap tracks (originalFn -> wrappedFn) so the proxy's
+// removeEventListener can find the wrapped function we actually
+// registered. Without it, a card that does removeEventListener with
+// the original fn would silently fail (we registered the wrapped form,
+// not the bare fn). Cards rarely remove explicitly because cleanup
+// auto-fires from mica.onDestroy, but the path needs to work for the
+// ones that DO.
 var _docListenerMap=new Map();
 var document=new Proxy(_rd,{get:function(t,p){
   if(p==='querySelector')return function(s){return _c.querySelector(s)};
   if(p==='querySelectorAll')return function(s){return _c.querySelectorAll(s)};
   if(p==='getElementById')return function(id){return _c.querySelector('#'+CSS.escape(id))};
   if(p==='addEventListener')return function(evt,fn,o){
-    // Wrap, register, and push a cleanup so listeners auto-detach on card
-    // unmount. Without this, cards that did `document.addEventListener(
-    // 'keydown', ...)` leaked across re-renders/unmounts; pressing a key
-    // fired stale handlers from cards that no longer exist on the canvas.
-    // Mirrors the window.addEventListener wrap below — this closes the
-    // parallel gap for document-level listeners.
+    // Wrap + register + push a cleanup so document-level listeners
+    // auto-detach on card unmount. Without this, cards that did
+    // document.addEventListener directly leaked across re-renders /
+    // unmounts; pressing a key fired stale handlers from cards that
+    // no longer existed on the canvas. Parallel to the window
+    // .addEventListener wrap below.
     var w=_runCb(fn);
     _docListenerMap.set(fn,w);
     _origDAEL(evt,w,o);
