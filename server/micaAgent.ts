@@ -1858,21 +1858,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             //     vision (mmproj-F16 loaded by llama-server). Skipped when
             //     project is unset or SDK exports are missing.
             //
-            //   - "tavily": stdio MCP server (`npx tavily-mcp`) providing
-            //     `tavily_search`, `tavily_extract`, `tavily_crawl`,
-            //     `tavily_map`, `tavily_research` (underscores; tavily-mcp
-            //     v0.2.x renamed from hyphens). SDK-qualified tool names:
-            //     `mcp__tavily__tavily_search`, etc. Replaces qwen-code's
-            //     built-in `web_search`, which was removed upstream in CLI
-            //     v0.15.2 (PR #3502, "MCP-based approach"). The SDK still
-            //     registers `web_fetch`, but it can only summarize a known
-            //     URL — without search, the agent has no way to discover
-            //     candidate URLs in the first place. Subagents that need
-            //     library/CDN research must allowlist
-            //     `mcp__tavily__tavily_search` (and usually
-            //     `mcp__tavily__tavily_extract`) explicitly in their
-            //     frontmatter `tools:` field — the SDK filters MCP tools
-            //     per-subagent. Skipped when TAVILY_API_KEY is unset.
+            // Third-party MCP servers (tavily, etc.) are NOT registered here —
+            // they live in `<project>/.qwen/settings.json` `mcpServers` and
+            // are merged in by the qwen SDK at session start (cli.js
+            // newSessionConfig). Policy: mica registers only framework
+            // primitives (server-name prefix `mica-`) that depend on mica's
+            // runtime context. Anything else is project configuration the
+            // user can edit/disable/swap. The migrate-out of tavily happened
+            // 2026-05-02 — see template at
+            // templates/dgx-spark-local/.qwen/settings.json.
             ...(() => {
               const servers: Record<string, unknown> = {};
               const renderServer = buildRenderMcpServer(sessionProject);
@@ -1882,13 +1876,6 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               // landed at wrong paths. See server/plugins/cardClassTools.ts.
               const cardClassServer = buildCardClassMcpServer(sessionProject);
               if (cardClassServer) servers["mica-card-class"] = cardClassServer;
-              if (process.env.TAVILY_API_KEY) {
-                servers["tavily"] = {
-                  command: "npx",
-                  args: ["-y", "tavily-mcp"],
-                  env: { TAVILY_API_KEY: process.env.TAVILY_API_KEY },
-                };
-              }
               return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
             })(),
             env: {
