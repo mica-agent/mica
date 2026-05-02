@@ -40,6 +40,21 @@ const FUEL_HISTORY_CAP = 5;
 const recentBaselines = [];
 const recentBaselinesActual = [];
 let lastContextWindow = 0;
+
+// Subagent visibility (paired with server's subagent_started/event/finished
+// broadcasts). Per-subagent live state, keyed by tool_use_id. Drives the
+// active-subagent strip + the status-line "N subagents" badge.
+//   agent_type   — task-decomposer / component-coder / repo-module-analyst …
+//   description  — original dispatch description (the parent's hint)
+//   status       — "running" | "done" | "failed"
+//   lastActivity — most recent event description (what it's doing right now)
+//   lastEventTs  — Date.now() of the most recent event, used for stalled marker
+//   startTs      — Date.now() at subagent_started, used for elapsed timer
+// Cleared on assistant turn-end + on cursor-advance — same lifecycle as the
+// fuel-gauge rolling buffer.
+const subagentStates = new Map();
+const SUBAGENT_STALL_MS = 30_000;
+const subagentStripEl = container.querySelector("#chat-subagent-strip");
 const clearBtn = container.querySelector("#chat-clear-btn");
 const horizonBtn = container.querySelector("#chat-horizon-btn");
 const archiveBtn = container.querySelector("#chat-archive-btn");
@@ -543,7 +558,62 @@ function updateMeta() {
   const parts = [];
   if (elapsedSec > 0) parts.push(formatDuration(elapsedSec));
   if (stepCount > 0) parts.push(stepCount + (stepCount === 1 ? " step" : " steps"));
+  const subBadge = computeSubagentBadge();
+  if (subBadge) parts.push(subBadge);
   statusMeta.textContent = parts.join(" . ");
+}
+
+// Status-line badge: counts running subagents, marks stalled (no event for
+// >30s). Returns "" when nothing's running so the badge disappears between
+// turns. Recomputed on every event AND on the elapsedTimer's 1s tick (so a
+// silent stall transitions to "stalled" without external trigger).
+function computeSubagentBadge() {
+  if (subagentStates.size === 0) return "";
+  const now = Date.now();
+  let active = 0;
+  let stalled = 0;
+  for (const s of subagentStates.values()) {
+    if (s.status === "running") {
+      active++;
+      if (now - s.lastEventTs > SUBAGENT_STALL_MS) stalled++;
+    }
+  }
+  if (active === 0) return "";
+  if (stalled > 0) return active + " subagent" + (active === 1 ? "" : "s") + " (" + stalled + " stalled)";
+  return active + " subagent" + (active === 1 ? "" : "s");
+}
+
+// Strip render: per-subagent line above the chat-input area, showing
+// running state + elapsed time + latest activity. Hides when empty.
+function renderSubagentStrip() {
+  if (!subagentStripEl) return;
+  if (subagentStates.size === 0) {
+    subagentStripEl.style.display = "none";
+    subagentStripEl.innerHTML = "";
+    return;
+  }
+  const lines = [];
+  const now = Date.now();
+  for (const s of subagentStates.values()) {
+    const elapsed = Math.round((now - s.startTs) / 1000);
+    const stalled = s.status === "running" && (now - s.lastEventTs > SUBAGENT_STALL_MS);
+    const icon = s.status === "running"
+      ? (stalled ? "&#9208;" : "&#9881;")  // ⏸ : ⚙
+      : (s.status === "done" ? "&#10003;" : "&#10007;");  // ✓ : ✗
+    const color = stalled
+      ? "#fbbf24"
+      : (s.status === "running" ? "#a78bfa" : (s.status === "done" ? "#3fb950" : "#f87171"));
+    const activity = (s.lastActivity || "starting...").slice(0, 80);
+    lines.push(
+      '<div style="color:' + color + ';">' +
+        icon + " <span style=\"font-weight:600;\">" + escapeHtml(s.agent_type) + "</span> " +
+        "<span style=\"color:#6e7681;\">(" + elapsed + "s)</span> &mdash; " +
+        escapeHtml(activity) +
+      "</div>"
+    );
+  }
+  subagentStripEl.innerHTML = lines.join("");
+  subagentStripEl.style.display = "flex";
 }
 
 // Two-note chime played when a turn finishes (success or error — the user
@@ -816,10 +886,51 @@ ch.onData(function(data) {
         addDetailLine(`[${stepCount}] ${data.description}`);
       }
       break;
+    case "subagent_started":
+      if (data.tool_use_id) {
+        subagentStates.set(data.tool_use_id, {
+          agent_type: data.agent_type || "unknown",
+          description: data.description || "",
+          status: "running",
+          lastActivity: "starting...",
+          lastEventTs: Date.now(),
+          startTs: Date.now(),
+        });
+        renderSubagentStrip();
+        updateMeta();
+      }
+      break;
+    case "subagent_event":
+      if (data.tool_use_id && subagentStates.has(data.tool_use_id)) {
+        const s = subagentStates.get(data.tool_use_id);
+        s.lastActivity = data.kind === "thinking"
+          ? ("thinking: " + (data.summary || ""))
+          : (data.description || data.kind || "...");
+        s.lastEventTs = Date.now();
+        renderSubagentStrip();
+        updateMeta();
+      }
+      break;
+    case "subagent_finished":
+      if (data.tool_use_id && subagentStates.has(data.tool_use_id)) {
+        const s = subagentStates.get(data.tool_use_id);
+        s.status = data.status || "done";
+        s.lastActivity = data.summary || s.lastActivity || "";
+        s.lastEventTs = Date.now();
+        renderSubagentStrip();
+        updateMeta();
+      }
+      break;
     case "assistant":
       setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+      // Subagent strip + badge clear on turn-end. The strip was a live
+      // view of in-flight work; once the parent turn returns, the
+      // subagent transcripts are part of the chat-bubble's expandable
+      // detail anyway, so the strip's job is done.
+      subagentStates.clear();
+      renderSubagentStrip();
       // Advance cursor locally if the server moved it. Trigger a re-render
       // of cursor-dependent display state (greyed messages above the line,
       // horizon separator at the cursor position) so the change is visible
@@ -930,6 +1041,12 @@ ch.onData(function(data) {
       setBusy(false);
       stopBtn.style.display = "none";
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+      // Subagent strip clears on any turn-end path. The server's drain
+      // broadcasts subagent_finished:failed for tasks that didn't return,
+      // but if the parent's error path is reached without a drain (e.g.,
+      // socket disconnect), this defensively clears the strip too.
+      subagentStates.clear();
+      renderSubagentStrip();
       setStatus("Error", "#f87171", false);
       addDetailLine("ERROR: " + (data.error || "Unknown"));
       addMessage("assistant", "Error: " + (data.error || "Unknown"), "System");
@@ -1163,6 +1280,11 @@ function advanceHorizon() {
     recentBaselines.length = 0;
     recentBaselinesActual.length = 0;
     if (fuelEl) fuelEl.style.display = "none";
+    // Same reset for the subagent strip (no in-flight subagents survive
+    // a cursor advance — but if the user clicked ^ during a stuck turn,
+    // they may have orphan strip lines from a prior session).
+    subagentStates.clear();
+    renderSubagentStrip();
   }).catch(function(err) {
     console.error("[chat] advance-cursor failed:", err);
     window.alert("Could not advance horizon: " + (err && err.message ? err.message : "unknown"));
@@ -1305,6 +1427,8 @@ const _unsubCursorAdvanced = mica.on("cursor-advanced", function(ev) {
   recentBaselines.length = 0;
   recentBaselinesActual.length = 0;
   if (fuelEl) fuelEl.style.display = "none";
+  subagentStates.clear();
+  renderSubagentStrip();
 });
 mica.onDestroy(_unsubCursorAdvanced);
 
