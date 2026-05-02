@@ -11,6 +11,7 @@ import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
 import { buildCardClassMcpServer } from "./plugins/cardClassTools.js";
+import { buildCliMcpServer, bindSdk as bindCliMcpSdk } from "./plugins/cliMcp.js";
 import {
   loadProjectSubagents,
   configureConcurrency,
@@ -262,6 +263,9 @@ async function getQuery() {
       // its MCP server when the first agent turn fires.
       const { bindSdk } = await import("./plugins/cardClassTools.js");
       bindSdk(_tool, _createSdkMcpServer);
+      // Same binding for the cli-mcp adapter (project-scoped third-party tool
+      // wrapper, driven by <project>/.mica/tools.json).
+      bindCliMcpSdk(_tool, _createSdkMcpServer);
     } catch (err) {
       console.error("[mica-agent] Failed to load @qwen-code/sdk:", (err as Error).message);
       throw new Error("@qwen-code/sdk not available");
@@ -1887,6 +1891,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               // landed at wrong paths. See server/plugins/cardClassTools.ts.
               const cardClassServer = buildCardClassMcpServer(sessionProject);
               if (cardClassServer) servers["mica-card-class"] = cardClassServer;
+              // mica-tools: project-scoped third-party CLI tools, declared in
+              // <project>/.mica/tools.json. Each tool there becomes a callable
+              // mcp__mica-tools__<server>_<op>. See server/plugins/cliMcp.ts
+              // and the add-third-party-tool skill.
+              const cliMcpServer = buildCliMcpServer(sessionProject);
+              if (cliMcpServer) servers["mica-tools"] = cliMcpServer;
               return Object.keys(servers).length > 0 ? { mcpServers: servers } : {};
             })(),
             env: {
