@@ -88,6 +88,7 @@ import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, bu
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { fetchHandler } from "./plugins/micaFetch.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
+import { createProcessHandler, manifest as processManifest } from "./plugins/processChannel.js";
 import { createLlmChatHandler, manifest as llmDirectManifest } from "./plugins/llmChat.js";
 import { createLlmAgentHandler, manifest as llmAgentManifest } from "./plugins/llmAgent.js";
 import { getManifests } from "./handlerManifest.js";
@@ -2021,6 +2022,12 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // discover handlers via GET /api/handlers.
   channelManager.registerHandler("llm-direct", createLlmChatHandler(), llmDirectManifest);
   channelManager.registerHandler("llm-agent", createLlmAgentHandler(), llmAgentManifest);
+  // process: generic spawn-and-stream primitive for long-running third-party
+  // subprocesses. Card classes use it via mica.openChannel("process", { command,
+  // args, cwd, env }). Companion to cli-mcp (which is for stateless agent-
+  // callable tools); this is for stateful, persistent subprocesses (autoresearch
+  // training loops, language servers, daemons). See server/plugins/processChannel.ts.
+  channelManager.registerHandler("process", createProcessHandler(), processManifest);
 
   // Start llama-server for local AI — unless disabled via env. The
   // MICA_DISABLE_LLAMA=1 escape hatch lets OpenRouter-only users skip
