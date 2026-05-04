@@ -938,9 +938,9 @@ If you need to test a web app the user is building, launch it on a DIFFERENT por
   // a tool result (confirmed by curl tests that show the same model
   // correctly describes image content when called directly, while the
   // agent flow self-reports as blind). The note nudges the prior.
-  parts.push(`## You have vision
+  parts.push(`## Vision
 
-You CAN see images. This runtime loads Qwen3.6-35B-A3B with its vision encoder (mmproj). When a tool result includes an image attachment (e.g. an image the user attached via the chat card's 📷 button), you actually see that image — don't say "I can't view images" or fall back to describing source code when a picture is right there. Describe the attached image directly: colors, layout, visible text, whether anything is clipped or wrong.`);
+This runtime is multimodal (Qwen3.6-35B-A3B with mmproj). When a user message or tool result includes an image, describe what's actually visible — don't fall back to "I can't view images."`);
 
   // Unified Mica tools prelude — same prose qwen, Claude, and opencode get.
   parts.push(buildAgentToolsPrelude());
