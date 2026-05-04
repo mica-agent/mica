@@ -1502,12 +1502,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // text adjacent to the actual user input. Same lever pattern we use
         // for participate-fully compliance — fresh text wins over distant
         // directives. ~30-token cost per turn; cheap insurance.
-        const TURN_NUDGE = `[Turn discipline reminder, apply BEFORE coding]
-1. If this turn will edit non-doc files (card.js/html/css, .ts, .py, .json), the relevant describing doc(s) must already describe the change — update them FIRST in this same turn, even if the user's intent feels obvious. The framework cannot detect doc/code drift after the fact.
-2. If \`participate-fully\` is in your skills list, invoke it before any other tool call to assess what changed.
-
-`;
-        const promptWithHistory = TURN_NUDGE + historyBlock + message;
+        const promptWithHistory = historyBlock + message;
 
         // Baseline size of the prompt the SDK will send on the first LLM call
         // of this turn (before any tool-loop accumulation). context includes
