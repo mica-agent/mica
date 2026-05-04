@@ -603,13 +603,19 @@ async function buildAvailableSkillsPrompt(project: string | null): Promise<strin
     .map((s) => `- **${s.name}** — ${s.description}`)
     .join("\n");
 
-  return `## Available skills (mandatory when matched)
+  // Compact skill listing — names + one-line descriptions. The
+  // qwen-code SDK's `skill` tool also surfaces these to the model;
+  // this block is the system-prompt redundancy that reinforces it
+  // for the local Qwen prior, which sometimes ignores tool listings.
+  // Kept short to limit prompt density (the previous "mandatory when
+  // matched" preamble + "match liberally" trailer added ~150 tokens
+  // of prescriptive prose; the agent gets the same signal from the
+  // tool description).
+  return `## Available skills
 
-When a user request matches one of the skills below, you MUST invoke it via the \`skill\` tool BEFORE any other action — before \`read_file\`, \`list_directory\`, \`write_file\`, anything. The skill body contains load-bearing procedural steps; noticing a skill is relevant and then free-forming the work anyway defeats the purpose. Match → invoke → follow.
+Invoke matching skills via the \`skill\` tool before related work:
 
-${skillLines}
-
-Match liberally — the trigger words in each description aren't exhaustive; use judgment for adjacent phrasings. If multiple skills match, prefer the most specific. If \`participate-fully\` is listed, read it at the start of EVERY turn to assess what changed.`;
+${skillLines}`;
 }
 
 export async function buildContext(
