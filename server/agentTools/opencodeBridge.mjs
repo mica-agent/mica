@@ -143,10 +143,15 @@ const TOOLS = [
       "invoke its skills via the `skill` tool. Use AFTER discover-library identifies a " +
       "library that has a known skills package (e.g. Three.js → 'threejs-skills'). The " +
       "package is cloned into both .qwen/skills/<name>/ and .claude/skills/<name>/ so all " +
-      "agent backends pick it up. Common shorthands: 'threejs-skills', 'three'.",
+      "agent backends pick it up. Common shorthands: 'threejs-skills', 'three'. " +
+      "TWO-TIER TRUST: curated shorthands and previously-approved URLs install instantly. " +
+      "For a new URL the agent has discovered (e.g. via web_search), the FIRST call returns " +
+      "a 'pending approval' report — show the URL to the user, get explicit OK in chat, then " +
+      "retry with approve: true.",
     inputSchema: {
       source: z.string().describe("Shorthand ('threejs-skills'), 'github:owner/repo', or full https:// URL"),
       name: z.string().optional().describe("Override install dir name (default: derived from source)"),
+      approve: z.boolean().optional().describe("Set true ONLY after user explicitly approved this URL in chat. First call without approve for new URLs."),
     },
     restPath: "/api/tools/mica-install-skills",
   },

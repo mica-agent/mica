@@ -137,11 +137,16 @@ This is what spec.md should look like before any code is written. The reviewer s
 
 For each non-trivial library you've selected, check if a Mica-shaped skills package exists and install it. Library-specific skills carry the procedural knowledge the model's training-data priors miss — disposal patterns, init-order quirks, version-specific gotchas — and prevent recurring failures (e.g. Three.js cards that leak GPU memory because textures aren't disposed on remount).
 
-Try in order:
+Try in order, cheap-to-expensive:
 
-1. **Known shorthand** — pass the library name to `mica_install_skills` and let it resolve. Currently mapped: `three`, `threejs`, `threejs-skills` → `cloudai-x/threejs-skills`. Try other library names too; the tool will tell you if the shorthand isn't known.
-2. **GitHub search** — search for `<library>-skills` (e.g. `leaflet-skills`, `d3-skills`) and look for repos that follow the SKILL.md convention (markdown files with YAML `name:` / `description:` frontmatter). If found, pass the URL to `mica_install_skills source="github:owner/repo"`.
-3. **None found** — record `"no skills package available"` in the spec next to the library decision and proceed. This is fine; community skills don't exist for every library.
+1. **Curated shorthand** — `mica_install_skills source="<library>-skills"` (e.g. `threejs-skills`). Mica's curated table maps the well-known names to vetted repos; installs instantly with no gate. Currently mapped: `three`, `threejs`, `threejs-skills` → `cloudai-x/threejs-skills`. Other names won't be in the table yet — that's fine, fall through.
+2. **GitHub convention** — `mica_install_skills source="github:<owner>/<library>-skills"` if you can guess a likely owner (e.g. `github:mrdoob/three-skills`). Convention-based; instant install if the repo exists.
+3. **Web search** — `web_search "<library> skills SKILL.md"` or `<library> mica skills` to find community packages. Pick the top maintained candidate; `web_fetch` its README to verify it follows the SKILL.md convention (each skill is a directory with `SKILL.md` + YAML `name:` / `description:` frontmatter).
+   - First call: `mica_install_skills source="<the URL you found>"`. The tool returns a "Pending user approval" report with the resolved URL.
+   - Surface that URL to the user in your reply: *"I found a skills package at `<URL>` — install it?"*
+   - On user yes, retry with the SAME args plus `approve: true`. Mica records the approval in `.mica/skills-approvals.json` so future installs of the same URL skip the gate.
+   - On user no or "skip libraries-skills," proceed without — record "no skills package available" next to the library decision in spec.md.
+4. **None found** — record `"no skills package available"` in the spec next to the library decision and proceed. This is fine; community skills don't exist for every library.
 
 Newly installed skills are visible to the agent on the NEXT turn via the `skill` tool. To use them in the SAME turn (e.g. mid-build), `read_file` the relevant SKILL.md directly from `.qwen/skills/<name>/<skill-dir>/SKILL.md` (or `.claude/skills/<name>/...` for Claude/opencode).
 

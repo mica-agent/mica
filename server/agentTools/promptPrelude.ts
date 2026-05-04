@@ -28,7 +28,12 @@ When you need a card class, the canonical flow is: \`mica_list_classes\` → \`m
 
 ### Library-aware skills
 
-When \`discover-library\` selects a third-party library (Three.js, Leaflet, D3, …), check whether a Mica-shaped skills package exists for it and install it via \`mica_install_skills\` before writing card.js. Known shorthands include \`threejs-skills\` (Three.js); for others, try \`<library>-skills\` as a github search. Library-specific skills give you procedural guidance the model's training-data priors miss (resource disposal, init-order quirks, version-specific gotchas) — without them, common failures recur (e.g. Three.js cards that leak GPU memory because textures aren't disposed on remount).
+When \`discover-library\` selects a third-party library (Three.js, Leaflet, D3, …), check whether a Mica-shaped skills package exists for it and install it via \`mica_install_skills\` before writing card.js. Library-specific skills give you procedural guidance the model's training-data priors miss (resource disposal, init-order quirks, version-specific gotchas) — without them, common failures recur (e.g. Three.js cards that leak GPU memory because textures aren't disposed on remount).
+
+Discovery cascades cheap-to-expensive:
+1. **Curated shorthand** — try \`mica_install_skills source="<library>-skills"\` first (e.g. \`threejs-skills\`). Mica-vetted, installs instantly.
+2. **GitHub convention** — if shorthand returns "Unsupported source format", try \`source="github:<owner>/<library>-skills"\` for repos that follow the SKILL.md convention.
+3. **Web search** — if neither hits, \`web_search "<library> skills SKILL.md"\` to find a community package. The first call to \`mica_install_skills\` with a non-curated URL returns a "pending approval" report listing the URL — surface that URL to the user in your reply, ask them to confirm, and on yes, retry with the same args plus \`approve: true\`. Mica records the approval per-project so future installs of the same URL skip the gate.
 
 ### Iterating on a working card class
 
