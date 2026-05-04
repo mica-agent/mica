@@ -1,0 +1,7 @@
+{
+  "extension": ".opencode",
+  "badge": "OC",
+  "primaryFile": "chat.json",
+  "defaultTitle": "OpenCode",
+  "dependencies": {}
+}

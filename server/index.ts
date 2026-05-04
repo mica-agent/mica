@@ -85,6 +85,8 @@ import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llam
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
+import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
+import { stopOpencodeServer } from "./opencodeServer.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { fetchHandler } from "./plugins/micaFetch.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
@@ -140,6 +142,38 @@ async function reapChildProcesses(graceMs: number): Promise<void> {
   for (const pid of survivors) {
     console.warn(`[shutdown] SIGKILLing surviving child pid=${pid}`);
     try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
+}
+
+/** Reap orphan opencode-serve processes left behind by previous Mica
+ *  instances. Called at startup, before we spawn a fresh one. Without this,
+ *  every dev-loop restart of Mica accumulates an opencode-serve hanging
+ *  off PID 1 — they reach a stuck state on restart-time config changes
+ *  (e.g. an earlier ConfigInvalidError) and the next user-loaded web UI
+ *  may hit one of them by port. The pattern matches `opencode serve` in
+ *  argv; safe because that string only appears in the headless server
+ *  CLI, not in `opencode providers login` / `opencode tui`. */
+async function reapOrphanOpencodeServers(): Promise<void> {
+  const { execSync } = await import("node:child_process");
+  let pids: number[] = [];
+  try {
+    pids = execSync(`pgrep -f "[.]opencode serve"`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid);
+  } catch { return; /* none alive */ }
+  if (pids.length === 0) return;
+  console.log(`[startup] reaping ${pids.length} orphan opencode-serve process(es) from prior runs: ${pids.join(", ")}`);
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+  }
+  // Brief grace, then SIGKILL stragglers.
+  await new Promise((r) => setTimeout(r, 800));
+  for (const pid of pids) {
+    try { process.kill(pid, 0); } catch { continue; /* already exited */ }
+    try { process.kill(pid, "SIGKILL"); console.warn(`[startup] SIGKILL stale opencode-serve pid=${pid}`); } catch { /* gone */ }
   }
 }
 
@@ -239,6 +273,7 @@ function switchProject(projectName: string) {
   setChatProject(projectName);
   setAgentProject(projectName);
   setClaudeAgentProject(projectName);
+  setOpencodeAgentProject(projectName);
   setExecProject(projectName);
   setPtyProject(projectName);
   console.log(`[mica] Active project: ${projectName}`);
@@ -2023,6 +2058,10 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // Ensure workspace directory exists
   await mkdir(WORKSPACE_DIR, { recursive: true });
 
+  // Reap any opencode-serve orphans from a previous Mica run. Each restart
+  // would otherwise leak one (children of the dead Mica re-parent to PID 1).
+  await reapOrphanOpencodeServers();
+
   // Register mica.* RPC plugins
   registerMicaHandler("chat", chatHandler);  // mica.chat.*
   registerMicaHandler("exec", execHandler);  // mica.exec.*
@@ -2037,6 +2076,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
   channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
+  channelManager.registerHandler("opencode", createOpencodeAgentHandler(fileWatcher));  // .opencode files -> OpenCode agent (lazy-spawned opencode serve)
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
   channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat (legacy binding)
   channelManager.registerHandler("skills", createSkillComposeHandler());  // .skills files -> collaborative SKILL.md authoring
@@ -2096,6 +2136,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
     // and any in-flight subprocesses orphan to PID 1, accumulating leaks
     // across restart cycles. See incident: zombies from Apr 23 found alive
     // 9+ days later, holding llama-server -np slots + ~50-100MB RAM each.
+    stopOpencodeServer();  // gracefully close the opencode HTTP server (no-op if never spawned)
     await reapChildProcesses(3000);
     await stopLlamaServer();
     process.exit(0);
