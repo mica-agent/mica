@@ -288,7 +288,10 @@ function buildMicaToolsMcpServer(sessionProject: string | null): unknown | null 
     toolFn: _tool,
     createServerFn: _createSdkMcpServer,
     sessionProject,
-    serverName: "mica-tools",
+    // Match Claude + opencode: same server name across all three agents
+    // means tool calls show up consistently in logs (mcp__mica-builtins__X)
+    // and the agent system prompt's prose stays accurate.
+    serverName: "mica-builtins",
   });
 }
 
