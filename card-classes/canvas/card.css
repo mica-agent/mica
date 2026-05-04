@@ -68,7 +68,12 @@
 .canvas-meta-overlay {
     position: absolute;
     inset: 0;
-    z-index: 40;
+    /* High z-index: freeform cards' z-index climbs on every click-to-front
+       (the canvas card's `topZ` is monotonic with no cap), so z=40 was
+       easily overtaken after a long working session — meta cards started
+       appearing behind regular cards. 9999 keeps the overlay reliably
+       above any card stack the user has built up. */
+    z-index: 9999;
     display: flex;
     align-items: center;
     justify-content: center;
