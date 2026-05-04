@@ -6,7 +6,7 @@ import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT } from "./files.js";
-import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency } from "./cardValidators.js";
+import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
@@ -1745,6 +1745,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               const filePath = pathFromWriteInput(input);
               const preReason = checkCardClassPrecondition(filePath, readFilesThisTurn);
               if (preReason) return { behavior: "deny" as const, message: preReason };
+
+              const libReason = checkLibraryDiscoveryPrecondition(filePath, readFilesThisTurn);
+              if (libReason) return { behavior: "deny" as const, message: libReason };
 
               const content = contentFromWriteInput(input);
               if (content !== null) {

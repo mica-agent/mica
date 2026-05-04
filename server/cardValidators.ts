@@ -139,6 +139,40 @@ export function checkCardClassPrecondition(
   return "Read `.qwen/skills/create-card-class/SKILL.md` (or `.claude/skills/create-card-class/SKILL.md` for Claude) before writing card class code. The Mica API surface (mica.files.*, mica.openChannel, channel sessions, file events) is documented there. Improvising leads to invented endpoints, wrong field names (e.g. file.name vs file.path), and fictional registries (e.g. Mica.registerCardClass — does not exist). Read the skill, then retry.";
 }
 
+// Design-doc files that bake in library/dependency decisions. Writing one
+// without running the discover-library workflow first is the failure mode
+// where the agent ships bespoke implementations and back-rationalizes them
+// with invented user constraints ("User specified 'no external libraries'"
+// when no such thing was said). Empirical: world clock 6 with qwen-code SDK
+// produced exactly that confabulation when discover-library wasn't invoked.
+//
+// Match is intentionally loose — basename only — so it catches design docs
+// regardless of which folder the project's canvasRoot is configured to.
+const DESIGN_DOC_RX = /(?:^|\/)(spec|decomposition|interfaces)\.md$/;
+const DISCOVER_LIBRARY_SKILL_RX = /\.(?:qwen|claude)\/skills\/discover-library\/SKILL\.md$/;
+
+/** If `filePath` is a design doc (spec.md, decomposition.md, interfaces.md)
+ *  and the discover-library skill hasn't been read in `readFiles`, returns
+ *  the deny reason. Otherwise null.
+ *
+ *  Why this exists: the discover-library skill has a guard ("If the user
+ *  said no external libraries — confirm before assuming") that fires only
+ *  inside the skill's workflow. When the agent skips the skill entirely
+ *  and writes spec/decomposition straight from priors, the guard never
+ *  triggers, and the agent confabulates a user constraint to justify
+ *  rolling bespoke. This precondition forces the skill onto the path.
+ *  Same pattern as checkCardClassPrecondition. */
+export function checkLibraryDiscoveryPrecondition(
+  filePath: string,
+  readFiles: Set<string>,
+): string | null {
+  if (!DESIGN_DOC_RX.test(filePath)) return null;
+  for (const p of readFiles) {
+    if (DISCOVER_LIBRARY_SKILL_RX.test(p)) return null;
+  }
+  return "Read `.qwen/skills/discover-library/SKILL.md` (or `.claude/skills/discover-library/SKILL.md` for Claude) before writing or modifying spec.md / decomposition.md / interfaces.md. Design docs that bake in library choices without running the discover-library workflow tend to default to bespoke implementations and back-rationalize the choice with invented user constraints (\"User specified 'no external libraries'\" when nothing of the sort was said). The skill takes <30 seconds: search → curl-verify → record the decision per subproblem. Library is the default; bespoke is the exception that requires a documented \"no library fits because Z\" reason. Read the skill, then retry.";
+}
+
 const METADATA_JSON_RX = /\.mica\/card-classes\/([^/]+)\/metadata\.json$/;
 
 /** When the agent writes `.mica/card-classes/<dir>/metadata.json`, ensure the
