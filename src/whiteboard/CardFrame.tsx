@@ -186,6 +186,7 @@ export default function CardFrame({ project, file, canvasRoot, onEdit, onDelete,
       className={`wb-card wb-card--resized ${flipped ? "wb-card--flipped" : ""} ${file.meta && collapsed ? "wb-card--collapsed" : ""}`}
       data-filename={file.name}
       data-meta={file.meta ? "true" : undefined}
+      data-modified-at={file.modifiedAt}
     >
       {/* Header */}
       <div className="wb-card-header">

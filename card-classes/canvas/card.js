@@ -232,6 +232,10 @@ function persistZSilent() {
 function positionCard(card) {
     const name = card.getAttribute('data-filename');
     if (!name) return;
+    // Seed heat from the card's modifiedAt attribute. Heat trail uses this
+    // to bucket cards as hot/warm/mild/cool/cold on first mount; live
+    // file-changed broadcasts maintain it after that.
+    seedHeatFromCard(card, name);
     // Phone: CSS handles stacking, just reveal the card
     if (isPhone) {
         requestAnimationFrame(() => { card.classList.add('wb-card--positioned'); });
@@ -709,6 +713,8 @@ const unsubCreated = mica.on('file-created', (msg) => {
     // New cards will appear via React portaling + MutationObserver
     // Just update empty state after a tick
     setTimeout(updateEmptyState, 100);
+    // Newly created file is by definition fresh — heat trail bumps it.
+    if (msg && msg.filename) bumpHeat(msg.filename);
 });
 mica.onDestroy(unsubCreated);
 
@@ -717,9 +723,102 @@ const unsubDeleted = mica.on('file-deleted', (msg) => {
         delete layout[msg.filename];
         persistLayout();
     }
+    if (msg && msg.filename) heatTimestamps.delete(msg.filename);
     setTimeout(updateEmptyState, 100);
 });
 mica.onDestroy(unsubDeleted);
+
+// -- Heat trail ----------------------------------------
+//
+// Persistent recency-driven opacity. Decoupled from the existing 10s
+// `wb-card--agent-write` / `wb-card--external-write` glow (whiteboard.css):
+// that animation is the spike attention-grabber on fresh writes; this is
+// the long-term "shape of activity" baseline that lets the user glance at
+// a busy canvas and tell which cards have been touched recently versus
+// which are reference material.
+//
+// Bucketed (5 levels) rather than a continuous gradient so the CSS layer
+// is cheap (no animation churn; each card lives in one of five static
+// states). Buckets transition smoothly via the existing
+// `transition: opacity 0.3s` rule on .canvas-freeform > .wb-card.
+//
+// Heat is per-tab in-memory state. Persisted state is unnecessary —
+// modifiedAt seeds initial heat on load; live broadcasts maintain it.
+
+// Per-card last-touched timestamp (ms). Bumped on file-created /
+// file-changed / agent-write; seeded from data-modified-at when a card
+// first mounts. Map key: filename.
+const heatTimestamps = new Map();
+
+// Bucket thresholds in seconds since last touch. Tuned so:
+//   - Fresh edits keep the card at full strength for a half hour
+//     (covers a typical iteration session).
+//   - Cards stay legible (>= 0.45 opacity) even when cold.
+const HEAT_BUCKETS = [
+    { name: 'hot',  maxAgeSec: 60 },          // < 1 min
+    { name: 'warm', maxAgeSec: 1800 },        // < 30 min
+    { name: 'mild', maxAgeSec: 14400 },       // < 4 hours
+    { name: 'cool', maxAgeSec: 86400 },       // < 24 hours
+    // anything else → 'cold'
+];
+
+function bucketForAge(ageSec) {
+    for (const b of HEAT_BUCKETS) if (ageSec < b.maxAgeSec) return b.name;
+    return 'cold';
+}
+
+function applyHeat(filename) {
+    const card = freeform.querySelector(`.wb-card[data-filename="${CSS.escape(filename)}"]`);
+    if (!card) return;
+    const ts = heatTimestamps.get(filename);
+    if (typeof ts !== 'number') {
+        // Unknown card (no event seen, no modifiedAt seeded) — treat as warm
+        // so we don't visually demote brand-new cards we haven't tracked yet.
+        card.dataset.heat = 'warm';
+        return;
+    }
+    const ageSec = (Date.now() - ts) / 1000;
+    card.dataset.heat = bucketForAge(ageSec);
+}
+
+function bumpHeat(filename) {
+    if (!filename) return;
+    heatTimestamps.set(filename, Date.now());
+    applyHeat(filename);
+}
+
+// Initial seed when a card first mounts — read its data-modified-at and
+// translate the file's mtime into a heat timestamp. Skip if we already have
+// a more-recent timestamp from a live event (don't demote a hot card just
+// because positionCard re-ran).
+function seedHeatFromCard(card, filename) {
+    if (!card || !filename) return;
+    const isoStr = card.dataset.modifiedAt;
+    if (!isoStr) return;
+    const t = new Date(isoStr).getTime();
+    if (Number.isNaN(t)) return;
+    const existing = heatTimestamps.get(filename);
+    if (typeof existing !== 'number' || t > existing) {
+        heatTimestamps.set(filename, t);
+    }
+    applyHeat(filename);
+}
+
+// Re-sweep all tracked cards once a minute to age them through buckets.
+// Cheap: just read timestamps, compute bucket, set dataset attribute.
+const heatDecayTimer = setInterval(() => {
+    for (const filename of heatTimestamps.keys()) applyHeat(filename);
+}, 60_000);
+mica.onDestroy(() => clearInterval(heatDecayTimer));
+
+// Live writes (any source — agent, this tab, other tab, external editor)
+// bump heat. Self-edits intentionally count: the heat trail is "shape of
+// activity" not "alert me to changes" (which is what the 10s glow does,
+// and which already skips self-echoes).
+const unsubChanged = mica.on('file-changed', (msg) => {
+    if (msg && msg.filename) bumpHeat(msg.filename);
+});
+mica.onDestroy(unsubChanged);
 
 // -- Collapse / expand individual cards -----------------
 // CardFrame's minimize button dispatches `mica-toggle-collapse` with
