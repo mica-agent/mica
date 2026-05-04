@@ -26,15 +26,7 @@ Use these INSTEAD of \`write_file\` / \`edit\` when working with card classes �
 
 When you need a card class, the canonical flow is: \`mica_list_classes\` → \`mica_create_class\` (if the class doesn't exist) → \`mica_create_card_instance\` (to put it on the canvas) → \`render_capture\` (to verify it renders correctly).
 
-### Iteration discipline (anti-patterns to avoid)
+### Iterating on a working card class
 
-These patterns burn turns without making progress:
-
-- **Don't full-rewrite a working file to add one feature.** Use \`mica_edit_class_file\` with \`old_string\` + \`new_string\` to ADD the new bit while keeping what already works. Full overwrites regularly regress code that was rendering correctly (e.g. lose a working Earth while trying to add the Moon).
-- **Don't delete + recreate an instance to "refresh" after a class file edit.** Mica's file-watcher broadcasts \`card-class-changed\` on every save and the frontend hot-reloads existing instances live. The only reason to delete an instance is if you genuinely want it gone from the canvas.
-- **Don't curl Mica's REST API to "verify" cache state** (e.g. \`GET /api/card-classes/<n>/card.js\`). Cache invalidation is automatic; the read-back tells you nothing actionable.
-- **Don't write \`.mica/layout.json\` directly.** It's runtime state owned by the canvas card class. The validator denies these writes.
-- **Don't write \`.mica/card-classes/*/card.js|html|css\` directly.** Use \`mica_edit_class_file\`. The validator denies raw writes here so you get pre-write lint and partial-edit support.
-
-If \`render_capture\` shows the card is partially working (e.g. Earth visible but no Moon), the right move is a single targeted \`mica_edit_class_file\` adding ONLY the missing piece — not a full rewrite, not a delete-recreate.`;
+When \`render_capture\` shows a card is partially working (e.g. Earth visible but Moon missing), use \`mica_edit_class_file\` with \`old_string\` + \`new_string\` to add ONLY the missing piece — the framework keeps the rest of the file intact. Saving a class file hot-reloads its live instance automatically.`;
 }
