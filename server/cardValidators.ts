@@ -151,6 +151,50 @@ export function checkCardClassPrecondition(
 const DESIGN_DOC_RX = /(?:^|\/)(spec|decomposition|interfaces)\.md$/;
 const DISCOVER_LIBRARY_SKILL_RX = /\.(?:qwen|claude)\/skills\/discover-library\/SKILL\.md$/;
 
+// Paths the agent should NEVER write directly via raw write_file. Each
+// has a structured tool that owns the path's invariants — bypassing the
+// tool produces malformed state (layout.json corruption, metadata schema
+// errors, lint failures that don't surface until next save). The
+// precondition deny redirects to the right tool.
+const PROTECTED_PATH_RULES: Array<{ rx: RegExp; reason: string }> = [
+  {
+    // .mica/layout.json — runtime state owned by the canvas card class.
+    // Drag, resize, click-to-front, smart-layout — all flow through the
+    // canvas. Direct agent writes corrupt the layout (missing per-card
+    // entries, inconsistent z-orders) and can survive across reloads.
+    rx: /\.mica\/layout\.json$/,
+    reason: "Refusing direct write_file to `.mica/layout.json`. Layout is runtime state owned by the canvas card class — drag, resize, smart-layout, and z-order all flow through it. The agent has no business editing it. If you need to reposition a card on canvas, ask the user; if you're trying to refresh a card after editing its class files, you don't need to — Mica's file-watcher broadcasts `card-class-changed` and the frontend hot-reloads existing instances on save.",
+  },
+  {
+    // card.js / card.html / card.css inside a card class — should go
+    // through mica_edit_class_file which (a) runs the same pre-write
+    // lint that fires after every save, surfacing failures in this
+    // same turn, and (b) supports partial edits (old_string/new_string)
+    // so amending a working file doesn't accidentally regress it
+    // through a full-file rewrite. Direct write_file makes both worse.
+    rx: /\.mica\/card-classes\/[^/]+\/card\.(?:js|html|css)$/,
+    reason: "Refusing direct write_file to a card class file. Use the `mica_edit_class_file` tool instead — it runs the same lint that fires post-save BEFORE the write (lint failures surface in this same turn) and supports partial edits via `old_string`/`new_string` so you can ADD content (e.g. add a Moon mesh) without rewriting the whole file and regressing what was already working. If you really must replace the entire file, pass `content=` to mica_edit_class_file. Args: `class` (directory name), `file` ('card.js' / 'card.html' / 'card.css'), then either `content` (full replace) or `old_string`+`new_string` (partial).",
+  },
+  {
+    // metadata.json — should go through mica_create_class which
+    // serializes from typed inputs (name, badge, extension, scripts,
+    // styles, etc.) instead of free-form JSON the agent might shape
+    // wrong (extension/dirname mismatch, missing required fields).
+    rx: /\.mica\/card-classes\/[^/]+\/metadata\.json$/,
+    reason: "Refusing direct write_file to a card class metadata.json. Use the `mica_create_class` tool instead — it serializes metadata from typed inputs (name, badge, defaultTitle, extension, scripts, styles, handler, primaryFile) so the schema is correct by construction. Editing free-form JSON here is the recurring failure mode where the extension doesn't match the directory name and the card silently renders as TXT.",
+  },
+];
+
+/** If `filePath` is one of the agent-protected paths above (layout.json,
+ *  card.js/html/css, metadata.json) reject the raw write and redirect to
+ *  the structured tool. Otherwise null. */
+export function checkProtectedPathPrecondition(filePath: string): string | null {
+  for (const rule of PROTECTED_PATH_RULES) {
+    if (rule.rx.test(filePath)) return rule.reason;
+  }
+  return null;
+}
+
 /** If `filePath` is a design doc (spec.md, decomposition.md, interfaces.md)
  *  and the discover-library skill hasn't been read in `readFiles`, returns
  *  the deny reason. Otherwise null.

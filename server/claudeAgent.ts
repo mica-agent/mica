@@ -8,7 +8,7 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT } from "./files.js";
 import { buildSubagentCanvasContext } from "./micaAgent.js";
-import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition } from "./cardValidators.js";
+import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
@@ -865,6 +865,9 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           // (see server/cardValidators.ts).
           if (["write_file", "write_to_file", "create_file", "Write"].includes(toolName)) {
             const filePath = pathFromWriteInput(input);
+            const protReason = checkProtectedPathPrecondition(filePath);
+            if (protReason) return { behavior: "deny" as const, message: protReason };
+
             const preReason = checkCardClassPrecondition(filePath, readFilesThisTurn);
             if (preReason) return { behavior: "deny" as const, message: preReason };
 
