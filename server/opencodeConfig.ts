@@ -19,6 +19,9 @@
 
 import type { Config, AgentConfig, McpLocalConfig } from "@opencode-ai/sdk";
 import { loadProjectSubagents, type ParsedSubagent } from "./subagents.js";
+import { AGENT_TOOL_AUTH_SECRET } from "./agentTools/registry.js";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 
 /** Build an opencode Config object from Mica's subagent files + workspace env.
  *  Project parameter is null for v1 (we use workspace-shared subagents only,
@@ -76,6 +79,31 @@ export async function buildOpencodeConfig(): Promise<Config> {
       enabled: true,
     };
   }
+
+  // mica-builtins — unified hub for Mica-internal tools. Same surface as
+  // qwen and Claude get via SDK-embedded MCPs; opencode reaches it via a
+  // tiny stdio bridge child process that forwards to /api/tools/*.
+  // Auth secret is per-backend-startup; passed in env so cards (which
+  // can't see process env) cannot reach the tool API. See
+  // server/agentTools/registry.ts and opencodeBridge.mjs.
+  //
+  // Project context: bridge does NOT pass X-Mica-Project header (one
+  // bridge serves all sessions; can't tell which session is calling).
+  // Mica's REST falls back to the last-active opencode project, set by
+  // opencodeAgent.ts on each turn start (setLastActiveOpencodeProject).
+  // For typical 1-active-session use this resolves correctly; concurrent
+  // multi-session tool calls can race — accepted v1 limitation.
+  const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "agentTools", "opencodeBridge.mjs");
+  const micaPort = process.env.MICA_PORT || "3002";
+  mcp["mica-builtins"] = {
+    type: "local",
+    command: ["node", bridgePath],
+    environment: {
+      MICA_TOOLS_AUTH_SECRET: AGENT_TOOL_AUTH_SECRET,
+      MICA_TOOLS_BASE_URL: `http://127.0.0.1:${micaPort}`,
+    },
+    enabled: true,
+  };
 
   if (Object.keys(mcp).length > 0) config.mcp = mcp;
 

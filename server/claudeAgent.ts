@@ -22,6 +22,8 @@ import {
   type ParsedSubagent,
 } from "./subagents.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
+import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
+import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { markProjectActivity } from "./projectActivity.js";
@@ -119,17 +121,36 @@ interface ChatMessage {
 
 // Lazy-load the SDK
 let _query: ((config: unknown) => AsyncIterable<unknown>) | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _claudeTool: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _claudeCreateSdkMcpServer: any = null;
 async function getQuery() {
   if (!_query) {
     try {
       const mod = await import("@anthropic-ai/claude-agent-sdk");
       _query = (mod as { query: typeof _query }).query;
+      _claudeTool = (mod as { tool: unknown }).tool;
+      _claudeCreateSdkMcpServer = (mod as { createSdkMcpServer: unknown }).createSdkMcpServer;
     } catch (err) {
       console.error("[claude-agent] Failed to load @anthropic-ai/claude-agent-sdk:", (err as Error).message);
       throw new Error("@anthropic-ai/claude-agent-sdk not available");
     }
   }
   return _query!;
+}
+
+/** Build Claude SDK's mica-builtins MCP server. Mirrors the qwen wiring
+ *  in micaAgent.ts; both go through buildAgentToolsMcpServer with each
+ *  SDK's own tool/createSdkMcpServer helpers. */
+function buildClaudeBuiltinsMcpServer(sessionProject: string | null): unknown | null {
+  if (!sessionProject || !_claudeTool || !_claudeCreateSdkMcpServer) return null;
+  return buildAgentToolsMcpServer({
+    toolFn: _claudeTool,
+    createServerFn: _claudeCreateSdkMcpServer,
+    sessionProject,
+    serverName: "mica-builtins",
+  });
 }
 
 // -- History persistence --
@@ -353,6 +374,9 @@ You execute shell commands inside the same container that runs Mica itself. Thes
 - Any process matching \`vite\`, \`tsx server/index.ts\`, \`vllm\`, \`npm run dev\`, or under \`/workspaces/mica/\` is Mica. Leave it alone.
 
 If you need to test a web app the user is building, launch it on a DIFFERENT port (e.g. 9000, 9090) — don't use 5173 or 3002. If a port conflict happens, use a different port rather than killing anything.`);
+
+  // Unified Mica tools prelude — same prose qwen, Claude, and opencode get.
+  parts.push(buildAgentToolsPrelude());
 
   parts.push(`## Skills
 This project's skills are bundled by its template and live under \`.claude/skills/<name>/SKILL.md\`. The Claude Code SDK auto-discovers them and surfaces each skill's \`description:\` to you. When a user request matches a skill's trigger words, load that skill (read its SKILL.md) and follow it. If a \`participate-fully\` skill is present, read it at the start of every turn — it tells you how to handle the \`## Since your last turn\` section above.
@@ -923,6 +947,14 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
               "TodoWrite",
               "Agent", "Task",
             ],
+            // mica-builtins MCP server — unified hub for Mica-internal
+            // tools (currently render_capture; mica_create_class etc.
+            // migrate here in Phase 2). Same handlers as qwen + opencode
+            // via /api/tools/* loopback. See server/agentTools/registry.ts.
+            ...(() => {
+              const builtinsServer = buildClaudeBuiltinsMcpServer(sessionProject);
+              return builtinsServer ? { mcpServers: { "mica-builtins": builtinsServer } } : {};
+            })(),
             // Clear CLAUDECODE — if Mica is launched from inside a Claude Code shell
             // the SDK would otherwise refuse ("cannot launch inside another session").
             env: { ...process.env, CLAUDECODE: "" } as NodeJS.ProcessEnv,

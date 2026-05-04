@@ -87,6 +87,7 @@ import { createAgentHandler, setActiveProject as setAgentProject, buildContext a
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
 import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
 import { stopOpencodeServer } from "./opencodeServer.js";
+import { registerAgentToolRoutes } from "./agentTools/restRoutes.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { fetchHandler } from "./plugins/micaFetch.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
@@ -2072,6 +2073,11 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // the project-list page isn't subscribed to any specific project.
   setActivityBroadcast(broadcast);
   registerMicaHandler("render", renderHandler);  // mica.render.capture
+
+  // Register agent-tools REST routes (POST /api/tools/<tool>). These are
+  // the unified surface for tools available to ALL agents (qwen, Claude,
+  // opencode). See server/agentTools/registry.ts.
+  registerAgentToolRoutes(app);
 
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent

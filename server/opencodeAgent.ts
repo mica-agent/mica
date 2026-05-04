@@ -50,6 +50,8 @@ import { markAgentWrite } from "./writeSource.js";
 import { loadProjectSubagents } from "./subagents.js";
 import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { markProjectActivity } from "./projectActivity.js";
+import { setLastActiveOpencodeProject } from "./agentTools/registry.js";
+import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { getOpencodeServer } from "./opencodeServer.js";
 import type { Event, Part } from "@opencode-ai/sdk";
@@ -265,6 +267,9 @@ You execute shell commands inside the same container that runs Mica itself. Thes
 - **Ports 8012, 8013** — vLLM inference. NEVER kill these.
 - Any process matching \`vite\`, \`tsx server/index.ts\`, \`vllm\`, \`npm run dev\`, or under \`/workspaces/mica/\` is Mica. Leave it alone.
 If you need to launch a test web app, use a different port (9000, 9090).`);
+
+  // Unified Mica tools prelude — same prose qwen, Claude, and opencode get.
+  parts.push(buildAgentToolsPrelude());
 
   parts.push(`## Asking the user a question
 
@@ -778,6 +783,11 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       if (busy) { queue.push(message); return; }
       busy = true;
       markProjectActivity(sessionProject, +1);
+      // Publish this session's project as the last-active opencode project.
+      // The mica-builtins MCP bridge runs once per opencode-serve and can't
+      // pass session-scoped headers; Mica's /api/tools/* endpoints fall back
+      // to this when X-Mica-Project is absent. See server/agentTools/registry.ts.
+      setLastActiveOpencodeProject(sessionProject);
 
       // Reset per-turn collectors
       Object.keys(turnToolCalls).forEach((k) => delete turnToolCalls[k]);

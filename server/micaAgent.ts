@@ -26,6 +26,8 @@ import { writeSnapshot } from "./turnSnapshots.js";
 import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
+import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
+import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { z } from "zod";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
@@ -274,100 +276,19 @@ async function getQuery() {
   return _query!;
 }
 
-/** Build the mica-render MCP server with the project bound in. A fresh
- *  instance per turn is cheap (it's just object construction) and binds
- *  `sessionProject` into the tool handler's closure cleanly. */
-function buildRenderMcpServer(sessionProject: string | null): unknown | null {
+/** Build the mica-tools MCP server for the qwen-code SDK. Tools live in
+ *  server/agentTools/registry.ts; this just wires them through the
+ *  qwen SDK's createSdkMcpServer + tool helpers. The actual work
+ *  (captureCard, vision caption, etc.) runs server-side via /api/tools/*
+ *  loopback so qwen, Claude, and opencode all share the same impl.
+ *  Replaces the in-process render_capture handler that lived here. */
+function buildMicaToolsMcpServer(sessionProject: string | null): unknown | null {
   if (!sessionProject || !_tool || !_createSdkMcpServer) return null;
-  const captureToolDef = _tool(
-    "render_capture",
-    "Capture a PNG screenshot of a card as it is currently rendered on the " +
-    "canvas, then return a TEXT verification report describing what's in the " +
-    "image. The server runs the screenshot through llama-server's vision " +
-    "encoder (mmproj) directly and returns a 5-15 line description as the " +
-    "tool result — layout, colors, visible text, anything that looks broken " +
-    "or missing. You receive TEXT, not an image (the SDK's tool_result " +
-    "channel doesn't carry image data through to the model — that's why the " +
-    "server captions on your behalf). Use this after building or editing a " +
-    "card class to verify it rendered correctly. The browser tab must be " +
-    "open to the project's canvas. The filename is the canvas-root-relative " +
-    "path of the card instance file (e.g. 'canvas/my-widget.burndown'), not " +
-    "the card class directory.",
-    { filename: z.string().describe("Canvas-root-relative path of the instance file (e.g. 'canvas/my.burndown')") },
-    async (args: { filename: string }) => {
-      try {
-        const result = await captureCard(sessionProject, args.filename);
-        const png = await fsReadFile(result.path);
-        const base64 = png.toString("base64");
-
-        // Caption the image via a direct llama-server call (NOT through the
-        // SDK). Same pattern as processImageMessage's user-attachment flow
-        // (which works in production via the chat card's 📷 button) — the
-        // SDK strips MCP image blocks from tool_result content, so we have
-        // to do the vision-bearing call ourselves and return text.
-        //
-        // Bypassing the SDK here is intentional and contained: the model
-        // is the same qwen3-vl-local llama-server is loaded with; we're
-        // just talking to it directly because the SDK's openai-compatible
-        // tool_result type is text-only.
-        let caption = "";
-        try {
-          const llamaUrl = LLAMA_URL.replace(/\/v1$/, "");
-          const captionRes = await fetch(`${llamaUrl}/v1/chat/completions`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: "qwen3-vl-local",
-              max_tokens: 400,
-              messages: [
-                {
-                  role: "system",
-                  content:
-                    "You are verifying a rendered Mica card class. Describe what's actually visible in the attached image — layout, colors, visible text, anything that looks broken, missing, clipped, or wrong. Look for: red error banners, blank/empty regions, overlapping elements, illegible text, missing markers/icons. Describe the IMAGE, not the source code. 5-15 lines of plain text, no markdown.",
-                },
-                {
-                  role: "user",
-                  content: [
-                    { type: "text", text: `Verification of ${args.filename}: describe what you see.` },
-                    { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } },
-                  ],
-                },
-              ],
-            }),
-          });
-          if (captionRes.ok) {
-            const data = await captionRes.json() as {
-              choices?: Array<{ message?: { content?: string } }>;
-            };
-            caption = data.choices?.[0]?.message?.content?.trim() || "";
-          } else {
-            caption = `(captioning failed: llama-server returned ${captionRes.status})`;
-          }
-        } catch (capErr) {
-          caption = `(captioning failed: ${(capErr as Error).message})`;
-        }
-
-        return {
-          content: [{
-            type: "text",
-            text:
-              `Render verification of ${args.filename} ` +
-              `(${result.width}×${result.height}, ${Math.round(result.bytes / 1024)} KiB, ` +
-              `saved to ${result.relativePath}):\n\n${caption || "(no description returned)"}`,
-          }],
-        };
-      } catch (err) {
-        return {
-          isError: true,
-          content: [{ type: "text", text: `Capture failed: ${(err as Error).message}` }],
-        };
-      }
-    },
-  );
-  return _createSdkMcpServer({
-    name: "mica-render",
-    version: "1.0.0",
-    tools: [captureToolDef],
+  return buildAgentToolsMcpServer({
+    toolFn: _tool,
+    createServerFn: _createSdkMcpServer,
+    sessionProject,
+    serverName: "mica-tools",
   });
 }
 
@@ -1012,9 +933,10 @@ If you need to test a web app the user is building, launch it on a DIFFERENT por
   // agent flow self-reports as blind). The note nudges the prior.
   parts.push(`## You have vision
 
-You CAN see images. This runtime loads Qwen3.6-35B-A3B with its vision encoder (mmproj). When a tool result includes an image attachment, you actually see that image — don't say "I can't view images" or fall back to describing source code when a picture is right there. Describe the attached image directly: colors, layout, visible text, whether anything is clipped or wrong.
+You CAN see images. This runtime loads Qwen3.6-35B-A3B with its vision encoder (mmproj). When a tool result includes an image attachment (e.g. an image the user attached via the chat card's 📷 button), you actually see that image — don't say "I can't view images" or fall back to describing source code when a picture is right there. Describe the attached image directly: colors, layout, visible text, whether anything is clipped or wrong.`);
 
-The \`render_capture\` tool (MCP server \`mica-render\`) returns a screenshot of a rendered canvas card with the image attached. Use it to visually verify card work and report what you actually see in the pixels.`);
+  // Unified Mica tools prelude — same prose qwen, Claude, and opencode get.
+  parts.push(buildAgentToolsPrelude());
 
   parts.push(`## Asking the user a question
 
@@ -1912,8 +1834,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // templates/dgx-spark-local/.qwen/settings.json.
             ...(() => {
               const servers: Record<string, unknown> = {};
-              const renderServer = buildRenderMcpServer(sessionProject);
-              if (renderServer) servers["mica-render"] = renderServer;
+              // mica-builtins: unified hub for Mica-internal tools that
+              // reach /api/tools/* via REST. Shared across qwen, Claude,
+              // opencode. Tool defs live in server/agentTools/registry.ts.
+              const builtinsServer = buildMicaToolsMcpServer(sessionProject);
+              if (builtinsServer) servers["mica-builtins"] = builtinsServer;
               // mica-card-class: structured CRUD for card classes + instances.
               // Replaces hand-constructed write_file calls that recurringly
               // landed at wrong paths. See server/plugins/cardClassTools.ts.
