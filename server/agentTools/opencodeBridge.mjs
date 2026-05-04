@@ -30,6 +30,12 @@ if (!AUTH) {
 // Mirror of server/agentTools/registry.ts AGENT_TOOLS shape — schemas
 // declared as zod (matches the MCP SDK's expectations). When a new tool
 // is added to the TS registry, add the same name+schema+restPath here.
+//
+// Schemas here are intentionally PERMISSIVE — Mica's REST endpoints
+// validate inputs against the canonical zod schemas server-side, so any
+// shape drift surfaces as a 400 from the server, not silent corruption.
+// We declare the bare minimum so opencode shows useful tool descriptions
+// to the model.
 const TOOLS = [
   {
     name: "render_capture",
@@ -48,6 +54,87 @@ const TOOLS = [
       filename: z.string().describe("Canvas-root-relative path of the instance file (e.g. 'canvas/my.burndown')"),
     },
     restPath: "/api/tools/render-capture",
+  },
+  {
+    name: "mica_create_class",
+    description:
+      "Create a card class atomically. Use this INSTEAD of write_file for new card " +
+      "classes — the framework picks the directory and validates metadata.json shape. " +
+      "Required: name (lowercase, dashes only — e.g. 'world-clock'). Optional: badge, " +
+      "defaultTitle, extension, card_html, card_js, card_css, scripts (CDN URLs), " +
+      "styles, handler, primaryFile.",
+    inputSchema: {
+      name: z.string().describe("Card class identifier (directory name and default extension)"),
+      badge: z.string().optional(),
+      defaultTitle: z.string().optional(),
+      extension: z.string().optional(),
+      card_html: z.string().optional(),
+      card_js: z.string().optional(),
+      card_css: z.string().optional(),
+      scripts: z.array(z.string()).optional(),
+      styles: z.array(z.string()).optional(),
+      handler: z.string().optional(),
+      primaryFile: z.string().optional(),
+    },
+    restPath: "/api/tools/mica-create-class",
+  },
+  {
+    name: "mica_edit_class_file",
+    description:
+      "Edit a card class's card.html / card.js / card.css with PRE-WRITE validation. " +
+      "For card.js, the same lint that runs after every save runs BEFORE the write so " +
+      "lint failures surface in the same turn. Supports full-content replace (content=) " +
+      "or partial edit (old_string=+new_string=). metadata.json edits go through " +
+      "mica_create_class instead.",
+    inputSchema: {
+      class: z.string().describe("Card class name (directory name)"),
+      file: z.enum(["card.html", "card.js", "card.css"]),
+      content: z.string().optional(),
+      old_string: z.string().optional(),
+      new_string: z.string().optional(),
+    },
+    restPath: "/api/tools/mica-edit-class-file",
+  },
+  {
+    name: "mica_create_card_instance",
+    description:
+      "Create an instance of an existing card class on the canvas. Lands at " +
+      "<canvasRoot>/<filename>.<class_extension>. Verifies the class exists. Use " +
+      "INSTEAD of write_file for new card instances.",
+    inputSchema: {
+      class_extension: z.string().describe("File extension of the class (with leading dot, e.g. '.world-clock')"),
+      filename: z.string().describe("Filename without extension (e.g. 'my-clock')"),
+      content: z.string().optional(),
+    },
+    restPath: "/api/tools/mica-create-card-instance",
+  },
+  {
+    name: "mica_delete_card_instance",
+    description: "Delete a card instance file. Accepts canvas-relative or project-relative paths.",
+    inputSchema: {
+      filename: z.string().describe("Path to the instance file"),
+    },
+    restPath: "/api/tools/mica-delete-card-instance",
+  },
+  {
+    name: "mica_delete_class",
+    description:
+      "Delete a card class directory and all its files. Refuses if instance files of " +
+      "this class exist on the canvas, unless force=true.",
+    inputSchema: {
+      name: z.string().describe("Card class name to delete"),
+      force: z.boolean().optional().describe("If true, delete even when instances exist"),
+    },
+    restPath: "/api/tools/mica-delete-class",
+  },
+  {
+    name: "mica_list_classes",
+    description:
+      "List all card classes available in this project (project-scoped + built-in). " +
+      "Returns name, extension, badge, source. Useful before creating a new class to " +
+      "check for naming collisions or before creating an instance.",
+    inputSchema: {},
+    restPath: "/api/tools/mica-list-classes",
   },
 ];
 

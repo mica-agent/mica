@@ -61,7 +61,7 @@ function classDir(project: string, name: string): string {
 
 // ── Tool: mica_create_class ────────────────────────────────────────
 
-const createClassSchema = {
+export const createClassSchema = {
   name: z.string().describe("Card class identifier (becomes the directory name and, by default, the file extension). Lowercase alphanumeric + dashes only — e.g. \"world-clock\", \"burndown\". No dots. THIS IS THE ONLY REQUIRED FIELD; everything else has reasonable defaults."),
   badge: z.string().optional().describe("1-4 character abbreviation shown on the card's title bar (e.g. \"WCK\", \"BRN\"). Defaults to the first 3 letters of name, uppercase."),
   defaultTitle: z.string().optional().describe("Human-readable card title (e.g. \"World Clock\", \"Burndown\"). Defaults to title-cased name (\"world-clock\" → \"World Clock\")."),
@@ -75,7 +75,7 @@ const createClassSchema = {
   primaryFile: z.string().optional().describe("Optional. Used by container-style card classes whose instance is a directory containing a specific filename — e.g. '.todo' classes whose instance dirs contain plan.todo."),
 };
 
-async function createClassImpl(
+export async function createClassImpl(
   project: string,
   args: z.infer<z.ZodObject<typeof createClassSchema>>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
@@ -202,14 +202,14 @@ async function createClassImpl(
 
 // ── Tool: mica_create_card_instance ────────────────────────────────
 
-const createInstanceSchema = {
+export const createInstanceSchema = {
   class_extension: z.string().describe("Extension of the card class to instantiate, with leading dot (e.g. '.world-clock'). Class must already exist (use mica_create_class first if needed)."),
   filename: z.string().describe("Bare filename for the instance, no extension. The class extension is appended automatically. E.g. 'tokyo' for a world-clock instance becomes 'canvas/tokyo.world-clock'."),
   parent: z.string().optional().describe("Optional sub-folder under canvasRoot to place the instance in (e.g. 'cities'). Defaults to canvasRoot itself."),
   content: z.string().optional().describe("Optional initial content for the instance file. Defaults to empty string."),
 };
 
-async function createInstanceImpl(
+export async function createInstanceImpl(
   project: string,
   args: z.infer<z.ZodObject<typeof createInstanceSchema>>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
@@ -262,11 +262,11 @@ async function createInstanceImpl(
 
 // ── Tool: mica_delete_card_instance ─────────────────────────────────
 
-const deleteInstanceSchema = {
+export const deleteInstanceSchema = {
   filename: z.string().describe("Project-relative path of the instance file to delete (e.g. 'canvas/tokyo.world-clock'). Or canvas-relative bare name; framework canonicalizes."),
 };
 
-async function deleteInstanceImpl(
+export async function deleteInstanceImpl(
   project: string,
   args: z.infer<z.ZodObject<typeof deleteInstanceSchema>>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
@@ -294,12 +294,12 @@ async function deleteInstanceImpl(
 
 // ── Tool: mica_delete_class ────────────────────────────────────────
 
-const deleteClassSchema = {
+export const deleteClassSchema = {
   name: z.string().describe("Card class name (directory name, no dot). Same name used in mica_create_class."),
   force: z.boolean().optional().describe("If true, delete even when instance files of this class exist. Default false: refuse and list the instances so the agent can decide."),
 };
 
-async function deleteClassImpl(
+export async function deleteClassImpl(
   project: string,
   args: z.infer<z.ZodObject<typeof deleteClassSchema>>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
@@ -353,7 +353,7 @@ async function deleteClassImpl(
 
 // ── Tool: mica_list_classes ─────────────────────────────────────────
 
-async function listClassesImpl(
+export async function listClassesImpl(
   project: string,
   _args: Record<string, never>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
@@ -400,7 +400,7 @@ async function listClassesImpl(
 
 // ── Tool: mica_edit_class_file ─────────────────────────────────────
 
-const editClassFileSchema = {
+export const editClassFileSchema = {
   class: z.string().describe("Card class name (directory name, e.g. 'world-clock'). Must already exist."),
   file: z.enum(["card.html", "card.js", "card.css"]).describe("Which file to edit. metadata.json edits go through mica_create_class instead — that tool serializes the metadata from typed inputs and avoids JSON-shape mistakes."),
   content: z.string().optional().describe("Full file content (replaces existing). Mutually exclusive with old_string/new_string."),
@@ -408,7 +408,7 @@ const editClassFileSchema = {
   new_string: z.string().optional().describe("Replacement for old_string. Required when old_string is provided."),
 };
 
-async function editClassFileImpl(
+export async function editClassFileImpl(
   project: string,
   args: z.infer<z.ZodObject<typeof editClassFileSchema>>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {

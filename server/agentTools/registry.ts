@@ -28,6 +28,14 @@
 import { z } from "zod";
 import { randomBytes } from "crypto";
 import { renderCaptureTool } from "./renderCapture.js";
+import {
+  createClassTool,
+  editClassFileTool,
+  createInstanceTool,
+  deleteInstanceTool,
+  deleteClassTool,
+  listClassesTool,
+} from "./cardClass.js";
 
 // Per-backend startup secret. Agents include this in the
 // `x-mica-agent-auth` header on every /api/tools/* request. Browser cards
@@ -65,6 +73,12 @@ export interface AgentToolDef<
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const AGENT_TOOLS: AgentToolDef<any>[] = [
   renderCaptureTool,
+  createClassTool,
+  editClassFileTool,
+  createInstanceTool,
+  deleteInstanceTool,
+  deleteClassTool,
+  listClassesTool,
 ];
 
 // ── Project resolution for opencode bridge ───────────────────────────

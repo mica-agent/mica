@@ -10,7 +10,11 @@ import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFrom
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
-import { buildCardClassMcpServer } from "./plugins/cardClassTools.js";
+// buildCardClassMcpServer retired — its tools (mica_create_class,
+// mica_edit_class_file, mica_list_classes, mica_create_card_instance,
+// mica_delete_class, mica_delete_card_instance) now live in the unified
+// mica-builtins server (server/agentTools/cardClass.ts). The cardClassTools
+// module is kept for its impl + schema exports, used by the new wrappers.
 import { buildCliMcpServer, bindSdk as bindCliMcpSdk } from "./plugins/cliMcp.js";
 import {
   loadProjectSubagents,
@@ -261,12 +265,12 @@ async function getQuery() {
       _query = (mod as { query: typeof _query }).query;
       _tool = (mod as { tool: unknown }).tool;
       _createSdkMcpServer = (mod as { createSdkMcpServer: unknown }).createSdkMcpServer;
-      // Bind the SDK helpers into the card-class tools module so it can build
-      // its MCP server when the first agent turn fires.
-      const { bindSdk } = await import("./plugins/cardClassTools.js");
-      bindSdk(_tool, _createSdkMcpServer);
-      // Same binding for the cli-mcp adapter (project-scoped third-party tool
-      // wrapper, driven by <project>/.mica/tools.json).
+      // The card-class CRUD tools now live in the unified registry
+      // (server/agentTools/cardClass.ts) and reach Mica via REST loopback —
+      // they don't need SDK injection any more. Only the cli-mcp adapter
+      // (project-scoped third-party tools, driven by <project>/.mica/tools.json)
+      // still uses the per-SDK MCP wrapper because its tools are dynamic
+      // per-project (the unified registry shape is a static set).
       bindCliMcpSdk(_tool, _createSdkMcpServer);
     } catch (err) {
       console.error("[mica-agent] Failed to load @qwen-code/sdk:", (err as Error).message);
@@ -1840,13 +1844,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               // mica-builtins: unified hub for Mica-internal tools that
               // reach /api/tools/* via REST. Shared across qwen, Claude,
               // opencode. Tool defs live in server/agentTools/registry.ts.
+              // Currently exposes: render_capture, mica_create_class,
+              // mica_edit_class_file, mica_create_card_instance,
+              // mica_delete_card_instance, mica_delete_class,
+              // mica_list_classes. The previous standalone mica-card-class
+              // SDK MCP was retired in favor of this unified surface.
               const builtinsServer = buildMicaToolsMcpServer(sessionProject);
               if (builtinsServer) servers["mica-builtins"] = builtinsServer;
-              // mica-card-class: structured CRUD for card classes + instances.
-              // Replaces hand-constructed write_file calls that recurringly
-              // landed at wrong paths. See server/plugins/cardClassTools.ts.
-              const cardClassServer = buildCardClassMcpServer(sessionProject);
-              if (cardClassServer) servers["mica-card-class"] = cardClassServer;
               // mica-tools: project-scoped third-party CLI tools, declared in
               // <project>/.mica/tools.json. Each tool there becomes a callable
               // mcp__mica-tools__<server>_<op>. See server/plugins/cliMcp.ts
