@@ -136,6 +136,20 @@ const TOOLS = [
     inputSchema: {},
     restPath: "/api/tools/mica-list-classes",
   },
+  {
+    name: "mica_install_skills",
+    description:
+      "Install a third-party skills package into the current project so future turns can " +
+      "invoke its skills via the `skill` tool. Use AFTER discover-library identifies a " +
+      "library that has a known skills package (e.g. Three.js → 'threejs-skills'). The " +
+      "package is cloned into both .qwen/skills/<name>/ and .claude/skills/<name>/ so all " +
+      "agent backends pick it up. Common shorthands: 'threejs-skills', 'three'.",
+    inputSchema: {
+      source: z.string().describe("Shorthand ('threejs-skills'), 'github:owner/repo', or full https:// URL"),
+      name: z.string().optional().describe("Override install dir name (default: derived from source)"),
+    },
+    restPath: "/api/tools/mica-install-skills",
+  },
 ];
 
 const server = new McpServer({ name: "mica-builtins", version: "1.0.0" });

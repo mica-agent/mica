@@ -36,6 +36,7 @@ import {
   deleteClassTool,
   listClassesTool,
 } from "./cardClass.js";
+import { installSkillsTool } from "./installSkills.js";
 
 // Per-backend startup secret. Agents include this in the
 // `x-mica-agent-auth` header on every /api/tools/* request. Browser cards
@@ -79,6 +80,7 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   deleteInstanceTool,
   deleteClassTool,
   listClassesTool,
+  installSkillsTool,
 ];
 
 // ── Project resolution for opencode bridge ───────────────────────────

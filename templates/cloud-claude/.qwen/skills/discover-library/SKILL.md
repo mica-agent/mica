@@ -133,6 +133,18 @@ User asks for a world clock card with a day/night overlay. Subproblems and libra
 
 This is what spec.md should look like before any code is written. The reviewer scanning this can immediately catch a wrong call ("wait, why are we hand-rolling solar math when leaflet.terminator already does it?").
 
+## After choosing — install library skills if available
+
+For each non-trivial library you've selected, check if a Mica-shaped skills package exists and install it. Library-specific skills carry the procedural knowledge the model's training-data priors miss — disposal patterns, init-order quirks, version-specific gotchas — and prevent recurring failures (e.g. Three.js cards that leak GPU memory because textures aren't disposed on remount).
+
+Try in order:
+
+1. **Known shorthand** — pass the library name to `mica_install_skills` and let it resolve. Currently mapped: `three`, `threejs`, `threejs-skills` → `cloudai-x/threejs-skills`. Try other library names too; the tool will tell you if the shorthand isn't known.
+2. **GitHub search** — search for `<library>-skills` (e.g. `leaflet-skills`, `d3-skills`) and look for repos that follow the SKILL.md convention (markdown files with YAML `name:` / `description:` frontmatter). If found, pass the URL to `mica_install_skills source="github:owner/repo"`.
+3. **None found** — record `"no skills package available"` in the spec next to the library decision and proceed. This is fine; community skills don't exist for every library.
+
+Newly installed skills are visible to the agent on the NEXT turn via the `skill` tool. To use them in the SAME turn (e.g. mid-build), `read_file` the relevant SKILL.md directly from `.qwen/skills/<name>/<skill-dir>/SKILL.md` (or `.claude/skills/<name>/...` for Claude/opencode).
+
 ## Cross-references
 
 - `create-card-class/SKILL.md` § STEP 0.5 — invokes this skill recursively for each subproblem during inline card-class builds.

@@ -26,6 +26,10 @@ Use these INSTEAD of \`write_file\` / \`edit\` when working with card classes �
 
 When you need a card class, the canonical flow is: \`mica_list_classes\` → \`mica_create_class\` (if the class doesn't exist) → \`mica_create_card_instance\` (to put it on the canvas) → \`render_capture\` (to verify it renders correctly).
 
+### Library-aware skills
+
+When \`discover-library\` selects a third-party library (Three.js, Leaflet, D3, …), check whether a Mica-shaped skills package exists for it and install it via \`mica_install_skills\` before writing card.js. Known shorthands include \`threejs-skills\` (Three.js); for others, try \`<library>-skills\` as a github search. Library-specific skills give you procedural guidance the model's training-data priors miss (resource disposal, init-order quirks, version-specific gotchas) — without them, common failures recur (e.g. Three.js cards that leak GPU memory because textures aren't disposed on remount).
+
 ### Iterating on a working card class
 
 When \`render_capture\` shows a card is partially working (e.g. Earth visible but Moon missing), use \`mica_edit_class_file\` with \`old_string\` + \`new_string\` to add ONLY the missing piece — the framework keeps the rest of the file intact. Saving a class file hot-reloads its live instance automatically.`;

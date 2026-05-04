@@ -1,0 +1,214 @@
+// mica_install_skills — clone a third-party skills package into the project
+// so future turns can invoke its skills via the `skill` tool. Fits into the
+// canonical agent flow:
+//   discover-library: "use Three.js 0.158.0"
+//   → check if a Three.js skills package exists ("threejs-skills")
+//   → mica_install_skills source="threejs-skills"
+//   → next turn: agent has Three.js-specific procedural guidance available
+//
+// The package is cloned into `<project>/.qwen/skills/<name>/` and symlinked
+// into `<project>/.claude/skills/<name>/` so all three agent backends pick
+// up the new skills on their next turn through their standard skill-discovery
+// mechanisms (qwen-code SDK auto-discovers SKILL.md files; Claude Agent SDK
+// likewise; opencode reads Config.skills directories).
+
+import { z } from "zod";
+import { join } from "path";
+import { mkdir, readdir, readFile, symlink } from "fs/promises";
+import { existsSync } from "fs";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { WORKSPACE_DIR } from "../files.js";
+import type { AgentToolDef, AgentToolResult } from "./registry.js";
+
+const execFileP = promisify(execFile);
+
+// Curated lookup table — well-known library → skills repo. Hint list, not a
+// registry. Agent can also pass `github:owner/repo` or full URL directly.
+// Expand as the ecosystem grows; ship empty rather than wrong.
+const KNOWN_SKILL_PACKAGES: Record<string, string> = {
+  three: "https://github.com/cloudai-x/threejs-skills.git",
+  threejs: "https://github.com/cloudai-x/threejs-skills.git",
+  "three.js": "https://github.com/cloudai-x/threejs-skills.git",
+  "threejs-skills": "https://github.com/cloudai-x/threejs-skills.git",
+  "three-skills": "https://github.com/cloudai-x/threejs-skills.git",
+};
+
+const inputSchema = {
+  source: z
+    .string()
+    .describe(
+      "Where to fetch the skills from. Accepts: " +
+        "(a) a known shorthand like 'threejs-skills' or 'three' (lookup table), " +
+        "(b) 'github:owner/repo' (clones https://github.com/owner/repo.git), or " +
+        "(c) a full https:// URL to a git repo on github.com / gitlab.com / bitbucket.org. " +
+        "The repository should follow the SKILL.md convention — each skill is a directory " +
+        "containing SKILL.md with YAML frontmatter (name, description) and a markdown body.",
+    ),
+  name: z
+    .string()
+    .optional()
+    .describe(
+      "Override the directory name for the install (default: derived from source — " +
+        "e.g. 'github:cloudai-x/threejs-skills' → 'threejs', stripping the '-skills' suffix). " +
+        "Use alphanumeric, dash, underscore only.",
+    ),
+} as const;
+
+interface ResolvedSource { url: string; defaultName: string }
+
+function resolveSource(source: string): ResolvedSource | { error: string } {
+  // Lookup-table shorthand — preferred path; agent doesn't need to know URLs.
+  if (KNOWN_SKILL_PACKAGES[source]) {
+    return { url: KNOWN_SKILL_PACKAGES[source], defaultName: source.replace(/-skills$/, "").replace(/^three\.js$/, "threejs") };
+  }
+  // github:owner/repo[#ref]
+  const ghMatch = source.match(/^github:([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+?)(?:\.git)?(?:#([a-zA-Z0-9_./-]+))?$/);
+  if (ghMatch) {
+    const [, owner, repo] = ghMatch;
+    return {
+      url: `https://github.com/${owner}/${repo}.git`,
+      defaultName: repo.replace(/-skills$/, "").replace(/\.git$/, ""),
+    };
+  }
+  // Full https URL on a known git host.
+  const urlMatch = source.match(
+    /^https:\/\/(github\.com|gitlab\.com|bitbucket\.org)\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+?)(\.git)?$/,
+  );
+  if (urlMatch) {
+    const repoPath = urlMatch[2];
+    const repo = repoPath.split("/").pop() || "skills";
+    return {
+      url: source.endsWith(".git") ? source : `${source}.git`,
+      defaultName: repo.replace(/-skills$/, ""),
+    };
+  }
+  return {
+    error:
+      `Unsupported source format: "${source}". Use one of: ` +
+      "(a) known shorthand (e.g. 'threejs-skills'), " +
+      "(b) 'github:owner/repo', or " +
+      "(c) full https:// URL on github.com / gitlab.com / bitbucket.org.",
+  };
+}
+
+async function summarizeSkills(skillsRoot: string): Promise<Array<{ name: string; description: string }>> {
+  const found: Array<{ name: string; description: string }> = [];
+  async function walk(dir: string): Promise<void> {
+    let entries: Awaited<ReturnType<typeof readdir>>;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      // Skip hidden + .git internals; recurse into normal subdirectories.
+      if (e.isDirectory() && !e.name.startsWith(".")) {
+        await walk(full);
+      } else if (e.isFile() && e.name === "SKILL.md") {
+        try {
+          const content = await readFile(full, "utf-8");
+          const fm = content.match(/^---\n([\s\S]*?)\n---/);
+          if (!fm) continue;
+          const nameMatch = fm[1].match(/^name:\s*(.+)$/m);
+          const descMatch = fm[1].match(/^description:\s*(.+(?:\n[ ]+.+)*)/m);
+          const name = nameMatch?.[1].trim().replace(/^["']|["']$/g, "") ?? "(no name)";
+          const description = (descMatch?.[1] ?? "")
+            .replace(/\n[ ]+/g, " ")
+            .trim()
+            .replace(/^["']|["']$/g, "");
+          found.push({ name, description: description.slice(0, 140) });
+        } catch {
+          // skip unreadable
+        }
+      }
+    }
+  }
+  await walk(skillsRoot);
+  return found;
+}
+
+export const installSkillsTool: AgentToolDef<typeof inputSchema> = {
+  name: "mica_install_skills",
+  description:
+    "Install a third-party skills package into the current project so future turns can " +
+    "invoke its skills via the `skill` tool. Use this AFTER `discover-library` identifies a " +
+    "library that has a known skills package (e.g. Three.js → 'threejs-skills'). The package " +
+    "is cloned into both `.qwen/skills/<name>/` (qwen-code SDK) and `.claude/skills/<name>/` " +
+    "(Claude / opencode), so all three agent backends pick up the new skills automatically " +
+    "on their next turn. To use a newly-installed skill in the SAME turn, read its SKILL.md " +
+    "via read_file. Common shorthands: 'threejs-skills' / 'three'.",
+  inputSchema,
+  restPath: "/api/tools/mica-install-skills",
+  handler: async (input, ctx): Promise<AgentToolResult> => {
+    if (!ctx.project) {
+      return { isError: true, text: "Active project required." };
+    }
+    const resolved = resolveSource(input.source);
+    if ("error" in resolved) {
+      return { isError: true, text: resolved.error };
+    }
+    const rawName = (input.name && input.name.trim()) || resolved.defaultName;
+    if (!/^[a-zA-Z0-9_-]+$/.test(rawName)) {
+      return {
+        isError: true,
+        text: `Invalid name "${rawName}" — use alphanumeric + dash/underscore only.`,
+      };
+    }
+    const name = rawName;
+    const projDir = join(WORKSPACE_DIR, ctx.project);
+    const qwenTarget = join(projDir, ".qwen", "skills", name);
+    const claudeTarget = join(projDir, ".claude", "skills", name);
+    if (existsSync(qwenTarget)) {
+      return {
+        isError: true,
+        text:
+          `A skills package already exists at .qwen/skills/${name}/. To reinstall ` +
+          `(e.g. to pick up upstream changes), remove that directory first via ` +
+          `run_shell_command, then retry.`,
+      };
+    }
+
+    // Ensure parent dirs exist.
+    await mkdir(join(projDir, ".qwen", "skills"), { recursive: true });
+    await mkdir(join(projDir, ".claude", "skills"), { recursive: true });
+
+    // Shallow clone via execFile (no shell — args passed as array, no
+    // injection risk). 30s timeout caps a hung clone.
+    try {
+      await execFileP("git", ["clone", "--depth", "1", resolved.url, qwenTarget], { timeout: 30_000 });
+    } catch (err) {
+      const e = err as { stderr?: string; message?: string };
+      const detail = (e.stderr || e.message || "(no detail)").slice(0, 400);
+      return { isError: true, text: `git clone failed: ${detail}` };
+    }
+
+    // Symlink .claude/skills/<name>/ → relative path into .qwen/skills/<name>/.
+    // Cheaper than a copy and stays in sync with the qwen tree if either is
+    // updated. Falls back gracefully if the FS doesn't support symlinks
+    // (rare in our Linux/Docker setup, but possible).
+    try {
+      await symlink(join("..", "..", ".qwen", "skills", name), claudeTarget);
+    } catch (err) {
+      console.warn(
+        `[install-skills] symlink to .claude/skills/${name} failed: ${(err as Error).message}. ` +
+          `qwen sees the skills; Claude/opencode may need a manual mirror.`,
+      );
+    }
+
+    const skills = await summarizeSkills(qwenTarget);
+    const skillsList =
+      skills.length > 0
+        ? skills.map((s) => `- **${s.name}** — ${s.description}`).join("\n")
+        : "(no SKILL.md files found at the expected paths — the upstream package may not follow the SKILL.md convention)";
+
+    return {
+      text:
+        `Installed ${skills.length} skill(s) from ${resolved.url} into ` +
+        `.qwen/skills/${name}/ (symlinked into .claude/skills/${name}/):\n\n${skillsList}\n\n` +
+        `Available next turn via the \`skill\` tool. To use this turn, read the relevant ` +
+        `SKILL.md with read_file — paths are .qwen/skills/${name}/<dir>/SKILL.md.`,
+    };
+  },
+};
