@@ -850,26 +850,27 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         </div>
       )}
       {currentError && (
-        // Red error banner overlaid at the top of the card. Visible to the
+        // Inset error box overlaid near the top of the card. Visible to the
         // user AND to render_capture's html2canvas — the agent's caption
-        // picks up the banner text as "the card has a red error banner
-        // reading X," which is its evidence that the error fired. Click
-        // the × to dismiss; auto-clears on next card re-render.
+        // picks up "card has a red error box reading X," which is its
+        // evidence the error fired. Click × to dismiss; auto-clears on next
+        // card re-render. Inset (rather than edge-to-edge banner) so the
+        // box visually encloses the message inside the card frame.
         <div
           style={{
             position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
+            top: 8,
+            left: 8,
+            right: 8,
             zIndex: 100,
             background: "rgba(220, 38, 38, 0.95)",
             color: "#fff",
-            padding: "6px 28px 6px 10px",
+            padding: "8px 32px 8px 12px",
             fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
             fontSize: 12,
             lineHeight: 1.4,
-            borderBottom: "1px solid rgba(0,0,0,0.3)",
-            boxShadow: "0 2px 4px rgba(0,0,0,0.4)",
+            borderRadius: 6,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
             wordBreak: "break-word",
           }}
         >
