@@ -498,6 +498,28 @@ export async function editClassFileImpl(
     }
     finalContent = args.content;
   } else if (typeof args.old_string === "string" && typeof args.new_string === "string") {
+    // No-op detection: identical old_string and new_string would write the
+    // file unchanged. Surfaces a soft loop where the agent intended a
+    // different tool (commonly render_capture) but generated tool-call args
+    // that round-trip to a degenerate edit. Without this check the tool
+    // returns success, the model reads "edit completed" → "now verify with
+    // screenshot" → emits the same degenerate edit, and the loop persists
+    // indefinitely. Observed: 90+ identical-args edits in one opencode
+    // session before catching it manually.
+    if (args.old_string === args.new_string) {
+      return {
+        isError: true,
+        content: [{
+          type: "text",
+          text:
+            `No-op edit refused: old_string and new_string are identical, so this call ` +
+            `would write the file unchanged. If you intended to verify the rendered card, ` +
+            `call \`render_capture\` with \`{ filename: "<canvas-relative path>" }\`. If ` +
+            `you intended to read the current content, call \`read_file\`. If you genuinely ` +
+            `wanted to edit, the new_string must differ from old_string.`,
+        }],
+      };
+    }
     let existing: string;
     try {
       existing = await readFile(filePath, "utf-8");
