@@ -224,37 +224,134 @@ function addMessage(role, content, agent, questions, turnId) {
     const header = agent ? `<div style="color:${ACCENT};font-size:11px;font-weight:600;margin-bottom:4px;">${escapeHtml(agent)}${chevron}</div>` : "";
     msg.innerHTML = `${header}<div class="chat-md" style="color:#e6edf3;font-size:13px;line-height:1.5;">${renderMarkdown(content)}</div>`;
     if (questions && questions.length > 0) {
-      const buttonRows = window.document.createElement("div");
-      buttonRows.style.cssText = "display:flex;flex-direction:column;gap:8px;margin-top:10px;";
-      for (let qi = 0; qi < questions.length; qi++) {
-        const q = questions[qi];
-        if (!q.options || q.options.length === 0) continue;
-        const row = window.document.createElement("div");
-        row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;";
-        for (let oi = 0; oi < q.options.length; oi++) {
-          const opt = q.options[oi];
-          const btn = window.document.createElement("button");
-          btn.textContent = opt.label;
-          btn.title = opt.description || opt.label;
-          btn.style.cssText = "background:rgba(124,58,237,0.15);color:#e6edf3;border:1px solid rgba(124,58,237,0.4);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit;";
-          btn.addEventListener("mouseenter", function() { btn.style.background = "rgba(124,58,237,0.3)"; });
-          btn.addEventListener("mouseleave", function() { btn.style.background = "rgba(124,58,237,0.15)"; });
-          btn.addEventListener("click", function() {
-            const rowButtons = buttonRows.querySelectorAll("button");
-            for (let i = 0; i < rowButtons.length; i++) {
-              rowButtons[i].disabled = true;
-              rowButtons[i].style.opacity = "0.4";
-              rowButtons[i].style.cursor = "default";
-            }
-            btn.style.background = "rgba(124,58,237,0.5)";
-            inputEl.value = opt.label;
-            send();
-          });
-          row.appendChild(btn);
+      // Per-question grouping: each question gets its own header + chip row.
+      // Single-question case auto-submits on click (preserves prior UX).
+      // Multi-question case stages selections per question; user clicks
+      // "Send answers" once all questions have a selection. Selecting in
+      // one question doesn't disable chips in other questions. multiSelect
+      // questions toggle on click.
+      const renderable = questions.filter(function(q) { return q.options && q.options.length > 0; });
+      if (renderable.length > 0) {
+        const isMulti = renderable.length > 1;
+        const selections = {};  // qi -> string (single) or [string] (multiSelect)
+        const allBtns = [];
+        let sendBtn = null;
+        function btnBase() {
+          return "color:#e6edf3;border:1px solid rgba(124,58,237,0.4);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit;";
         }
-        buttonRows.appendChild(row);
+        function btnUnselected() { return btnBase() + "background:rgba(124,58,237,0.15);"; }
+        function btnSelected() { return btnBase() + "background:rgba(124,58,237,0.55);"; }
+        function isSel(qi, label) {
+          const sel = selections[qi];
+          if (Array.isArray(sel)) return sel.indexOf(label) >= 0;
+          return sel === label;
+        }
+        function updateSendEnabled() {
+          if (!sendBtn) return;
+          const ok = renderable.every(function(q, qi) {
+            const sel = selections[qi];
+            if (q.multiSelect) return Array.isArray(sel) && sel.length > 0;
+            return typeof sel === "string" && sel.length > 0;
+          });
+          sendBtn.disabled = !ok;
+          sendBtn.style.opacity = ok ? "1" : "0.5";
+          sendBtn.style.cursor = ok ? "pointer" : "default";
+        }
+        function disableAll() {
+          for (let i = 0; i < allBtns.length; i++) {
+            allBtns[i].disabled = true;
+            allBtns[i].style.opacity = "0.4";
+            allBtns[i].style.cursor = "default";
+          }
+          if (sendBtn) {
+            sendBtn.disabled = true;
+            sendBtn.style.opacity = "0.4";
+            sendBtn.style.cursor = "default";
+          }
+        }
+        function submitMulti() {
+          const lines = renderable.map(function(q, qi) {
+            const sel = selections[qi];
+            const ans = q.multiSelect
+              ? (Array.isArray(sel) ? sel.join(", ") : "")
+              : (sel || "");
+            return (q.question || "Question " + (qi + 1)) + " -> " + ans;
+          });
+          disableAll();
+          inputEl.value = lines.join("\n");
+          send();
+        }
+        const groups = window.document.createElement("div");
+        groups.style.cssText = "display:flex;flex-direction:column;gap:14px;margin-top:6px;";
+        renderable.forEach(function(q, qi) {
+          const group = window.document.createElement("div");
+          group.style.cssText = "display:flex;flex-direction:column;gap:6px;";
+          if (q.question) {
+            const qText = window.document.createElement("div");
+            qText.style.cssText = "color:#e6edf3;font-size:13px;font-weight:500;line-height:1.4;";
+            qText.textContent = q.question;
+            group.appendChild(qText);
+          }
+          const row = window.document.createElement("div");
+          row.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;";
+          q.options.forEach(function(opt) {
+            const btn = window.document.createElement("button");
+            btn.textContent = opt.label;
+            btn.title = opt.description || opt.label;
+            btn.style.cssText = btnUnselected();
+            btn.addEventListener("mouseenter", function() {
+              if (btn.disabled) return;
+              if (!isSel(qi, opt.label)) btn.style.background = "rgba(124,58,237,0.3)";
+            });
+            btn.addEventListener("mouseleave", function() {
+              if (btn.disabled) return;
+              btn.style.background = isSel(qi, opt.label) ? "rgba(124,58,237,0.55)" : "rgba(124,58,237,0.15)";
+            });
+            btn.addEventListener("click", function() {
+              if (!isMulti) {
+                disableAll();
+                btn.style.cssText = btnSelected();
+                inputEl.value = opt.label;
+                send();
+                return;
+              }
+              if (q.multiSelect) {
+                const arr = Array.isArray(selections[qi]) ? selections[qi] : [];
+                const idx = arr.indexOf(opt.label);
+                if (idx >= 0) {
+                  arr.splice(idx, 1);
+                  btn.style.cssText = btnUnselected();
+                } else {
+                  arr.push(opt.label);
+                  btn.style.cssText = btnSelected();
+                }
+                selections[qi] = arr;
+              } else {
+                selections[qi] = opt.label;
+                const rowBtns = row.querySelectorAll("button");
+                for (let i = 0; i < rowBtns.length; i++) rowBtns[i].style.cssText = btnUnselected();
+                btn.style.cssText = btnSelected();
+              }
+              updateSendEnabled();
+            });
+            allBtns.push(btn);
+            row.appendChild(btn);
+          });
+          group.appendChild(row);
+          groups.appendChild(group);
+        });
+        if (isMulti) {
+          sendBtn = window.document.createElement("button");
+          sendBtn.textContent = "Send answers";
+          sendBtn.style.cssText = "background:rgba(124,58,237,0.6);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:default;font-family:inherit;align-self:flex-start;margin-top:4px;opacity:0.5;";
+          sendBtn.disabled = true;
+          sendBtn.addEventListener("click", function() {
+            if (!sendBtn.disabled) submitMulti();
+          });
+          groups.appendChild(sendBtn);
+        }
+        msg.appendChild(groups);
       }
-      msg.appendChild(buttonRows);
     }
   }
   messagesEl.appendChild(msg);
@@ -553,10 +650,12 @@ ch.onData(function(data) {
     case "user_question": {
       // Mid-turn structured question from the agent. Broadcast immediately
       // by server when ask_user_question is intercepted so it surfaces even
-      // if the agent misinterprets the deny message and keeps running.
+      // if the agent misinterprets the deny message and keeps running. The
+      // chip widget renders each question's text as a header above its row
+      // of options, so we don't pre-format the question text into the
+      // markdown content (would duplicate).
       const qs = data.questions || [];
-      const content = qs.map(function(q) { return "**" + (q.question || "") + "**"; }).join("\n\n");
-      addMessage("assistant", content, "OpenCode", qs);
+      addMessage("assistant", "", "OpenCode", qs);
       break;
     }
     case "thinking":
