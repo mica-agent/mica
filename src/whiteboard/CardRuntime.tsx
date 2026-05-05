@@ -854,8 +854,8 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         // user AND to render_capture's html2canvas — the agent's caption
         // picks up "card has a red error box reading X," which is its
         // evidence the error fired. Click × to dismiss; auto-clears on next
-        // card re-render. Inset (rather than edge-to-edge banner) so the
-        // box visually encloses the message inside the card frame.
+        // card re-render. Flex layout so the box grows vertically with
+        // wrapped text instead of clipping to one line.
         <div
           style={{
             position: "absolute",
@@ -863,26 +863,28 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             left: 8,
             right: 8,
             zIndex: 100,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
             background: "rgba(220, 38, 38, 0.95)",
             color: "#fff",
-            padding: "8px 32px 8px 12px",
+            padding: "8px 10px 8px 12px",
             fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
             fontSize: 12,
             lineHeight: 1.4,
             borderRadius: 6,
             boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-            wordBreak: "break-word",
           }}
         >
-          <strong style={{ marginRight: 6 }}>⚠ Card error:</strong>
-          <span>{currentError.slice(0, 400)}</span>
+          <div style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
+            <strong style={{ marginRight: 6 }}>⚠ Card error:</strong>
+            <span>{currentError.slice(0, 400)}</span>
+          </div>
           <button
             onClick={() => setCurrentError(null)}
             aria-label="Dismiss error"
             style={{
-              position: "absolute",
-              top: 4,
-              right: 4,
+              flexShrink: 0,
               background: "transparent",
               border: "none",
               color: "rgba(255,255,255,0.85)",
@@ -890,6 +892,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
               lineHeight: 1,
               cursor: "pointer",
               padding: "2px 6px",
+              marginTop: -2,
             }}
           >
             ×
