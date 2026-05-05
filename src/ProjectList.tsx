@@ -9,6 +9,7 @@ import {
 } from './api/canvasFiles';
 import type { ProjectInfo, TemplateInfo } from './api/canvasFiles';
 import { on as onMicaEvent } from './api/micaSocket';
+import Connections from './Connections';
 
 interface Props {
   workspaceName: string;
@@ -35,6 +36,7 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>(readInitialSort);
+  const [showConnections, setShowConnections] = useState(false);
 
   // Persist sort preference across sessions. Wrapped in try/catch because
   // private-browsing modes throw on localStorage writes.
@@ -197,7 +199,13 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
         <button onClick={() => { setShowClone(true); setCreateTemplate(null); setShowNewMenu(false); }} style={btnStyle}>
           Clone Repo
         </button>
+        <div style={{ flex: 1 }} />
+        <button onClick={() => setShowConnections(true)} style={btnStyle} title="Manage API keys for OpenRouter, Anthropic, Tavily, Claude Code, and GitHub">
+          Connections
+        </button>
       </div>
+
+      {showConnections && <Connections onClose={() => setShowConnections(false)} />}
 
       {/* Create form */}
       {createTemplate !== null && (

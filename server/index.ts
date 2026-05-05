@@ -102,6 +102,7 @@ import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { registerGitEndpoints } from "./plugins/git.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata, enforceCardJsLint, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
+import { SERVICES, getService, getAllStatuses, writePasteKey, deletePasteKey, type PasteKeyService } from "./connections.js";
 import { recordValidatorError, clearValidatorError, getPendingValidatorErrors, clearProjectValidatorErrors, hasValidatorError } from "./validatorErrorBuffer.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 import {
@@ -797,6 +798,89 @@ app.get("/api/openrouter/models", async (_req, res) => {
     res.status(502).json({ ok: false, error: (err as Error).message });
   }
 });
+
+// ── Connections (workspace-level credential store) ──────────
+//
+// Surfaced in the UI by src/Connections.tsx; populated by the user
+// pasting API keys for paste-key services (OpenRouter, Anthropic,
+// Tavily) or running CLI logins for delegated-cli services (Claude,
+// GitHub — Phase 2 will spawn the CLI; Phase 1 only reports status).
+//
+// Storage: <workspace>/.mica/credentials.json (paste-key services)
+// or the service's own credential file (delegated-cli — we just
+// check presence). See server/connections.ts for the full contract.
+
+// GET /api/connections — status of every known service.
+app.get("/api/connections", async (_req, res) => {
+  try {
+    const statuses = await getAllStatuses();
+    res.json({ ok: true, services: statuses });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+// POST /api/connections/:service — set the API key for a paste-key
+// service. Validates against the service's public auth endpoint; on
+// success persists to credentials.json. Returns 400 for unknown
+// service IDs or for delegated-cli services (Phase 1 doesn't connect
+// them via this endpoint).
+app.post("/api/connections/:service", async (req, res) => {
+  const id = req.params.service;
+  const svc = getService(id);
+  if (!svc) {
+    res.status(400).json({ ok: false, error: `Unknown service: ${id}` });
+    return;
+  }
+  if (svc.pattern !== "paste-key") {
+    res.status(400).json({
+      ok: false,
+      error: `${svc.displayName} is connected via its own CLI, not by pasting a key. ${
+        "phase1Instruction" in svc ? svc.phase1Instruction : ""
+      }`.trim(),
+    });
+    return;
+  }
+  const body = (req.body || {}) as { api_key?: string };
+  const key = typeof body.api_key === "string" ? body.api_key.trim() : "";
+  if (!key) {
+    res.status(400).json({ ok: false, error: "api_key is required" });
+    return;
+  }
+  const result = await svc.validate(key);
+  if (!result.ok) {
+    res.status(400).json({ ok: false, error: result.error || "Validation failed" });
+    return;
+  }
+  await writePasteKey(svc.id as PasteKeyService, key);
+  res.json({ ok: true, warning: result.warning });
+});
+
+// DELETE /api/connections/:service — remove a paste-key service's
+// stored API key. Doesn't affect env vars or legacy config.json
+// entries; user manages those out-of-band.
+app.delete("/api/connections/:service", async (req, res) => {
+  const id = req.params.service;
+  const svc = getService(id);
+  if (!svc) {
+    res.status(400).json({ ok: false, error: `Unknown service: ${id}` });
+    return;
+  }
+  if (svc.pattern !== "paste-key") {
+    res.status(400).json({
+      ok: false,
+      error: `${svc.displayName} can't be disconnected via this endpoint — log out via its CLI directly.`,
+    });
+    return;
+  }
+  await deletePasteKey(svc.id as PasteKeyService);
+  res.json({ ok: true });
+});
+
+// SERVICES is imported but only consumed by getAllStatuses internally.
+// Keep the import live for any future consumer that needs the registry
+// directly without re-fetching status.
+void SERVICES;
 
 // ── Card error/ok reporting ─────────────────────────────────
 

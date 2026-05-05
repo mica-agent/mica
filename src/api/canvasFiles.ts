@@ -163,6 +163,49 @@ export async function deleteProjectApi(project: string): Promise<void> {
   }
 }
 
+// ── Connections (workspace credential store) ─────────────────────
+
+export interface ConnectionStatus {
+  id: string;
+  pattern: "paste-key" | "delegated-cli";
+  displayName: string;
+  description: string;
+  connected: boolean;
+  source?: "credentials" | "legacy" | "env";
+  savedAt?: number;
+  inputHint?: string;
+  signupUrl?: string;
+  phase1Instruction?: string;
+}
+
+export async function fetchConnections(): Promise<ConnectionStatus[]> {
+  const res = await fetch(`${API_BASE}/api/connections`);
+  if (!res.ok) throw new Error(`Failed to fetch connections: ${res.statusText}`);
+  const body = await res.json();
+  return Array.isArray(body.services) ? body.services : [];
+}
+
+export async function saveConnection(service: string, apiKey: string): Promise<{ ok: boolean; warning?: string }> {
+  const res = await fetch(`${API_BASE}/api/connections/${encodeURIComponent(service)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Failed to save ${service}`);
+  return { ok: true, warning: body.warning };
+}
+
+export async function deleteConnection(service: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/connections/${encodeURIComponent(service)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Failed to disconnect ${service}`);
+  }
+}
+
 /** Get info about a specific project (returns workspace info if project is empty/null). */
 export async function fetchProject(project: string): Promise<ProjectInfo> {
   const res = await projFetch(project, `${API_BASE}/api/project`);

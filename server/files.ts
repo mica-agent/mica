@@ -566,21 +566,44 @@ export async function updateCanvasConfig(
 }
 
 /** Read the OpenRouter API key. Resolution order:
- *    1. Project-scoped `<project>/.mica/config.json` (set via the gear UI).
- *    2. Workspace-scoped `.mica/config.json` (shared across projects in a
- *       workspace).
- *    3. `OPENROUTER_API_KEY` environment variable (populated from `.env`
+ *    1. Per-project `<project>/.mica/config.json:openrouterApiKey`
+ *       (set via the chat card gear UI — the per-project override).
+ *    2. Workspace `<workspace>/.mica/credentials.json:openrouter.api_key`
+ *       (set via the Connections panel — the canonical workspace home).
+ *    3. Legacy workspace `<workspace>/.mica/config.json:openrouterApiKey`
+ *       (pre-Connections setups; kept for backwards-compatibility).
+ *    4. `OPENROUTER_API_KEY` environment variable (populated from `.env`
  *       by the dotenv load in server/index.ts, or from ambient env).
- *  Returns null when none of the three are set. */
+ *  Returns null when none of the four are set. Reads credentials.json
+ *  directly rather than importing connections.ts to avoid a module
+ *  cycle (connections.ts already imports WORKSPACE_DIR/micaDir from here). */
 export async function readOpenRouterKey(project: string | undefined): Promise<string | null> {
-  const configPath = project
-    ? join(WORKSPACE_DIR, project, ".mica", "config.json")
-    : join(WORKSPACE_DIR, ".mica", "config.json");
+  // 1. Per-project override.
+  if (project) {
+    try {
+      const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, project, ".mica", "config.json"), "utf-8"));
+      if (typeof cfg.openrouterApiKey === "string" && cfg.openrouterApiKey.length > 0) {
+        return cfg.openrouterApiKey;
+      }
+    } catch { /* no project override — fall through */ }
+  }
+  // 2. Workspace credentials.json (Connections panel home).
   try {
-    const cfg = JSON.parse(await readFile(configPath, "utf-8"));
-    const k = cfg.openrouterApiKey;
-    if (typeof k === "string" && k.length > 0) return k;
-  } catch { /* fall through to env */ }
+    const credRaw = await readFile(join(WORKSPACE_DIR, ".mica", "credentials.json"), "utf-8");
+    const creds = JSON.parse(credRaw);
+    const entry = creds && typeof creds === "object" ? creds.openrouter : undefined;
+    if (entry && typeof entry.api_key === "string" && entry.api_key.length > 0) {
+      return entry.api_key;
+    }
+  } catch { /* no credentials.json or no openrouter entry */ }
+  // 3. Legacy workspace config.json (pre-Connections setups).
+  try {
+    const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, ".mica", "config.json"), "utf-8"));
+    if (typeof cfg.openrouterApiKey === "string" && cfg.openrouterApiKey.length > 0) {
+      return cfg.openrouterApiKey;
+    }
+  } catch { /* no legacy workspace config */ }
+  // 4. Env var.
   const envKey = process.env.OPENROUTER_API_KEY;
   return typeof envKey === "string" && envKey.length > 0 ? envKey : null;
 }

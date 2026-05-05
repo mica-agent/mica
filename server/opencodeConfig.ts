@@ -20,6 +20,7 @@
 import type { Config, AgentConfig, McpLocalConfig } from "@opencode-ai/sdk";
 import { loadProjectSubagents, type ParsedSubagent } from "./subagents.js";
 import { AGENT_TOOL_AUTH_SECRET } from "./agentTools/registry.js";
+import { readPasteKey } from "./connections.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
@@ -69,13 +70,15 @@ export async function buildOpencodeConfig(): Promise<Config> {
   // ── MCP servers ─────────────────────────────────────────────────
   const mcp: Record<string, McpLocalConfig> = {};
 
-  // Tavily — same env var used by the qwen/claude paths. Skip silently if
-  // the key isn't set so opencode-only users don't get a startup warning.
-  if (process.env.TAVILY_API_KEY) {
+  // Tavily — readPasteKey resolves credentials.json → env var, so Connections-
+  // panel-managed keys take precedence over .env. Skip silently if neither is
+  // set so opencode-only users don't get a startup warning.
+  const tavilyKey = (await readPasteKey("tavily"))?.key;
+  if (tavilyKey) {
     mcp.tavily = {
       type: "local",
       command: ["npx", "-y", "tavily-mcp"],
-      environment: { TAVILY_API_KEY: process.env.TAVILY_API_KEY },
+      environment: { TAVILY_API_KEY: tavilyKey },
       enabled: true,
     };
   }
