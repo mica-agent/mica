@@ -145,14 +145,12 @@ coding agent at the project and it sees the canvas in the
   canvas, the `mica.*` overview, the design principles.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it is built:
   server, host, CARD_SHIM, ChannelManager, reactivity,
-  authoritative `mica.*` API reference.
-- [ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md) —
-  ChannelManager state machines, channel handler contract.
-- [DESIGN-DECISIONS.md](DESIGN-DECISIONS.md) — working
-  decisions that shaped Mica-Lite and what they displaced.
-- [TESTING.md](TESTING.md) — manual verification pass.
+  authoritative `mica.*` API reference. Includes the
+  `## Channel handler details` deep-dive and the
+  `## Decisions` log.
 - [CLAUDE.md](CLAUDE.md) — development guide for Claude Code
   and other agents working on the Mica codebase itself.
+  Includes the `## Testing` runtime walkthrough.
 
 For card-class authoring, the canonical reference is the
 `create-card-class` skill that ships with each project template:

@@ -54,7 +54,7 @@ humans see the same list.
     chat-history trimming, silent summarization, prompt-cache
     management, and reimplementations of `/compress` all live on
     the agent's side of the line — we don't build them. See
-    DESIGN-DECISIONS.md §"Augmentation-layer boundary" for the
+    ARCHITECTURE.md § Decisions §"Augmentation-layer boundary" for the
     full table and the reasoning.
 11. **Plan before building.** Cost of fixing wrong code is far
     greater than the cost of correct planning. Specs, contracts,
@@ -304,8 +304,8 @@ create, it ends on file delete. Transport connections attach and
 detach during the session's life without destroying the session.
 
 For the state machines, the transport adapter pattern, and
-handler contract examples, see
-[ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md).
+handler contract examples, see § Channel handler details
+later in this document.
 
 ### Registered channel handlers
 
@@ -559,7 +559,7 @@ auto-injects both `source` (windowId) and `cardSource`
 |---|---|---|
 | `mica.call(fn, args)` | `(fn: string, args?: object) => Promise<unknown>` | Request/response to a server export. Returns whatever the export resolves |
 | `mica.send(fn, args)` | `(fn: string, args?: object) => void` | Fire-and-forget |
-| `mica.openChannel(fn, args)` | `(fn: string, args?: object) => Channel` | Returns a handle with `onData`, `onClose`, `send`, `close`, `destroy`. See [ARCHITECTURE-DETAILS.md](ARCHITECTURE-DETAILS.md) for semantics |
+| `mica.openChannel(fn, args)` | `(fn: string, args?: object) => Channel` | Returns a handle with `onData`, `onClose`, `send`, `close`, `destroy`. See § Channel handler details for semantics |
 | `mica.fetch(url, opts)` | See below | Server-proxied HTTP with SSRF guard, rate limit, size cap |
 
 ### mica.fetch contract
@@ -649,3 +649,651 @@ design intent, not in the current system:
 
 Reactivity, which earlier drafts described as not implemented,
 is implemented — see the "Reactivity" section above.
+
+---
+
+## Channel handler details
+
+*Subsystem deep-dive on `ChannelManager` — sessions, clients, handler contract.*
+
+### Unified Channel Manager
+
+#### Problem
+
+Cards need persistent, bidirectional communication with server-side backends — chat agents, terminal PTYs, task runners, custom handlers. The original design used three separate managers (ChatChannelManager, TerminalChannelManager, AgentChannelManager) routed by file extension in a growing if/else chain. This violated tenets #2 (infrastructure provides pipes, not policy) and #5 (one mechanism, not per-type special cases).
+
+Additionally, channels broke on card re-renders because the browser closed and reopened connections during React lifecycle events. The root cause was conflating transport state (connection count) with user intent (session lifecycle) — violating tenet #4.
+
+#### Three Layers
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ TRANSPORT (index.ts)                                           │
+│                                                                │
+│ WebSocket adapter. Translates wire messages into               │
+│ ChannelManager method calls. Tracks which transport            │
+│ connection owns which client handle. Knows nothing about       │
+│ sessions, handlers, or card types.                             │
+│                                                                │
+│ Could be replaced with SSE, HTTP long-poll, or any other       │
+│ bidirectional transport without changing the layers below.      │
+└────────────────────────────┬───────────────────────────────────┘
+                             │
+              open(clientId, key, callbacks)
+              sendData(clientId, data)
+              detach(clientId)
+              destroySession(key)
+                             │
+┌────────────────────────────▼───────────────────────────────────┐
+│ CHANNEL MANAGER (channelManager.ts)                            │
+│                                                                │
+│ Manages sessions keyed by card file identity.                  │
+│ Attaches/detaches clients (opaque callback handles).           │
+│ Starts/stops card handlers on lifecycle transitions.           │
+│ Transport-agnostic — never imports WebSocket.                  │
+└────────────────────────────┬───────────────────────────────────┘
+                             │
+              ChannelHandler interface
+              (onAttach, onDetach, onData, onDestroy)
+                             │
+┌────────────────────────────▼───────────────────────────────────┐
+│ CARD HANDLERS (per card type)                                  │
+│                                                                │
+│ Registered by card class name. Implement ChannelHandler.       │
+│ Decide their own backend semantics: when to start processes,   │
+│ what to do with zero clients, how to handle errors.            │
+│                                                                │
+│ Infrastructure doesn't know what a "chat" or "terminal" is.    │
+│ That knowledge lives here.                                     │
+└────────────────────────────────────────────────────────────────┘
+```
+
+#### Session State Machine
+
+A session is bound to a card file on disk. It starts when the file is created and ends when the file is deleted. These are explicit user events. Everything else — browser connections, backend processes, failures — happens within the session lifetime.
+
+```
+                    card file created on disk
+                    (user clicks + Claude Chat, + Terminal, etc.)
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │         REGISTERED            │
+                    │                              │
+                    │  Session exists in manager   │
+                    │  handler: null               │
+                    │  clients: 0                  │
+                    └──────────┬───────────────────┘
+                               │
+                      first client attaches
+                               │
+                               ▼
+                    ┌──────────────────────────────┐
+              ┌────▶│          ACTIVE               │◀────┐
+              │     │                              │     │
+              │     │  handler: started            │     │
+              │     │  clients: 1+                 │     │
+              │     └──┬────────────┬──────────────┘     │
+              │        │            │                     │
+              │   last client   handler calls             │
+              │   detaches      ctx.idle()                │
+              │        │            │                     │
+              │        ▼            ▼                     │
+              │     ┌──────────────────────────────┐     │
+              │     │           IDLE                │     │
+              │     │                              │     │
+              │     │  clients: 0                  │     │
+              │     │  state: preserved            │     │
+              │     │  handler decides behavior:   │     │
+              │     │  • stay warm (chat)          │     │
+              │     │  • timeout → stop (terminal) │     │
+              │     └──┬───────────────────────────┘     │
+              │        │                                  │
+              │   client reattaches ──────────────────────┘
+              │
+              │
+              ── ANY STATE ──
+                    │
+           card file deleted / server shutdown / ctx.destroy()
+                    │
+                    ▼
+              ┌──────────────────────────────┐
+              │         DESTROYED             │
+              │                              │
+              │  handler.onDestroy() called  │
+              │  all clients notified        │
+              │  session removed             │
+              └──────────────────────────────┘
+```
+
+Key: the transition from ACTIVE to IDLE is **not** a teardown signal. It's informational — the handler decides what to do. A chat handler stays warm. A terminal handler starts an idle timer. An agent handler ignores it (task keeps running). The session is only destroyed by explicit events: card deletion, server shutdown, or the handler itself calling `ctx.destroy()`.
+
+#### Client (Browser) State Machine
+
+Clients are browser-side handles that attach to sessions. They're identified by `(project, canvas, filename, fn)` — the card file and the function being called. This is the **channel key**.
+
+```
+        openChannel(project, canvas, filename, fn, args)
+                    │
+          key exists in registry?
+           YES ── swap callbacks, return same handle (no WS message)
+           NO  ── create new handle, send channel_open
+                    │
+                    ▼
+              ┌──────────────┐       ┌──────────────┐
+              │  ATTACHED    │◀─────▶│  DETACHED    │
+              │              │       │              │
+              │  send works  │       │  in registry │
+              │  receiving   │       │  callbacks   │
+              │  data        │       │  nulled      │
+              └──────┬───────┘       └──────┬───────┘
+                     │                      │
+              ch.destroy()           openChannel() again
+              (card deleted)         (script re-run, reconnect)
+                     │
+                     ▼
+              ┌──────────────┐
+              │  DESTROYED   │  removed from registry
+              │              │  channel_close sent to server
+              └──────────────┘
+```
+
+`ch.close()` = **detach** (soft, client-side only). Nulls callbacks, but handle stays in registry. No message sent to server. This is safe for React cleanup — the channel persists across re-renders. The next `openChannel()` with the same key returns the existing handle and swaps in fresh callbacks.
+
+`ch.destroy()` = **hard close**. Removes from registry. Sends `channel_close`. Server tears down session if appropriate.
+
+This distinction is why card scripts "just work" across re-renders:
+```javascript
+const ch = mica.openChannel('chat_session', { provider: 'claude' });
+// First run: creates channel, sends channel_open
+// Subsequent runs: returns existing channel, swaps callbacks
+// No close/reopen cycle. No race conditions.
+
+mica.onDestroy(() => ch.close());
+// close() = detach. Channel stays alive in registry.
+// Next script execution gets it back via openChannel().
+```
+
+#### Channel handlers
+
+Each card class that uses a channel registers a handler at server
+startup (in `server/index.ts`). Handlers implement the
+`ChannelHandler` interface directly. Card `card.js` code does not
+contain server-side handler code — there is no `render.js` and no
+module-export model. The browser side and the server side are
+separate files, wired together by `mica.openChannel(fn, args)` on
+the browser and `channelManager.registerHandler(name, factory)`
+on the server.
+
+Registration at startup looks like this:
+
+```typescript
+channelManager.registerHandler("chat",       createAgentHandler(fileWatcher));   // .chat  → Qwen agent
+channelManager.registerHandler("claude",     createClaudeAgentHandler(fileWatcher)); // .claude → Claude Code agent
+channelManager.registerHandler("terminal",   createPtyHandler());                 // .terminal → PTY
+channelManager.registerHandler("llm-chat",   createLlmChatHandler());             // .llm-chat → direct LLM chat
+channelManager.registerHandler("skills",     createSkillComposeHandler());        // .skills → collaborative SKILL.md authoring
+channelManager.registerHandler("canvas-back", createCanvasBackComposeHandler());  // .canvas-back → propose-then-apply editor
+```
+
+The key (`chat`, `claude`, `terminal`, etc.) is the card class
+name. When the browser calls `mica.openChannel(fn, args)` from a
+card of that class, ChannelManager routes the session to the
+registered handler.
+
+#### ChannelHandler interface
+
+```typescript
+interface ChannelHandler {
+  onAttach?(clientId: string, args: Record<string, unknown>): void;
+  onDetach?(clientId: string): void;
+  onData?(clientId: string, data: unknown): void;
+  onDestroy?(): void;
+}
+```
+
+Lifecycle semantics:
+
+- `onAttach` fires when a client (browser tab) attaches to the
+  session. For reconnects, ChannelManager delivers a synthetic
+  `{ type: "attached" }` as the first `onData` call so handlers
+  can replay state (scrollback, history, current status).
+- `onDetach` fires when a client disconnects. Other clients on
+  the same session are unaffected.
+- `onData` fires on every browser-originated message. Handlers
+  read the message and decide what to push back via the
+  ctx-provided send/reply helpers.
+- `onDestroy` fires once, when the session ends (card file
+  deleted, or server shutdown).
+
+#### Handler examples
+
+Where each live channel handler lives today and what it does:
+
+**Claude agent** (`server/claudeAgent.ts`):
+```
+onAttach:    load chat history, replay to attaching client
+onData:      { type: "user_message", text } → spawn Claude Code CLI subprocess,
+             stream tool calls and responses back, auto-commit agent writes.
+             Handles tool-use loop, write-source tracking, busy lock.
+onDetach:    no-op — session continues
+onDestroy:   cancel any in-flight turn, close streams
+```
+
+**Qwen agent** (`server/micaAgent.ts`):
+```
+onAttach:    load chat history, replay to attaching client
+onData:      { type: "user_message", text } → tool loop against llama-server
+             at 127.0.0.1:8012. XML-fallback tool-call parsing.
+             Canvas-scope file-watcher integration (reactive turns on user idle).
+onDetach:    no-op — session continues
+onDestroy:   abort in-flight turn
+```
+
+**Terminal** (`server/plugins/pty.ts`):
+```
+onAttach:    spawn node-pty, replay scrollback to attaching client
+onData:      { input } → forward to PTY stdin
+             { resize, cols, rows } → resize PTY
+             { ping } → respond with pong + ptyAlive status
+onDetach:    if last client, PTY continues running (handler policy)
+onDestroy:   kill PTY
+```
+
+**LLM chat** (`server/plugins/llmChat.ts`):
+```
+onData:      { message } → direct prompt to local LLM, no tools, stream response
+```
+
+**Skill compose** (`server/plugins/skillCompose.ts`):
+```
+onData:      collaborative SKILL.md editing loop — agent proposes, user reviews,
+             resulting file written to .claude/skills/<name>/ or .qwen/skills/<name>/
+```
+
+The ChannelManager itself does not know what any of these
+handlers do. It only knows sessions, clients, and lifecycle. The
+handler decides backend semantics — when to start a process,
+what "idle" means for this card type, how to handle errors.
+
+#### Transport Adapter Pattern
+
+The WebSocket handler in `index.ts` is a thin translation layer:
+
+```
+WS message: channel_open    →  channelManager.open(clientId, ...)
+WS message: channel_data    →  channelManager.sendData(clientId, data)
+WS message: channel_close   →  channelManager.detach(clientId)
+WS event: connection closed  →  for each client: channelManager.detach(clientId)
+File event: file deleted     →  channelManager.destroySession(project, canvas, filename)
+Server event: shutdown       →  channelManager.destroyAll()
+```
+
+The adapter tracks which WebSocket connection owns which client IDs (`Map<WebSocket, Set<string>>`). This is transport-level bookkeeping that doesn't belong in the ChannelManager.
+
+#### Why This Design
+
+| Tenet | How it applies |
+|-------|---------------|
+| #2 Infrastructure provides pipes, not policy | ChannelManager doesn't know chat/terminal/agent semantics |
+| #4 Lifecycle bound to user intent | Session created on card file create, destroyed on card file delete |
+| #5 One mechanism | Single ChannelManager replaces three separate managers |
+| #6 Card class = extension point | New handler = a new file implementing ChannelHandler, registered in `server/index.ts`. Frontend side: a new card class opening `mica.openChannel()` in its `card.js`. No framework changes |
+| #7 Transport-agnostic | ChannelManager never imports WebSocket |
+
+---
+
+## Decisions
+
+*Working decisions that shaped Mica-Lite. Each entry captures the choice, why it was made, and what it displaces. For design intent that has not yet shipped, see `internal/VISION.md`.*
+
+
+### Files are files, not directories
+
+Mica-Lite does not use a card-as-directory model. A card is a
+plain file at the project root. The file extension selects the
+card class. The canvas arranges cards by layout, not by
+directory hierarchy.
+
+This is the biggest departure from earlier Mica drafts. Old
+drafts had cards as directories (`project.project/`, `research/`)
+with child cards as nested directories. The current model is
+flat: files at the root, `.mica/` for operational metadata, no
+containment in the file system.
+
+Reasons for the change:
+
+- Files LLMs already know how to produce (the "designed for AI
+  authorship" tenet).
+- Plain text editing works out of the box.
+- Git behavior matches user expectations — no hidden moves when
+  "reorganizing" cards.
+- The canvas layout is separate state, and different canvas
+  card classes can arrange the same files differently.
+
+Card arrangement ("containment" in the old vocabulary) lives in
+`.mica/layout.json`, keyed by device class. Different canvas
+card classes read and write the same file, choosing how to
+display the same set of files.
+
+### Multi-project, single-host, per-request scoping
+
+A single Mica instance serves multiple projects. There is no
+per-project Mica process and no per-project container.
+
+Requests identify their project via an `X-Mica-Project` header
+(with `?project=` as a query fallback for URL contexts that
+cannot set headers, such as `<img src>` or `window.open`). The
+card runtime auto-injects the header on every `/api/*` fetch.
+The server reads it via `getRequestProject(req)`.
+
+No module-level globals hold the "current project." Every
+request reads the header. Responses set `Vary: X-Mica-Project`
+so browser cache does not mix project state.
+
+Reason: no surprising tab-level bleeding. Two tabs on different
+projects interact with different state at every request. No
+context swap to track.
+
+Per-project container isolation as a blast radius is under
+consideration (see `internal/VISION.md`) but is not the current
+reality.
+
+### Augmentation-layer boundary: Mica shapes the input, the agent runs the turn
+
+Mica-Lite runs on top of coding agents (Qwen Code, Claude Code,
+and OpenRouter-routed variants). It augments them. It does not
+replace them. This line is load-bearing: without it, Mica drifts
+toward reimplementing concerns the SDK already owns, and ends up
+competing with the tool it's built on.
+
+**The rule.** Everything upstream of the SDK call is Mica's
+problem. Everything after the SDK receives the payload is the
+agent's problem.
+
+| Mica-layer (shape the input) | Agent-layer (run the turn) |
+|---|---|
+| What lives in the canvas baseline | Prompt-cache / KV-cache management |
+| How canvas files are presented (full vs summary) | In-session chat-history compaction (`/compress`) |
+| Which cards are pinned to every turn vs on-demand | Tool-result compression inside a turn |
+| Breaking big tasks into bounded subagent scopes (the analyze-repo skill) | Deciding what fits in the model's context |
+| Storing chat history on disk canonically | Rolling its own truncation when exceeded |
+| Surfacing the `mica.*` bridge and subagent defs | Using those tools to complete the user's ask |
+| UX: fresh-thread action, context meter, overflow error card | Handling prompt rejection at the transport level |
+
+**Things Mica does not build** (non-goals, explicit):
+
+- Token-aware trimming of chat history before sending to the SDK.
+- Silent summarization of old chat turns.
+- Prompt-cache / KV-cache-aware prefix construction.
+- Any reimplementation of the agent's `/compress` command.
+- Parsing the model's response stream to detect context
+  exhaustion and retry with smaller payload.
+
+If the agent's compaction has bugs, those are upstream bugs to
+file with the SDK. Our response is to make the canvas + fresh-
+thread pattern strong enough that compaction is rarely needed.
+We do not compensate for agent internals by reinventing them.
+
+Reason: reimplementing the agent inside Mica is a losing trade.
+We don't control prompt-cache state the way the SDK does (a
+token-aware trim blows the KV cache every turn, costing real
+latency), and we inherit all the bugs of the original feature
+without the team around it to fix them. Shaping the prompt well
+upstream is the leverage Mica has.
+
+### Canvas is memory; threads are working memory
+
+The product tenet "context lives on the canvas, not inside the
+agent" has a direct implication for how chat threads relate to
+durable memory. A thread is not a record; the canvas is.
+
+**Live thread.** The in-progress chat session on one chat card.
+Loaded into the agent's context each turn. Working memory for
+this arc of work. Dies when the arc ends.
+
+**Archived thread.** A past thread, stored on disk under
+`.mica/chats/archived/<timestamp>-<slug>.json`. Not in the
+baseline. Browsable by humans. Readable by agents on specific
+demand, never as ambient context.
+
+**Canvas.** Outlives threads. Every durable finding belongs here.
+
+An overflow is not a failure of memory — it is a signal that an
+arc of work has produced enough volume that findings should be
+promoted to canvas and a fresh thread started. "Fresh thread" is
+a healthy reset, not failure recovery.
+
+**Agent behavior policy.** Before reading an archived thread,
+exhaust canvas sources: card contents, `decisions.md`, card
+modifiedAt timestamps, `git log`. If the canvas cannot answer a
+question the user treats as settled work, that is a gap — ask
+for clarification, or offer to promote the missing information
+to a card. Archived threads are one-off references. Never load a
+full archived thread into context; extract what's needed and
+summarize.
+
+This mirrors the analyze-repo discipline: don't read a whole
+large artifact into context; skim with intent.
+
+### Storage model — work lives outside `.mica/`
+
+```
+my-project/
+├── .mica/                      ← infrastructure only
+│   ├── config.json             ← project config
+│   ├── layout.json             ← canvas layout, keyed by device class
+│   ├── canvas-back.md          ← project-level AI context
+│   ├── chats/                  ← chat history per agent card
+│   ├── cards/                  ← per-card state and AI context sidecars
+│   └── card-classes/           ← project-scoped card class definitions
+├── brief.md                    ← work files at project root
+├── spec.md
+├── tasks.todo
+├── architecture.mmd
+├── agent.claude                ← agent cards are just files too
+├── .claude/skills/             ← skills copied from the template
+├── .qwen/skills/               ← skills from the template
+└── .git/
+```
+
+Cards are the work. `.mica/` is the machinery. Delete `.mica/`
+and the project is back to plain files.
+
+Card classes (the vocabulary) are infrastructure and stay in
+`.mica/card-classes/` (project scope) or `card-classes/` (built-
+in in the Mica repo).
+
+### Card classes are project-wide
+
+Card classes live at two scopes. The resolver checks project
+first:
+
+```
+.mica/card-classes/<name>/    project-scoped
+card-classes/<name>/          built-in
+```
+
+Project-scoped classes travel with the project in git. Built-in
+classes ship with Mica. A workspace tier at
+`~/.mica/card-classes/` is a horizon item (see VISION); it is
+not implemented today.
+
+### Agent architecture — two built-in classes, set will change
+
+Today two agent card classes ship. `.chat` is backed by local
+Qwen through llama-server. `.claude` is backed by the Claude
+Code SDK via a spawned CLI subprocess. Both are regular card
+classes whose `card.js` opens a `mica.openChannel` to a server
+handler.
+
+The set will change — new agents, different models, specialist
+roles. What stays constant is the contract: an agent is a card
+class that owns a brief, opens a channel to a server handler,
+and reads the canvas for context. Multi-agent coordination via
+direct agent-to-agent messaging is a horizon item.
+
+Philosophically: multiple agent types will share plumbing
+(status, plan steps, blocker UI, channel protocol) while
+differing in rendering and backend behavior. The decision is
+to accept duplication across card classes until patterns
+emerge clearly. Extracting a shared library upfront tends to
+be premature. When the pattern is clear, a maintenance pass
+extracts primitives. Agents have the same maintenance problem
+humans do (copies drift), but a different strength (they can
+read an entire codebase instantly to apply a fix everywhere).
+
+### Agent context — brief as identity, canvas as shared context
+
+An agent's identity is its `brief.md`-equivalent content in the
+agent card's instance file or directory. The brief defines
+role, personality, constraints, and instructions. Part of the
+brief is model-specific (tool format, SDK capabilities) and
+comes from the card class. Part is role-specific and the user
+customizes it.
+
+The agent's context is the canvas itself. Agents read the same
+files humans see: briefs, specs, todos, diagrams. There is no
+separate "agent memory" and no hidden key-value store. The
+canvas is the shared context.
+
+### Card class as back of the card
+
+A card has two sides. The **front** is the instance — the
+user's file, its content, the accumulated state. The **back**
+is the card class: `card.html`, `card.js`, `card.css`, and
+`metadata.json`, plus the AI context (`context.md` at class
+level and `<card>.context.md` at instance level).
+
+The class is the machinery. The instance is the work. A
+user-facing flip UI (see VISION) is the natural way to expose
+this.
+
+### Skeleton-copy-first for new card classes
+
+New card classes are created by copying
+`templates/_card-class-skeleton/` to
+`.mica/card-classes/<name>/`, then editing the four files in
+place. The skeleton has the correct shape for CARD_SHIM, the
+`mica.*` bridge, and the metadata format.
+
+Reason: writing `card.js` from an empty page repeatedly invites
+class-wrappers, ES-module syntax, and invented base-class APIs
+that CARD_SHIM does not support. Starting from the skeleton
+keeps the generated code on the correct shape. The
+`create-card-class` skill leads with this rule.
+
+### Self-describing card classes — metadata.json
+
+Each card class declares its own metadata in `metadata.json`:
+
+```json
+{
+  "extension": ".todo",
+  "badge": "TODO",
+  "defaultTitle": "To Do",
+  "primaryFile": "tasks.md",
+  "dependencies": { "scripts": [], "styles": [] }
+}
+```
+
+The system reads `metadata.json` from each card class directory
+on startup. No central registry, no manifest file outside the
+class itself.
+
+Load-bearing constraint: the directory name must equal the
+extension without the dot. A class at
+`.mica/card-classes/kanban/` handles `.kanban` files. The
+`extension` field in `metadata.json` is documentation. The
+directory name is the actual lookup key. A mismatch silently
+falls through to the text renderer.
+
+### Event source attribution — source and cardSource
+
+Cross-window and cross-card coordination needs a way to skip
+self-echoes. Early drafts tried timing hacks (debounce,
+ignore-next-event flags). Fragile.
+
+**Decision:** broadcasts include a `source` field identifying
+the origin. `source` is either a `windowId` (per browser tab),
+`"agent"` (a server-side agent handler wrote it), or
+`"external"` (no source was marked — git pull, manual edit,
+process outside Mica).
+
+File writes through `mica.files.write()` additionally carry a
+`cardSource` field containing the writing card's `cardId`
+(per-card-instance UUID). This lets sibling cards in the same
+tab tell each other's writes apart.
+
+Cards use `mica.isSelfEcho(event)` to filter. This is the
+general pattern — any cross-card broadcast should include
+these fields so originators can skip their own echoes.
+
+### Layout is canvas card state
+
+Layout positions live in `.mica/layout.json`, keyed by device
+class (phone, tablet, desktop, display). The canvas card class
+reads and writes this file. Different canvas card classes can
+persist layout under different keys or formats.
+
+Earlier drafts placed layout at `project.project/layout.json`
+inside the canvas card's directory, following a
+"layout-belongs-to-the-card" principle. That placement is
+superseded by the files-are-files decision above: the canvas
+is a card file, not a directory, so layout moved to
+`.mica/layout.json`.
+
+Cross-window sync uses `layout-changed` broadcasts with
+`source` attribution (see above).
+
+### Cards as tools (not implemented)
+
+Earlier design sketches proposed `mica.callCard(cardName, fn,
+args)` so any card with named server-side exports could be
+called by other cards. An orchestrator agent delegates to a
+specialist agent card; a dashboard pulls from data cards.
+
+**Status: not implemented.** The runtime bridge does not expose
+`mica.callCard`. This is an internal-VISION item, not a
+present-tense design decision. Documenting it here to prevent
+agents or humans from assuming it works.
+
+### Implemented (formerly deferred)
+
+The following items appeared as "Deferred" in earlier versions
+of this doc and are now built:
+
+- **Canvas card owns the toolbar.** The canvas card class
+  renders the toolbar. `CanvasCardRuntime` does not own it.
+- **Canvas card owns layout and arrangement.** The canvas card
+  decides how children are mounted inside `#canvas-freeform`.
+- **`CanvasCardRuntime` is a thin host.** It renders the canvas
+  card's HTML and portals child cards into `#canvas-freeform`.
+  It does not own layout, drag, or toolbar.
+- **Reactivity.** The agent watches the file watcher, filters
+  events to its canvas scope, coalesces with a 15-second idle
+  gate, skips its own writes via write-source tracking, and
+  delivers coalesced events as a synthetic turn.
+
+### Deferred
+
+- **"Flip the card" UI.** A button on the card header that
+  shows the card class definition (`card.html`, `card.js`,
+  `card.css`, `metadata.json`) and the AI context files
+  instead of the instance content. A "Customize" action
+  copies a built-in class to `.mica/card-classes/` for local
+  editing. Purely frontend. No backend changes needed. The
+  data model is in place; the UI layer is pending.
+
+### Open questions
+
+- Workspace-tier card classes at `~/.mica/card-classes/`:
+  when, and with what cross-project promotion UX.
+- Card class versioning and breaking changes as the surface
+  evolves.
+- Per-project container isolation as a blast radius: whether
+  Mica needs it in addition to what the agent systems already
+  provide.
+- Card class system-dependency declaration
+  (`systemDeps` in metadata) for classes that need
+  non-JavaScript binaries available on the host.
