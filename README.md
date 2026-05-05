@@ -123,6 +123,33 @@ docker build -t mica:local .
 # then the same docker run above, with mica:local instead of the ghcr.io image.
 ```
 
+### Trust model
+
+Mica is a **single-user tool**. There is no API authentication. Anyone
+who can reach the Mica port has full read/write to your workspace —
+projects, chat history, stored credentials (the OpenRouter key in
+`.mica/config.json`, anything passed through `mica.fetch`).
+
+The expected deployment is one where the network itself is the
+boundary:
+
+- **Localhost dev checkout** (`scripts/start.sh`) — the boundary is
+  your machine.
+- **Devcontainer** (VS Code, GitHub Codespaces) — the boundary is
+  your VS Code SSH tunnel; ports are forwarded only to you.
+- **Docker on a remote host** (`docker run -p 3002:3002`) — the
+  boundary is whatever network controls front the host port. Use
+  `ssh -L 3002:localhost:3002 <host>` (or equivalent) so the port is
+  reachable only over your SSH session. Don't bind a public IP
+  without a firewall.
+
+Card classes installed in a project are trusted code: they run
+inline, can spawn subprocesses via `processChannel`, and can read
+process environment variables. Treat installing a card class the way
+you'd treat installing a small Node script in your project. Don't
+share Mica access with anyone you wouldn't hand your project
+directory to.
+
 ## Quick start (for Mica development)
 
 ```bash
