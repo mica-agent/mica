@@ -38,6 +38,12 @@ export interface ProjectInfo {
   /** Wall-clock timestamp (ms) of the last turn-start or turn-end for this
    *  project. Used to render "active … ago" hints if needed. */
   lastActivityAt?: number;
+  /** Wall-clock timestamp (ms) of the last project open (the user clicking
+   *  this project from the list, or any other path that calls
+   *  POST /api/projects/:project/open). Server reads this from the mtime of
+   *  `<project>/.mica/last-opened`. Undefined if the project has never been
+   *  opened. Drives the "Recent" sort in the project list. */
+  lastOpenedAt?: number;
 }
 
 /** File metadata from GET /api/files (no content). */

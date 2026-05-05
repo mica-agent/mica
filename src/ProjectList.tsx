@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   fetchProjects,
   createProjectApi,
@@ -15,6 +15,17 @@ interface Props {
   onOpenProject: (project: ProjectInfo) => void;
 }
 
+type SortMode = 'recent' | 'name';
+const SORT_KEY = 'mica.projectListSort';
+
+function readInitialSort(): SortMode {
+  try {
+    const v = localStorage.getItem(SORT_KEY);
+    if (v === 'name' || v === 'recent') return v;
+  } catch { /* localStorage unavailable */ }
+  return 'recent';
+}
+
 export default function ProjectList({ workspaceName, onOpenProject }: Props) {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
@@ -23,6 +34,34 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
   const [showClone, setShowClone] = useState(false);
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>(readInitialSort);
+
+  // Persist sort preference across sessions. Wrapped in try/catch because
+  // private-browsing modes throw on localStorage writes.
+  useEffect(() => {
+    try { localStorage.setItem(SORT_KEY, sortMode); } catch { /* ignore */ }
+  }, [sortMode]);
+
+  // Sorted view of the projects array. Memoized so resorting only happens
+  // when projects or sortMode change.
+  //   recent: by lastOpenedAt descending; never-opened projects fall to the
+  //           bottom (sorted alphabetically among themselves so the order
+  //           is stable).
+  //   name:   case-insensitive locale-aware alphabetical.
+  const sortedProjects = useMemo(() => {
+    const copy = projects.slice();
+    if (sortMode === 'name') {
+      copy.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    } else {
+      copy.sort((a, b) => {
+        const aT = a.lastOpenedAt ?? 0;
+        const bT = b.lastOpenedAt ?? 0;
+        if (bT !== aT) return bT - aT;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      });
+    }
+    return copy;
+  }, [projects, sortMode]);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -187,8 +226,46 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
           <p style={{ fontSize: 13 }}>Create a new project or clone an existing repository</p>
         </div>
       ) : (
+        <>
+          {/* Sort control — shown only when there's more than one project. */}
+          {projects.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, marginBottom: 10 }}>
+              <span style={{ fontSize: 11, color: '#888' }}>Sort:</span>
+              <div style={{ display: 'inline-flex', borderRadius: 6, border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                <button
+                  onClick={() => setSortMode('recent')}
+                  style={{
+                    background: sortMode === 'recent' ? 'rgba(255,255,255,0.08)' : 'transparent',
+                    color: sortMode === 'recent' ? '#ddd' : '#888',
+                    border: 'none',
+                    padding: '4px 10px',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  }}
+                  title="Most recently opened first"
+                >
+                  Recent
+                </button>
+                <button
+                  onClick={() => setSortMode('name')}
+                  style={{
+                    background: sortMode === 'name' ? 'rgba(255,255,255,0.08)' : 'transparent',
+                    color: sortMode === 'name' ? '#ddd' : '#888',
+                    border: 'none',
+                    padding: '4px 10px',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    borderLeft: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                  title="Alphabetical by name"
+                >
+                  Name
+                </button>
+              </div>
+            </div>
+          )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {projects.map((project) => (
+          {sortedProjects.map((project) => (
             <div
               key={project.name}
               style={{
@@ -239,6 +316,7 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
             </div>
           ))}
         </div>
+        </>
       )}
     </div>
   );

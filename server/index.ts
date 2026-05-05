@@ -69,6 +69,7 @@ import {
   getCardClassMeta,
   micaDir,
   validateProjectName,
+  markProjectOpened,
   type FileMeta,
   type CardSettings,
 } from "./files.js";
@@ -448,6 +449,10 @@ app.post("/api/projects/:project/open", async (req, res) => {
     const tAfterInit = Date.now();
     switchProject(name);
     const tAfterSwitch = Date.now();
+
+    // Touch the last-opened marker so the project list can sort by recency.
+    // Best-effort — failure is logged in the helper, doesn't fail the open.
+    await markProjectOpened(name);
 
     const displayName = await getProjectName(name);
     const tAfterName = Date.now();

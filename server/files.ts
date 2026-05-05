@@ -176,6 +176,31 @@ export interface ProjectInfo {
   hasGit: boolean;
   hasMica: boolean;
   docsDir?: string;
+  /** Wall-clock ms of the last `/api/projects/:project/open` call. Read from
+   *  the mtime of `<project>/.mica/last-opened`. Undefined for projects that
+   *  have never been opened (or were created before this field shipped).
+   *  Drives the "Recent" sort in the project list. */
+  lastOpenedAt?: number;
+}
+
+/** Path to the per-project last-opened marker. The file's mtime is the
+ *  timestamp; the file content is unused. */
+function lastOpenedMarkerPath(projectName: string): string {
+  return join(WORKSPACE_DIR, projectName, ".mica", "last-opened");
+}
+
+/** Mark a project as just opened. Writes an empty file (or refreshes its
+ *  mtime if it already exists). Best-effort — an I/O failure here shouldn't
+ *  break project open. */
+export async function markProjectOpened(projectName: string): Promise<void> {
+  validateProjectName(projectName);
+  const path = lastOpenedMarkerPath(projectName);
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, "", "utf-8");
+  } catch (err) {
+    console.warn(`[mark-opened:${projectName}] failed: ${(err as Error).message}`);
+  }
 }
 
 /** List all projects (subdirectories) in the workspace. */
@@ -202,12 +227,19 @@ export async function listProjects(): Promise<ProjectInfo[]> {
       } catch { /* no config */ }
     }
 
+    let lastOpenedAt: number | undefined;
+    try {
+      const s = await stat(lastOpenedMarkerPath(entry.name));
+      lastOpenedAt = s.mtime.getTime();
+    } catch { /* never opened */ }
+
     projects.push({
       name: entry.name,
       path: projPath,
       hasGit,
       hasMica,
       docsDir,
+      lastOpenedAt,
     });
   }
 
