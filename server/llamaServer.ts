@@ -14,7 +14,7 @@ const DEFAULT_PORT = 8012;
 // to A/B against Qwen3-Coder-Next ("unsloth/Qwen3-Coder-Next-GGUF" /
 // "Qwen3-Coder-Next-UD-Q4_K_XL.gguf").
 const HF_REPO = process.env.LLAMA_HF_REPO || "unsloth/Qwen3.6-35B-A3B-GGUF";
-const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf";
+const HF_FILE = process.env.LLAMA_HF_FILE || "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf";
 const MODEL_PATH = process.env.MODEL_PATH || "";
 // Per-slot context size. llama.cpp divides `--ctx-size` across slots, so to
 // give EACH slot this many tokens we pass -np × CTX_SIZE_PER_SLOT below.
