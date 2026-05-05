@@ -751,7 +751,7 @@ export async function deleteProjectFile(filename: string, project?: string): Pro
 
 // ── Validation ──────────────────────────────────────────────
 
-function validateProjectName(name: string): void {
+export function validateProjectName(name: string): void {
   if (!name || name.includes("/") || name.includes("\\") || name.includes("..") || name.startsWith(".")) {
     throw new Error(`Invalid project name: ${name}`);
   }

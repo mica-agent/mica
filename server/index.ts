@@ -68,6 +68,7 @@ import {
   CONTEXT_SOFT_CAP_CHARS,
   getCardClassMeta,
   micaDir,
+  validateProjectName,
   type FileMeta,
   type CardSettings,
 } from "./files.js";
@@ -255,13 +256,29 @@ app.use("/api", (_req, res, next) => {
 const fileWatcher = new FileWatcher();
 
 function getRequestProject(req: express.Request): string | null {
+  // Validate at the request boundary so all downstream `join(WORKSPACE_DIR,
+  // project, ...)` callsites are safe by construction. Without this gate, a
+  // header like `X-Mica-Project: ../../etc` would let a request reach files
+  // outside the workspace via path normalization (the file-watcher's
+  // canvasRoot/.mica-internal layout, the OpenRouter key blob, etc.). Fail
+  // closed: invalid name → null project (most endpoints already handle the
+  // null case by returning the workspace-default scope, which is safer than
+  // a 500 or a partial path).
+  const tryName = (raw: string): string | null => {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try { validateProjectName(trimmed); return trimmed; }
+    catch { return null; }
+  };
   const header = req.header("x-mica-project");
-  if (header && typeof header === "string" && header.trim()) {
-    return header.trim();
+  if (typeof header === "string") {
+    const v = tryName(header);
+    if (v) return v;
   }
   const q = req.query.project;
-  if (typeof q === "string" && q.trim()) {
-    return q.trim();
+  if (typeof q === "string") {
+    const v = tryName(q);
+    if (v) return v;
   }
   return null;
 }
