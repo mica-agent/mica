@@ -495,6 +495,8 @@ function addErrorBubble(filename, errorText) {
   }
   const wrap = window.document.createElement("div");
   wrap.style.cssText = "align-self:stretch;background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.4);border-radius:8px;padding:8px 10px;font-size:12px;";
+  // Tag with filename so card-error-cleared can find + remove this bubble.
+  wrap.dataset.cardErrorFilename = filename;
   const header = window.document.createElement("div");
   header.style.cssText = "color:#fca5a5;font-weight:600;margin-bottom:4px;";
   header.textContent = "\u26A0 Card '" + filename + "' errored";
@@ -548,6 +550,24 @@ const _unsubCardError = mica.on("card-error", function(ev) {
   addErrorBubble(ev.filename, ev.error);
 });
 mica.onDestroy(_unsubCardError);
+
+// Auto-remove bubbles when the server reports the file went errored → clean.
+// Server broadcasts `card-error-cleared` after a validator pass leaves the
+// buffer empty for a file that previously had an error. Drop matching bubbles
+// AND wipe the dedup map entry so a fresh error on the same file isn't
+// suppressed by the 2s window.
+const _unsubCardErrorCleared = mica.on("card-error-cleared", function(ev) {
+  if (!ev || !ev.filename) return;
+  const matches = messagesEl.querySelectorAll(
+    '[data-card-error-filename="' + window.CSS.escape(ev.filename) + '"]'
+  );
+  matches.forEach(function(node) { node.remove(); });
+  // Drop dedup keys for this file so any new error renders immediately.
+  for (const k of Array.from(_recentCardErrors.keys())) {
+    if (k.startsWith(ev.filename + "::")) _recentCardErrors.delete(k);
+  }
+});
+mica.onDestroy(_unsubCardErrorCleared);
 
 function setStatus(text, dot, pulsing) {
   statusBar.style.display = "block";

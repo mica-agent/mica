@@ -71,3 +71,11 @@ export function getPendingValidatorErrors(project: string): BufferedError[] {
 export function clearProjectValidatorErrors(project: string): void {
   buffer.delete(project);
 }
+
+/** Peek whether a project+filename currently has a buffered error. Used by
+ *  the file-watcher to decide whether to broadcast `card-error-cleared`
+ *  after validators settle: only fire the cleared event when the file
+ *  GOES from errored → clean, not on every clean write. */
+export function hasValidatorError(project: string, filename: string): boolean {
+  return buffer.get(project)?.has(filename) ?? false;
+}

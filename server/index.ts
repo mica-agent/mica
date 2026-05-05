@@ -100,7 +100,7 @@ import { createCanvasBackComposeHandler } from "./plugins/canvasBackCompose.js";
 import { registerGitEndpoints } from "./plugins/git.js";
 import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata, enforceCardJsLint, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
-import { recordValidatorError, clearValidatorError, getPendingValidatorErrors, clearProjectValidatorErrors } from "./validatorErrorBuffer.js";
+import { recordValidatorError, clearValidatorError, getPendingValidatorErrors, clearProjectValidatorErrors, hasValidatorError } from "./validatorErrorBuffer.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 import {
   setActivityBroadcast,
@@ -1900,18 +1900,20 @@ function broadcastToProject(project: string, msg: Record<string, unknown>): numb
 fileWatcher.on("file-change", async (event: { type: string; filename: string; project: string }) => {
   console.log(`[file-watcher:${event.project}] ${event.type}: ${event.filename}`);
 
+  // Capture whether this file had a validator error BEFORE we clear it.
+  // After validators re-run, if the buffer is still empty, the file went
+  // from errored → clean and we broadcast `card-error-cleared` so the chat
+  // card can remove the previously-rendered error bubble. Without this
+  // snapshot we can't distinguish "file was always clean" (no broadcast
+  // needed) from "file just got fixed" (broadcast desired).
+  const hadErrorBefore = hasValidatorError(event.project, event.filename);
+
   // Clear any prior validator-error buffer entry for this file before
   // re-running validators. Validators that emit errors will re-fill via
   // recordValidatorError below; validators that pass leave the buffer
   // empty, so a fix automatically clears the agent-visible error on its
   // next turn (the buildContext injection reads from this buffer).
-  if (event.type !== "deleted") {
-    clearValidatorError(event.project, event.filename);
-  } else {
-    // File deleted — also wipe any error tied to it; no point telling the
-    // agent about a file that no longer exists.
-    clearValidatorError(event.project, event.filename);
-  }
+  clearValidatorError(event.project, event.filename);
 
   // (former enforceCardClassPath wired here — retired. Path enforcement is
   // now structural via the mica-card-class MCP tools in
@@ -1922,20 +1924,23 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
   // Decomposition consistency: catch "Decision: Inline" + @component-coder
   // dispatch items contradiction (tenet 12). Fires after any decomposition.md
   // or plan.todo write — if both files exist and contradict, broadcast.
+  const validatorPromises: Promise<unknown>[] = [];
   if (event.type !== "deleted") {
-    enforceDecompositionConsistency(event.filename, projectDir(event.project), {
-      onError: (reason) => {
-        console.warn(`[decomposition-check:${event.project}] ${reason}`);
-        broadcastToProject(event.project, {
-          type: "card-error",
-          filename: event.filename,
-          error: reason,
-        });
-        recordValidatorError(event.project, event.filename, reason);
-      },
-    }).catch((err) => {
-      console.error(`[decomposition-check:${event.project}] failed:`, err);
-    });
+    validatorPromises.push(
+      enforceDecompositionConsistency(event.filename, projectDir(event.project), {
+        onError: (reason) => {
+          console.warn(`[decomposition-check:${event.project}] ${reason}`);
+          broadcastToProject(event.project, {
+            type: "card-error",
+            filename: event.filename,
+            error: reason,
+          });
+          recordValidatorError(event.project, event.filename, reason);
+        },
+      }).catch((err) => {
+        console.error(`[decomposition-check:${event.project}] failed:`, err);
+      }),
+    );
   }
 
   if (event.type === "deleted") {
@@ -1969,11 +1974,31 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
       ...(ws.cardSource ? { cardSource: ws.cardSource } : {}),
     });
   }
+
+  // Auto-remove the chat-card error bubble when this file went from errored
+  // → clean. Wait for the validator(s) to settle, re-check the buffer; if
+  // empty, broadcast `card-error-cleared` so the chat card prunes matching
+  // bubbles. Skipped when there was no prior error (no bubble to clear) and
+  // for delete events (the bubble removal is implicit — the card is gone).
+  if (hadErrorBefore && event.type !== "deleted" && validatorPromises.length > 0) {
+    Promise.allSettled(validatorPromises).then(() => {
+      if (!hasValidatorError(event.project, event.filename)) {
+        broadcastToProject(event.project, {
+          type: "card-error-cleared",
+          filename: event.filename,
+        });
+      }
+    });
+  }
 });
 
 fileWatcher.on("card-class-change", (event: { type: string; filename: string; project: string }) => {
   console.log(`[file-watcher:${event.project}] card-class ${event.type}: ${event.filename}`);
   broadcastToProject(event.project, { type: "card-class-changed", filename: event.filename, change: event.type });
+
+  // Capture had-error-before state so we can broadcast card-error-cleared
+  // after validators settle (see file-change handler above for the rationale).
+  const hadErrorBefore = hasValidatorError(event.project, event.filename);
 
   // Clear prior validator-error buffer entry before re-running validators.
   // Same pattern as the file-change handler above. The card-class watcher
@@ -1981,6 +2006,11 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // independently — a successful re-validation leaves the file's buffer
   // entry empty (no stale error visible to the agent).
   clearValidatorError(event.project, event.filename);
+
+  // Collect validator promises so we can await all of them before deciding
+  // whether to broadcast card-error-cleared. Promise.allSettled prevents one
+  // validator's error from masking another's clean verdict.
+  const validatorPromises: Promise<unknown>[] = [];
 
   // Post-write integrity check: the agent's canUseTool gate is dead under
   // permissionMode: "yolo", so `checkCardClassMetadataConsistency` can't
@@ -1994,40 +2024,44 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
     // Tier-1 URL reachability: fetch each dependencies.scripts/styles URL
     // and broadcast card-error if any 404 / fail. Runs in parallel with
     // the metadata-shape check below — different validation, both fire.
-    enforceDependenciesReachable(absPath, {
-      onError: (reason) => {
-        console.warn(`[deps-reachable:${event.project}] ${reason}`);
-        broadcastToProject(event.project, {
-          type: "card-error",
-          filename: event.filename,
-          error: reason,
-        });
-        recordValidatorError(event.project, event.filename, reason);
-      },
-    }).catch((err) => {
-      console.error(`[deps-reachable:${event.project}] failed:`, err);
-    });
-    enforceCardClassMetadata(absPath, {
-      // Auto-fix succeeded: framework already wrote the correct file. Log
-      // server-side for trace/audit, but DON'T broadcast card-error — the
-      // chat card would surface it as a red ⚠ banner indistinguishable
-      // from a genuine failure. The agent's next read sees the repaired
-      // content; no UI noise needed.
-      onAutoFix: (reason) => {
-        console.log(`[card-class-enforce:${event.project}] auto-fixed: ${reason}`);
-      },
-      onError: (reason) => {
-        console.warn(`[card-class-enforce:${event.project}] ${reason}`);
-        broadcastToProject(event.project, {
-          type: "card-error",
-          filename: event.filename,
-          error: reason,
-        });
-        recordValidatorError(event.project, event.filename, reason);
-      },
-    }).catch((err) => {
-      console.error(`[card-class-enforce:${event.project}] failed:`, err);
-    });
+    validatorPromises.push(
+      enforceDependenciesReachable(absPath, {
+        onError: (reason) => {
+          console.warn(`[deps-reachable:${event.project}] ${reason}`);
+          broadcastToProject(event.project, {
+            type: "card-error",
+            filename: event.filename,
+            error: reason,
+          });
+          recordValidatorError(event.project, event.filename, reason);
+        },
+      }).catch((err) => {
+        console.error(`[deps-reachable:${event.project}] failed:`, err);
+      }),
+    );
+    validatorPromises.push(
+      enforceCardClassMetadata(absPath, {
+        // Auto-fix succeeded: framework already wrote the correct file. Log
+        // server-side for trace/audit, but DON'T broadcast card-error — the
+        // chat card would surface it as a red ⚠ banner indistinguishable
+        // from a genuine failure. The agent's next read sees the repaired
+        // content; no UI noise needed.
+        onAutoFix: (reason) => {
+          console.log(`[card-class-enforce:${event.project}] auto-fixed: ${reason}`);
+        },
+        onError: (reason) => {
+          console.warn(`[card-class-enforce:${event.project}] ${reason}`);
+          broadcastToProject(event.project, {
+            type: "card-error",
+            filename: event.filename,
+            error: reason,
+          });
+          recordValidatorError(event.project, event.filename, reason);
+        },
+      }).catch((err) => {
+        console.error(`[card-class-enforce:${event.project}] failed:`, err);
+      }),
+    );
   }
 
   // Lint card.js for Mica-runtime violations the agent's generic syntax
@@ -2037,18 +2071,33 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // and self-corrects before the user sees a broken card.
   if (event.type !== "deleted" && event.filename.endsWith("/card.js")) {
     const absPath = join(projectDir(event.project), event.filename);
-    enforceCardJsLint(absPath, {
-      onError: (reason) => {
-        console.warn(`[card-js-lint:${event.project}] ${reason}`);
+    validatorPromises.push(
+      enforceCardJsLint(absPath, {
+        onError: (reason) => {
+          console.warn(`[card-js-lint:${event.project}] ${reason}`);
+          broadcastToProject(event.project, {
+            type: "card-error",
+            filename: event.filename,
+            error: reason,
+          });
+          recordValidatorError(event.project, event.filename, reason);
+        },
+      }).catch((err) => {
+        console.error(`[card-js-lint:${event.project}] failed:`, err);
+      }),
+    );
+  }
+
+  // Auto-remove the chat-card error bubble when this file went errored →
+  // clean. Same pattern as file-change handler.
+  if (hadErrorBefore && event.type !== "deleted" && validatorPromises.length > 0) {
+    Promise.allSettled(validatorPromises).then(() => {
+      if (!hasValidatorError(event.project, event.filename)) {
         broadcastToProject(event.project, {
-          type: "card-error",
+          type: "card-error-cleared",
           filename: event.filename,
-          error: reason,
         });
-        recordValidatorError(event.project, event.filename, reason);
-      },
-    }).catch((err) => {
-      console.error(`[card-js-lint:${event.project}] failed:`, err);
+      }
     });
   }
 });
