@@ -253,8 +253,17 @@ function CreateForm({ template, onSubmit, onCancel }: { template: string | null;
   // UX polish so users can see what they'll get without typing.
   const [docsDir, setDocsDir] = useState('canvas');
 
+  // Wrapping in <form> means Enter from any input fires onSubmit — no extra
+  // keypress handlers needed. The submit button is the form's default action;
+  // Cancel uses type="button" so it doesn't trigger submission.
   return (
-    <div style={formStyle}>
+    <form
+      style={formStyle}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (name.trim()) onSubmit(name.trim(), docsDir.trim(), template);
+      }}
+    >
       <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 500, color: '#ddd' }}>
         {template ? `New Project from "${template}"` : 'New Empty Project'}
       </h3>
@@ -281,14 +290,14 @@ function CreateForm({ template, onSubmit, onCancel }: { template: string | null;
         </label>
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button onClick={() => name.trim() && onSubmit(name.trim(), docsDir.trim(), template)} style={btnStyle} disabled={!name.trim()}>
+        <button type="submit" style={btnStyle} disabled={!name.trim()}>
           Create
         </button>
-        <button onClick={onCancel} style={{ ...btnStyle, background: 'transparent' }}>
+        <button type="button" onClick={onCancel} style={{ ...btnStyle, background: 'transparent' }}>
           Cancel
         </button>
       </div>
-    </div>
+    </form>
   );
 }
 
@@ -315,7 +324,15 @@ function CloneForm({
   const [cloning, setCloning] = useState(false);
 
   return (
-    <div style={formStyle}>
+    <form
+      style={formStyle}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!url.trim() || cloning) return;
+        setCloning(true);
+        onSubmit(url.trim(), name.trim(), docsDir.trim(), template);
+      }}
+    >
       <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 500, color: '#ddd' }}>Clone Repository</h3>
       <label style={labelStyle}>
         Git URL
@@ -364,21 +381,17 @@ function CloneForm({
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
         <button
-          onClick={() => {
-            if (!url.trim()) return;
-            setCloning(true);
-            onSubmit(url.trim(), name.trim(), docsDir.trim(), template);
-          }}
+          type="submit"
           style={btnStyle}
           disabled={!url.trim() || cloning}
         >
           {cloning ? 'Cloning...' : 'Clone'}
         </button>
-        <button onClick={onCancel} style={{ ...btnStyle, background: 'transparent' }}>
+        <button type="button" onClick={onCancel} style={{ ...btnStyle, background: 'transparent' }}>
           Cancel
         </button>
       </div>
-    </div>
+    </form>
   );
 }
 
