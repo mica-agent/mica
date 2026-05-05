@@ -125,17 +125,16 @@ mica_create_class({
   scripts: ["https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"],
   styles:  ["https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"],
   card_html: "<div class=\"card-world-clock\">...</div>",
-  card_js:   "(function(){ ... })();",
+  card_js:   "/* see CANONICAL CARD.JS pattern below */",
   card_css:  ".card-world-clock { ... }",  // optional
 })
 ```
 
 Returns `{ ok: true, dir: ".mica/card-classes/world-clock/", paths: { ... } }`.
 
-If a card.js or card.html is too large to send inline cleanly, omit it from
-the call — the tool writes a minimal stub and returns the canonical path.
-Then use `write_file` against that path to fill in the real content. (The
-path-/name-/metadata-shape problems are already solved by this point.)
+If you omit `card_js` entirely, the tool writes a working stub in the
+canonical shape (below) — edit the body via `mica_edit_class_file`,
+don't rewrite from scratch.
 
 Companion tools:
 - `mica_edit_class_file({ class, file: "card.js"|"card.html"|"card.css", content?, old_string?, new_string? })` — edit a class file with PRE-WRITE lint. For card.js, the lint that catches top-level redeclaration of CARD_SHIM globals (`mica`, `container`), ESM `import`/`export`, and other common mistakes runs BEFORE the write. Lint failures come back as a same-turn tool error so you can fix and retry without burning a card-error broadcast cycle. Use this INSTEAD of `write_file`/`edit` when modifying class files.
@@ -147,6 +146,64 @@ Companion tools:
 
 For dependencies, ALWAYS invoke `discover-library` first (see "Dependencies"
 below).
+
+## CANONICAL CARD.JS — copy this shape
+
+Every `card.js` you write should look like the counter below. Six lines do
+six things; the names of those six things are the structure of the file.
+
+```js
+// 1. Query into the injected `container`. It's a CARD_SHIM global pointing
+//    at this card's DOM root — your code uses it directly.
+const titleEl = container.querySelector('.title');
+const btnEl   = container.querySelector('button');
+
+// 2. Script-scoped state — any name except `container` or `mica`.
+let count = 0;
+
+// 3. Functions at script scope. The runtime wraps your file in a closure;
+//    that's already your "module." Plain function declarations, no IIFE.
+function render() {
+  titleEl.textContent = String(count);
+}
+
+// 4. DOM events on `container` or its descendants. The shim auto-cleans
+//    listeners on unmount, so you don't track them yourself.
+btnEl.addEventListener('click', () => {
+  count += 1;
+  render();
+});
+
+// 5. Anything that needs explicit teardown (timers, intervals, fetch
+//    abort controllers, websockets, library disposers) → `mica.onDestroy`.
+const id = setInterval(render, 1000);
+mica.onDestroy(() => clearInterval(id));
+
+// 6. First render at the bottom of the file.
+render();
+```
+
+**Every card.js you write keeps this shape.** Counter, world clock, Three.js
+scene, Leaflet map — only the body of `render()` and the contents of step 5
+change. The skeleton is the same. When the body grows, split `render()` into
+smaller functions; the six-step skeleton still wraps them.
+
+Cards that load a library (Three.js, Leaflet) layer two extra patterns inside
+the same skeleton:
+
+- **Library init goes BETWEEN steps 1 and 2** — once-only setup like
+  `const renderer = new THREE.WebGLRenderer();` `container.appendChild(renderer.domElement);`. Then your script-scoped state in step 2 references it.
+- **Library teardown goes IN step 5** — `mica.onDestroy(() => { renderer.dispose(); /* dispose textures, geometries, controls */ });`. Without this, the canvas leaks GPU memory across remounts.
+
+When `discover-library` selects a third-party library, run
+`mica_install_skills` for it (see `discover-library/SKILL.md` step 4). The
+installed library skill describes its disposers, init-order quirks, and
+version-specific gotchas — read that skill BEFORE filling in the body, so
+the body lands right the first time.
+
+If you're about to write `const container = ...`, `import {...}`, `export
+const`, or `(function(){ ... })()`, you've left the canonical shape. Stop
+and rewrite the section to match.
 
 ## Reference: file roles and globals
 

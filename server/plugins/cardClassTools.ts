@@ -160,12 +160,57 @@ export async function createClassImpl(
   if (typeof args.card_html === "string") {
     await writeFile(htmlPath, args.card_html, "utf-8");
   } else if (!existsSync(htmlPath)) {
-    await writeFile(htmlPath, `<div class="card-${name}">\n  <p>TODO: implement ${defaultTitle} markup</p>\n</div>\n`, "utf-8");
+    // Canonical card.html stub — pairs with the canonical card.js below.
+    // Working counter the agent can edit in place, so the first render is
+    // a real card and not a placeholder.
+    await writeFile(
+      htmlPath,
+      `<div class="card-${name}">\n  <h2 class="title">${defaultTitle}</h2>\n  <p class="count">0</p>\n  <button type="button">+</button>\n</div>\n`,
+      "utf-8",
+    );
   }
   if (typeof args.card_js === "string") {
     await writeFile(jsPath, args.card_js, "utf-8");
   } else if (!existsSync(jsPath)) {
-    await writeFile(jsPath, `// ${defaultTitle} — TODO: implement\nconsole.log("${name} card mounted");\n`, "utf-8");
+    // Canonical card.js stub — six-step shape from create-card-class
+    // SKILL.md § "CANONICAL CARD.JS". Demonstrates the pattern with a
+    // working counter; agent edits the body of `render()` and step 5
+    // (timers / library teardown) instead of writing card.js from scratch.
+    // Imitation beats remembered rules — the stub is the spec.
+    await writeFile(
+      jsPath,
+      [
+        `// ${defaultTitle} — canonical card.js shape.`,
+        `// Edit the render() body and step 5 (teardown) for your card's behavior.`,
+        ``,
+        `// 1. Query into container (the CARD_SHIM-injected DOM root).`,
+        `const countEl = container.querySelector('.count');`,
+        `const btnEl   = container.querySelector('button');`,
+        ``,
+        `// 2. Script-scoped state.`,
+        `let count = 0;`,
+        ``,
+        `// 3. Functions at script scope. No IIFE, no import/export.`,
+        `function render() {`,
+        `  countEl.textContent = String(count);`,
+        `}`,
+        ``,
+        `// 4. DOM events on container or its descendants (auto-cleaned on unmount).`,
+        `btnEl.addEventListener('click', () => {`,
+        `  count += 1;`,
+        `  render();`,
+        `});`,
+        ``,
+        `// 5. Anything that needs explicit teardown → mica.onDestroy.`,
+        `// (Empty for this counter; add timers, library disposers, etc. here.)`,
+        `mica.onDestroy(() => {});`,
+        ``,
+        `// 6. First render at the bottom.`,
+        `render();`,
+        ``,
+      ].join("\n"),
+      "utf-8",
+    );
   }
   if (typeof args.card_css === "string") {
     await writeFile(cssPath, args.card_css, "utf-8");

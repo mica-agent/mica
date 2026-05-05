@@ -26,6 +26,8 @@ Use these INSTEAD of \`write_file\` / \`edit\` when working with card classes �
 
 When you need a card class, the canonical flow is: \`mica_list_classes\` → \`mica_create_class\` (if the class doesn't exist) → \`mica_create_card_instance\` (to put it on the canvas) → \`render_capture\` (to verify it renders correctly).
 
+When you write \`card.js\`, copy the **CANONICAL CARD.JS** shape at \`.qwen/skills/create-card-class/SKILL.md\` (or \`.claude/skills/...\` for Claude). Six steps: query into \`container\`, declare state, define functions, wire events, register \`mica.onDestroy\` for teardown, render. Every card.js you write keeps that skeleton — only the body of \`render()\` and the contents of step 5 change. Library cards (Three.js, Leaflet) layer init between steps 1–2 and library teardown into step 5. Imitating the shape is more reliable than memorizing what to avoid.
+
 ### Library-aware skills
 
 When \`discover-library\` selects a third-party library (Three.js, Leaflet, D3, …), check whether a Mica-shaped skills package exists for it and install it via \`mica_install_skills\` before writing card.js. Library-specific skills give you procedural guidance the model's training-data priors miss (resource disposal, init-order quirks, version-specific gotchas) — without them, common failures recur (e.g. Three.js cards that leak GPU memory because textures aren't disposed on remount).
