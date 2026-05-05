@@ -287,10 +287,31 @@ export async function createInstanceImpl(
     : `${cfg.canvasRoot}/${baseName}${ext}`;
   const absPath = join(projectDir(project), projectRelative);
 
+  // Idempotency: if the file already exists, treat the call as a no-op
+  // success when the existing content matches (or when no content was
+  // requested). Returning isError: true on "already exists" caused tight
+  // retry loops — agents read the error as a transient failure, retry with
+  // identical args, get the same error, retry again. Observed in production:
+  // 176 consecutive calls in one session, agent never converged. Match
+  // mica_create_class's existing idempotency pattern (above, line 119).
   if (existsSync(absPath)) {
+    const requested = args.content ?? "";
+    let existing = "";
+    try {
+      const { readFile } = await import("fs/promises");
+      existing = await readFile(absPath, "utf-8");
+    } catch { /* unreadable — fall through to mismatch-style report */ }
+    if (requested === "" || existing === requested) {
+      return {
+        content: [{
+          type: "text",
+          text: `Card instance "${projectRelative}" already exists. No-op (idempotent).\n  class: ${className} (${ext})\n  absolute path: ${absPath}\n\nIf you wanted to replace its content, edit the file directly via write_file or call mica_delete_card_instance first.`,
+        }],
+      };
+    }
     return {
       isError: true,
-      content: [{ type: "text", text: `Instance "${projectRelative}" already exists. Delete via mica_delete_card_instance to replace, or pick a different filename.` }],
+      content: [{ type: "text", text: `Instance "${projectRelative}" already exists with different content. Delete via mica_delete_card_instance to replace, or pick a different filename.` }],
     };
   }
 
