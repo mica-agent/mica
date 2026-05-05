@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# Mica — Docker container lifecycle for an installed Mica.
+#
+# Wraps the daily start/stop/restart/status/logs operations on the
+# container that install.sh creates. Same env-var conventions as
+# install.sh, so MICA_WORKSPACE / MICA_IMAGE / MICA_CONTAINER / port
+# overrides applied at install time keep working here.
+#
+# What this script does NOT do:
+#   - Pull the image (install.sh owns that — first install only)
+#   - Run preflight checks (install.sh owns those)
+#   - Manage the auxiliary vLLM container
+#
+# Usage: bash scripts/mica.sh {start|stop|restart|status|logs|help}
+
+set -euo pipefail
+
+# ── Colors (NO_COLOR + non-TTY safe) ──────────────────────────────
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_RESET=$'\033[0m'
+else
+  C_OK=""; C_WARN=""; C_ERR=""; C_DIM=""; C_RESET=""
+fi
+
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s✓%s %s\n' "$C_OK" "$C_RESET" "$*"; }
+warn() { printf '%s!%s %s\n' "$C_WARN" "$C_RESET" "$*" >&2; }
+die()  { printf '%sError:%s %s\n' "$C_ERR" "$C_RESET" "$*" >&2; exit 1; }
+
+# ── Defaults (mirror install.sh) ─────────────────────────────────
+WORKSPACE="${MICA_WORKSPACE:-$HOME/mica-workspace}"
+IMAGE="${MICA_IMAGE:-ghcr.io/robchang/mica:latest}"
+NAME="${MICA_CONTAINER:-mica}"
+PORT_BACKEND="${MICA_PORT_BACKEND:-3002}"
+PORT_FRONTEND="${MICA_PORT_FRONTEND:-5173}"
+PORT_LLAMA="${MICA_PORT_LLAMA:-8012}"
+VOLUME_MODELS="${MICA_MODEL_VOLUME:-mica-models}"
+
+# ── Helpers ──────────────────────────────────────────────────────
+# Returns: "running" | "stopped" | "missing"
+container_state() {
+  # `docker ps -a --filter name=^X$` returns one line per exact-name match,
+  # empty output if no container exists. Avoids the `docker inspect` quirk
+  # where missing containers print a stray newline to stdout before failing.
+  local raw
+  raw="$(docker ps -a --filter "name=^${NAME}$" --format '{{.State}}' 2>/dev/null || true)"
+  case "$raw" in
+    running) echo "running" ;;
+    "")      echo "missing" ;;
+    *)       echo "stopped" ;;  # exited / created / paused / dead / restarting
+  esac
+}
+
+image_present() {
+  docker image inspect "$IMAGE" >/dev/null 2>&1
+}
+
+print_urls() {
+  say ""
+  say "  UI:        http://localhost:$PORT_FRONTEND/"
+  say "  API:       http://localhost:$PORT_BACKEND/api"
+  say "  Workspace: $WORKSPACE"
+  say ""
+  say "  ${C_DIM}logs:    bash scripts/mica.sh logs${C_RESET}"
+  say "  ${C_DIM}stop:    bash scripts/mica.sh stop${C_RESET}"
+}
+
+# ── Subcommands ──────────────────────────────────────────────────
+cmd_start() {
+  local state; state="$(container_state)"
+  case "$state" in
+    running)
+      ok "$NAME is already running"
+      print_urls
+      ;;
+    stopped)
+      say "Starting existing container $NAME …"
+      docker start "$NAME" >/dev/null
+      ok "$NAME started"
+      print_urls
+      ;;
+    missing)
+      if ! image_present; then
+        die "Image '$IMAGE' is not present locally. Run \`bash install.sh\` first to pull and create the container."
+      fi
+      say "No container named $NAME exists. Creating fresh from $IMAGE …"
+      mkdir -p "$WORKSPACE"
+      local run_args=(
+        --rm -d
+        --name "$NAME"
+        --gpus all
+        -p "$PORT_BACKEND:3002"
+        -p "$PORT_FRONTEND:5173"
+        -p "$PORT_LLAMA:8012"
+        -v "$WORKSPACE:/project"
+        -v "$VOLUME_MODELS:/home/vscode/.cache/huggingface"
+      )
+      if [ "${MICA_DISABLE_LLAMA:-0}" = "1" ]; then
+        run_args+=( -e MICA_DISABLE_LLAMA=1 )
+        ok "llama-server disabled (OpenRouter-only mode)"
+      fi
+      if [ "${MICA_MOUNT_CLAUDE:-0}" = "1" ]; then
+        local claude_dir="${MICA_CLAUDE_DIR:-$HOME/.claude}"
+        if [ -d "$claude_dir" ]; then
+          run_args+=( -v "$claude_dir:/home/vscode/.claude" )
+          ok "mounting $claude_dir for Claude Code cards"
+        else
+          warn "MICA_MOUNT_CLAUDE=1 but $claude_dir not found — skipping"
+        fi
+      fi
+      local cid; cid="$(docker run "${run_args[@]}" "$IMAGE")"
+      ok "$NAME started: ${cid:0:12}"
+      print_urls
+      ;;
+  esac
+}
+
+cmd_stop() {
+  local state; state="$(container_state)"
+  case "$state" in
+    running)
+      say "Stopping $NAME …"
+      docker stop "$NAME" >/dev/null
+      ok "$NAME stopped"
+      ;;
+    stopped)
+      ok "$NAME is already stopped (no-op)"
+      ;;
+    missing)
+      ok "no container named $NAME (no-op)"
+      ;;
+  esac
+}
+
+cmd_restart() {
+  local state; state="$(container_state)"
+  case "$state" in
+    running)
+      say "Restarting $NAME …"
+      docker restart "$NAME" >/dev/null
+      ok "$NAME restarted"
+      print_urls
+      ;;
+    *)
+      cmd_start
+      ;;
+  esac
+}
+
+cmd_status() {
+  local state; state="$(container_state)"
+  say "=== Mica container status ==="
+  say ""
+  case "$state" in
+    running)
+      local started_at
+      started_at="$(docker inspect -f '{{.State.StartedAt}}' "$NAME" 2>/dev/null)"
+      say "  Container: ${C_OK}running${C_RESET} ($NAME)"
+      say "  Image:     $IMAGE"
+      say "  Started:   $started_at"
+      print_urls
+      ;;
+    stopped)
+      say "  Container: ${C_WARN}stopped${C_RESET} ($NAME exists but not running)"
+      say ""
+      say "  ${C_DIM}start:   bash scripts/mica.sh start${C_RESET}"
+      ;;
+    missing)
+      say "  Container: ${C_DIM}not created${C_RESET} ($NAME does not exist)"
+      if image_present; then
+        say "  Image:     ${C_OK}present${C_RESET} ($IMAGE)"
+        say ""
+        say "  ${C_DIM}create + start:  bash scripts/mica.sh start${C_RESET}"
+      else
+        say "  Image:     ${C_WARN}not pulled${C_RESET} ($IMAGE)"
+        say ""
+        say "  ${C_DIM}pull + create + start:  bash install.sh${C_RESET}"
+      fi
+      ;;
+  esac
+}
+
+cmd_logs() {
+  local state; state="$(container_state)"
+  case "$state" in
+    missing) die "no container named $NAME exists. Nothing to tail." ;;
+    *)       exec docker logs -f "$NAME" ;;
+  esac
+}
+
+cmd_help() {
+  cat <<EOF
+Mica — Docker container lifecycle wrapper
+
+Usage:
+  bash scripts/mica.sh start     start (or create + start) the Mica container
+  bash scripts/mica.sh stop      stop the Mica container (idempotent)
+  bash scripts/mica.sh restart   restart, or start if not running
+  bash scripts/mica.sh status    show container state + URLs
+  bash scripts/mica.sh logs      tail container logs (Ctrl+C detaches)
+  bash scripts/mica.sh help      show this message
+
+Env-var overrides (mirror install.sh):
+  MICA_WORKSPACE      host workspace dir   (default: \$HOME/mica-workspace)
+  MICA_IMAGE          docker image         (default: ghcr.io/robchang/mica:latest)
+  MICA_CONTAINER      container name       (default: mica)
+  MICA_PORT_BACKEND   backend host port    (default: 3002)
+  MICA_PORT_FRONTEND  frontend host port   (default: 5173)
+  MICA_PORT_LLAMA     llama-server port    (default: 8012)
+  MICA_DISABLE_LLAMA  set to 1 to skip the local GPU model
+  MICA_MOUNT_CLAUDE   set to 1 to bind-mount ~/.claude
+  MICA_CLAUDE_DIR     override claude dir  (default: \$HOME/.claude)
+
+For the first-time install (image pull + preflight + create), use:
+  bash install.sh
+EOF
+}
+
+# ── Dispatch ─────────────────────────────────────────────────────
+# Help is allowed without a working docker; everything else needs it.
+case "${1:-help}" in
+  help|--help|-h) cmd_help; exit 0 ;;
+esac
+
+command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
+
+case "${1:-help}" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  restart) cmd_restart ;;
+  status)  cmd_status ;;
+  logs)    cmd_logs ;;
+  *)       die "unknown subcommand '${1:-}'. Try: bash scripts/mica.sh help" ;;
+esac
