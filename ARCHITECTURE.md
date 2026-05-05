@@ -10,96 +10,8 @@ this doc is wrong. Flag it and fix it.
 
 ## Posture
 
-Sixteen engineering convictions shape every decision in this
-codebase. They are mirrored verbatim in CLAUDE.md so agents and
-humans see the same list.
+Sixteen engineering convictions shape every decision in this codebase. They are listed and explained in **CLAUDE.md § How we build** (the canonical home). Throughout this document, references like *tenet 11* point at that numbered list.
 
-1. **Optimize every choice for AI generation.** This is the product
-   tenet "designed for AI authorship" applied to implementation.
-   When we pick a file format, an API shape, a state location, or a
-   folder convention, the test is: can an LLM produce correct code
-   against this from a natural-language prompt? Card classes are
-   `card.html + card.js + card.css + metadata.json` because LLMs
-   write those one-shot. `mica.*` stays small because large APIs
-   confuse generators. No custom DSL, no framework-in-framework, no
-   bytecode. If a design is nicer for humans but harder for agents,
-   the design is wrong and gets reversed.
-2. **Plain files over databases.** Humans, agents, and git all read
-   the same bytes. No ORM. No migrations. `.mica/` is a directory,
-   not a schema.
-3. **Pipes, not policy.** Server and host do not know what "chat"
-   or "terminal" or "mermaid" is. `if (extension === ".terminal")`
-   in a pipe means we failed.
-4. **One mechanism.** One ChannelManager for all bidirectional
-   channels. One card-class contract for all cards. When we are
-   forking, we extract a primitive instead.
-5. **User intent, not transport.** Sessions start on file create
-   and end on file delete. Not on WebSocket close, not on tab
-   close. Transport is ephemeral; intent is durable.
-6. **Small orthogonal primitives.** The Emacs instinct. Before
-   adding a field to a central config or a method to a central
-   API, check whether a smaller composition gets there.
-7. **Root cause, not symptoms.** No bandaids. If the mental model
-   is right, the fix is obvious. If it is not, stop and redraw.
-8. **Runtime tests are the bar.** Compile is necessary, not
-   sufficient. Type checks prove code compiles. They do not prove
-   a channel survives a re-render.
-9. **Read before writing.** Especially the card class you are
-   about to change. Rewriting without reading drops details that
-   were debugged in.
-10. **Don't rebuild agent internals.** Mica is an augmentation
-    layer on coding agents (Qwen Code, Claude Code, OpenRouter
-    variants), not a replacement. We shape what goes into the
-    prompt; the agent handles how it processes. Token-aware
-    chat-history trimming, silent summarization, prompt-cache
-    management, and reimplementations of `/compress` all live on
-    the agent's side of the line — we don't build them. See
-    ARCHITECTURE.md § Decisions §"Augmentation-layer boundary" for the
-    full table and the reasoning.
-11. **Plan before building.** Cost of fixing wrong code is far
-    greater than the cost of correct planning. Specs, contracts,
-    and interface boundaries are decided and approved *before*
-    any code is written. This is the parent rationale for tenets
-    8 and 9, and the justification for every gate we ship.
-    Skipping the plan to "just try something" inverts the cost
-    asymmetry.
-12. **Divide only when architecture and model both demand it.**
-    Decompose work into subagent dispatches only when (a) seams
-    are architecturally real — named integration boundaries,
-    distinct contracts another agent could implement without
-    reading the others' code — AND (b) the integrated whole
-    exceeds the model's reliable working set. If either gate
-    fails, work inline. Reusable design memory, narrative
-    cleanliness, and future flexibility are not gates.
-13. **Context is the budget.** Every line of skill prose, every
-    file read, every dispatch payload consumes the model's
-    working set. The skill suite itself is part of the model's
-    permanent system prompt — duplicating "read before writing"
-    across five skills directly burns the budget on which
-    adherence depends. Cut before adding. Curate at every level:
-    skill prose, dispatch context, file reads. The dynamic
-    counterpart to tenet 1's static design discipline.
-14. **Approval gates are user-driven, not file-driven.** A spec
-    save is not a build trigger. Humans control the moment a
-    build starts. File-watcher events propagate state; they
-    don't authorize action. Drives fresh-thread semantics,
-    decompose-task gating, and per-turn discipline.
-15. **Reuse before reinventing.** Before writing custom code,
-    check whether `mica.*` APIs, the agent SDK, or an
-    established library already does the job. If unsure between
-    "use the API" and "write our own", surface the option to the
-    user — don't silently roll your own. Tenet 10 is the
-    strongest specific case; the same discipline applies to
-    `mica.*` (host API) and to 3rd-party libraries.
-16. **Follow APIs as authored; validate before relying.** Once
-    an API is chosen, use signatures and shapes verbatim — don't
-    improvise method names that "look right" (`mica.read()` is
-    not a method; `mica.getContent()` is). For 3rd-party
-    endpoints — URLs, services, library entry points — verify
-    they exist and return the shape your code parses *before*
-    committing to the integration. Distinct from tenet 8: that
-    verifies the agent's *output*; this verifies the agent's
-    *inputs*.
 
 ## The pipes
 
@@ -363,26 +275,97 @@ streaming responses, abort semantics).
 
 ## Agents
 
-Two agent card classes ship today. Both are regular card classes
+Three agent card classes ship today. All are regular card classes
 whose `card.js` opens a `mica.openChannel` to a server handler,
-and the handler wraps a model.
+and the handler wraps a model. Same channel contract; different
+backends.
+
+### Qwen (`.chat`)
+
+`server/micaAgent.ts` is the channel handler. Uses the qwen-code
+SDK (`@qwen-code/sdk`) talking to llama-server's OpenAI-compatible
+HTTP API at `127.0.0.1:8012`. Tool loop runs through the SDK; tool
+calls are XML-tagged. The SDK's `qwen_code` preset provides the
+base system prompt; Mica appends the canvas baseline + per-turn
+context. Local model, no cloud roundtrip.
 
 ### Claude (`.claude`)
 
-`server/claudeAgent.ts` is the channel handler. It uses
-`@anthropic-ai/claude-agent-sdk`. For each turn it spawns the
+`server/claudeAgent.ts` is the channel handler. Uses the Claude
+Agent SDK (`@anthropic-ai/claude-agent-sdk`) which spawns the
 Claude Code CLI as a subprocess with `cwd` set to the project
 path. The CLI reads authentication from the host's
 `~/.claude/.credentials.json`. Output streams back through the
 channel.
 
-### Qwen (`.chat`)
+### Opencode (`.opencode`)
 
-`server/micaAgent.ts` is the channel handler. It calls
-llama-server's OpenAI-compatible HTTP API at `127.0.0.1:8012`.
-Tool loop, history trimming (system prompt + last N messages),
-XML-fallback tool-call parsing for models that do not populate
-`tool_calls` cleanly, and truncation-detection are handled here.
+`server/opencodeAgent.ts` is the channel handler. Uses the
+opencode SDK (`@opencode-ai/sdk`) against a long-running
+`opencode-serve` daemon (one per backend lifetime, shared across
+sessions). Communication is `session.promptAsync` plus an SSE
+event stream on `/global/event`; tool calls go through opencode's
+own MCP plumbing. Compatible with the same llama-server backend
+as Qwen, plus optional cloud providers (OpenRouter etc.) when
+configured.
+
+### Unified agent-tools surface (mica-builtins MCP)
+
+Mica exposes a fixed set of internal tools to all three backends
+under the same names and shapes via an MCP server registered as
+`mica-builtins`. Single source of truth in
+`server/agentTools/registry.ts`. Each tool is described once as
+an `AgentToolDef` (name, description, zod schema, REST path,
+handler) and adapted to the three SDKs:
+
+- qwen-code SDK → SDK-embedded MCP via `createSdkMcpServer`
+- Claude Agent SDK → same shape (the SDK exports the same helpers)
+- opencode-serve → external stdio MCP child process
+  (`opencodeBridge.mjs`) registered via `Config.mcp`, fetches the
+  same REST endpoints
+
+Eight tools today:
+
+| Tool | Purpose |
+|---|---|
+| `render_capture` | Capture a card screenshot, run it through llama-server's vision encoder, return a text caption — agent's eyes on the rendered output |
+| `mica_create_class` | Atomic card-class creation with metadata schema enforced; writes a canonical card.js stub when omitted |
+| `mica_edit_class_file` | Edit `card.html`/`card.js`/`card.css` with pre-write lint + partial-edit support (`old_string`+`new_string`); refuses no-op edits where the two strings are identical |
+| `mica_create_card_instance` | Place a card instance under canvas-root, idempotent on existing matching content |
+| `mica_delete_card_instance` | Delete a card instance file |
+| `mica_delete_class` | Delete a card-class directory; refuses if instances exist (force flag overrides) |
+| `mica_list_classes` | List project-scoped + built-in card classes |
+| `mica_install_skills` | Clone a third-party skills package into `.qwen/skills/` and `.claude/skills/`; two-tier trust (curated table + per-project approvals.json) |
+
+Every backend's prelude (`promptPrelude.ts`) describes the same
+tools in the same prose. Adding a new tool means: write the
+`AgentToolDef`, register it in `AGENT_TOOLS`, document it once in
+the prelude — all three agents pick it up automatically.
+
+### Validators (pre-write + post-write)
+
+Server-side validators run on agent file writes. Two layers:
+
+- **Pre-write** (`canUseTool` hook in micaAgent / claudeAgent):
+  `checkProtectedPathPrecondition` (refuses raw `write_file` to
+  layout.json + card-class internals, redirects to the structured
+  tool), `checkLibraryDiscoveryPrecondition` (gates spec.md /
+  decomposition.md / interfaces.md until the discover-library
+  skill is read), `checkCardClassMetadataConsistency` (extension
+  must match dir name). Hook is dead under qwen's `permissionMode:
+  yolo` for write tools — known limitation.
+- **Post-write** (`fileWatcher` listener in `server/index.ts`):
+  `enforceCardClassMetadata`, `enforceCardJsLint`,
+  `enforceDecompositionConsistency`, `enforceDependenciesReachable`.
+  These run regardless of how the write happened (SDK write_file,
+  bash heredoc, external editor).
+
+Errors flow through `validatorErrorBuffer.ts` → injected into the
+agent's next-turn `## Validator errors needing your attention`
+section AND broadcast as `card-error` events for chat-card UI
+surfacing. The buffer self-clears on rewrite — a fix removes the
+error from both the agent's prompt and the user's view on the
+next file-change event.
 
 ### Subagent delegation
 

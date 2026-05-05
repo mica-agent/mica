@@ -298,14 +298,20 @@ invoke a server export instead.
 Agents in Mica are card classes, not a framework feature. An agent
 card opens a bidirectional channel to a server handler via
 `mica.openChannel`. The handler wraps a model (the Claude Code
-SDK, or local Qwen via llama-server) and manages conversation
+SDK, the qwen-code SDK against local llama-server, or the
+opencode SDK against opencode-serve) and manages conversation
 state, tool use, and file writes.
 
-Today two agent card classes ship with Mica: one backed by the
-Claude Code CLI subprocess, one backed by local Qwen through
-llama-server. The set will change. What stays constant is the
-contract. An agent is a card that owns a brief, opens a channel,
-and reads the canvas for context.
+Today three agent card classes ship with Mica: `.chat` (qwen-code
+SDK + local llama-server), `.claude` (Claude Code subprocess),
+and `.opencode` (opencode-serve, supports both local llama-server
+and cloud providers). All three see the same internal tool
+surface (`mica-builtins` MCP — render_capture, card-class CRUD,
+skills installation) so functionality added at the framework
+level is available across backends without per-backend wiring.
+The set will change. What stays constant is the contract: an
+agent is a card that owns a brief, opens a channel, and reads
+the canvas for context.
 
 Reactivity is built in. The agent watches the file watcher and
 triages changes within its canvas scope after a short idle window,

@@ -16,9 +16,9 @@ is not yet built.
 
 ## How we build
 
-Sixteen engineering convictions shape every decision. Mirrored
-verbatim from ARCHITECTURE.md so the list lives in one canonical
-phrasing.
+Sixteen engineering convictions shape every decision in the Mica
+codebase. This file is the canonical home; ARCHITECTURE.md cites
+them by number, doesn't repeat them.
 
 1. **Optimize every choice for AI generation.** This is the
    product tenet "designed for AI authorship" applied to
@@ -196,6 +196,23 @@ features in the framework.
   explicit demand, never as ambient context. Baseline carries
   the current thread only. See ARCHITECTURE.md § Decisions §"Canvas
   is memory; threads are working memory."
+- **File-write decision rule.** Four paths in a Mica project
+  have structured tools that own their schema and lint; the
+  agent prelude tells agents to use them. Internal code that
+  writes these paths follows the same rule:
+  - `.mica/card-classes/<name>/card.{js,html,css}` →
+    `mica_edit_class_file` (pre-write lint, partial-edit
+    safety)
+  - `.mica/card-classes/<name>/metadata.json` →
+    `mica_create_class` (typed inputs serialized, schema
+    enforced)
+  - new card instance under canvas-root →
+    `mica_create_card_instance` (idempotent, verifies class)
+  - `.mica/layout.json` → don't write (runtime state owned by
+    the canvas card class)
+  Everything else — markdown docs, free-form content,
+  generated data — `write_file` is right. The four protected
+  paths are the closed list of Mica-owned schemas.
 - **Don't skip StrictMode correctness.** See below.
 
 ## React host implementation notes
