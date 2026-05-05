@@ -58,11 +58,14 @@ const TOOLS = [
   {
     name: "mica_create_class",
     description:
-      "Create a card class atomically. Use this INSTEAD of write_file for new card " +
-      "classes — the framework picks the directory and validates metadata.json shape. " +
-      "Required: name (lowercase, dashes only — e.g. 'world-clock'). Optional: badge, " +
-      "defaultTitle, extension, card_html, card_js, card_css, scripts (CDN URLs), " +
-      "styles, handler, primaryFile.",
+      "Use this to create a new card class at `.mica/card-classes/<name>/` (writes " +
+      "metadata.json + card.html + card.js + card.css). The framework picks the directory, " +
+      "validates the metadata schema, and writes a canonical card.js stub when card_js is " +
+      "omitted. Idempotent on identical args. Class creation does not go through write_file " +
+      "— that path doesn't enforce the schema and produces extension/dirname mismatches that " +
+      "silently render as TXT. Required: name (lowercase, dashes only). Optional: badge, " +
+      "defaultTitle, extension, card_html, card_js, card_css, scripts (CDN URLs), styles, " +
+      "handler, primaryFile.",
     inputSchema: {
       name: z.string().describe("Card class identifier (directory name and default extension)"),
       badge: z.string().optional(),
@@ -81,11 +84,14 @@ const TOOLS = [
   {
     name: "mica_edit_class_file",
     description:
-      "Edit a card class's card.html / card.js / card.css with PRE-WRITE validation. " +
-      "For card.js, the same lint that runs after every save runs BEFORE the write so " +
-      "lint failures surface in the same turn. Supports full-content replace (content=) " +
-      "or partial edit (old_string=+new_string=). metadata.json edits go through " +
-      "mica_create_class instead.",
+      "Use this for any edit to `.mica/card-classes/<name>/card.{js,html,css}`. Pre-write " +
+      "lint catches CARD_SHIM-global redeclaration (`mica`, `container`), ESM `import`/" +
+      "`export`, IIFE wrappers, etc. so failures surface in this same turn. Two edit modes: " +
+      "partial (`old_string`+`new_string`) preserves all surrounding code untouched — safer " +
+      "default for amending working files; full replace (`content=`) overwrites the whole " +
+      "file. Class-file edits don't go through `write_file` or `edit` — those bypass the " +
+      "lint and the partial-edit safety, and full-rewrites repeatedly regress working code. " +
+      "metadata.json edits go through `mica_create_class`.",
     inputSchema: {
       class: z.string().describe("Card class name (directory name)"),
       file: z.enum(["card.html", "card.js", "card.css"]),
@@ -98,9 +104,12 @@ const TOOLS = [
   {
     name: "mica_create_card_instance",
     description:
-      "Create an instance of an existing card class on the canvas. Lands at " +
-      "<canvasRoot>/<filename>.<class_extension>. Verifies the class exists. Use " +
-      "INSTEAD of write_file for new card instances.",
+      "Use this to put a new card instance on the canvas. Writes " +
+      "`<canvasRoot>/<filename>.<class_extension>` and verifies the class is registered " +
+      "first. Idempotent — calling twice with the same args returns no-op success on the " +
+      "second call. Instance creation does not go through `write_file` — that path doesn't " +
+      "know the canvas-root location or check class registration, so wrong paths silently " +
+      "render as TXT.",
     inputSchema: {
       class_extension: z.string().describe("File extension of the class (with leading dot, e.g. '.world-clock')"),
       filename: z.string().describe("Filename without extension (e.g. 'my-clock')"),

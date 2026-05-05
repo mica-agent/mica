@@ -45,7 +45,7 @@ function requireProject<T>(ctx: { project: string | null }, run: (project: strin
 export const createClassTool: AgentToolDef<typeof createClassSchema> = {
   name: "mica_create_class",
   description:
-    "Create a card class atomically. The framework owns paths and shapes — you supply intent (name, badge, dependencies) and content. Use this INSTEAD of write_file for new card classes. The directory location, name shape, and metadata.json schema are all enforced by the tool; the agent cannot accidentally write to wrong paths or invalid metadata. Idempotent on identical args. card_html and card_js are optional — if omitted, minimal stubs are written so subsequent edits land on the correct paths returned in the success message.",
+    "Use this to create a new card class at `.mica/card-classes/<name>/` (writes metadata.json + card.html + card.js + card.css). You supply intent (name, badge, dependencies, content); the framework picks the directory, validates the metadata schema, and writes a canonical card.js stub when card_js is omitted. Idempotent on identical args (returns no-op if the class already exists with matching config). Class creation does not go through write_file — that path doesn't enforce the metadata schema or directory shape and produces extension/dirname mismatches that silently render as TXT.",
   inputSchema: createClassSchema,
   restPath: "/api/tools/mica-create-class",
   handler: async (input, ctx) => {
@@ -57,7 +57,7 @@ export const createClassTool: AgentToolDef<typeof createClassSchema> = {
 export const editClassFileTool: AgentToolDef<typeof editClassFileSchema> = {
   name: "mica_edit_class_file",
   description:
-    "Edit a card class's card.html, card.js, or card.css file with PRE-WRITE validation. For card.js, the same lint that runs after every save (rejecting top-level redeclaration of CARD_SHIM globals like `mica`/`container`, `import`/`export` statements, etc.) runs BEFORE the write — lint failures surface as a tool-result error in this same turn instead of as a card-error broadcast on the next turn. Use this INSTEAD of write_file or edit when modifying class files; it gives you same-turn fixup on the most common card.js mistakes. Supports full-content replacement (content=) or partial edit (old_string=+new_string=). metadata.json edits go through mica_create_class instead — that tool serializes from typed inputs.",
+    "Use this for any edit to `.mica/card-classes/<name>/card.{js,html,css}`. Pre-write lint catches CARD_SHIM-global redeclaration (`mica`, `container`), ESM `import`/`export`, IIFE wrappers, etc. so failures surface as a tool-result error in this same turn instead of a card-error broadcast on the next turn. Two edit modes: partial (`old_string` + `new_string`) preserves all surrounding code untouched — safer default for amending working files; full replace (`content=`) overwrites the whole file. Class-file edits don't go through `write_file` or `edit` — those paths bypass the lint and the partial-edit safety, and full-rewrites repeatedly regress working code (e.g. textured Earth → simple sphere because the rewrite drops the texture-loader code). metadata.json edits go through `mica_create_class`.",
   inputSchema: editClassFileSchema,
   restPath: "/api/tools/mica-edit-class-file",
   handler: async (input, ctx) => {
@@ -69,7 +69,7 @@ export const editClassFileTool: AgentToolDef<typeof editClassFileSchema> = {
 export const createInstanceTool: AgentToolDef<typeof createInstanceSchema> = {
   name: "mica_create_card_instance",
   description:
-    "Create an instance of an existing card class on the canvas. The instance file lands at <canvasRoot>/<filename>.<class_extension>. Verifies the class exists before writing. Use this INSTEAD of write_file for new card instances; it picks the right path and confirms the class is registered first.",
+    "Use this to put a new card instance on the canvas. Writes `<canvasRoot>/<filename>.<class_extension>` and verifies the class is registered first. Idempotent — calling twice with the same args returns no-op success on the second call (the file already exists with the requested content). Instance creation does not go through `write_file` — write_file doesn't know the canvas-root path or check class registration, so wrong paths silently render as TXT.",
   inputSchema: createInstanceSchema,
   restPath: "/api/tools/mica-create-card-instance",
   handler: async (input, ctx) => {

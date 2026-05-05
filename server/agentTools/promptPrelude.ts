@@ -13,9 +13,20 @@ These tools come from Mica itself — same names, same input/output shape, same 
 
 \`render_capture\` — capture a PNG of a card on the canvas and return a vision-model description of what's actually visible. Use after building or editing a card class to verify the rendered output matches the spec — the canvas may render with broken layout / missing markers / wrong colors / runtime errors that source-only review can't catch. Input: \`{ filename: 'canvas/<name>.<ext>' }\`. Output: text. The browser tab must be open to the project's canvas; the model that captions runs locally via llama-server's vision encoder.
 
+### File-write decision rule
+
+Four paths in a Mica project have structured tools that own their schema and lint. Use the structured tool for these; \`write_file\` is right for everything else.
+
+- \`.mica/card-classes/<name>/card.{js,html,css}\` → \`mica_edit_class_file\`
+- \`.mica/card-classes/<name>/metadata.json\` → \`mica_create_class\` (it serializes from typed inputs)
+- new card instance under canvas-root (e.g. \`canvas/foo.world-clock\`) → \`mica_create_card_instance\`
+- \`.mica/layout.json\` → don't write at all (runtime state owned by the canvas card)
+
+Everything else — \`spec.md\`, \`decomposition.md\`, \`questions.md\`, \`README.md\`, free-form markdown, generated data files, anything the user asked you to author — \`write_file\` is the right tool.
+
 ### Card-class authoring
 
-Use these INSTEAD of \`write_file\` / \`edit\` when working with card classes — the framework owns paths and shapes, validates metadata, and rejects common card.js lint failures BEFORE the write so the agent sees them in the same turn.
+The structured tools above own paths, shapes, and lint. Pre-write validation rejects common card.js mistakes (CARD_SHIM-global redeclaration, ESM import/export) BEFORE the write so failures surface as a tool-result error in the same turn instead of a card-error broadcast on the next turn.
 
 - \`mica_create_class\` — create a card class atomically. You supply intent (\`name\`, optional \`badge\`, \`defaultTitle\`, \`extension\`, \`card_html\`, \`card_js\`, \`card_css\`, \`scripts\` (CDN URLs), \`styles\`, \`handler\`, \`primaryFile\`). The framework picks the directory and writes a correct \`metadata.json\`. Idempotent on identical args. Stubs are written for any omitted card_html / card_js so subsequent edits land on the right paths.
 - \`mica_edit_class_file\` — edit \`card.html\` / \`card.js\` / \`card.css\` with PRE-WRITE validation (lint failures surface in the same turn). Args: \`class\` (directory name), \`file\`, and either \`content\` (replace) or \`old_string\` + \`new_string\` (partial edit). \`metadata.json\` edits go through \`mica_create_class\` instead.
