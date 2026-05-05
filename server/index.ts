@@ -787,7 +787,7 @@ app.post("/api/cards/:filename/error", (req, res) => {
     // with a "Send to agent" affordance. Project-scoped via existing helper.
     const proj = getRequestProject(req);
     if (proj) {
-      broadcastToProject(proj, { type: "card-error", filename, error });
+      broadcastToProject(proj, { type: "card-error", filename, error, surface: classifyErrorSurface(filename) });
       // ALSO record into the validator-error buffer so the runtime error
       // reaches the agent's prompt context on its next turn (same pipeline
       // as schema/path/lint validators). Without this, the agent has no
@@ -1836,7 +1836,7 @@ wss.on("connection", (ws) => {
           const proj = wsProjects.get(ws);
           const fname = filename;
           if (proj && fname) {
-            broadcastToProject(proj, { type: "card-error", filename: fname, error: errMsg });
+            broadcastToProject(proj, { type: "card-error", filename: fname, error: errMsg, surface: classifyErrorSurface(fname) });
             broadcastToProject(proj, {
               type: "progress",
               tool: "channel-open-error",
@@ -1879,6 +1879,29 @@ function broadcast(msg: Record<string, unknown>) {
       try { ws.send(data); } catch { wsClients.delete(ws); }
     }
   }
+}
+
+/** Classify an error's preferred chat surface.
+ *
+ *  "overlay" — the file has a CardRuntime mounted on it (canvas-root cards,
+ *  including markdown / spec.md / decomposition.md AND custom card classes
+ *  like .world-clock or .moon-orbit). The overlay listener in CardRuntime
+ *  matches on exact filename and surfaces a red error box on the card
+ *  itself; render_capture's vision caption then feeds the same error back
+ *  to the agent through the visual channel. A chat bubble would be
+ *  duplicative noise.
+ *
+ *  "bubble" — the file has no card runtime listening (`.mica/` internals:
+ *  card-class definitions, layout, sidecars). No overlay surface, so the
+ *  bubble in chat is the only chat-side affordance the user has. The agent
+ *  also gets the error via the validator buffer injection regardless.
+ *
+ *  Heuristic: anything under `.mica/` is framework-internal; everything
+ *  else is a project file with a card runtime. Sync, no config read —
+ *  works correctly even mid-startup before canvasRoot is resolved. */
+function classifyErrorSurface(filename: string): "overlay" | "bubble" {
+  if (filename === ".mica" || filename.startsWith(".mica/")) return "bubble";
+  return "overlay";
 }
 
 /** Send a message only to WS clients subscribed to the given project.
@@ -1934,6 +1957,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
             type: "card-error",
             filename: event.filename,
             error: reason,
+            surface: classifyErrorSurface(event.filename),
           });
           recordValidatorError(event.project, event.filename, reason);
         },
@@ -1986,6 +2010,7 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
         broadcastToProject(event.project, {
           type: "card-error-cleared",
           filename: event.filename,
+          surface: classifyErrorSurface(event.filename),
         });
       }
     });
@@ -2032,6 +2057,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
             type: "card-error",
             filename: event.filename,
             error: reason,
+            surface: classifyErrorSurface(event.filename),
           });
           recordValidatorError(event.project, event.filename, reason);
         },
@@ -2055,6 +2081,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
             type: "card-error",
             filename: event.filename,
             error: reason,
+            surface: classifyErrorSurface(event.filename),
           });
           recordValidatorError(event.project, event.filename, reason);
         },
@@ -2079,6 +2106,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
             type: "card-error",
             filename: event.filename,
             error: reason,
+            surface: classifyErrorSurface(event.filename),
           });
           recordValidatorError(event.project, event.filename, reason);
         },
@@ -2096,6 +2124,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
         broadcastToProject(event.project, {
           type: "card-error-cleared",
           filename: event.filename,
+          surface: classifyErrorSurface(event.filename),
         });
       }
     });

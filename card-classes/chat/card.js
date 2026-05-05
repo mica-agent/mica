@@ -534,6 +534,15 @@ const _CARD_ERROR_DEDUP_MS = 2000;
 
 const _unsubCardError = mica.on("card-error", function(ev) {
   if (!ev || !ev.filename || !ev.error) return;
+  // Surface gating: bubbles only fire for files with no in-card overlay
+  // path (.mica/ internals — class definitions, sidecars). Errors on
+  // canvas-root files (markdown, custom card classes) get tagged
+  // surface="overlay" by the server because CardRuntime mounts a red
+  // error box ON the broken card, and render_capture's vision caption
+  // feeds that error back to the agent through the visual channel.
+  // Bubble would just duplicate noise the user is already seeing
+  // spatially. Bubble cleanup logic below uses the same gate.
+  if (ev.surface && ev.surface !== "bubble") return;
   // Skip self — the chat card showing its own error risks loops if Send-to-agent
   // re-triggers the same throw, and is confusing UX. Server still logs it.
   if (ev.filename === mica.filename) return;
@@ -558,6 +567,9 @@ mica.onDestroy(_unsubCardError);
 // suppressed by the 2s window.
 const _unsubCardErrorCleared = mica.on("card-error-cleared", function(ev) {
   if (!ev || !ev.filename) return;
+  // Same surface gate as `card-error` above — overlay-tagged clears never
+  // had a bubble to remove in this card; skip the DOM scan and dedup wipe.
+  if (ev.surface && ev.surface !== "bubble") return;
   const matches = messagesEl.querySelectorAll(
     '[data-card-error-filename="' + window.CSS.escape(ev.filename) + '"]'
   );
