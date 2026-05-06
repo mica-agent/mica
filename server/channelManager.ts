@@ -85,6 +85,15 @@ export class ChannelManager {
   private filenameToSessionId = new Map<string, string>();  // `${project}|${filename}` → sessionId
   // In-flight session creation single-flight (keyed by sessionId).
   private creating = new Map<string, Promise<Session>>();
+  // Cross-session broadcast listeners. Used by voiceAgent's ambient
+  // announcements: every time a chat card broadcasts (e.g. an `assistant`
+  // turn-end event), voice gets notified and can queue a TTS notification.
+  // Per CLAUDE.md tenet 3 (pipes, not policy), this hook is generic — the
+  // listener decides what to filter on. Add via onAnyBroadcast(); the
+  // returned function unsubscribes.
+  private broadcastListeners = new Set<
+    (project: string | null, filename: string, data: unknown) => void
+  >();
 
   private filenameKey(project: string | null, filename: string): string {
     return `${project ?? "<workspace>"}|${filename}`;
@@ -119,6 +128,14 @@ export class ChannelManager {
       project: session.project,
 
       broadcast(data: unknown): void {
+        // One-line visibility for assistant_speech in particular, since
+        // missing audio is the most reported voice issue and silence here
+        // means "no clients attached" (so even a perfect TTS frame goes
+        // nowhere).
+        const t = (data as { type?: string } | null)?.type;
+        if (t === "assistant_speech") {
+          console.log(`[channel-mgr:broadcast] ${session.filename} type=assistant_speech clients=${session.clients.size}`);
+        }
         for (const [clientId, handle] of session.clients) {
           try {
             handle.onData(data);
@@ -126,6 +143,15 @@ export class ChannelManager {
             console.warn(`[channel-mgr] Stale client ${clientId}, removing`);
             session.clients.delete(clientId);
             self.clientToSession.delete(clientId);
+          }
+        }
+        // Notify cross-session listeners (used by voiceAgent for ambient
+        // announcements). Wrapped in try/catch per listener so a buggy
+        // subscriber can't poison broadcasts for the rest of the system.
+        for (const listener of self.broadcastListeners) {
+          try { listener(session.project, session.filename, data); }
+          catch (err) {
+            console.warn(`[channel-mgr] broadcast listener threw: ${(err as Error).message}`);
           }
         }
       },
@@ -293,6 +319,79 @@ export class ChannelManager {
    *  active session exists for that file. Used by file-deletion handlers. */
   findSessionByFilename(project: string | null, filename: string): string | undefined {
     return this.filenameToSessionId.get(this.filenameKey(project, filename));
+  }
+
+  /** Subscribe to every broadcast across all sessions. Used by voiceAgent's
+   *  ambient announcements (Phase 2): when a chat card emits an `assistant`
+   *  turn-end event, voice gets notified and can queue a TTS announcement.
+   *  Returns an unsubscribe function — sessions MUST call it from onDestroy. */
+  onAnyBroadcast(
+    listener: (project: string | null, filename: string, data: unknown) => void,
+  ): () => void {
+    this.broadcastListeners.add(listener);
+    return () => this.broadcastListeners.delete(listener);
+  }
+
+  /** Dispatch a payload into another card's channel handler as if it had been
+   *  sent by an external client. Used by the .voice card's `send_to_card`
+   *  tool to forward user requests into a chat card's queue without the user
+   *  having to click into that card. The dispatched data flows through the
+   *  target handler's `onData(clientId, data)` exactly like a normal client
+   *  message; the target card's existing clients see broadcasts as usual.
+   *
+   *  Returns `{ ok, clientCount?, queueDepth? }`:
+   *  - ok=false: no active session — the card hasn't been opened yet.
+   *  - ok=true, clientCount>0: target session has UI clients attached;
+   *    they'll see the new message bubble live.
+   *  - ok=true, clientCount=0: the agent will process and persist, but no
+   *    client is attached to render the new message — the user has to open
+   *    the card to see it. Voice should warn about this.
+   *  - queueDepth: 0 if the message dispatched immediately (current turn
+   *    is idle), N if it landed in the busy-queue with N items ahead.
+   *    Provided by the target handler synchronously via a `_voiceMeta`
+   *    callback we inject into `data`. Undefined if the target handler
+   *    doesn't honour the callback (older handlers / non-chat agents). */
+  dispatchToFilename(
+    project: string | null,
+    filename: string,
+    data: unknown,
+  ): { ok: boolean; clientCount?: number; queueDepth?: number } {
+    const sessionId = this.filenameToSessionId.get(this.filenameKey(project, filename));
+    if (!sessionId) return { ok: false };
+    const session = this.sessions.get(sessionId);
+    if (!session || session.state !== "active" || !session.handler?.onData) return { ok: false };
+    // Synthetic clientId — the dispatched message doesn't have an attached
+    // client; the target handler should not try to sendTo() this id, but
+    // micaAgent (the main consumer here) only uses clientId for diagnostics
+    // and queue routing, neither of which require a real client.
+    const clientCount = session.clients.size;
+    console.log(
+      `[channel-mgr] dispatchToFilename(${filename}) → session=${sessionId.slice(0, 8)} clients=${clientCount}` +
+        (clientCount === 0
+          ? " (no UI attached — message will persist but no live update will render)"
+          : ""),
+    );
+    // Inject a synchronous `onQueued` callback into the data so the
+    // target handler can report back queue depth without us needing
+    // async coordination. Honoured by handlers that read `_voiceMeta`
+    // (currently micaAgent); ignored otherwise.
+    let queueDepth: number | undefined;
+    const wrappedData =
+      data && typeof data === "object"
+        ? {
+            ...(data as object),
+            _voiceMeta: {
+              onQueued: (depth: number) => { queueDepth = depth; },
+            },
+          }
+        : data;
+    try {
+      session.handler.onData("voice-dispatch", wrappedData);
+      return { ok: true, clientCount, queueDepth };
+    } catch (err) {
+      console.warn(`[channel-mgr] dispatchToFilename(${filename}) handler.onData threw: ${(err as Error).message}`);
+      return { ok: false };
+    }
   }
 
   sendData(clientId: string, data: unknown): void {

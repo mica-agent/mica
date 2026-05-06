@@ -5,6 +5,8 @@ const talkBtn = container.querySelector('#vh-talk');
 const statusEl = container.querySelector('#vh-status');
 const transcriptWrap = container.querySelector('#vh-transcript-wrap');
 const transcriptEl = container.querySelector('#vh-transcript');
+const replyWrap = container.querySelector('#vh-reply-wrap');
+const replyEl = container.querySelector('#vh-reply');
 const audioEl = container.querySelector('#vh-audio');
 const metaEl = container.querySelector('#vh-meta');
 
@@ -83,19 +85,61 @@ function stopRecording() {
   setStatus('Processing', 'processing');
 }
 
+// Sequential audio playback queue. Each /converse response yields one WAV
+// per sentence in arrival order; we play them back-to-back through a single
+// <audio> element. Holding object URLs in `wavQueue` lets us overlap arrival
+// with playback — a sentence can finish synthesizing before the previous one
+// finishes playing.
+let wavQueue = [];
+let isPlayingQueue = false;
+
+function enqueueWav(wavB64) {
+  const bin = window.atob(wavB64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new window.Blob([bytes], { type: 'audio/wav' });
+  const url = window.URL.createObjectURL(blob);
+  wavQueue.push(url);
+  if (!isPlayingQueue) playNextWav();
+}
+
+function playNextWav() {
+  const url = wavQueue.shift();
+  if (!url) { isPlayingQueue = false; return; }
+  isPlayingQueue = true;
+  audioEl.src = url;
+  audioEl.style.display = '';
+  audioEl.onended = function() {
+    window.URL.revokeObjectURL(url);
+    playNextWav();
+  };
+  audioEl.play().catch(function() { /* user can press play manually */ });
+}
+
+function resetReply() {
+  wavQueue = [];
+  isPlayingQueue = false;
+  audioEl.onended = null;
+  audioEl.pause();
+  audioEl.removeAttribute('src');
+  audioEl.style.display = 'none';
+  replyEl.textContent = '';
+  replyWrap.style.display = 'none';
+}
+
 async function handleStop() {
   const recordMs = Date.now() - recordStartedAt;
   const blob = new window.Blob(recordedChunks, { type: recordedMime });
   if (blob.size < 200) {
-    // Probably a tap — too short to transcribe.
     setStatus('Hold longer', 'idle');
     setMeta('Recording was ~' + recordMs + 'ms; try holding the button while speaking.');
     return;
   }
+  resetReply();
   const t0 = Date.now();
   let resp;
   try {
-    resp = await window.fetch('/api/voice/echo', {
+    resp = await window.fetch('/api/voice/converse', {
       method: 'POST',
       headers: { 'Content-Type': recordedMime },
       body: blob,
@@ -115,26 +159,81 @@ async function handleStop() {
     setMeta(msg);
     return;
   }
-  const transcriptHeader = resp.headers.get('x-transcript');
-  const transcript = transcriptHeader ? decodeURIComponent(transcriptHeader) : '(no transcript)';
-  const wavBuf = await resp.arrayBuffer();
-  const wavBlob = new window.Blob([wavBuf], { type: 'audio/wav' });
-  const wavUrl = window.URL.createObjectURL(wavBlob);
 
-  transcriptEl.textContent = transcript;
-  transcriptWrap.style.display = '';
-  audioEl.src = wavUrl;
-  audioEl.style.display = '';
-  // Auto-play the response. Browsers allow this when the user just
-  // interacted with the page (button release), so it should work.
-  audioEl.play().catch(function() { /* user can press play manually */ });
+  setStatus('Thinking', 'processing');
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let lineBuf = '';
+  let sentenceCount = 0;
+  let firstAudioMs = null;
+  let errorMsg = null;
 
-  const elapsed = Date.now() - t0;
-  setStatus('Ready', 'ready');
-  setMeta(
-    'Recorded ' + recordMs + 'ms · round-trip ' + elapsed + 'ms · ' +
-    (blob.size / 1024).toFixed(1) + ' KB ↑'
-  );
+  while (true) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (err) {
+      errorMsg = 'stream read failed: ' + (err && err.message ? err.message : err);
+      break;
+    }
+    if (chunk.done) break;
+    lineBuf += decoder.decode(chunk.value, { stream: true });
+    let nl;
+    while ((nl = lineBuf.indexOf('\n')) !== -1) {
+      const line = lineBuf.slice(0, nl);
+      lineBuf = lineBuf.slice(nl + 1);
+      if (!line.trim()) continue;
+      let frame;
+      try { frame = JSON.parse(line); }
+      catch (_) { continue; }
+
+      if (frame.type === 'transcript') {
+        transcriptEl.textContent = frame.text || '(no speech detected)';
+        transcriptWrap.style.display = '';
+      } else if (frame.type === 'sentence') {
+        sentenceCount++;
+        if (sentenceCount === 1) {
+          replyEl.textContent = '';
+          replyWrap.style.display = '';
+        }
+        // Append with a space so sentences read naturally inline.
+        replyEl.textContent += (replyEl.textContent ? ' ' : '') + frame.text;
+      } else if (frame.type === 'audio') {
+        if (firstAudioMs === null) {
+          firstAudioMs = Date.now() - t0;
+          setStatus('Speaking', 'ready');
+        }
+        enqueueWav(frame.wav_b64);
+      } else if (frame.type === 'done') {
+        firstAudioMs = frame.first_audio_ms != null ? frame.first_audio_ms : firstAudioMs;
+        const elapsed = frame.elapsed_ms != null ? frame.elapsed_ms : (Date.now() - t0);
+        setMeta(
+          'Recorded ' + recordMs + 'ms · first audio ' +
+          (firstAudioMs != null ? firstAudioMs + 'ms' : 'n/a') +
+          ' · total ' + elapsed + 'ms · ' + sentenceCount + ' sentence' +
+          (sentenceCount === 1 ? '' : 's')
+        );
+      } else if (frame.type === 'error') {
+        errorMsg = frame.message || 'unknown error';
+      }
+    }
+  }
+
+  if (errorMsg) {
+    setStatus('Error', 'error');
+    setMeta(errorMsg);
+    return;
+  }
+  // If audio is still playing, status stays "Speaking" until queue drains.
+  if (!isPlayingQueue) setStatus('Ready', 'ready');
+  else {
+    audioEl.addEventListener('ended', function once() {
+      if (wavQueue.length === 0 && !isPlayingQueue) {
+        setStatus('Ready', 'ready');
+        audioEl.removeEventListener('ended', once);
+      }
+    });
+  }
 }
 
 async function checkServerReady() {

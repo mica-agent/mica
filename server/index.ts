@@ -85,8 +85,10 @@ import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llamaServer.js";
 import { ensureVoiceServers, stopVoiceServers, getVoiceServerStatus, getSttUrl, getTtsUrl } from "./voiceServers.js";
+import { SentenceFanout } from "./voiceStreaming.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
+import { createVoiceAgentHandler } from "./voiceAgent.js";
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
 import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
 import { stopOpencodeServer } from "./opencodeServer.js";
@@ -222,7 +224,14 @@ app.use((req, res, next) => {
     if (req.path.endsWith("/upload")) return next();
     // Voice routes that accept raw audio bodies; echo/transcribe both consume
     // a recorded blob from MediaRecorder, /synthesize takes JSON (handled by jsonParser).
-    if (req.path === "/api/voice/echo" || req.path === "/api/voice/transcribe") return next();
+    // Voice routes that accept raw audio bodies. /synthesize takes JSON
+    // (handled by jsonParser); everything else here gets the raw stream.
+    if (
+      req.path === "/api/voice/echo" ||
+      req.path === "/api/voice/converse" ||
+      req.path === "/api/voice/transcribe"
+    )
+      return next();
   }
   jsonParser(req, res, next);
 });
@@ -831,13 +840,19 @@ app.post("/api/voice/echo", async (req, res) => {
     res.status(503).json({ error: "Voice servers disabled (MICA_DISABLE_VOICE=1)" });
     return;
   }
+  // Self-heal: if a sidecar died (or hasn't been started since boot),
+  // ensureVoiceServers respawns it. Cheap when already running.
   if (!status.stt.ready || !status.tts.ready) {
-    res.status(503).json({
-      error: "Voice servers not ready yet",
-      stt_ready: status.stt.ready,
-      tts_ready: status.tts.ready,
-    });
-    return;
+    try {
+      await ensureVoiceServers();
+    } catch (err) {
+      res.status(503).json({
+        error: `Voice servers not ready: ${(err as Error).message}`,
+        stt_ready: status.stt.ready,
+        tts_ready: status.tts.ready,
+      });
+      return;
+    }
   }
 
   // Buffer the audio body. Express won't have parsed it (we skip jsonParser
@@ -924,6 +939,212 @@ app.post("/api/voice/echo", async (req, res) => {
   res.send(Buffer.from(wavBytes));
 });
 
+// /api/voice/converse — streaming voice round-trip with the LLM in the
+// loop. Audio in → STT → llama-server stream → per-sentence TTS → NDJSON
+// frames out. The browser plays audio as each sentence's WAV arrives,
+// so the user hears the response start before the LLM has finished
+// generating the rest of it.
+//
+// Response framing: one JSON object per line ("\n"-terminated), Content-Type
+// application/x-ndjson. Frames:
+//   {"type":"transcript", "text": <STT result>}                        — emitted once
+//   {"type":"sentence",   "idx": N, "text": <sentence>}                — per sentence
+//   {"type":"audio",      "idx": N, "wav_b64": <base64 WAV>}           — per sentence
+//   {"type":"done", "elapsed_ms": N, "first_audio_ms": N}              — terminal
+//   {"type":"error", "message": <str>}                                 — on failure
+//
+// Sentence boundary: [.!?] followed by whitespace or end-of-stream. Splits
+// abbreviations like "Dr." but acceptable for hello-world.
+app.post("/api/voice/converse", async (req, res) => {
+  const status = getVoiceServerStatus();
+  if (status.disabled) {
+    res.status(503).json({ error: "Voice servers disabled (MICA_DISABLE_VOICE=1)" });
+    return;
+  }
+  if (!status.stt.ready || !status.tts.ready) {
+    try {
+      await ensureVoiceServers();
+    } catch (err) {
+      res.status(503).json({
+        error: `Voice servers not ready: ${(err as Error).message}`,
+      });
+      return;
+    }
+  }
+
+  // Buffer the audio body (same pattern as /echo).
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  const MAX_BYTES = 50 * 1024 * 1024;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      req.on("data", (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_BYTES) {
+          reject(new Error("audio too large (50MB limit)"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("end", () => resolve());
+      req.on("error", reject);
+    });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+  const audioBuf = Buffer.concat(chunks);
+  const audioContentType = req.headers["content-type"] || "application/octet-stream";
+
+  // Switch into streaming mode early so the client can render "Listening…"
+  // → "Thinking…" before the first audio arrives.
+  res.setHeader("content-type", "application/x-ndjson");
+  res.setHeader("cache-control", "no-store");
+  res.setHeader("x-accel-buffering", "no");
+  res.flushHeaders?.();
+  const t0 = Date.now();
+  let firstAudioAt: number | null = null;
+
+  const writeFrame = (frame: object): boolean => {
+    return res.write(JSON.stringify(frame) + "\n");
+  };
+
+  // 1. STT.
+  let transcript = "";
+  try {
+    const sttForm = new FormData();
+    sttForm.append("audio", new Blob([audioBuf], { type: audioContentType }), "audio.webm");
+    const sttResp = await fetch(`${getSttUrl()}/transcribe`, { method: "POST", body: sttForm });
+    if (!sttResp.ok) {
+      writeFrame({ type: "error", message: `STT failed: ${sttResp.status} ${(await sttResp.text()).slice(0, 300)}` });
+      res.end();
+      return;
+    }
+    const sttJson = (await sttResp.json()) as { text?: string };
+    transcript = (sttJson.text || "").trim();
+  } catch (err) {
+    writeFrame({ type: "error", message: `STT request failed: ${(err as Error).message}` });
+    res.end();
+    return;
+  }
+  writeFrame({ type: "transcript", text: transcript });
+
+  if (!transcript) {
+    writeFrame({ type: "sentence", idx: 0, text: "I didn't catch that." });
+    // Synthesize a one-liner so the user hears something.
+    try {
+      const ttsResp = await fetch(`${getTtsUrl()}/synthesize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "I didn't catch that." }),
+      });
+      if (ttsResp.ok) {
+        const wavBuf = Buffer.from(await ttsResp.arrayBuffer());
+        firstAudioAt = Date.now();
+        writeFrame({ type: "audio", idx: 0, wav_b64: wavBuf.toString("base64") });
+      }
+    } catch {
+      /* ignore — done frame still fires */
+    }
+    writeFrame({
+      type: "done",
+      elapsed_ms: Date.now() - t0,
+      first_audio_ms: firstAudioAt ? firstAudioAt - t0 : null,
+    });
+    res.end();
+    return;
+  }
+
+  // 2. LLM stream + sentence-buffered TTS via SentenceFanout helper. Each
+  //    LLM delta is `feed()`d in; the helper cuts on sentence boundaries,
+  //    fires TTS in parallel, and calls `onFrame` with sentence/audio frames
+  //    in order.
+  const fanout = new SentenceFanout({
+    ttsUrl: getTtsUrl(),
+    onFrame: (frame) => {
+      if (frame.type === "sentence") {
+        writeFrame({ type: "sentence", idx: frame.idx, text: frame.text });
+      } else if (frame.type === "audio") {
+        if (firstAudioAt === null) firstAudioAt = Date.now();
+        writeFrame({ type: "audio", idx: frame.idx, wav_b64: frame.wavB64 });
+      } else {
+        writeFrame({ type: "error", message: frame.message });
+      }
+    },
+  });
+
+  try {
+    const llmResp = await fetch(`http://127.0.0.1:8012/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "voice",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are Mica's voice assistant. Reply in 1–2 short conversational sentences. " +
+              "No markdown, no lists, no code. Plain spoken English only.",
+          },
+          { role: "user", content: transcript },
+        ],
+        max_tokens: 256,
+        temperature: 0.6,
+        stream: true,
+        // Skip Qwen3.6's chain-of-thought — it'd waste TTFT and we're
+        // generating short voice replies, not reasoning.
+        chat_template_kwargs: { enable_thinking: false },
+      }),
+    });
+    if (!llmResp.ok) {
+      writeFrame({
+        type: "error",
+        message: `LLM error (${llmResp.status}): ${(await llmResp.text()).slice(0, 300)}`,
+      });
+      res.end();
+      return;
+    }
+
+    // Parse SSE: lines starting with "data: ", terminated by "data: [DONE]".
+    const reader = llmResp.body as unknown as AsyncIterable<Uint8Array>;
+    const decoder = new TextDecoder();
+    let sseBuf = "";
+    for await (const chunk of reader) {
+      sseBuf += decoder.decode(chunk, { stream: true });
+      let nl: number;
+      while ((nl = sseBuf.indexOf("\n")) !== -1) {
+        const line = sseBuf.slice(0, nl).trim();
+        sseBuf = sseBuf.slice(nl + 1);
+        if (!line || !line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") break;
+        try {
+          const obj = JSON.parse(payload);
+          const delta: string = obj?.choices?.[0]?.delta?.content || "";
+          if (delta) fanout.feed(delta);
+        } catch {
+          /* malformed line — skip */
+        }
+      }
+    }
+  } catch (err) {
+    writeFrame({ type: "error", message: `LLM stream failed: ${(err as Error).message}` });
+    res.end();
+    return;
+  }
+
+  // Flush any trailing remainder as a final sentence (no terminal punctuation),
+  // then wait for all in-flight TTS to emit before sending `done`.
+  fanout.end();
+  await fanout.drain();
+  writeFrame({
+    type: "done",
+    elapsed_ms: Date.now() - t0,
+    first_audio_ms: firstAudioAt ? firstAudioAt - t0 : null,
+  });
+  res.end();
+});
+
 // /api/voice/synthesize — text in (JSON), audio/wav out. Lighter-weight
 // than /echo for cards that only need TTS (e.g. an "agent speaks its
 // reply" toggle on a normal chat card).
@@ -960,6 +1181,68 @@ app.post("/api/voice/synthesize", async (req, res) => {
     res.send(Buffer.from(wavBytes));
   } catch (err) {
     res.status(502).json({ error: `TTS request failed: ${(err as Error).message}` });
+  }
+});
+
+// /api/voice/transcribe — STT-only convenience for cards (e.g. mica.listen()).
+// Audio body in (any format librosa can decode), JSON `{ transcript, durationMs }` out.
+// Distinct from /echo (which also does TTS) and /converse (which also runs the LLM).
+app.post("/api/voice/transcribe", async (req, res) => {
+  const status = getVoiceServerStatus();
+  if (status.disabled) {
+    res.status(503).json({ error: "Voice servers disabled (MICA_DISABLE_VOICE=1)" });
+    return;
+  }
+  if (!status.stt.ready) {
+    try {
+      await ensureVoiceServers();
+    } catch (err) {
+      res.status(503).json({ error: `STT server not ready: ${(err as Error).message}` });
+      return;
+    }
+  }
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  const MAX_BYTES = 50 * 1024 * 1024;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      req.on("data", (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_BYTES) {
+          reject(new Error("audio too large (50MB limit)"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("end", () => resolve());
+      req.on("error", reject);
+    });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+  const audioBuf = Buffer.concat(chunks);
+  const audioContentType = req.headers["content-type"] || "application/octet-stream";
+
+  const t0 = Date.now();
+  try {
+    const sttForm = new FormData();
+    sttForm.append("audio", new Blob([audioBuf], { type: audioContentType }), "audio.webm");
+    const sttResp = await fetch(`${getSttUrl()}/transcribe`, { method: "POST", body: sttForm });
+    if (!sttResp.ok) {
+      const errText = await sttResp.text();
+      res.status(502).json({ error: `STT failed: ${sttResp.status} ${errText.slice(0, 300)}` });
+      return;
+    }
+    const sttJson = (await sttResp.json()) as { text?: string; duration_s?: number };
+    res.json({
+      transcript: (sttJson.text || "").trim(),
+      durationMs: Date.now() - t0,
+      audioDurationS: typeof sttJson.duration_s === "number" ? sttJson.duration_s : null,
+    });
+  } catch (err) {
+    res.status(502).json({ error: `STT request failed: ${(err as Error).message}` });
   }
 });
 
@@ -2429,6 +2712,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
 
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
+  channelManager.registerHandler("voice", createVoiceAgentHandler(channelManager));  // .voice files -> canvas-aware voice assistant
   channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
   channelManager.registerHandler("opencode", createOpencodeAgentHandler(fileWatcher));  // .opencode files -> OpenCode agent (lazy-spawned opencode serve)
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY

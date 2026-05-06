@@ -91,6 +91,32 @@
   color: #e6edf3;
 }
 
+.vh-reply-wrap {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.vh-reply-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #c4b5fd;
+}
+.vh-reply {
+  background: rgba(124,58,237,0.08);
+  border: 1px solid rgba(124,58,237,0.25);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #e6edf3;
+  min-height: 1.45em;
+}
+.vh-reply .vh-sentence { display: inline; }
+.vh-reply .vh-sentence-pending { opacity: 0.5; }
+
 .vh-audio { width: 100%; max-width: 480px; }
 .vh-audio::-webkit-media-controls-panel { background-color: rgba(255,255,255,0.04); }
 

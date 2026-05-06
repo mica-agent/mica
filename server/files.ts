@@ -1080,6 +1080,42 @@ function chatArchiveDir(chatId: string, project: string | null | undefined): str
   return join(micaDir(project ?? undefined), "chats", "archived", chatId);
 }
 
+/** Persisted-queue helpers for the chat agent's per-card pending-message
+ *  queue. The queue file lives at `.mica/chats/<chatId>.queue.json` and
+ *  carries an array of structured items (see `QueuedItem` in
+ *  server/micaAgent.ts). Used to survive server restarts: anything queued
+ *  but not-yet-processed is restored on next session-create. The in-flight
+ *  turn at restart time is gone (its message was already shifted out of
+ *  the queue when processing started), but everything queued behind it
+ *  comes back. */
+
+function chatQueuePath(chatId: string, project: string | null | undefined): string {
+  return join(micaDir(project ?? undefined), "chats", `${chatId}.queue.json`);
+}
+
+export async function loadChatQueue<T>(
+  chatId: string,
+  project: string | null | undefined,
+): Promise<T[]> {
+  try {
+    const raw = await readFile(chatQueuePath(chatId, project), "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveChatQueue<T>(
+  chatId: string,
+  items: T[],
+  project: string | null | undefined,
+): Promise<void> {
+  const dir = join(micaDir(project ?? undefined), "chats");
+  await mkdir(dir, { recursive: true });
+  await atomicWriteJson(chatQueuePath(chatId, project), items);
+}
+
 /** Read the live chat history's message count. Returns 0 if no history
  *  file exists or the file is empty/corrupt. Used by the manual advance-
  *  cursor endpoint to set cursor = current length. */

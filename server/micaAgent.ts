@@ -5,11 +5,13 @@
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
+import { SentenceFanout } from "./voiceStreaming.js";
+import { getTtsUrl, getVoiceServerStatus } from "./voiceServers.js";
 // buildCardClassMcpServer retired — its tools (mica_create_class,
 // mica_edit_class_file, mica_list_classes, mica_create_card_instance,
 // mica_delete_class, mica_delete_card_instance) now live in the unified
@@ -1181,13 +1183,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
   return async function agentHandlerFactory(
     _content: string,
-    _args: Record<string, unknown>,
+    args: Record<string, unknown>,
     ctx: SessionContext
   ): Promise<ChannelHandler> {
     // Capture project at session creation. All file ops in this closure
     // use sessionProject — the user can switch projects without redirecting
     // this session's writes to the wrong .mica/chats directory.
     const sessionProject = ctx.project;
+    // Voice mode — when the chat card's 🔊 toggle is on, the card sends
+    // `{ voiceMode: true }` either as openChannel args (initial state) or
+    // as a per-message override. Mutable so the toggle takes effect on
+    // the next reply without needing to reopen the channel. When false,
+    // the sentence-streaming code path is skipped — zero overhead.
+    let voiceMode = args && args.voiceMode === true;
+    let voicePref = args && typeof args.voice === "string" ? (args.voice as string) : undefined;
     // Chat history is keyed by the session's stable UUID (the file's per-card
     // sidecar id). Stable across renames; isolated per file even if two
     // projects share the same filename.
@@ -1195,7 +1204,74 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     let busy = false;
     // Queue carries plain strings for text turns, or {text, attach} for
     // image-bearing turns. The drain handler below branches on shape.
-    let queue: Array<string | { text: string; attach: string }> = [];
+    // Queued messages waiting for the current turn to finish. Items are
+    // structured (vs. the bare-string-or-tuple shape this used to be) so
+    // the chat card can show source attribution + per-item cancellation.
+    // The full text lives here; broadcasts truncate to ~160 chars for
+    // wire transport.
+    interface QueuedItem {
+      id: string;
+      text: string;
+      attach?: string;
+      source: "user" | "voice" | "file-changes";
+      queuedAt: number;
+    }
+    let queue: QueuedItem[] = [];
+
+    // Restore the persisted queue from disk so anything queued before a
+    // server restart resumes processing. Done synchronously-from-async
+    // before any new messages can land via onData (handler factory hasn't
+    // returned yet). The in-flight turn at restart-time is gone — its
+    // message was shifted out before processing began — so we only
+    // recover what was queued behind it.
+    queue = await loadChatQueue<QueuedItem>(chatId, sessionProject);
+    if (queue.length > 0) {
+      console.log(`[mica-agent] restored ${queue.length}-item queue from .mica/chats/${chatId}.queue.json`);
+    }
+
+    /** Persist + broadcast the queue. Called after every push/shift/cancel/clear. */
+    async function commitQueue(): Promise<void> {
+      try {
+        await saveChatQueue(chatId, queue, sessionProject);
+      } catch (err) {
+        console.warn(`[mica-agent] queue persist failed: ${(err as Error).message}`);
+      }
+      // Broadcast a slim version (truncated text, ordered list) so all
+      // attached clients can render the queue panel.
+      ctx.broadcast({
+        type: "queue",
+        items: queue.map((q) => ({
+          id: q.id,
+          text: q.text.length > 160 ? q.text.slice(0, 160) + "…" : q.text,
+          source: q.source,
+          queuedAt: q.queuedAt,
+          attach: q.attach || undefined,
+        })),
+      });
+    }
+
+    /** Push a fresh item onto the queue. Source is inferred from the
+     *  channel onData call site. */
+    function enqueueMessage(text: string, source: QueuedItem["source"], attach?: string): QueuedItem {
+      const item: QueuedItem = {
+        id: randomUUID(),
+        text,
+        source,
+        queuedAt: Date.now(),
+        ...(attach ? { attach } : {}),
+      };
+      queue.push(item);
+      void commitQueue();
+      return item;
+    }
+
+    /** Pop the next queued item and persist. Returns undefined if empty. */
+    function dequeueNext(): QueuedItem | undefined {
+      const next = queue.shift();
+      if (next) void commitQueue();
+      return next;
+    }
+
     let activeAbort: AbortController | null = null;
     // The current turn's SDK query handle. Tracked so the interrupt
     // path (user clicks stop, or session destroy) can call q.interrupt()
@@ -1281,7 +1357,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       const message = `[File changes detected] The following files changed:\n${lines.join("\n")}\n\n${tail}`;
 
       if (busy) {
-        queue.push(message);
+        enqueueMessage(message, "file-changes");
       } else {
         processMessage(message);
       }
@@ -1289,14 +1365,22 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
     sessionState.deliverFn = deliverCoalescedEvents;
 
-    async function processMessage(message: string) {
+    async function processMessage(message: string, source: QueuedItem["source"] = "user") {
       // Guard against concurrent invocations. If another processMessage is
-      // mid-flight, queue this one instead of racing.
+      // mid-flight, queue this one instead of racing. Caller should have
+      // checked busy already and gone through enqueueMessage with proper
+      // source attribution; this defensive push preserves whatever source
+      // the caller intended.
       if (busy) {
         console.log(`[mica-agent] processMessage called while busy — queueing: ${message.slice(0, 60)}`);
-        queue.push(message);
+        enqueueMessage(message, source);
         return;
       }
+      // Capture the source so the turn-end assistant broadcast can include
+      // it. Voice's broadcast listener uses this to decide whether to
+      // read the reply in full (voice-dispatched, the user is on voice
+      // and wants to hear it all) or just summarize (background ambient).
+      const turnSource = source;
       busy = true; sessionState.busy = true;
       markProjectActivity(sessionProject, +1);
       console.log(`[mica-agent] processMessage START: ${message.slice(0, 60)}`);
@@ -2244,7 +2328,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           return;
         }
 
-        console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)} (peak ${peakTokens} / ${contextWindow})`);
+        console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)} (peak ${peakTokens} / ${contextWindow}) source=${turnSource}`);
         ctx.broadcast({
           type: "assistant",
           content: resultText,
@@ -2265,7 +2349,57 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           durationMs,
           ...(ttftMs !== null ? { ttftMs } : {}),
           turn_id: turnId,
+          // Source attribution surfaced to listeners. voiceAgent uses this
+          // to decide whether to read this reply aloud in full (voice
+          // dispatched the request, user is on voice and wants the answer)
+          // vs the default ambient summary.
+          source: turnSource,
+          viaVoice: turnSource === "voice",
         });
+
+        // Voice mode: speak the assistant reply sentence-by-sentence.
+        // Fire-and-forget — TTS frames flow over the open channel as
+        // sentences finish synthesizing, well after this handler returns.
+        // The card sequences playback via `assistant_speech` frames.
+        // No-op when voiceMode is false (the common case).
+        if (voiceMode && resultText) {
+          const voiceStatus = getVoiceServerStatus();
+          if (!voiceStatus.disabled && voiceStatus.tts.ready) {
+            const fanout = new SentenceFanout({
+              ttsUrl: getTtsUrl(),
+              voice: voicePref,
+              onFrame: (f) => {
+                if (f.type === "audio") {
+                  ctx.broadcast({
+                    type: "assistant_speech",
+                    sentence_idx: f.idx,
+                    wav_b64: f.wavB64,
+                    turn_id: turnId,
+                  });
+                } else if (f.type === "sentence") {
+                  ctx.broadcast({
+                    type: "assistant_speech_text",
+                    sentence_idx: f.idx,
+                    text: f.text,
+                    turn_id: turnId,
+                  });
+                } else {
+                  // tts_error — surface via console; card stays graceful.
+                  console.warn(`[mica-agent:voice] ${f.message}`);
+                }
+              },
+            });
+            fanout.feed(resultText);
+            fanout.end();
+            // Don't await — let TTS frames stream while the rest of the
+            // turn's bookkeeping (recordTurn etc) runs in parallel.
+            void fanout.drain().catch((err) => {
+              console.warn(`[mica-agent:voice] drain failed: ${(err as Error).message}`);
+            });
+          } else {
+            console.log(`[mica-agent:voice] skipped (disabled=${voiceStatus.disabled} ttsReady=${voiceStatus.tts.ready})`);
+          }
+        }
 
         void recordTurn(sessionProject, {
           turn_id: turnId,
@@ -2342,12 +2476,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // synchronous block. setImmediate's callback briefly clears busy then
         // re-enters processMessage atomically (JS event loop is cooperative,
         // so no other handler can squeeze in between the two statements).
-        if (queue.length > 0) {
-          const next = queue.shift()!;
+        const next = dequeueNext();
+        if (next) {
           setImmediate(() => {
             busy = false; sessionState.busy = false;
-            if (typeof next === "string") processMessage(next);
-            else processImageMessage(next.text, next.attach);
+            if (next.attach) processImageMessage(next.text, next.attach, next.source);
+            else processMessage(next.text, next.source);
           });
         } else {
           busy = false; sessionState.busy = false;
@@ -2368,9 +2502,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     // Trade-off: this turn has no tool-use. It's a one-shot "describe /
     // inspect this card" query. Agent-triggered verification during
     // card authoring continues to use the MCP render_capture tool.
-    async function processImageMessage(text: string, attachmentFilename: string) {
+    async function processImageMessage(text: string, attachmentFilename: string, source: QueuedItem["source"] = "user") {
       if (busy) {
-        queue.push({ text, attach: attachmentFilename });
+        enqueueMessage(text, source, attachmentFilename);
         return;
       }
       busy = true; sessionState.busy = true;
@@ -2451,7 +2585,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
         const tsEnd = Date.now();
 
-        console.log(`[mica-agent] broadcasting assistant (image-path) for: ${text.slice(0, 60)}`);
+        console.log(`[mica-agent] broadcasting assistant (image-path) for: ${text.slice(0, 60)} source=${source}`);
         ctx.broadcast({
           type: "assistant",
           content: reply,
@@ -2463,6 +2597,8 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           arcComplete: false,
           capacity: 0,
           cursor,
+          source,
+          viaVoice: source === "voice",
           cursorAdvanced: false,
           durationMs: tsEnd - tsStart,
           ttftMs: firstTokenAt.t !== null ? firstTokenAt.t - requestStart : null,
@@ -2503,12 +2639,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         recordTurnEnd(ctx.filename);
         markProjectActivity(sessionProject, -1);
         console.log(`[mica-agent] processImageMessage DONE | queue depth: ${queue.length}`);
-        if (queue.length > 0) {
-          const next = queue.shift()!;
+        const next = dequeueNext();
+        if (next) {
           setImmediate(() => {
             busy = false; sessionState.busy = false;
-            if (typeof next === "string") processMessage(next);
-            else processImageMessage(next.text, next.attach);
+            if (next.attach) processImageMessage(next.text, next.attach, next.source);
+            else processMessage(next.text, next.source);
           });
         } else {
           busy = false; sessionState.busy = false;
@@ -2528,6 +2664,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         ]).then(([messages, cursor]) => {
           ctx.sendTo(clientId, { type: "history", messages, cursor });
 
+          // Send the current queue snapshot so a screen joining mid-queue
+          // sees pending items immediately. Without this, late-joiners
+          // wait for the next push/cancel/clear before the panel renders.
+          ctx.sendTo(clientId, {
+            type: "queue",
+            items: queue.map((q) => ({
+              id: q.id,
+              text: q.text.length > 160 ? q.text.slice(0, 160) + "…" : q.text,
+              source: q.source,
+              queuedAt: q.queuedAt,
+              attach: q.attach || undefined,
+            })),
+          });
+
           // Replay current-turn ephemeral events if a turn is in flight.
           // The chat card's existing case handlers process replayed events
           // identically to live ones — late-joiner transitions from "Ready"
@@ -2544,14 +2694,27 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // Delay slightly to let the UI settle
             setTimeout(() => {
               if (!busy) processMessage(scanMessage);
-              else queue.push(scanMessage);
+              else enqueueMessage(scanMessage, "user");
             }, 2000);
           }
         });
       },
 
       onData(clientId, data) {
-        const msg = data as { type?: string; message?: string; attachmentFilename?: string };
+        const msg = data as {
+          type?: string;
+          message?: string;
+          attachmentFilename?: string;
+          voiceMode?: boolean;
+          voice?: string;
+          id?: string;            // for cancel_queued
+          _voiceMeta?: { onQueued?: (depth: number) => void };
+        };
+
+        // Voice toggle: every send may carry an updated voiceMode flag,
+        // so the chat card's 🔊 button takes effect on the very next reply.
+        if (typeof msg.voiceMode === "boolean") voiceMode = msg.voiceMode;
+        if (typeof msg.voice === "string") voicePref = msg.voice;
 
         if (msg.type === "interrupt") {
           if (activeAbort) {
@@ -2585,6 +2748,32 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           if (queue.length > 0) {
             console.log(`[mica-agent] interrupt: dropping ${queue.length} queued message(s)`);
             queue.length = 0;
+            void commitQueue();
+          }
+          return;
+        }
+
+        if (msg.type === "cancel_queued") {
+          // Light-weight per-item cancel from the chat card UI. Splice
+          // out the matching id; no-op if it already drained (race).
+          const id = typeof msg.id === "string" ? msg.id : "";
+          const idx = id ? queue.findIndex((q) => q.id === id) : -1;
+          if (idx >= 0) {
+            const removed = queue.splice(idx, 1)[0];
+            console.log(`[mica-agent] queue cancelled item ${removed.id} (queue depth: ${queue.length})`);
+            void commitQueue();
+          }
+          return;
+        }
+
+        if (msg.type === "clear_queue") {
+          // Empty the queue without touching the in-flight turn. The
+          // distinction from interrupt: clear_queue lets the current
+          // turn finish, just stops anything stacked behind it.
+          if (queue.length > 0) {
+            console.log(`[mica-agent] clear_queue: dropping ${queue.length} queued message(s)`);
+            queue.length = 0;
+            void commitQueue();
           }
           return;
         }
@@ -2599,19 +2788,31 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         const message = msg.message;
         if (!message) return;
 
+        // Source attribution: the synthetic clientId "voice-dispatch"
+        // (set by ChannelManager.dispatchToFilename) tells us this came
+        // from the .voice card; everything else is a normal user send.
+        const source: QueuedItem["source"] = clientId === "voice-dispatch" ? "voice" : "user";
+
         if (busy) {
-          queue.push(msg.attachmentFilename ? { text: message, attach: msg.attachmentFilename } : message);
+          enqueueMessage(message, source, msg.attachmentFilename);
+          // Voice expects the queue depth so it can speak "queued behind N".
+          // The dispatched payload may carry a synchronous callback for
+          // this — invoke it before returning.
+          msg._voiceMeta?.onQueued?.(queue.length);
           return;
         }
+
+        // Voice cares whether its dispatch landed immediately (depth=0) too.
+        msg._voiceMeta?.onQueued?.(0);
 
         // Image-bearing turns bypass the Qwen SDK entirely. See
         // processImageMessage below for rationale — the SDK can't carry
         // images through its `prompt: string` parameter, and tool-result
         // delivery was unreliable across chat-template/modality boundaries.
         if (msg.attachmentFilename) {
-          processImageMessage(message, msg.attachmentFilename);
+          processImageMessage(message, msg.attachmentFilename, source);
         } else {
-          processMessage(message);
+          processMessage(message, source);
         }
       },
 

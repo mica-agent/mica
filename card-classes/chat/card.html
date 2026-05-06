@@ -11,6 +11,7 @@
       </span>
       <span id="chat-fuel-headroom" style="font-family:monospace;font-size:10px;color:#6e7681;"></span>
     </span>
+    <span id="chat-voice-btn" title="Speak agent replies aloud" style="cursor:pointer;color:#8b949e;font-size:13px;padding:0 2px;flex-shrink:0;">&#128264;</span>
     <span id="chat-archive-btn" title="Previous conversations on this card" style="cursor:pointer;color:#8b949e;font-size:13px;padding:0 2px;flex-shrink:0;">&#128336;</span>
     <span id="chat-clear-btn" title="Clear this card (archives the current conversation)" style="cursor:pointer;color:#8b949e;font-size:13px;padding:0 2px;flex-shrink:0;">&#128465;</span>
     <span id="chat-horizon-btn" title="Mark a fresh arc here — earlier messages stay visible but the agent ignores them on the next turn. To create a separate chat card, use the canvas toolbar's + Chat." style="cursor:pointer;color:#8b949e;font-size:14px;padding:0 2px;flex-shrink:0;line-height:1;">⌃</span>
@@ -78,6 +79,14 @@
         <button id="chat-settings-save" style="background:#7c3aed;color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Save</button>
       </div>
     </div>
+  </div>
+
+  <div id="chat-queue-panel" style="display:none;flex-direction:column;gap:4px;padding:4px 12px 0;flex-shrink:0;border-top:1px solid #30363d;">
+    <div style="display:flex;align-items:center;justify-content:space-between;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:#6e7681;padding:4px 0 2px;">
+      <span><span id="chat-queue-count">0</span> queued</span>
+      <button id="chat-queue-clear-all" title="Drop all queued items (current turn keeps running)" style="background:transparent;border:none;color:#8b949e;cursor:pointer;font-size:11px;padding:0;text-decoration:underline;font-family:inherit;">clear queued</button>
+    </div>
+    <div id="chat-queue-list" style="display:flex;flex-direction:column;gap:3px;max-height:140px;overflow-y:auto;"></div>
   </div>
 
   <div id="chat-attach-row" style="display:none;align-items:center;gap:6px;padding:4px 12px 0;flex-shrink:0;">

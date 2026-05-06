@@ -61,7 +61,8 @@ python -m pip install \
   "numpy<2.0" \
   "fastapi>=0.110" \
   "uvicorn[standard]>=0.27" \
-  "python-multipart>=0.0.9" || die "pip install failed — see error above"
+  "python-multipart>=0.0.9" \
+  "imageio-ffmpeg>=0.5" || die "pip install failed — see error above"
 
 ok "Python deps installed"
 

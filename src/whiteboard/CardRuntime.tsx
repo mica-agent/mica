@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 // we add proper lifecycle coordination between React and widget scripts.
 import { getOrCreateBridge, windowId, on as onSocketEvent, type CanvasId } from "../api/micaSocket";
 import { canonicalizeCardPath, canvasRelative, getCanvasRoot } from "../api/canvasPaths";
+import { listenViaMediaRecorder, speakViaSynthesize } from "../api/voice";
 
 interface CardDependencies {
   scripts?: string[];
@@ -640,6 +641,24 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         getContent: () => _cachedContent !== null ? _cachedContent : _contentPromise,
         files: guardNamespace(files, "files"),
         cardClasses: guardNamespace(cardClasses, "cardClasses"),
+        /** Speak `text` through the local Kokoro TTS sidecar. Resolves
+         *  when playback ends; rejects with AbortError if `opts.signal`
+         *  fires. Voice servers must be running (`/api/voice/status`).
+         *  Cards typically wire this to a 🔊 toggle that auto-speaks
+         *  agent replies. */
+        speak: (text: string, opts: { voice?: string; signal?: AbortSignal } = {}): Promise<void> =>
+          speakViaSynthesize(text, opts),
+        /** Capture mic audio until `opts.releaseSignal` aborts, then
+         *  POST to /api/voice/transcribe and return the transcript.
+         *  Caller manages the AbortController (e.g. press-and-hold:
+         *  `pointerdown` creates the controller, `pointerup` aborts it).
+         *  Resolves with `transcript: ""` for sub-200ms recordings
+         *  (accidental taps). */
+        listen: (opts: { mode: "press-hold"; releaseSignal: AbortSignal; minDurationMs?: number }) =>
+          listenViaMediaRecorder({
+            releaseSignal: opts.releaseSignal,
+            minDurationMs: opts.minDurationMs,
+          }),
         /** Surface an error to chat. Chat cards listen for `card-error` and
          *  render a "Ask agent to fix" bubble with this message. Use inside
          *  try/catch when your card handles its own UI (e.g. a toast) but

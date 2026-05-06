@@ -38,6 +38,28 @@ from pathlib import Path
 # Lazy imports — these are slow and we want fast --help / arg-parse.
 # The model load happens in the lifespan handler.
 
+# librosa decodes wav/flac via soundfile but anything else (webm/opus from
+# MediaRecorder, m4a, etc.) hands off to audioread which shells out to
+# `ffmpeg` on PATH. The devcontainer doesn't ship system ffmpeg, so we
+# prepend the imageio-ffmpeg-bundled binary's directory to PATH here. This
+# is a no-op if imageio-ffmpeg isn't installed; install.sh adds it.
+try:
+    import imageio_ffmpeg  # type: ignore
+    _ff = imageio_ffmpeg.get_ffmpeg_exe()
+    _ff_dir = os.path.dirname(_ff)
+    if _ff_dir not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = _ff_dir + os.pathsep + os.environ.get("PATH", "")
+    # audioread also probes for an `ffmpeg` name specifically; the bundled
+    # binary is named e.g. ffmpeg-linux-aarch64-v7.0.2. Symlink once.
+    _link = os.path.join(_ff_dir, "ffmpeg")
+    if not os.path.exists(_link):
+        try:
+            os.symlink(_ff, _link)
+        except OSError:
+            pass
+except ImportError:
+    pass
+
 DEFAULT_PORT = int(os.environ.get("VOICE_STT_PORT", "8013"))
 DEFAULT_HOST = os.environ.get("VOICE_STT_HOST", "127.0.0.1")
 
@@ -116,7 +138,29 @@ def main() -> None:
             try:
                 wave, _sr = librosa.load(tf.name, sr=16000, mono=True)
             except Exception as e:
-                raise HTTPException(400, f"failed to decode audio: {e}") from e
+                # audioread sometimes raises with no message — include the
+                # exception type so we can tell "no decoder backend" from
+                # "corrupt file" from a real codec failure.
+                raise HTTPException(
+                    400,
+                    f"failed to decode audio: {type(e).__name__}: {e or '(no message)'}",
+                ) from e
+            # Trim leading + trailing silence. The .voice card's recorder
+            # starts when the user turns the mic on, not when they begin
+            # speaking, so each utterance can carry several seconds of
+            # leading silence depending on think-time. Parakeet hallucinates
+            # words to "fill" long unusual silences (the most common report
+            # is invented phrases at the start of a transcript). top_db=25
+            # is permissive enough to keep quiet syllables but strips dead
+            # air. ~80ms of pre-roll is preserved by frame_length=512.
+            try:
+                wave_trimmed, _ = librosa.effects.trim(wave, top_db=25, frame_length=512, hop_length=128)
+                if len(wave_trimmed) >= 16000 // 4:  # ≥250ms remaining → use trimmed
+                    wave = wave_trimmed
+            except Exception:
+                # Defensive: if trimming barfs (extremely short or all-silence
+                # input), fall back to the untrimmed signal.
+                pass
             duration = len(wave) / 16000
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as wav_tf:
