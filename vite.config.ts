@@ -20,6 +20,23 @@ export default defineConfig({
     host: '0.0.0.0',
     port: FRONTEND_PORT,
     allowedHosts: true,
+    // Stop chokidar from watching the voice-benchmark venv (thousands of
+    // Python files trip the inotify limit) and other generated/cached
+    // trees. Without these, `npm run dev` crashes with ENOSPC: "System
+    // limit for number of file watchers reached" the moment the venv
+    // grows past ~8K files. The patterns are matched against the absolute
+    // file path; we use a permissive form that catches both the repo-root
+    // copy and any nested install. Vite already ignores node_modules + .git.
+    watch: {
+      ignored: [
+        '**/.venv/**',
+        '**/__pycache__/**',
+        '**/.cache/**',
+        '**/.mica-pids/**',
+        '**/scripts/benchmarks/voice/audio/**',
+        '**/scripts/benchmarks/voice/results/**',
+      ],
+    },
     proxy: {
       '/api': {
         target: `http://localhost:${BACKEND_PORT}`,
