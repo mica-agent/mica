@@ -58,7 +58,10 @@ python -m pip install \
   "librosa>=0.10" \
   "requests>=2.31" \
   "psutil>=5.9" \
-  "numpy<2.0" || die "pip install failed — see error above"
+  "numpy<2.0" \
+  "fastapi>=0.110" \
+  "uvicorn[standard]>=0.27" \
+  "python-multipart>=0.0.9" || die "pip install failed — see error above"
 
 ok "Python deps installed"
 
