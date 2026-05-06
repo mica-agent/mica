@@ -1,0 +1,24 @@
+<div class="vh-root">
+  <div class="vh-header">
+    <h2 class="vh-title">Voice Hello</h2>
+    <p class="vh-subtitle">Press and hold to talk. Mica transcribes you with Parakeet, then speaks the same words back with Kokoro — all locally on your Spark.</p>
+  </div>
+
+  <div class="vh-body">
+    <div class="vh-status" id="vh-status" data-state="idle">Ready</div>
+
+    <button class="vh-talk" id="vh-talk" type="button" aria-label="Press and hold to talk">
+      <span class="vh-talk-icon">●</span>
+      <span class="vh-talk-label">Hold to talk</span>
+    </button>
+
+    <div class="vh-transcript-wrap" id="vh-transcript-wrap" style="display:none;">
+      <div class="vh-transcript-label">You said</div>
+      <div class="vh-transcript" id="vh-transcript">—</div>
+    </div>
+
+    <audio class="vh-audio" id="vh-audio" controls preload="auto" style="display:none;"></audio>
+
+    <div class="vh-meta" id="vh-meta">—</div>
+  </div>
+</div>

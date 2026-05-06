@@ -84,6 +84,7 @@ import { promisify } from "util";
 import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llamaServer.js";
+import { ensureVoiceServers, stopVoiceServers, getVoiceServerStatus, getSttUrl, getTtsUrl } from "./voiceServers.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
@@ -214,10 +215,15 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as NodeJS.Signals[]
 
 const app = express();
 app.use(cors());
-// JSON body parser — skip binary upload routes
+// JSON body parser — skip binary upload + voice audio routes
 const jsonParser = express.json({ limit: "5mb" });
 app.use((req, res, next) => {
-  if (req.path.endsWith("/upload") && req.method === "POST") return next();
+  if (req.method === "POST") {
+    if (req.path.endsWith("/upload")) return next();
+    // Voice routes that accept raw audio bodies; echo/transcribe both consume
+    // a recorded blob from MediaRecorder, /synthesize takes JSON (handled by jsonParser).
+    if (req.path === "/api/voice/echo" || req.path === "/api/voice/transcribe") return next();
+  }
   jsonParser(req, res, next);
 });
 
@@ -796,6 +802,164 @@ app.get("/api/openrouter/models", async (_req, res) => {
     res.json({ ok: true, models, cached: false });
   } catch (err) {
     res.status(502).json({ ok: false, error: (err as Error).message });
+  }
+});
+
+// ── Voice (STT + TTS sidecars) ──────────────────────────────
+//
+// Three endpoints:
+//   GET  /api/voice/status      — sidecar readiness for the voice-hello card
+//   POST /api/voice/echo        — audio in → STT → TTS same text → audio out (hello-world round-trip)
+//   POST /api/voice/synthesize  — JSON {text} → audio out (used by future TTS-only flows)
+//
+// /api/voice/transcribe (audio → text only) is reserved but not wired in
+// hello-world; /echo covers it. Add later if a card needs the split.
+
+app.get("/api/voice/status", (_req, res) => {
+  res.json(getVoiceServerStatus());
+});
+
+// /api/voice/echo — the hello-world round-trip. Accepts a recorded audio
+// blob from the browser's MediaRecorder (any format librosa can decode:
+// webm/opus, ogg, m4a, wav). Forwards to the STT sidecar, then forwards
+// the transcribed text to the TTS sidecar, then streams the resulting
+// WAV back. The transcript is returned in the X-Transcript header so the
+// card can display "you said: ..." alongside playback.
+app.post("/api/voice/echo", async (req, res) => {
+  const status = getVoiceServerStatus();
+  if (status.disabled) {
+    res.status(503).json({ error: "Voice servers disabled (MICA_DISABLE_VOICE=1)" });
+    return;
+  }
+  if (!status.stt.ready || !status.tts.ready) {
+    res.status(503).json({
+      error: "Voice servers not ready yet",
+      stt_ready: status.stt.ready,
+      tts_ready: status.tts.ready,
+    });
+    return;
+  }
+
+  // Buffer the audio body. Express won't have parsed it (we skip jsonParser
+  // for /api/voice/echo above). Use Node streams directly.
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  const MAX_BYTES = 50 * 1024 * 1024;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      req.on("data", (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_BYTES) {
+          reject(new Error("audio too large (50MB limit)"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("end", () => resolve());
+      req.on("error", reject);
+    });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+  const audioBuf = Buffer.concat(chunks);
+  const audioContentType = req.headers["content-type"] || "application/octet-stream";
+
+  // 1. POST to STT sidecar as multipart/form-data. FormData is built-in
+  //    on modern Node; Blob too.
+  let transcript = "";
+  try {
+    const sttForm = new FormData();
+    sttForm.append(
+      "audio",
+      new Blob([audioBuf], { type: audioContentType }),
+      "audio.webm",
+    );
+    const sttResp = await fetch(`${getSttUrl()}/transcribe`, {
+      method: "POST",
+      body: sttForm,
+    });
+    if (!sttResp.ok) {
+      const errText = await sttResp.text();
+      res.status(502).json({ error: `STT failed: ${sttResp.status} ${errText.slice(0, 300)}` });
+      return;
+    }
+    const sttJson = (await sttResp.json()) as { text?: string };
+    transcript = (sttJson.text || "").trim();
+  } catch (err) {
+    res.status(502).json({ error: `STT request failed: ${(err as Error).message}` });
+    return;
+  }
+
+  if (!transcript) {
+    // Empty transcription — likely silence or unintelligible. Return a
+    // friendly synthesized response so the card has SOMETHING to play.
+    transcript = "(silence detected — try speaking louder)";
+  }
+
+  // 2. POST to TTS sidecar.
+  let wavBytes: ArrayBuffer;
+  try {
+    const ttsResp = await fetch(`${getTtsUrl()}/synthesize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: transcript }),
+    });
+    if (!ttsResp.ok) {
+      const errText = await ttsResp.text();
+      res.status(502).json({ error: `TTS failed: ${ttsResp.status} ${errText.slice(0, 300)}` });
+      return;
+    }
+    wavBytes = await ttsResp.arrayBuffer();
+  } catch (err) {
+    res.status(502).json({ error: `TTS request failed: ${(err as Error).message}` });
+    return;
+  }
+
+  // 3. Stream the WAV back. Transcript goes in a header so the card can
+  //    display it alongside the audio. URI-encode for header safety.
+  res.setHeader("content-type", "audio/wav");
+  res.setHeader("x-transcript", encodeURIComponent(transcript));
+  res.setHeader("cache-control", "no-store");
+  res.send(Buffer.from(wavBytes));
+});
+
+// /api/voice/synthesize — text in (JSON), audio/wav out. Lighter-weight
+// than /echo for cards that only need TTS (e.g. an "agent speaks its
+// reply" toggle on a normal chat card).
+app.post("/api/voice/synthesize", async (req, res) => {
+  const status = getVoiceServerStatus();
+  if (status.disabled) {
+    res.status(503).json({ error: "Voice servers disabled" });
+    return;
+  }
+  if (!status.tts.ready) {
+    res.status(503).json({ error: "TTS server not ready yet" });
+    return;
+  }
+  const body = (req.body || {}) as { text?: string; voice?: string };
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!text) {
+    res.status(400).json({ error: "text is required" });
+    return;
+  }
+  try {
+    const ttsResp = await fetch(`${getTtsUrl()}/synthesize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voice: body.voice }),
+    });
+    if (!ttsResp.ok) {
+      const errText = await ttsResp.text();
+      res.status(502).json({ error: `TTS failed: ${ttsResp.status} ${errText.slice(0, 300)}` });
+      return;
+    }
+    const wavBytes = await ttsResp.arrayBuffer();
+    res.setHeader("content-type", "audio/wav");
+    res.setHeader("cache-control", "no-store");
+    res.send(Buffer.from(wavBytes));
+  } catch (err) {
+    res.status(502).json({ error: `TTS request failed: ${(err as Error).message}` });
   }
 });
 
@@ -2296,6 +2460,17 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
     console.log("[startup] MICA_DISABLE_LLAMA=1 — skipping local llama-server.");
   }
 
+  // Voice sidecars (Parakeet STT + Kokoro TTS) — lazy on startup, same
+  // posture as llama-server. Failure here is non-fatal: chat/agents work
+  // without voice; only the .voice-hello card surfaces the error.
+  if (process.env.MICA_DISABLE_VOICE !== "1") {
+    ensureVoiceServers().catch((err) => {
+      console.warn("[startup] voice servers failed to start:", (err as Error).message);
+    });
+  } else {
+    console.log("[startup] MICA_DISABLE_VOICE=1 — skipping voice sidecars.");
+  }
+
   const workspaceName = getWorkspaceName();
 
   server.listen(PORT, "0.0.0.0", () => {
@@ -2329,6 +2504,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
     stopOpencodeServer();  // gracefully close the opencode HTTP server (no-op if never spawned)
     await reapChildProcesses(3000);
     await stopLlamaServer();
+    await stopVoiceServers();
     process.exit(0);
   };
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as NodeJS.Signals[]) {
