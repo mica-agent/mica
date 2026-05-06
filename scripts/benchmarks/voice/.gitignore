@@ -1,0 +1,4 @@
+# Local-only — don't ship benchmark results, model caches, or sample audio
+.venv/
+results/
+audio/
