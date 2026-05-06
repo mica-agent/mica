@@ -19,7 +19,8 @@ Env overrides:
     VOICE_TTS_PORT  default 8014
     VOICE_TTS_HOST  default 127.0.0.1
 """
-from __future__ import annotations
+# Match voice-stt-server.py: no `from __future__ import annotations` so
+# FastAPI's Pydantic integration can resolve special types correctly.
 
 import argparse
 import io

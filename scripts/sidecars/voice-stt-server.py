@@ -22,7 +22,9 @@ Env overrides:
     VOICE_STT_PORT  default 8013
     VOICE_STT_HOST  default 127.0.0.1
 """
-from __future__ import annotations
+# NOTE: don't add `from __future__ import annotations` here. FastAPI's
+# Pydantic integration can't resolve UploadFile through the resulting
+# ForwardRef wrapper and 500s on every request with PydanticUserError.
 
 import argparse
 import io
