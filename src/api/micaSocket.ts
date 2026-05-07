@@ -117,9 +117,22 @@ export function connect(url?: string): void {
     ws = null;
   }
 
-  const apiPort = import.meta.env.VITE_MICA_WS_PORT || "3002";
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  wsUrl = url || `${protocol}//${location.hostname}:${apiPort}/ws/cards`;
+  // For desktop dev (http://localhost:5173) we connect directly to the
+  // backend's WS port so it survives Vite restarts. For any non-
+  // localhost origin (Tailscale Serve, Caddy, cloud LB, etc.) only
+  // the page's port is reachable — direct-port-3002 fails. Use the
+  // same-origin path so Vite's /ws proxy (in dev) or the upstream
+  // reverse proxy (in prod) routes to the backend.
+  const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  if (url) {
+    wsUrl = url;
+  } else if (isLocal) {
+    const apiPort = import.meta.env.VITE_MICA_WS_PORT || "3002";
+    wsUrl = `${protocol}//${location.hostname}:${apiPort}/ws/cards`;
+  } else {
+    wsUrl = `${protocol}//${location.host}/ws/cards`;
+  }
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
@@ -156,6 +169,12 @@ export function connect(url?: string): void {
     //   (2) HTTP probe via relative URL. Works once Vite is back up. On 200,
     //       force-reload so the page picks up any fresh frontend build.
     // Previously we only did (2) — which wedged when Vite was slow to recover.
+    // Track whether we've actually seen the server go down. We only
+    // force-reload on a CONFIRMED down→up transition, not on the first
+    // successful poll. Without this guard, transient WS blips (common
+    // over iOS Safari + Tailscale + power management) get misread as
+    // "server restarted" and trigger a reload-on-every-blip loop.
+    let confirmedDown = false;
     const poll = setInterval(async () => {
       if (!ws || ws.readyState === WebSocket.CLOSED) {
         try { connect(wsUrl); } catch { /* will retry next tick */ }
@@ -163,12 +182,20 @@ export function connect(url?: string): void {
       try {
         const r = await fetch("/api/project");
         if (r.ok) {
-          clearInterval(poll);
-          console.log("[mica-socket] Server is back — reloading page");
-          window.location.replace(window.location.pathname + "?t=" + Date.now());
+          if (confirmedDown) {
+            clearInterval(poll);
+            console.log("[mica-socket] Server is back — reloading page");
+            window.location.replace(window.location.pathname + "?t=" + Date.now());
+          }
+          // If we've never seen it down, stay silent. Either WS reconnects
+          // on its own (stopPollOnReconnect handler clears this poll) or a
+          // future poll will catch a real outage.
+        } else {
+          confirmedDown = true;
         }
       } catch {
-        // server still down, try again
+        // network error fetching /api/project → server is genuinely down.
+        confirmedDown = true;
       }
     }, 2000);
     // If WS reconnects before HTTP does, we want to stop polling so we don't

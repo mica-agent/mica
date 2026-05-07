@@ -244,7 +244,12 @@ app.use((_req, res, next) => {
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
       "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
-      "connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com",
+      // wss: and https: schemes added so the page can open WebSockets +
+      // fetches back to the same origin when served from any HTTPS host
+      // (Tailscale Serve, Caddy, cloud LB, etc). 'self' alone is scheme-
+      // sensitive in browsers — an HTTPS-served page would otherwise have
+      // its WSS connection blocked.
+      "connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:* wss: https: https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com",
       "img-src 'self' data: blob:",
       "font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     ].join("; ")
@@ -2248,7 +2253,29 @@ wss.on("connection", (ws) => {
   wsClients.add(ws);
   wsIds.set(ws, nextWsId++);
 
+  // Keepalive heartbeat. Without this, idle WebSockets get dropped by
+  // intermediate proxies (Tailscale Serve idles after ~60s, iOS Safari
+  // is even more aggressive about closing inactive sockets to save
+  // battery). A WS-level ping every 30s keeps the connection alive
+  // through most proxies and lets us detect a half-open client when no
+  // pong arrives within 30s of a ping.
+  let isAlive = true;
+  ws.on("pong", () => { isAlive = true; });
+  const heartbeat = setInterval(() => {
+    if (ws.readyState !== ws.OPEN) return;
+    if (!isAlive) {
+      // No pong response since last ping — connection is dead. Force-close
+      // so the client's onClose fires and reconnect logic kicks in.
+      console.log(`[websocket] no pong from ws#${wsIds.get(ws) ?? "?"} — terminating`);
+      try { ws.terminate(); } catch { /* ignore */ }
+      return;
+    }
+    isAlive = false;
+    try { ws.ping(); } catch { /* ignore */ }
+  }, 30_000);
+
   const cleanupWsChannels = () => {
+    clearInterval(heartbeat);
     wsClients.delete(ws);
     // Drop file-watcher ref for this client's subscribed project
     const subscribed = wsProjects.get(ws);

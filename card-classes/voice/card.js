@@ -54,7 +54,12 @@ let suppressNextUtterance = false; // turnMicOff() sets this so the final partia
 // rejects fan/keyboard noise. SILENCE_MS controls how long a pause must
 // be before we treat it as end-of-utterance.
 const SPEECH_RMS = 0.02;
-const SILENCE_MS = 800;
+// 1500ms silence to end an utterance. 800ms tripped on normal mid-
+// sentence thinking pauses and shipped partial transcripts ("I want
+// to know") to STT/LLM, which then dispatched a confused half-request
+// to Qwen. The completeness-check on the server side catches the
+// remaining cases where the user pauses for >1.5s mid-thought.
+const SILENCE_MS = 1500;
 const MIN_UTTERANCE_MS = 350;
 const MAX_UTTERANCE_MS = 30000;
 
@@ -66,12 +71,17 @@ function setMeta(text) {
   metaEl.textContent = text || '—';
 }
 
-// Sequential audio playback queue. Each `assistant_speech` frame pushes a
-// base64 WAV; we play them in order through one element. New turn ⇒
-// flush the queue (interrupt any leftover playback).
-let wavQueue = [];
+// Sequential audio playback. We bypass the <audio> element entirely
+// (its play() is gated by Safari/Chrome's autoplay policy and rejects
+// async after the user gesture is "consumed"). AudioContext +
+// AudioBufferSourceNode plays freely once unlocked from a user gesture
+// at mic-on time. Each `assistant_speech` frame is decoded into an
+// AudioBuffer and played in order. New turn does NOT wipe the queue —
+// click the "stop talking" button to interrupt explicitly.
+let playbackCtx = null;
+let wavQueue = [];   // AudioBuffer[]
 let isPlayingQueue = false;
-let speechCurrentUrl = null;
+let currentSource = null;  // AudioBufferSourceNode for the in-flight buffer
 const WAV_QUEUE_MAX = 12;
 
 function updateStopSpeakingButton() {
@@ -80,63 +90,90 @@ function updateStopSpeakingButton() {
   stopBtn.style.display = (isPlayingQueue || wavQueue.length > 0) ? '' : 'none';
 }
 
-function enqueueSpeechWav(b64) {
+function ensurePlaybackCtx() {
+  if (playbackCtx) return playbackCtx;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) {
+    console.warn('[voice] no AudioContext available');
+    return null;
+  }
+  playbackCtx = new Ctx();
+  return playbackCtx;
+}
+
+async function enqueueSpeechWav(b64) {
   const bin = window.atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const blob = new window.Blob([bytes], { type: 'audio/wav' });
-  const url = window.URL.createObjectURL(blob);
-  // Bound the queue. With user-utterance no longer wiping it,
-  // back-to-back long answers could otherwise pile up many minutes
-  // of audio. Drop the oldest pending WAV when we hit the cap so
-  // the most recent answer always gets airtime.
+  const ctx = ensurePlaybackCtx();
+  if (!ctx) return;
+  // Resume context if it suspended (browser may have done so during
+  // page sleep / background). resume() fails gracefully if the
+  // gesture context has lapsed; we'll know from the catch.
+  if (ctx.state === 'suspended') {
+    try { await ctx.resume(); } catch (_) { /* keep going; decode below will still work */ }
+  }
+  let buffer;
+  try {
+    // decodeAudioData mutates the ArrayBuffer slice it consumes, so
+    // pass a fresh ArrayBuffer copy. Wrapping bytes.buffer can fail
+    // in Safari with "ArrayBuffer detached" if reused.
+    buffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+  } catch (err) {
+    console.warn('[voice] decodeAudioData failed: ' + (err && err.message ? err.message : err));
+    return;
+  }
+  // Bound the queue. Drop oldest pending buffer when we hit the cap
+  // so the most recent answer always gets airtime.
   if (wavQueue.length >= WAV_QUEUE_MAX) {
-    const dropped = wavQueue.shift();
-    if (dropped) { try { window.URL.revokeObjectURL(dropped); } catch (_) {} }
+    wavQueue.shift();
     console.log('[voice] audio queue full, dropping oldest');
   }
-  wavQueue.push(url);
+  wavQueue.push(buffer);
   updateStopSpeakingButton();
+  console.log('[voice] enqueued AudioBuffer (' + bytes.length + ' wav bytes, ' + buffer.duration.toFixed(2) + 's); queue=' + wavQueue.length + ' isPlaying=' + isPlayingQueue + ' ctxState=' + ctx.state);
   if (!isPlayingQueue) playNextWav();
 }
 
 function playNextWav() {
-  const url = wavQueue.shift();
-  if (!url) {
+  const buffer = wavQueue.shift();
+  if (!buffer) {
     isPlayingQueue = false;
-    speechCurrentUrl = null;
+    currentSource = null;
     updateStopSpeakingButton();
     if (statusEl.dataset.state === 'speaking') {
       setStatus(micOn ? 'Listening' : 'Ready', micOn ? 'recording' : 'ready');
     }
     return;
   }
+  const ctx = ensurePlaybackCtx();
+  if (!ctx) {
+    isPlayingQueue = false;
+    return;
+  }
   isPlayingQueue = true;
-  speechCurrentUrl = url;
-  audioEl.src = url;
-  audioEl.style.display = '';
-  updateStopSpeakingButton();
-  audioEl.onended = function() {
-    if (speechCurrentUrl) {
-      try { window.URL.revokeObjectURL(speechCurrentUrl); } catch (_) {}
-    }
-    speechCurrentUrl = null;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  src.onended = function() {
+    if (currentSource === src) currentSource = null;
     playNextWav();
   };
-  audioEl.play().catch(function() {
-    // Browser auto-play guard, or audio element busy. Skip and try the next.
+  currentSource = src;
+  updateStopSpeakingButton();
+  try {
+    src.start(0);
+    console.log('[voice] started AudioBufferSource (' + buffer.duration.toFixed(2) + 's)');
+  } catch (err) {
+    console.warn('[voice] src.start() threw: ' + (err && err.message ? err.message : err));
     playNextWav();
-  });
+  }
 }
 
 function stopVoicePlayback() {
-  try { audioEl.pause(); } catch (_) {}
-  if (speechCurrentUrl) {
-    try { window.URL.revokeObjectURL(speechCurrentUrl); } catch (_) {}
-    speechCurrentUrl = null;
-  }
-  for (let i = 0; i < wavQueue.length; i++) {
-    try { window.URL.revokeObjectURL(wavQueue[i]); } catch (_) {}
+  if (currentSource) {
+    try { currentSource.onended = null; currentSource.stop(); } catch (_) {}
+    currentSource = null;
   }
   wavQueue = [];
   isPlayingQueue = false;
@@ -227,6 +264,16 @@ async function turnMicOn() {
     setMeta('This browser cannot record audio.');
     return;
   }
+  // Unlock the playback AudioContext from this user-gesture click.
+  // Without this, async audio frames arriving after a server round-trip
+  // get blocked by Safari/Chrome's autoplay policy with NotAllowedError.
+  // The context, once resumed under a gesture, stays unlocked for the
+  // session lifetime.
+  const playCtx = ensurePlaybackCtx();
+  if (playCtx && playCtx.state === 'suspended') {
+    try { await playCtx.resume(); console.log('[voice] playback AudioContext resumed'); }
+    catch (e) { console.warn('[voice] resume() failed: ' + (e && e.message ? e.message : e)); }
+  }
   let stream;
   try {
     stream = await window.navigator.mediaDevices.getUserMedia({
@@ -315,10 +362,22 @@ function startUtteranceRecorder() {
   recordedChunks = [];
   speechStartedAt = 0;
   mediaRecorder.ondataavailable = function(e) {
-    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+    if (e.data && e.data.size > 0) {
+      recordedChunks.push(e.data);
+      console.log('[voice] ondataavailable: chunk size=' + e.data.size + ' total=' + recordedChunks.length);
+    } else {
+      console.log('[voice] ondataavailable fired but data was empty');
+    }
   };
   mediaRecorder.onstop = onUtteranceRecorderStopped;
-  mediaRecorder.start();
+  mediaRecorder.onerror = function(e) {
+    console.error('[voice] MediaRecorder.onerror:', e && e.error ? e.error : e);
+  };
+  // iOS Safari requires a timeslice (>0) for ondataavailable to fire
+  // reliably during recording. Without timeslice some Safari builds emit
+  // 0 chunks even on stop. 1000ms is a reasonable default.
+  mediaRecorder.start(1000);
+  console.log('[voice] MediaRecorder.start() with mime=' + recordedMime);
 }
 
 async function onUtteranceRecorderStopped() {
@@ -334,14 +393,25 @@ async function onUtteranceRecorderStopped() {
 
   if (suppressNextUtterance) {
     suppressNextUtterance = false;
+    console.log('[voice] onstop: suppressed (mic-off path)');
     return;
   }
   // Filter blips: speech window shorter than MIN_UTTERANCE_MS is likely a
   // VAD spike (cough, click, brief breath). Don't ship to STT.
-  if (speechMs < MIN_UTTERANCE_MS) return;
-  if (chunks.length === 0) return;
+  if (speechMs < MIN_UTTERANCE_MS) {
+    console.log('[voice] onstop: speech too short (' + speechMs + 'ms < ' + MIN_UTTERANCE_MS + 'ms), skipping');
+    return;
+  }
+  if (chunks.length === 0) {
+    console.warn('[voice] onstop: NO CHUNKS captured (MediaRecorder produced no data) — speech was ' + speechMs + 'ms');
+    return;
+  }
   const blob = new window.Blob(chunks, { type: recordedMime });
-  if (blob.size < 500) return;
+  console.log('[voice] onstop: ' + chunks.length + ' chunks, blob.size=' + blob.size + ' speechMs=' + speechMs);
+  if (blob.size < 500) {
+    console.warn('[voice] onstop: blob too small (' + blob.size + ' bytes), skipping');
+    return;
+  }
   let b64;
   try {
     b64 = await blobToBase64(blob);
@@ -349,6 +419,7 @@ async function onUtteranceRecorderStopped() {
     setMeta('Encode failed: ' + String(err && err.message ? err.message : err));
     return;
   }
+  console.log('[voice] sending to server: ' + b64.length + ' b64chars mime=' + recordedMime);
   resetReplyDisplay();
   ch.send({ audioB64: b64, audioMime: recordedMime });
 }
@@ -405,7 +476,38 @@ function endUtterance() {
 }
 
 // ── Channel ────────────────────────────────────────────────────
-const ch = mica.openChannel('voice_session');
+//
+// Wrapper around mica.openChannel that auto-reopens after WS-level
+// disconnects (tab backgrounded, network blip, proxy idle-timeout).
+// The card sees a stable `ch` API; under the hood we replace the
+// underlying channel object on reconnect and re-register handlers.
+let _ch = null;
+let _onDataCb = null;
+let _onCloseCb = null;
+let _reconnectAttempts = 0;
+function _openVoiceChannel() {
+  _ch = mica.openChannel('voice_session');
+  if (_onDataCb) _ch.onData(_onDataCb);
+  _ch.onClose(function() {
+    console.warn('[voice] channel closed; will retry');
+    if (_onCloseCb) {
+      try { _onCloseCb(); } catch (e) { console.error(e); }
+    }
+    // Backoff: 500ms, 1s, 2s, 4s, max 8s.
+    const delay = Math.min(8000, 500 * Math.pow(2, _reconnectAttempts++));
+    window.setTimeout(function() {
+      console.log('[voice] reopening channel (attempt ' + _reconnectAttempts + ')');
+      _openVoiceChannel();
+    }, delay);
+  });
+  _reconnectAttempts = 0;
+}
+_openVoiceChannel();
+const ch = {
+  onData: function(cb) { _onDataCb = cb; if (_ch) _ch.onData(cb); },
+  onClose: function(cb) { _onCloseCb = cb; },
+  send: function(payload) { if (_ch) _ch.send(payload); },
+};
 
 let turnStartedAt = 0;
 let firstAudioMs = null;
@@ -436,12 +538,26 @@ ch.onData(function(data) {
   if (t === 'transcript') {
     if (data.text) {
       transcriptEl.textContent = data.text;
+      transcriptEl.style.fontStyle = '';
+      transcriptEl.style.opacity = '';
       transcriptWrap.style.display = '';
     } else {
       setStatus('No speech detected', 'idle');
       setMeta('Hold the button while speaking — release when done.');
     }
     if (turnStartedAt === 0) turnStartedAt = Date.now();
+    return;
+  }
+
+  if (t === 'transcript_partial') {
+    // Voice paused mid-thought — server is buffering, waiting for the
+    // user to continue. Show the partial in italics + a "go on" hint.
+    transcriptEl.textContent = (data.text || '') + ' …';
+    transcriptEl.style.fontStyle = 'italic';
+    transcriptEl.style.opacity = '0.75';
+    transcriptWrap.style.display = '';
+    setStatus('Go on…', 'processing');
+    setMeta('Sounds like you paused — keep going.');
     return;
   }
 
@@ -508,6 +624,7 @@ ch.onData(function(data) {
     if (firstAudioMs === null && turnStartedAt > 0) {
       firstAudioMs = Date.now() - turnStartedAt;
     }
+    console.log('[voice] received assistant_speech idx=' + data.sentence_idx + ' wav=' + (data.wav_b64 ? data.wav_b64.length : 0) + 'b64chars ambient=' + !!data.ambient);
     enqueueSpeechWav(data.wav_b64);
     return;
   }
@@ -545,7 +662,8 @@ ch.onData(function(data) {
 });
 
 ch.onClose(function() {
-  setStatus('Disconnected', 'error');
+  setStatus('Reconnecting…', 'processing');
+  setMeta('Channel dropped — auto-reopening.');
 });
 
 // ── Toggle bindings ────────────────────────────────────────────
@@ -597,4 +715,8 @@ checkServerReady();
 mica.onDestroy(function() {
   turnMicOff();
   stopVoicePlayback();
+  if (playbackCtx) {
+    try { playbackCtx.close(); } catch (_) {}
+    playbackCtx = null;
+  }
 });

@@ -6,8 +6,23 @@
 	"build": {
 		"dockerfile": "Dockerfile"
 	},
-	// GPU passthrough
-	"runArgs": ["--gpus", "all", "-p", "8890:8890/udp"],
+	// GPU passthrough.
+	// "-p 5173:5173" publishes the Vite dev port to the HOST's localhost so
+	// that host-side reverse proxies (e.g. `tailscale serve --bg https /
+	// proxy 5173` running on the Spark) can front it with HTTPS. The
+	// `forwardPorts` block below is a separate VSCode mechanism that
+	// tunnels container ports to the laptop's localhost; it does NOT
+	// publish to the Spark host network. Both are needed: forwardPorts
+	// for VSCode access, -p for tailscale-serve / iOS access.
+	// Backend (3002) is also published for symmetry / debug curls from
+	// the host; not strictly required since Vite proxies /api and /ws
+	// to localhost:3002 within the container.
+	"runArgs": [
+		"--gpus", "all",
+		"-p", "8890:8890/udp",
+		"-p", "5173:5173",
+		"-p", "3002:3002"
+	],
 	// Mount host cache directories to container
 	"mounts": [
 		{

@@ -64,6 +64,7 @@ DEFAULT_PORT = int(os.environ.get("VOICE_STT_PORT", "8013"))
 DEFAULT_HOST = os.environ.get("VOICE_STT_HOST", "127.0.0.1")
 
 _model = None  # type: ignore
+_vad = None  # Silero VAD model — speech-activity detection before Parakeet
 
 
 def load_model():
@@ -83,11 +84,24 @@ def load_model():
     return _model
 
 
+def load_vad():
+    """Load Silero VAD once, lazily, and cache. Cheap: ~1MB, ~0.5s load."""
+    global _vad
+    if _vad is not None:
+        return _vad
+    from silero_vad import load_silero_vad  # type: ignore
+    print("[voice-stt] loading Silero VAD ...", flush=True)
+    t0 = time.perf_counter()
+    _vad = load_silero_vad()
+    print(f"[voice-stt] Silero VAD loaded in {time.perf_counter() - t0:.1f}s", flush=True)
+    return _vad
+
+
 @asynccontextmanager
 async def lifespan(app):
-    # Model load on startup — not on first request — so /health latency
-    # reflects readiness.
+    # Both models on startup so /health latency reflects readiness.
     load_model()
+    load_vad()
     yield
 
 
@@ -145,23 +159,61 @@ def main() -> None:
                     400,
                     f"failed to decode audio: {type(e).__name__}: {e or '(no message)'}",
                 ) from e
-            # Trim leading + trailing silence. The .voice card's recorder
-            # starts when the user turns the mic on, not when they begin
-            # speaking, so each utterance can carry several seconds of
-            # leading silence depending on think-time. Parakeet hallucinates
-            # words to "fill" long unusual silences (the most common report
-            # is invented phrases at the start of a transcript). top_db=25
-            # is permissive enough to keep quiet syllables but strips dead
-            # air. ~80ms of pre-roll is preserved by frame_length=512.
+            # Strip non-speech regions with Silero VAD before Parakeet sees
+            # the audio. The .voice card's recorder runs continuously while
+            # the mic is on, so each upload carries leading + trailing
+            # silence (and possibly mid-utterance gaps). Parakeet
+            # hallucinates words to "fill" long unusual silences — the
+            # source of the "invented lead-in text" complaint. Silero
+            # detects voice-activity windows precisely (default 30ms
+            # padding around each segment) and we feed only those to
+            # Parakeet. Mid-utterance gaps shorter than 100ms get merged
+            # automatically; longer gaps just collapse cleanly.
+            #
+            # Falls back to the untrimmed signal if VAD errors out (model
+            # not loaded, torch issue, etc.) — better to feed Parakeet a
+            # noisy clip than nothing.
+            duration = len(wave) / 16000  # original duration for metrics
+            print(
+                f"[voice-stt] decoded {duration:.2f}s of 16kHz mono "
+                f"(suffix={suffix}, content_type={audio.content_type}, "
+                f"upload_bytes={len(content)}, samples={len(wave)})",
+                flush=True,
+            )
             try:
-                wave_trimmed, _ = librosa.effects.trim(wave, top_db=25, frame_length=512, hop_length=128)
-                if len(wave_trimmed) >= 16000 // 4:  # ≥250ms remaining → use trimmed
-                    wave = wave_trimmed
-            except Exception:
-                # Defensive: if trimming barfs (extremely short or all-silence
-                # input), fall back to the untrimmed signal.
-                pass
-            duration = len(wave) / 16000
+                import torch  # type: ignore
+                import numpy as np  # type: ignore
+                from silero_vad import get_speech_timestamps  # type: ignore
+                vad = load_vad()
+                wave_t = torch.from_numpy(wave)
+                speech_segments = get_speech_timestamps(
+                    wave_t, vad, sampling_rate=16000,
+                )
+                if not speech_segments:
+                    # Audio is entirely non-speech — return empty transcript.
+                    print(
+                        f"[voice-stt] VAD: 0 segments (no speech detected) — "
+                        f"input was {duration:.2f}s, suffix={suffix}, content_type={audio.content_type}",
+                        flush=True,
+                    )
+                    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+                    return {
+                        "text": "",
+                        "duration_s": duration,
+                        "elapsed_ms": elapsed_ms,
+                    }
+                voice_chunks = [
+                    wave[s["start"]:s["end"]] for s in speech_segments
+                ]
+                wave = np.concatenate(voice_chunks).astype(np.float32)
+                duration = len(wave) / 16000  # post-VAD duration
+                print(
+                    f"[voice-stt] VAD: {len(speech_segments)} segments, "
+                    f"{duration:.2f}s of speech kept",
+                    flush=True,
+                )
+            except Exception as e:
+                print(f"[voice-stt] VAD failed, using untrimmed: {type(e).__name__}: {e}", flush=True)
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as wav_tf:
                 sf.write(wav_tf.name, wave, 16000)

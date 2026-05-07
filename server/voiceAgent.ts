@@ -82,6 +82,29 @@ async function readChatHistoryFor(
   }
 }
 
+/** Read the project's spec/intent file if present. Returns the first
+ *  ~500 chars (`cleanForTts`'d so heading hashes / markdown links don't
+ *  bleed in). Empty string when no spec, no canvas/spec.md, or it's
+ *  empty — caller suppresses the "Project intent" section entirely. */
+async function loadProjectIntent(project: string | null): Promise<string> {
+  // Try canvas/spec.md first (the convention). Future: scan canvasRoot
+  // for any `.spec.md` if this project uses a different name.
+  const candidates = ["canvas/spec.md", "spec.md"];
+  for (const path of candidates) {
+    try {
+      const content = await readProjectFile(path, project || undefined);
+      const text = String(content?.content || "").trim();
+      if (text.length === 0) continue;
+      const cleaned = cleanForTts(text).trim();
+      if (cleaned.length === 0) continue;
+      return cleaned.length > 500 ? cleaned.slice(0, 500) + "…" : cleaned;
+    } catch {
+      // file missing → try next candidate
+    }
+  }
+  return "";
+}
+
 /** Heuristic card status. Reads chat history; if last entry is a user
  *  turn, infer busy. If no history, "idle (empty)". Otherwise idle with
  *  a hint of how recent the last reply was. */
@@ -103,7 +126,16 @@ const MAX_HISTORY = 8;
 
 interface VoiceTurn {
   role: "user" | "assistant";
+  /** User-visible text — what the chat-card UI renders, what the user
+   *  hears (speakable). Strip of all <tool>/<say> markup. */
   content: string;
+  /** LLM-only context — the raw <tool>...</tool><say>...</say> output
+   *  from the assistant turn, fed back to the LLM on the NEXT turn so
+   *  it sees its own prior tool calls and continues following the
+   *  grammar. Without this, the LLM starts hallucinating "OK, I asked
+   *  Qwen" without ever emitting a <tool> block. Only set on assistant
+   *  turns; absent for user turns (their content already IS the raw). */
+  raw?: string;
 }
 
 /** Minimal XML-block extractor. Greedy match; doesn't handle nested tags
@@ -162,6 +194,66 @@ function parseField(inner: string, field: string): string {
   return m ? m[1].trim() : "";
 }
 
+// Words that, when they're the last word of a transcript, strongly suggest
+// the user paused mid-thought rather than finishing. Voice should buffer
+// the partial and wait for the next utterance instead of dispatching.
+//
+// Curated to avoid false positives on common short complete sentences:
+// - Demonstratives (this/that/these/those) REMOVED — "Look at that!",
+//   "I love that.", "What's this?" are all complete and very common.
+// - "if" REMOVED — "only if", "even if" mid-sentence is rare; many
+//   sentences end naturally with conditional clauses already complete.
+// - Auxiliary verbs are kept (their bare-end form like "I will." in
+//   conversation is uncommon and easily confirmed by re-asking).
+const INCOMPLETE_TRAILING_WORDS = new Set([
+  // Conjunctions
+  "and", "or", "but", "so", "because", "since", "while", "though",
+  "although", "then", "plus", "also", "when", "whenever",
+  "before", "after", "until", "unless",
+  // Fillers / hedges
+  "um", "uh", "hmm", "er", "like", "well", "actually",
+  // Articles / determiners (true mid-phrase markers — "I want a." is gibberish)
+  "the", "a", "an", "some", "any",
+  // Prepositions (always lead into something)
+  "of", "to", "for", "with", "from", "on", "in", "at", "by", "into",
+  "onto", "about", "around", "through", "across", "between", "over",
+  "under", "near", "next",
+  // Auxiliary / modal verbs
+  "is", "are", "was", "were", "be", "been", "being",
+  "will", "would", "could", "should", "may", "might", "must", "can",
+  "do", "does", "did", "doing",
+  "has", "have", "had", "having",
+  // Possessives that need a noun
+  "my", "your", "his", "her", "its", "our", "their",
+  // Comma-trailing fragments
+  "and,", "or,", "but,",
+]);
+
+/** Returns `true` if the transcript looks like a complete spoken thought,
+ *  `false` if it likely trailed off mid-utterance (so voice should buffer
+ *  it and wait for the user to continue). Heuristic-only: regex on the
+ *  trailing word + a couple of fragment shapes. Misses "open the file"
+ *  → "in the docs folder" style semantic continuations, which is the
+ *  trade-off vs running an extra LLM call on every utterance. */
+function looksComplete(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return true; // empty → caller handles separately
+  // Single word: "hello", "yes", "stop" — treat as complete.
+  const words = trimmed.split(/\s+/);
+  if (words.length === 1) return true;
+  // Trailing comma or em-dash → mid-thought.
+  if (/[,—–-]\s*$/.test(trimmed)) return false;
+  // Trailing ellipsis → explicit trailing-off.
+  if (/\.\.\.\s*$/.test(trimmed)) return false;
+  // Last word ends with hyphen → mid-word cut.
+  const last = words[words.length - 1].toLowerCase().replace(/[.!?,]+$/, "");
+  if (!last) return true;
+  if (last.endsWith("-")) return false;
+  // Last word is a "stay-tuned" trailing word.
+  if (INCOMPLETE_TRAILING_WORDS.has(last)) return false;
+  return true;
+}
+
 export function createVoiceAgentHandler(channelMgr: ChannelManager) {
   return async function voiceAgentFactory(
     _content: string,
@@ -174,6 +266,29 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     const history: VoiceTurn[] = [];
     let activeAbort: AbortController | null = null;
     let busy = false;
+
+    // Partial-utterance buffer. When the user pauses mid-thought, VAD
+    // cuts the recording and STT returns a partial like "I want to know".
+    // Heuristic completeness check (looksComplete()) flags it; we stash
+    // the text here and wait for the next utterance to arrive, then
+    // prepend the buffer. PARTIAL_EXPIRY_MS auto-flushes the buffer if
+    // the user falls silent for too long — better to dispatch a partial
+    // than leave them hanging.
+    let pendingPartial: string | null = null;
+    let pendingPartialAt = 0;
+    let pendingPartialTimer: NodeJS.Timeout | null = null;
+    // 4s expiry — long enough for a normal mid-thought pause + the next
+    // STT round-trip, short enough that an unrelated follow-up question
+    // doesn't accidentally inherit a stale partial. Was 8s; changing
+    // topics within 8s was too easy to bridge by mistake.
+    const PARTIAL_EXPIRY_MS = 4000;
+
+    function clearPendingPartialTimer(): void {
+      if (pendingPartialTimer) {
+        clearTimeout(pendingPartialTimer);
+        pendingPartialTimer = null;
+      }
+    }
 
     // ── Phase 2: ambient announcement queue ─────────────────────
     //
@@ -319,7 +434,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
       },
     );
 
-    return {
+    const handler: ChannelHandler = {
       onAttach(clientId) {
         ctx.sendTo(clientId, {
           type: "history",
@@ -335,6 +450,18 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           message?: string;
           voice?: string;
         };
+
+        // Diagnostic log: every inbound channel message. Helps debug
+        // "iOS isn't sending audio" type issues — we can see whether
+        // the channel is alive at all and what shape the payload has.
+        const shape = msg.audioB64
+          ? `audioB64 (${msg.audioB64.length} b64chars, mime=${msg.audioMime || "?"})`
+          : msg.type
+            ? `type=${msg.type}`
+            : msg.message
+              ? `message (${msg.message.length} chars)`
+              : "unknown";
+        console.log(`[voice-agent] onData ← ${shape}`);
 
         if (msg.type === "interrupt") {
           if (activeAbort) {
@@ -384,12 +511,30 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             ctx.broadcast({ type: "thinking", phase: "stt" });
             const audioBuf = Buffer.from(msg.audioB64, "base64");
             const audioMime = msg.audioMime || "audio/webm";
+            // Map mime → file extension. iOS Safari can only record
+            // audio/mp4 (no webm support); other browsers do webm/opus.
+            // Parakeet-side, librosa+ffmpeg uses the suffix as a hint
+            // for the demuxer, so picking the right extension matters.
+            const extByMime: Record<string, string> = {
+              "audio/webm": ".webm",
+              "audio/webm;codecs=opus": ".webm",
+              "audio/ogg": ".ogg",
+              "audio/ogg;codecs=opus": ".ogg",
+              "audio/mp4": ".mp4",
+              "audio/mp4;codecs=mp4a.40.2": ".mp4",
+              "audio/aac": ".aac",
+              "audio/wav": ".wav",
+              "audio/wave": ".wav",
+            };
+            const ext = extByMime[audioMime] || extByMime[audioMime.split(";")[0]] || ".webm";
+            const filename = `audio${ext}`;
+            console.log(`[voice-agent] STT request: mime=${audioMime} bytes=${audioBuf.length} filename=${filename}`);
             try {
               const sttForm = new FormData();
               sttForm.append(
                 "audio",
                 new Blob([audioBuf], { type: audioMime }),
-                "audio.webm",
+                filename,
               );
               const sttResp = await fetch(`${getSttUrl()}/transcribe`, {
                 method: "POST",
@@ -415,12 +560,57 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             userText = msg.message.trim();
           }
 
-          ctx.broadcast({ type: "transcript", text: userText });
           if (!userText) {
             // Empty utterance — probably an accidental tap or silence.
+            // If we had a buffered partial, leave it alone — user might
+            // try again. Don't broadcast a fresh transcript event.
             ctx.broadcast({ type: "done" });
             return;
           }
+
+          // Concatenate any buffered partial from a recent utterance so
+          // the LLM sees the full continued thought ("I want to know"
+          // + "what time it is in tokyo" → one message). The partial
+          // expires after PARTIAL_EXPIRY_MS to avoid stale prefixes.
+          if (pendingPartial && Date.now() - pendingPartialAt < PARTIAL_EXPIRY_MS) {
+            userText = `${pendingPartial} ${userText}`;
+            console.log(`[voice-agent] continuing buffered partial: ${JSON.stringify(userText.slice(0, 120))}`);
+          }
+          pendingPartial = null;
+          clearPendingPartialTimer();
+
+          // Heuristic completeness check. If the transcript trails off
+          // (ends with conjunction, filler, article, preposition, etc.),
+          // buffer it and wait for the user to continue rather than
+          // dispatching a half-formed request to Qwen.
+          if (!looksComplete(userText)) {
+            pendingPartial = userText;
+            pendingPartialAt = Date.now();
+            console.log(`[voice-agent] partial detected, buffering: ${JSON.stringify(userText.slice(0, 120))}`);
+            ctx.broadcast({
+              type: "transcript_partial",
+              text: userText,
+              waitingForMore: true,
+            });
+            // Auto-flush if no follow-up arrives — dispatch what we have.
+            pendingPartialTimer = setTimeout(() => {
+              if (pendingPartial) {
+                console.log(`[voice-agent] partial expired after ${PARTIAL_EXPIRY_MS}ms, force-dispatching`);
+                const expired = pendingPartial;
+                pendingPartial = null;
+                pendingPartialTimer = null;
+                // Re-enter onData with the buffered text as a synthetic
+                // user message. This routes through the regular dispatch
+                // path including LLM tool loop.
+                handler.onData?.(_clientId, { message: expired, voice: msg.voice });
+              }
+            }, PARTIAL_EXPIRY_MS);
+            ctx.broadcast({ type: "done" });
+            return;
+          }
+
+          console.log(`[voice-agent] transcript dispatched (${userText.length} chars): ${JSON.stringify(userText)}`);
+          ctx.broadcast({ type: "transcript", text: userText });
 
           history.push({ role: "user", content: userText });
           if (history.length > MAX_HISTORY) {
@@ -430,25 +620,41 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // 2. Build canvas-aware prompt.
           const cards = (await listCanvasFiles(sessionProject || undefined))
             .filter((c) => !c.name.startsWith(".") && c.name !== ctx.filename);
-          const cardSummary = cards.length
-            ? cards
-                .map((c) => {
-                  const dot = c.name.lastIndexOf(".");
-                  const kind = dot === -1 ? "file" : c.name.slice(dot + 1);
-                  const ageMs = Date.now() - new Date(c.modifiedAt).getTime();
-                  const ageMin = Math.floor(ageMs / 60_000);
-                  const age =
-                    ageMin <= 0
-                      ? "just now"
-                      : ageMin < 60
-                        ? `${ageMin}m ago`
-                        : `${Math.floor(ageMin / 60)}h ago`;
-                  return `  - ${c.name} (.${kind}, last activity ${age})`;
-                })
-                .join("\n")
-            : "  (none)";
+
+          // Filename list for `send_to_card`. Even on a blank canvas this
+          // is short — voice still knows what's dispatchable.
+          const cardListLines = cards
+            .map((c) => {
+              const dot = c.name.lastIndexOf(".");
+              const kind = dot === -1 ? "file" : c.name.slice(dot + 1);
+              return `  - ${c.name} (.${kind})`;
+            })
+            .join("\n");
+
+          // Top 3 most-recently-modified cards, with relative ages, so
+          // voice can answer "what's new?" without firing a tool. Section
+          // is omitted entirely when there's nothing meaningful to show.
+          const recentLines = [...cards]
+            .sort((a, b) => +new Date(b.modifiedAt) - +new Date(a.modifiedAt))
+            .slice(0, 3)
+            .map((c) => {
+              const ageMs = Date.now() - new Date(c.modifiedAt).getTime();
+              const ageMin = Math.floor(ageMs / 60_000);
+              const age =
+                ageMin <= 0
+                  ? "just now"
+                  : ageMin < 60
+                    ? `${ageMin}m ago`
+                    : `${Math.floor(ageMin / 60)}h ago`;
+              return `  - ${c.name} — modified ${age}`;
+            })
+            .join("\n");
 
           const projectLabel = sessionProject || "(workspace)";
+
+          // Project intent: first ~500 chars of canvas/spec.md, if any.
+          // Empty string when there's no spec — section is omitted.
+          const projectIntent = await loadProjectIntent(sessionProject);
 
           // Pick a representative chat-style card filename to use in
           // examples — grounds the LLM in the actual canvas vocabulary.
@@ -462,79 +668,105 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           });
           const exampleFilename = exampleCard ? exampleCard.name : "chat.chat";
 
-          const systemPrompt =
-            `You are Mica's voice assistant for the "${projectLabel}" project. ` +
-            "You run on Qwen3.6 — the same model behind the canvas's chat cards — but with a voice persona: " +
-            "every word inside <say>…</say> is read aloud, so reply in 1–2 short conversational sentences, " +
-            "no markdown, no lists, no code, no URLs.\n\n" +
+          // ── System prompt ───────────────────────────────────────
+          //
+          // Posture, not modes. The LLM gets whatever context exists
+          // (project name always, intent + recent activity if present)
+          // and a description of how voice should behave as that
+          // context emerges. No branching on "blank vs full" — the
+          // sections themselves carry the gradient.
 
-            "## Cards on this canvas (the only valid <file> values for send_to_card)\n" +
-            cardSummary + "\n\n" +
+          const promptParts: string[] = [];
 
-            "## Default to answering yourself\n" +
-            "You're a capable assistant — answer most questions directly using your own knowledge. " +
-            "General knowledge (people, history, science, definitions, math, jokes, advice), questions about " +
-            "what's on the canvas, conversational replies — handle them yourself in 1–2 spoken sentences. " +
-            "The user is talking to you out loud and wants a fast back-and-forth, not a relay to another card.\n\n" +
+          promptParts.push(
+            `You are Mica's voice — the user's first contact on this canvas. ` +
+            `Project: "${projectLabel}".\n\n` +
 
-            "## When to dispatch (rare)\n" +
-            "Only use send_to_card when the user clearly wants action that requires the slow agent's tools: " +
-            "writing or editing files, running commands, searching the web, refactoring code, multi-step planning, " +
-            "or anything else that needs file-system / shell / web access. Phrases like \"tell qwen\", " +
-            "\"have the agent\", \"write a file\", \"edit the code\", \"open up\", \"run\" usually mean dispatch. " +
-            "Phrases like \"who is\", \"what is\", \"explain\", \"summarize from memory\", \"what do you think\" " +
-            "do NOT — answer those yourself.\n\n" +
+            "**Be responsive above all.** Short replies, fast back-and-forth, never make the user wait while you over-think. One or two spoken sentences is almost always enough.\n\n" +
 
+            "**Notice what's on the canvas, but don't depend on it.** When there's a project intent below, ground your suggestions in it. When there isn't, lean on your own knowledge — you're Qwen3.6, you know a lot — and engage with whatever the user brings. Don't announce the canvas state to the user; just behave appropriately for what's there.\n\n" +
+
+            "**Work with the user as context emerges.** The first few exchanges may be loose — exploring an idea, kicking around possibilities. As the conversation surfaces what the user actually wants, start suggesting concrete moves: \"Want me to ask Qwen to draft a spec?\" \"Should I have it explore the X angle?\" Engage the chat agents and other tools more as the work crystallizes — not as a default.\n\n" +
+
+            "**Dispatch when there's real work.** When the user clearly wants something done that needs files, code, search, or planning — use `send_to_card` to route it. After dispatching, if a logical next step is obvious, mention it briefly. If not, just confirm and stop.\n\n" +
+
+            "Every word inside <say>…</say> is read aloud. No markdown, no lists, no code, no URLs in <say>.\n",
+          );
+
+          if (projectIntent) {
+            promptParts.push(
+              "## Project intent (from canvas/spec.md — already in your context)\n" +
+              projectIntent + "\n\n" +
+              "Answer questions about the project from this section directly. Do NOT call read_card on spec.md; you already have its content above.\n",
+            );
+          }
+
+          if (recentLines) {
+            promptParts.push(
+              "## What's recent on the canvas\n" +
+              recentLines + "\n",
+            );
+          }
+
+          if (cardListLines) {
+            promptParts.push(
+              "## Cards available for send_to_card\n" +
+              cardListLines + "\n",
+            );
+          }
+
+          promptParts.push(
             "## Tools\n" +
             `<tool name="list_cards"/>` + " — fresh canvas listing. Rare; the list above is usually enough.\n" +
-            `<tool name="read_card"><file>EXACT_FILENAME</file></tool>` + " — read a card's contents (text files only — markdown, spec, JSON, etc). Use when the user asks about a specific file's contents and the answer isn't in your memory.\n" +
-            `<tool name="card_status"><file>EXACT_FILENAME</file></tool>` + " — check whether a chat card's agent is currently busy or idle, plus a one-line activity hint. Use to answer \"is Qwen still working?\".\n" +
-            `<tool name="read_recent_replies"><file>EXACT_FILENAME</file><n>1</n></tool>` + " — fetch the last N assistant replies from a chat card so you can summarize what it just said. <n> is optional, default 1. Use for \"what did Qwen just say?\".\n" +
-            `<tool name="send_to_card"><file>EXACT_FILENAME_FROM_LIST_ABOVE</file><message>WHAT_TO_DO_IN_PLAIN_ENGLISH</message></tool>` + " — forward a request to a chat card. ONLY for action — see rules above.\n\n" +
+            `<tool name="read_card"><file>EXACT_FILENAME</file></tool>` + " — read a card's contents (markdown, spec, json, etc). Use when answering needs project-specific data you don't already have.\n" +
+            `<tool name="card_status"><file>EXACT_FILENAME</file></tool>` + " — busy/idle hint for a chat card. Use for \"is Qwen still working?\".\n" +
+            `<tool name="read_recent_replies"><file>EXACT_FILENAME</file><n>1</n></tool>` + " — fetch the last N assistant replies from a chat card. Use for \"what did Qwen just say?\".\n" +
+            `<tool name="send_to_card"><file>EXACT_FILENAME</file><message>WHAT_TO_DO</message></tool>` + " — forward to a chat card. Only when the user wants real work routed.\n",
+          );
 
+          promptParts.push(
             "## Hard rules\n" +
             "1. Tools go OUTSIDE <say>. NEVER nest a tool inside say tags — the XML would be read aloud.\n" +
-            "2. <file> MUST be one of the filenames listed above, copied verbatim. NEVER put a code path, output path, or URL there.\n" +
+            "2. <file> MUST be a filename from the canvas list, copied verbatim. NEVER put a code path, output path, or URL there.\n" +
             "3. <message> is plain English — NOT code, NOT XML.\n" +
-            "4. After dispatching, give a brief spoken confirmation in <say>.\n\n" +
+            "4. After dispatching, give a brief spoken confirmation in <say>. If a follow-up step is obvious, mention it.\n",
+          );
 
-            "## Examples\n" +
+          promptParts.push(
+            "## Examples — the gradient from loose to active\n" +
 
+            "# Loose / exploratory — leans on own knowledge\n" +
+            "User: I'm thinking about something to track running mileage\n" +
+            "Assistant: <say>Couple of well-worn shapes for that: GPS-based auto-logging, manual entries with notes, or trends-over-time dashboards. What matters most to you — the speed of logging, or the analytics?</say>\n\n" +
+
+            "# Mid / clarifying — surfacing intent, offering scaffolding\n" +
+            "User: yeah trends matter most. weekly mileage and pace\n" +
+            "Assistant: <say>Got it — pace and weekly volume. Want me to ask Qwen to draft a quick spec, or talk through the data model first?</say>\n\n" +
+
+            "# Active / dispatching with proactive follow-up\n" +
+            "User: yeah have qwen draft the spec\n" +
+            `Assistant: <tool name="send_to_card"><file>${exampleFilename}</file><message>Draft a spec for a running-tracker card focused on weekly mileage and pace trends.</message></tool><say>OK, asked Qwen for the spec. Once it lands, I can have it sketch the data model.</say>\n\n` +
+
+            "# General knowledge — direct answer\n" +
             "User: who's Bruce Springsteen?\n" +
-            "Assistant: <say>He's a New Jersey rock musician famous for the E Street Band and albums like Born to Run and Born in the U.S.A.</say>\n\n" +
+            "Assistant: <say>New Jersey rock musician — Born to Run, Born in the U.S.A., legendary live shows with the E Street Band.</say>\n\n" +
 
-            "User: what cards do I have?\n" +
-            "Assistant: <say>You have a chat card, a spec, and a couple of notes on this canvas.</say>\n\n" +
+            "# Project-specific lookup — read tool, then summarize\n" +
+            `Assistant: <tool name="read_recent_replies"><file>${exampleFilename}</file></tool><say>Qwen wrapped the architecture plan — four services and a five-stage retrieval pipeline. Want me to ask it to detail the riskiest one?</say>\n\n` +
 
-            "User: what's the capital of France?\n" +
-            "Assistant: <say>Paris.</say>\n\n" +
-
-            "User: what is Mica?\n" +
-            "Assistant: <say>It's a canvas where humans and agents work on context together — the project you're in right now.</say>\n\n" +
-
-            "User: tell Qwen to write a hello world script to slash tmp slash hi dot py\n" +
-            `Assistant: <tool name="send_to_card"><file>${exampleFilename}</file><message>Write a hello world script to /tmp/hi.py</message></tool><say>OK, told Qwen.</say>\n\n` +
-
-            "User: have the agent refactor card dot js to use async await\n" +
-            `Assistant: <tool name="send_to_card"><file>${exampleFilename}</file><message>Refactor card.js to use async/await.</message></tool><say>On it — Qwen will refactor it.</say>\n\n` +
-
-            "User: what did Qwen just say?\n" +
-            `Assistant: <tool name="read_recent_replies"><file>${exampleFilename}</file></tool>\n` +
-            "  (then, in the SAME response after seeing the result, summarize:)\n" +
-            "Assistant: <say>Qwen said the script is ready and it explained how to run it.</say>\n\n" +
-
-            "User: is Qwen still working?\n" +
-            `Assistant: <tool name="card_status"><file>${exampleFilename}</file></tool><say>Yes — still busy on the last request.</say>\n\n` +
-
-            "User: what's in the spec?\n" +
-            `Assistant: <tool name="read_card"><file>canvas/spec.md</file></tool><say>The spec describes an interactive map of SFO with terminal pins and a search box.</say>\n\n` +
-
+            "# Out-of-scope — graceful redirect\n" +
             "User: what's the weather?\n" +
-            "Assistant: <say>I don't have weather access from here — but the rest of your canvas is quiet.</say>";
+            "Assistant: <say>I don't have weather access from here — but the rest of your canvas is quiet.</say>",
+          );
+
+          const systemPrompt = promptParts.join("\n");
 
           const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
             { role: "system", content: systemPrompt },
-            ...history.map((h) => ({ role: h.role, content: h.content })),
+            // Feed the LLM its raw prior outputs (with <tool>/<say> tags)
+            // so it sees its own past tool calls and keeps following the
+            // grammar. User turns have no raw — content IS the raw.
+            ...history.map((h) => ({ role: h.role, content: h.raw || h.content })),
           ];
 
           // 3. LLM loop.
@@ -611,6 +843,13 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             } finally {
               activeAbort = null;
             }
+            // Normalize a common LLM grammar slip: `<tool name="say">...</say>`
+            // (conflating the <tool> shape with the <say> wrapper). Rewrite
+            // these to plain `<say>...</say>` BEFORE parsing so the extractor
+            // catches them. Without this, the malformed block isn't picked
+            // up as a tool call OR a say block, and the spoken-text fallback
+            // ends up reading the raw XML aloud.
+            llmRaw = llmRaw.replace(/<tool\s+name\s*=\s*["']say["']\s*>/gi, "<say>");
             lastLlmRaw = llmRaw;
 
             const tools = extractBlocks(llmRaw, "tool");
@@ -858,7 +1097,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             await fanout.drain();
             console.log(`[voice-agent] turn done — audio frames emitted=${audioFramesEmitted}`);
 
-            history.push({ role: "assistant", content: speakable });
+            history.push({ role: "assistant", content: speakable, raw: lastLlmRaw });
             if (history.length > MAX_HISTORY) {
               history.splice(0, history.length - MAX_HISTORY);
             }
@@ -882,9 +1121,12 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
         if (activeAbort) {
           try { activeAbort.abort(); } catch { /* ignore */ }
         }
+        clearPendingPartialTimer();
+        pendingPartial = null;
         unsubscribeBroadcastListener();
         announcementQueue.length = 0;
       },
     };
+    return handler;
   };
 }

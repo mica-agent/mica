@@ -59,6 +59,12 @@ export function cleanForTts(text: string): string {
   s = s.replace(/^\s*>\s+/gm, "");
   // Backslash-escaped markdown chars: \* \_ \` etc.
   s = s.replace(/\\([\\*_`[\](){}#>+\-.!])/g, "$1");
+  // Strip any leftover XML/HTML-style tags (last-line-of-defense for LLM
+  // grammar slips like `<tool name="say">...</say>` that weren't caught
+  // by the parsers upstream). We delete the tag itself but keep the
+  // content between tags. Doesn't affect plain `<` or `>` symbols inside
+  // running prose.
+  s = s.replace(/<\/?[a-zA-Z][^>]*>/g, "");
   // Collapse runs of whitespace (newlines from heading/bullet trims, etc).
   s = s.replace(/\s+/g, " ").trim();
   return s;

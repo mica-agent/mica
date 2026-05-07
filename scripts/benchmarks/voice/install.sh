@@ -62,7 +62,8 @@ python -m pip install \
   "fastapi>=0.110" \
   "uvicorn[standard]>=0.27" \
   "python-multipart>=0.0.9" \
-  "imageio-ffmpeg>=0.5" || die "pip install failed — see error above"
+  "imageio-ffmpeg>=0.5" \
+  "silero-vad>=5.1" || die "pip install failed — see error above"
 
 ok "Python deps installed"
 
