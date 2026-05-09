@@ -36,7 +36,7 @@
 //   { type: "clear" }                 — reset conversation history
 
 import type { ChannelHandler, SessionContext, ChannelManager } from "./channelManager.js";
-import { listCanvasFiles, readProjectFile, getOrCreateCardId } from "./files.js";
+import { listCanvasFiles, readProjectFile, getOrCreateCardId, loadChatQueue } from "./files.js";
 import { readFile } from "fs/promises";
 import { join } from "path";
 import {
@@ -106,18 +106,65 @@ async function loadProjectIntent(project: string | null): Promise<string> {
   return "";
 }
 
-/** Heuristic card status. Reads chat history; if last entry is a user
- *  turn, infer busy. If no history, "idle (empty)". Otherwise idle with
- *  a hint of how recent the last reply was. */
+interface CardQueueItem {
+  text: string;     // first ~100 chars of the queued message
+  source: string;   // "user" | "voice" | "file-changes"
+  queuedAt: number; // unix ms; 0 if missing
+}
+
+/** Heuristic card status. Reads chat history AND the chat agent's
+ *  persisted queue (`.mica/chats/<chatId>.queue.json`) so voice can
+ *  see what's already pending and avoid piling on. Falls back to
+ *  history-only signals when no queue file exists (card never had a
+ *  session) or read fails. */
 async function cardStatusFor(
   project: string | null,
   filename: string,
-): Promise<{ busy: boolean; summary: string }> {
+): Promise<{ busy: boolean; summary: string; queueDepth: number; queueItems: CardQueueItem[] }> {
   const history = await readChatHistoryFor(project, filename);
-  if (history.length === 0) return { busy: false, summary: "idle (no conversation yet)" };
+  // Resolve cardId so we can read the persisted queue. Same path the
+  // chat agent uses to write it.
+  let cardId = "";
+  try { cardId = await getOrCreateCardId(project, filename); } catch { /* leave empty */ }
+  const rawQueue = cardId
+    ? await loadChatQueue<{ text?: string; source?: string; queuedAt?: number }>(cardId, project).catch(() => [])
+    : [];
+  const queueDepth = rawQueue.length;
+  const queueItems: CardQueueItem[] = rawQueue.slice(0, 5).map((q) => ({
+    text: typeof q.text === "string" ? q.text.slice(0, 100) : "",
+    source: typeof q.source === "string" ? q.source : "user",
+    queuedAt: typeof q.queuedAt === "number" ? q.queuedAt : 0,
+  }));
+  // Busy if a user-turn is the latest history entry (chat agent is
+  // mid-reply) OR there are queued items (pending work behind it).
   const last = history[history.length - 1];
-  if (last.role === "user") return { busy: true, summary: "busy — last user turn awaiting reply" };
-  return { busy: false, summary: `idle (last reply ${history.length} messages in)` };
+  const busy = (last && last.role === "user") || queueDepth > 0;
+  let summary: string;
+  if (history.length === 0 && queueDepth === 0) {
+    summary = "idle (no conversation yet)";
+  } else if (queueDepth > 0) {
+    summary = `busy — ${queueDepth} item${queueDepth === 1 ? "" : "s"} queued`;
+  } else if (busy) {
+    summary = "busy — last user turn awaiting reply";
+  } else {
+    summary = `idle (last reply ${history.length} messages in)`;
+  }
+  return { busy, summary, queueDepth, queueItems };
+}
+
+/** Format a unix-ms timestamp as a relative age ("just now", "3m ago",
+ *  "1h ago"). Mirrors the canvas listing's age helper so the voice
+ *  agent's prompts stay consistent. */
+function formatRelativeAge(ms: number): string {
+  if (!ms || !isFinite(ms)) return "unknown";
+  const ageSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (ageSec < 5) return "just now";
+  if (ageSec < 60) return `${ageSec}s ago`;
+  const ageMin = Math.floor(ageSec / 60);
+  if (ageMin < 60) return `${ageMin}m ago`;
+  const ageHr = Math.floor(ageMin / 60);
+  if (ageHr < 24) return `${ageHr}h ago`;
+  return `${Math.floor(ageHr / 24)}d ago`;
 }
 
 const LLM_URL = "http://127.0.0.1:8012/v1/chat/completions";
@@ -1074,7 +1121,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
 
             "**Work with the user as context emerges.** The first few exchanges may be loose — exploring an idea, kicking around possibilities. As the conversation surfaces what the user actually wants, start suggesting concrete moves: \"Want me to ask Qwen to draft a spec?\" \"Should I have it explore the X angle?\" Engage the chat agents and other tools more as the work crystallizes.\n\n" +
 
-            "**Dispatch when there's real work.** When the user clearly wants something done that needs files, code, search, or planning — use `send_to_card` to route it. After dispatching, mention an obvious follow-up if there is one, or just confirm briefly and stop.\n\n" +
+            "**Dispatch when there's real work.** When the user clearly wants something done that needs files, code, search, or planning — use `send_to_card` to route it. After dispatching, mention an obvious follow-up if there is one, or just confirm briefly and stop. Before dispatching to a chat card that's already busy or has a recent delegation, consider calling `card_status` to see what's queued — if the user's new request overlaps with something already pending, work with them to decide (combine, skip, or wait) rather than piling on.\n\n" +
 
             "Every word inside <say>…</say> is read aloud. Keep <say> as plain conversational speech — no markdown, no lists, no code, no URLs.\n",
           );
@@ -1411,8 +1458,22 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                     file,
                     busy: status.busy,
                     summary: status.summary,
+                    queueDepth: status.queueDepth,
+                    queueItems: status.queueItems,
                   });
-                  readResultLines.push(`<result tool="card_status" file="${file}">\n${status.busy ? "BUSY" : "IDLE"} — ${status.summary}\n</result>`);
+                  // Format a richer body for the LLM. Empty queue → just
+                  // the busy/summary line; non-empty → numbered preview
+                  // of the first 5 queued items so Mica can recognize
+                  // overlap with what the user just asked.
+                  const head = `${status.busy ? "BUSY" : "IDLE"} — ${status.summary}`;
+                  const queueLines = status.queueItems.length === 0
+                    ? ""
+                    : "\nQueue:\n" + status.queueItems.map((q, i) => {
+                        const age = formatRelativeAge(q.queuedAt);
+                        const text = q.text.replace(/"/g, "'");
+                        return `${i + 1}. (${q.source}, ${age}): "${text}"`;
+                      }).join("\n");
+                  readResultLines.push(`<result tool="card_status" file="${file}">\n${head}${queueLines}\n</result>`);
                 } else if (name === "read_recent_replies") {
                   if (!file) throw new Error("missing <file>");
                   const nStr = parseField(tb.body, "n");
