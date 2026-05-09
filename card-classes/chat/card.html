@@ -53,10 +53,20 @@
           <input type="radio" name="chat-provider" value="local" style="vertical-align:middle;margin-right:6px;" />
           <span>Local llama-server</span>
         </label>
-        <label style="display:block;cursor:pointer;">
+        <label style="display:block;margin-bottom:4px;cursor:pointer;">
           <input type="radio" name="chat-provider" value="openrouter" style="vertical-align:middle;margin-right:6px;" />
           <span>OpenRouter</span>
         </label>
+        <label style="display:block;cursor:pointer;">
+          <input type="radio" name="chat-provider" value="openai-compat" style="vertical-align:middle;margin-right:6px;" />
+          <span>OpenAI-compatible <span style="color:#6e7681;font-size:11px;">(custom endpoint)</span></span>
+        </label>
+      </div>
+
+      <div id="chat-settings-baseurl-row" style="display:none;">
+        <div style="color:#ccc;margin-bottom:6px;">Base URL <span style="color:#6e7681;font-weight:normal;">(saved per project)</span></div>
+        <input id="chat-settings-baseurl" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div id="chat-settings-baseurl-hint" style="color:#6e7681;font-size:11px;margin-top:4px;">e.g., api.openai.com/v1, api.together.xyz/v1, or a self-hosted vLLM URL.</div>
       </div>
 
       <div>
@@ -69,7 +79,7 @@
       </div>
 
       <div id="chat-settings-key-row" style="display:none;">
-        <div style="color:#ccc;margin-bottom:6px;">OpenRouter API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span></div>
+        <div id="chat-settings-key-label" style="color:#ccc;margin-bottom:6px;">OpenRouter API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span></div>
         <input id="chat-settings-key" type="password" placeholder="sk-or-..." autocomplete="off" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
         <div id="chat-settings-key-status" style="color:#6e7681;font-size:11px;margin-top:4px;"></div>
       </div>

@@ -488,7 +488,7 @@ export function evictCardIdsForProject(project: string): void {
 // state here without needing its own sidecar file.
 
 export interface CardSettings {
-  provider?: "local" | "openrouter";
+  provider?: "local" | "openrouter" | "openai-compat";
   model?: string;
 }
 
@@ -621,6 +621,73 @@ export async function writeOpenRouterKey(project: string | undefined, key: strin
   if (key.length === 0) delete cfg.openrouterApiKey;
   else cfg.openrouterApiKey = key;
   await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf-8");
+}
+
+/** Read the project-wide OpenAI-compatible endpoint configuration:
+ *  base URL + API key. Stored alongside the OpenRouter key in
+ *  `.mica/config.json` for the project. Returns `{baseUrl: null,
+ *  key: null}` when nothing's set. Both fields are persisted together
+ *  because they describe one connection (e.g. api.openai.com vs
+ *  api.together.xyz vs a self-hosted endpoint). Resolution order
+ *  matches OpenRouter: per-project config.json → workspace config →
+ *  env vars (OPENAI_BASE_URL / OPENAI_API_KEY). */
+export async function readOpenAICompatConfig(
+  project: string | undefined,
+): Promise<{ baseUrl: string | null; key: string | null }> {
+  let baseUrl: string | null = null;
+  let key: string | null = null;
+  // Per-project override.
+  if (project) {
+    try {
+      const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, project, ".mica", "config.json"), "utf-8"));
+      if (typeof cfg.openaiCompatBaseUrl === "string" && cfg.openaiCompatBaseUrl.length > 0) baseUrl = cfg.openaiCompatBaseUrl;
+      if (typeof cfg.openaiCompatApiKey === "string" && cfg.openaiCompatApiKey.length > 0) key = cfg.openaiCompatApiKey;
+    } catch { /* no project override */ }
+  }
+  // Workspace fallback.
+  if (!baseUrl || !key) {
+    try {
+      const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, ".mica", "config.json"), "utf-8"));
+      if (!baseUrl && typeof cfg.openaiCompatBaseUrl === "string" && cfg.openaiCompatBaseUrl.length > 0) baseUrl = cfg.openaiCompatBaseUrl;
+      if (!key && typeof cfg.openaiCompatApiKey === "string" && cfg.openaiCompatApiKey.length > 0) key = cfg.openaiCompatApiKey;
+    } catch { /* no workspace config */ }
+  }
+  // Env var fallbacks. Matches the convention OpenAI client libraries
+  // already follow so a user with these in `.env` doesn't need to repeat
+  // them in the gear panel.
+  if (!baseUrl && typeof process.env.OPENAI_BASE_URL === "string" && process.env.OPENAI_BASE_URL.length > 0) {
+    baseUrl = process.env.OPENAI_BASE_URL;
+  }
+  if (!key && typeof process.env.OPENAI_API_KEY === "string" && process.env.OPENAI_API_KEY.length > 0) {
+    key = process.env.OPENAI_API_KEY;
+  }
+  return { baseUrl, key };
+}
+
+/** Persist OpenAI-compatible config to `.mica/config.json`. Empty
+ *  string clears that field. Both fields are independent — caller
+ *  may pass `null` to leave a field untouched. */
+export async function writeOpenAICompatConfig(
+  project: string | undefined,
+  cfg: { baseUrl?: string | null; key?: string | null },
+): Promise<void> {
+  const configPath = project
+    ? join(WORKSPACE_DIR, project, ".mica", "config.json")
+    : join(WORKSPACE_DIR, ".mica", "config.json");
+  await mkdir(dirname(configPath), { recursive: true });
+  let stored: Record<string, unknown> = {};
+  try {
+    stored = JSON.parse(await readFile(configPath, "utf-8"));
+  } catch { /* start fresh */ }
+  if (cfg.baseUrl !== undefined && cfg.baseUrl !== null) {
+    if (cfg.baseUrl.length === 0) delete stored.openaiCompatBaseUrl;
+    else stored.openaiCompatBaseUrl = cfg.baseUrl;
+  }
+  if (cfg.key !== undefined && cfg.key !== null) {
+    if (cfg.key.length === 0) delete stored.openaiCompatApiKey;
+    else stored.openaiCompatApiKey = cfg.key;
+  }
+  await writeFile(configPath, JSON.stringify(stored, null, 2), "utf-8");
 }
 
 /**

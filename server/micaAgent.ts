@@ -5,7 +5,7 @@
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
@@ -1459,7 +1459,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // actual model name — that's how skills tell whether we're on Qwen-30B
         // or Claude-via-OpenRouter and calibrate their thresholds.
         const cardSettings = await readCardSettings(sessionProject || undefined, ctx.filename);
-        const provider = cardSettings.provider === "openrouter" ? "openrouter" : "local";
+        // Provider allowlist: anything unknown falls back to local. The
+        // PUT endpoint does the same — defense in depth in case a stale
+        // sidecar JSON pre-dates this provider value.
+        let provider: "local" | "openrouter" | "openai-compat";
+        if (cardSettings.provider === "openrouter") provider = "openrouter";
+        else if (cardSettings.provider === "openai-compat") provider = "openai-compat";
+        else provider = "local";
         let baseUrl: string;
         let apiKey: string;
         let modelName: string;
@@ -1477,6 +1483,36 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           // Default model resolution: per-card gear setting > OPENROUTER_DEFAULT_MODEL
           // env var (from .env) > built-in fallback.
           modelName = cardSettings.model || process.env.OPENROUTER_DEFAULT_MODEL || "anthropic/claude-3.5-sonnet";
+        } else if (provider === "openai-compat") {
+          // Generic OpenAI-compatible endpoint: user-supplied baseUrl +
+          // key (api.openai.com, Together, Groq, self-hosted vLLM, etc.).
+          // Stored per-project alongside OpenRouter creds. The Qwen SDK
+          // speaks OpenAI protocol natively — we just point it at a
+          // different baseUrl + key.
+          const cfg = await readOpenAICompatConfig(sessionProject || undefined);
+          if (!cfg.baseUrl) {
+            ctx.broadcast({
+              type: "error",
+              error: "OpenAI-compatible provider selected but no base URL set. Open the gear icon and add the endpoint URL.",
+            });
+            return;
+          }
+          if (!cfg.key) {
+            ctx.broadcast({
+              type: "error",
+              error: "OpenAI-compatible provider selected but no API key set. Open the gear icon and add a key.",
+            });
+            return;
+          }
+          // Normalize: ensure baseUrl ends with /v1 (the SDK expects an
+          // OpenAI-shaped path). Most providers expose /v1; if the user
+          // pasted the host root we add it.
+          baseUrl = cfg.baseUrl.replace(/\/+$/, "");
+          if (!/\/v\d+$/.test(baseUrl)) baseUrl = baseUrl + "/v1";
+          apiKey = cfg.key;
+          // Model: gear-setting-only. No env-var default — the user's
+          // endpoint catalog is unique to their provider.
+          modelName = cardSettings.model || "gpt-4o-mini";
         } else {
           baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
           apiKey = "dummy";
@@ -1978,7 +2014,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // max across the turn is the true "peak prompt pressure" — the number
         // the gauge should display.
         let peakIterationInput = 0;
-        let contextWindow: number = provider === "openrouter" ? 0 : LOCAL_CTX_WINDOW;
+        // Local llama-server: known fixed context. Remote providers
+        // (openrouter, openai-compat): unknown until the SDK reports
+        // it via modelUsage on first turn — start at 0 and let the
+        // SDK fill it in.
+        let contextWindow: number = provider === "local" ? LOCAL_CTX_WINDOW : 0;
         // SDK error result detection: when llama-server / OpenRouter returns a
         // 400 (e.g. context overflow), the SDK emits a result event with
         // `is_error: true, subtype: "error_during_execution", error: { message }`

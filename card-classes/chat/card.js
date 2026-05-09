@@ -258,19 +258,22 @@ var modelLabelEl = container.querySelector('#chat-model-label');
 var serverModel = '';  // populated from /api/llm/status
 function renderModelLabel() {
   var provider = currentSettings.provider || 'local';
-  var providerShort = provider === 'openrouter' ? 'OpenRouter' : 'Local';
-  var model = provider === 'openrouter'
-    ? (currentSettings.model || '')
-    : (serverModel || currentSettings.model || '');
+  var providerShort;
+  if (provider === 'openrouter') providerShort = 'OpenRouter';
+  else if (provider === 'openai-compat') providerShort = 'OpenAI';
+  else providerShort = 'Local';
+  var model = provider === 'local'
+    ? (serverModel || currentSettings.model || '')
+    : (currentSettings.model || '');
   var display = model ? providerShort + ' · ' + model : providerShort;
   modelLabelEl.textContent = display;
   modelLabelEl.title = display;  // full text on hover (the CSS ellipsis hides the tail)
 }
 
 function checkLlmStatus() {
-  // Skip llama-server status polling for OpenRouter cards — the local server
+  // Skip llama-server status polling for remote providers — the local server
   // is irrelevant to them, so don't show "Model loading..." or block Send.
-  if (currentSettings.provider === 'openrouter') {
+  if (currentSettings.provider === 'openrouter' || currentSettings.provider === 'openai-compat') {
     sendBtn.disabled = false;
     inputEl.placeholder = 'Ask Qwen Agent...';
     return;
@@ -1811,11 +1814,15 @@ const settingsModelDropdown = container.querySelector('#chat-settings-model-drop
 const settingsKeyRow = container.querySelector('#chat-settings-key-row');
 const settingsKey = container.querySelector('#chat-settings-key');
 const settingsKeyStatus = container.querySelector('#chat-settings-key-status');
+const settingsKeyLabel = container.querySelector('#chat-settings-key-label');
+const settingsBaseurlRow = container.querySelector('#chat-settings-baseurl-row');
+const settingsBaseurl = container.querySelector('#chat-settings-baseurl');
 const providerRadios = container.querySelectorAll('input[name="chat-provider"]');
 
 const MODEL_DEFAULTS = {
   local: 'openai:local',
-  openrouter: 'anthropic/claude-3.5-sonnet'
+  openrouter: 'anthropic/claude-3.5-sonnet',
+  'openai-compat': 'gpt-4o-mini'
 };
 
 // Lazy-loaded OpenRouter model catalog. Populated on first openSettings()
@@ -1970,12 +1977,22 @@ settingsModel.addEventListener('blur', function() {
 function updateProviderUI(provider) {
   if (provider === 'openrouter') {
     settingsKeyRow.style.display = 'block';
+    settingsBaseurlRow.style.display = 'none';
+    settingsKeyLabel.innerHTML = 'OpenRouter API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span>';
     settingsModel.placeholder = MODEL_DEFAULTS.openrouter + ' (default)';
     settingsModelHint.textContent = 'Pick from the list or type any OpenRouter model id, e.g. anthropic/claude-3.5-sonnet, openai/gpt-4o.';
     // Pre-warm the catalog so the dropdown is responsive on first focus.
     fetchOpenrouterModels();
+  } else if (provider === 'openai-compat') {
+    settingsKeyRow.style.display = 'block';
+    settingsBaseurlRow.style.display = 'block';
+    settingsKeyLabel.innerHTML = 'API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span>';
+    settingsModel.placeholder = MODEL_DEFAULTS['openai-compat'] + ' (default)';
+    settingsModelHint.textContent = 'Type the model id your endpoint expects (e.g. gpt-4o-mini, mistralai/Mixtral-8x7B-Instruct-v0.1, your-vllm-model-name).';
+    hideModelDropdown();
   } else {
     settingsKeyRow.style.display = 'none';
+    settingsBaseurlRow.style.display = 'none';
     settingsModel.placeholder = MODEL_DEFAULTS.local + ' (default)';
     settingsModelHint.textContent = 'For local llama-server the model name is informational; the loaded model is whatever the server started with.';
     hideModelDropdown();
@@ -1991,27 +2008,40 @@ function openSettings() {
   // shows the current values, not a stale snapshot.
   Promise.allSettled([
     fetch(settingsUrl(''), { headers: projectHeaders() }).then(function(r) { return r.json(); }),
-    fetch('/api/openrouter-key', { headers: projectHeaders() }).then(function(r) { return r.json(); })
+    fetch('/api/openrouter-key', { headers: projectHeaders() }).then(function(r) { return r.json(); }),
+    fetch('/api/openai-config', { headers: projectHeaders() }).then(function(r) { return r.json(); })
   ]).then(function(results) {
     const s = results[0].status === 'fulfilled' ? results[0].value : {};
     const k = results[1].status === 'fulfilled' ? results[1].value : { hasKey: false };
+    const oc = results[2].status === 'fulfilled' ? results[2].value : { baseUrl: null, hasKey: false };
     const provider = s.provider || 'local';
     providerRadios.forEach(function(r) { r.checked = (r.value === provider); });
     settingsModel.value = s.model || '';
     settingsKey.value = '';
+    settingsBaseurl.value = oc.baseUrl || '';
     // Swap the input placeholder so the user can tell at a glance whether a
     // key is already stored. Leaving the field blank on save keeps the existing
     // key (see save handler), so the masked placeholder is purely visual.
-    settingsKey.placeholder = k.hasKey ? 'sk-or-••••••••••••••••' : 'sk-or-...';
+    // Pick the placeholder that matches the SELECTED provider; the user only
+    // ever sees the key field for the active provider.
+    let hasKeyForProvider, keyHint;
+    if (provider === 'openai-compat') {
+      hasKeyForProvider = !!oc.hasKey;
+      keyHint = hasKeyForProvider ? 'sk-••••••••••••••••' : 'sk-... (or any token your endpoint expects)';
+    } else {
+      hasKeyForProvider = !!k.hasKey;
+      keyHint = hasKeyForProvider ? 'sk-or-••••••••••••••••' : 'sk-or-...';
+    }
+    settingsKey.placeholder = keyHint;
     settingsKeyStatus.style.color = '#6e7681';
     settingsModelHint.style.color = '#6e7681';
-    settingsKeyStatus.textContent = k.hasKey
+    settingsKeyStatus.textContent = hasKeyForProvider
       ? 'Key set ✓ — paste a new one to replace, or clear it to remove.'
       : 'No key set yet.';
     updateProviderUI(provider);
     settingsPanel.style.display = 'block';
     setTimeout(function() {
-      (provider === 'openrouter' ? settingsKey : settingsModel).focus();
+      (provider === 'openrouter' || provider === 'openai-compat' ? settingsKey : settingsModel).focus();
     }, 0);
   });
 }
@@ -2027,6 +2057,7 @@ settingsSave.addEventListener('click', function() {
   providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
   const model = settingsModel.value.trim();
   const keyValue = settingsKey.value;  // do NOT trim — leading/trailing whitespace in a key is the user's problem to fix, but we preserve the field exactly
+  const baseurlValue = settingsBaseurl.value.trim();
   settingsSave.disabled = true;
   settingsSave.textContent = 'Saving...';
 
@@ -2034,9 +2065,19 @@ settingsSave.addEventListener('click', function() {
   settingsKeyStatus.style.color = '#6e7681';
   settingsModelHint.style.color = '#6e7681';
 
+  // For OpenAI-compat, require a base URL. The dispatcher will refuse with a
+  // confusing error otherwise, so catch it here and surface a clean message.
+  if (provider === 'openai-compat' && !baseurlValue) {
+    settingsModelHint.textContent = 'Base URL required (e.g., https://api.openai.com/v1).';
+    settingsModelHint.style.color = '#f87171';
+    settingsSave.disabled = false;
+    settingsSave.textContent = 'Save';
+    return;
+  }
+
   // For OpenRouter, validate the (key, model) pair with openrouter.ai BEFORE
   // saving anything. If either is rejected we keep the panel open and surface
-  // the specific error next to the offending field. Local provider skips this.
+  // the specific error next to the offending field. Other providers skip this.
   const needsValidation = provider === 'openrouter' && (keyValue.length > 0 || model.length > 0);
   const validateP = needsValidation
     ? fetch('/api/openrouter/validate', {
@@ -2058,20 +2099,37 @@ settingsSave.addEventListener('click', function() {
     }
     if (!v.ok) { var e = new Error('validation failed'); e.validationFailure = true; throw e; }
 
-    // Both valid (or network-unverified) — proceed with the two saves in parallel.
+    // Valid (or unverified) — save card settings and the matching credential
+    // store in parallel. For openrouter the key goes to /api/openrouter-key;
+    // for openai-compat the (baseUrl, key) pair goes to /api/openai-config.
     const cardP = fetch(settingsUrl(''), {
       method: 'PUT',
       headers: projectHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ provider: provider, model: model })
     }).then(function(r) { return r.json(); });
-    const keyP = keyValue.length > 0
-      ? fetch('/api/openrouter-key', {
-          method: 'PUT',
-          headers: projectHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ key: keyValue })
-        }).then(function(r) { return r.json(); })
-      : Promise.resolve(null);
-    return Promise.all([cardP, keyP]).then(function() {
+    let credP;
+    if (provider === 'openrouter') {
+      credP = keyValue.length > 0
+        ? fetch('/api/openrouter-key', {
+            method: 'PUT',
+            headers: projectHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ key: keyValue })
+          }).then(function(r) { return r.json(); })
+        : Promise.resolve(null);
+    } else if (provider === 'openai-compat') {
+      // Always send baseUrl (we required it above). Only send key if user
+      // typed one — empty field means "keep the existing key".
+      const body = { baseUrl: baseurlValue };
+      if (keyValue.length > 0) body.key = keyValue;
+      credP = fetch('/api/openai-config', {
+        method: 'PUT',
+        headers: projectHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body)
+      }).then(function(r) { return r.json(); });
+    } else {
+      credP = Promise.resolve(null);
+    }
+    return Promise.all([cardP, credP]).then(function() {
       return { warning: v.warning };  // forward any "couldn't verify" warning to the toast
     });
   }).then(function(meta) {

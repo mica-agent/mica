@@ -55,6 +55,8 @@ import {
   canonicalizeCardPath,
   readOpenRouterKey,
   writeOpenRouterKey,
+  readOpenAICompatConfig,
+  writeOpenAICompatConfig,
   archiveChat,
   listArchivedChats,
   readArchivedChat,
@@ -680,7 +682,12 @@ app.put("/api/cards/settings", async (req, res) => {
   if (!path) { res.status(400).json({ error: "missing ?path=<filename>" }); return; }
   const proj = getRequestProject(req) || undefined;
   const body = (req.body || {}) as CardSettings;
-  const provider = body.provider === "openrouter" ? "openrouter" : "local";
+  // Allowlist provider: any unknown value falls back to "local" so a
+  // typo or stale client doesn't write a meaningless setting.
+  let provider: CardSettings["provider"];
+  if (body.provider === "openrouter") provider = "openrouter";
+  else if (body.provider === "openai-compat") provider = "openai-compat";
+  else provider = "local";
   const model = typeof body.model === "string" ? body.model.trim() : "";
   const settings: CardSettings = { provider };
   if (model) settings.model = model;
@@ -705,6 +712,32 @@ app.put("/api/openrouter-key", async (req, res) => {
   const key = typeof body.key === "string" ? body.key.trim() : "";
   await writeOpenRouterKey(proj, key);
   res.json({ ok: true, hasKey: Boolean(key) });
+});
+
+// Generic OpenAI-compatible endpoint config: base URL + API key. Used
+// by chat cards configured for `provider: "openai-compat"`. Same
+// per-project storage shape as openrouter; both fields are connection-
+// level (shared across cards in the project), not per-card.
+//
+// The key is masked on read — we only return whether one's set so the
+// UI can render a placeholder hint without leaking the secret.
+app.get("/api/openai-config", async (req, res) => {
+  const proj = getRequestProject(req) || undefined;
+  const cfg = await readOpenAICompatConfig(proj);
+  res.json({ baseUrl: cfg.baseUrl || "", hasKey: Boolean(cfg.key) });
+});
+
+app.put("/api/openai-config", async (req, res) => {
+  const proj = getRequestProject(req) || undefined;
+  const body = (req.body || {}) as { baseUrl?: string; key?: string };
+  // Pass undefined for fields the client didn't include so writeOpenAI…
+  // leaves them untouched (e.g. user updates baseUrl without re-typing
+  // the key). Empty string is meaningful — it clears the field.
+  const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl.trim() : undefined;
+  const key = typeof body.key === "string" ? body.key.trim() : undefined;
+  await writeOpenAICompatConfig(proj, { baseUrl, key });
+  const cfg = await readOpenAICompatConfig(proj);
+  res.json({ ok: true, baseUrl: cfg.baseUrl || "", hasKey: Boolean(cfg.key) });
 });
 
 // Validate an OpenRouter (key, model) pair against openrouter.ai before persisting.
