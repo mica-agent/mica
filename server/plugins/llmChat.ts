@@ -64,6 +64,9 @@ export function createLlmChatHandler() {
 
         if (msg.type === "interrupt") {
           if (activeAbort) activeAbort.abort();
+          // Broadcast `done` so a chat-card UI listening on it unsticks
+          // its busy state. Empty content marks the turn as cancelled.
+          ctx.broadcast({ type: "done", content: "", model: cfg.model || "coder" });
           return;
         }
 
@@ -77,6 +80,11 @@ export function createLlmChatHandler() {
         const userMessage = msg.message;
         const userContent = msg.content;
         if (!userMessage && !userContent) return;
+
+        // Synthetic clientId from channelMgr.dispatchToFilename — voice
+        // dispatched this turn. The eventual `done` broadcast carries
+        // viaVoice:true so voice's ambient gate plays the reply aloud.
+        const turnSource: "user" | "voice" = _clientId === "voice-dispatch" ? "voice" : "user";
 
         // Per-message model override wins over the args default. Either way,
         // an explicit baseUrl bypasses the LLM_PORTS table entirely.
@@ -148,7 +156,18 @@ export function createLlmChatHandler() {
           if (assistantText) {
             history.push({ role: "assistant", content: assistantText });
           }
-          ctx.broadcast({ type: "done", content: assistantText, model: modelKey });
+          ctx.broadcast({
+            type: "done",
+            content: assistantText,
+            model: modelKey,
+            // Source attribution for any listener that wants to gate
+            // on voice-dispatched turns (voice's ambient TTS gate).
+            // Today voice's listener only fires on `type: "assistant"`
+            // — these fields are no-ops until that broadens, but
+            // ship the data shape now to avoid future plumbing churn.
+            source: turnSource,
+            viaVoice: turnSource === "voice",
+          });
 
         } catch (err) {
           if ((err as Error).name !== "AbortError") {

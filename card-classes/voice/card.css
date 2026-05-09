@@ -13,13 +13,61 @@
 .vc-title { margin: 0; font-size: 16px; font-weight: 600; color: #e6edf3; }
 .vc-subtitle { margin: 0; font-size: 12px; color: #8b949e; line-height: 1.4; }
 
+/* Voice selector — single curated dropdown of Kokoro voices, grouped
+   by accent + gender. Sits in the header so the user always knows
+   which voice will speak the next reply. */
+.vc-voice-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #8b949e;
+}
+.vc-voice-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.vc-voice-select {
+  background: rgba(255,255,255,0.04);
+  color: #e6edf3;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.vc-voice-select:focus {
+  outline: none;
+  border-color: rgba(124,58,237,0.5);
+}
+.vc-voice-select optgroup {
+  background: #0d1117;
+  color: #8b949e;
+  font-style: normal;
+}
+.vc-voice-select option {
+  background: #0d1117;
+  color: #e6edf3;
+}
+
 .vc-body {
   flex: 1;
+  min-height: 0;  /* allow flex child to shrink below content size so overflow-y kicks in */
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* Top-aligned, not centered: when reply content grows, center alignment
+     clips both top and bottom. Top-anchor + overflow-y on the body lets
+     the user scroll through the whole card content within the card's
+     fixed height — no need to manually expand the card to read a long
+     reply. The mic button stays horizontally centered via align-items. */
+  justify-content: flex-start;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   gap: 12px;
+  padding-top: 8px;
 }
 
 .vc-status {
@@ -141,7 +189,38 @@
   line-height: 1.45;
   color: #e6edf3;
   min-height: 1.45em;
+  /* No inner scroll — the parent .vc-body owns scrolling now so the
+     entire card content (mic, status, transcript, reply, tools, meta)
+     is reachable without manually resizing the card. Nested scroll
+     containers would force the user to mouse over the right zone to
+     scroll, which is confusing. */
 }
+/* Markdown rendering inside the reply panel — kept tight so
+   structured content (headings, lists, code, tables) stays scannable
+   in the small bubble. Most rules mirror the chat card's defaults so
+   a reply moved between cards reads consistently. */
+.vc-reply h1, .vc-reply h2, .vc-reply h3 {
+  margin: 8px 0 4px;
+  line-height: 1.25;
+  color: #e6edf3;
+}
+.vc-reply h1 { font-size: 16px; }
+.vc-reply h2 { font-size: 14px; }
+.vc-reply h3 { font-size: 13px; font-weight: 600; }
+.vc-reply ul {
+  margin: 4px 0 4px 18px;
+  padding: 0;
+}
+.vc-reply li { margin: 2px 0; }
+.vc-reply strong { color: #fff; }
+.vc-reply em { color: #c4b5fd; font-style: italic; }
+.vc-reply pre {
+  /* Inline style on <pre> already handles bg/border; this scopes
+     wrapping behavior so long lines don't overflow the bubble. */
+  white-space: pre;
+  word-wrap: normal;
+}
+.vc-reply table { display: block; overflow-x: auto; }
 .vc-tools-list {
   display: flex;
   flex-direction: column;

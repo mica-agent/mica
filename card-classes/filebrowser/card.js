@@ -11,6 +11,9 @@ const treePaneEl = container.querySelector('#fb-tree');
 const resizerEl = container.querySelector('#fb-resizer');
 const rootEl = container.querySelector('#fb-root');
 const refreshBtn = container.querySelector('#fb-refresh');
+const uploadBtn = container.querySelector('#fb-upload');
+const uploadInput = container.querySelector('#fb-upload-input');
+const activeFolderEl = container.querySelector('#fb-active-folder');
 const showHiddenInput = container.querySelector('#fb-show-hidden');
 const previewNameEl = container.querySelector('#fb-preview-name');
 const previewMetaEl = container.querySelector('#fb-preview-meta');
@@ -36,9 +39,47 @@ let entries = [];            // flat list from mica.files.listAll()
 let pinned = new Set();      // filenames currently in canvas config.pinned
 let expanded = new Set();    // folder paths the user has opened
 let selected = null;         // currently-previewed file path
-let dropTarget = null;       // folder path the next drop will target (null = canvas root)
+let dropTarget = null;       // folder path the next drop will target (null = active folder fallback)
+let activeFolder = null;     // folder path the upload button writes into; null = canvasRoot
 let showHidden = false;      // toggle: surface .mica/.qwen/.claude (always hides .git, node_modules, etc.)
 let treeWidth = null;        // px width of tree pane; null = use CSS default (40%); set by drag
+
+// Folder-level glow when files land via the watcher. We deliberately
+// glow the PARENT directory rather than the individual file — agent
+// codegen / git pulls / multi-file uploads commonly land 10–50 files
+// in a few directories. Highlighting the folder gives one calm signal
+// per active dir regardless of how many files arrived inside it. The
+// per-file events the server emits are reused as-is; we just collapse
+// them down by dirname client-side.
+const GLOW_DURATION_MS = 2200;
+const GLOW_CAP = 8;        // worst-case cap on simultaneously glowing folders
+const newPaths = new Set();
+const glowTimers = new Map();
+// Mark a folder as recently-active. Each fresh hit re-arms the timer so
+// a sustained burst keeps the glow alive instead of flickering off mid-stream.
+function markNew(path) {
+  // Skip root-level entries (parentDir === ''): the project root has no
+  // tree node to attach a glow to. Watcher-level signal still arrives;
+  // it just doesn't get a visual badge.
+  if (!path) return;
+  if (!newPaths.has(path)) {
+    if (newPaths.size >= GLOW_CAP) return;
+    newPaths.add(path);
+  }
+  if (glowTimers.has(path)) clearTimeout(glowTimers.get(path));
+  glowTimers.set(path, setTimeout(() => {
+    newPaths.delete(path);
+    glowTimers.delete(path);
+    const escaped = window.CSS && window.CSS.escape ? window.CSS.escape(path) : path.replace(/"/g, '\\"');
+    const node = treeBodyEl.querySelector('[data-path="' + escaped + '"]');
+    if (node) node.classList.remove('fb-node--new');
+  }, GLOW_DURATION_MS));
+}
+function parentDir(filename) {
+  if (!filename) return '';
+  const slash = filename.lastIndexOf('/');
+  return slash === -1 ? '' : filename.slice(0, slash);
+}
 
 function ext(path) {
   const dot = path.lastIndexOf('.');
@@ -65,6 +106,7 @@ async function loadState() {
     if (Array.isArray(parsed.expanded)) expanded = new Set(parsed.expanded);
     if (typeof parsed.showHidden === 'boolean') showHidden = parsed.showHidden;
     if (typeof parsed.treeWidth === 'number' && parsed.treeWidth > 0) treeWidth = parsed.treeWidth;
+    if (typeof parsed.activeFolder === 'string') activeFolder = parsed.activeFolder;
   } catch (_) { /* fresh card, no state */ }
 }
 
@@ -73,9 +115,33 @@ function persistState() {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    const payload = JSON.stringify({ expanded: [...expanded], showHidden, treeWidth });
+    const payload = JSON.stringify({ expanded: [...expanded], showHidden, treeWidth, activeFolder });
     mica.files.write(mica.filename, payload).catch(() => { /* best effort */ });
   }, 400);
+}
+
+// Active folder = upload destination. Updated when the user clicks any
+// folder in the tree, OR implicitly when a file is selected (its parent
+// becomes active). The label badge in the header reflects the current
+// target so the upload button isn't a guessing game.
+function setActiveFolder(folder) {
+  const next = folder || null;
+  if (activeFolder === next) return;
+  activeFolder = next;
+  updateActiveFolderLabel();
+  persistState();
+  renderTree();  // refresh outline on the active row
+}
+function updateActiveFolderLabel() {
+  if (!activeFolderEl) return;
+  // No active folder → uploads go to PROJECT ROOT (not canvasRoot).
+  // The badge reflects that with "in /" so the destination isn't a
+  // mystery. canvasRoot is still where canvas-card content lives, but
+  // it's not a sensible default for ad-hoc uploads (would create the
+  // canvas dir on a fresh project, surprise).
+  const target = activeFolder || '';
+  activeFolderEl.textContent = target ? 'in ' + target + '/' : 'in / (project root)';
+  if (uploadBtn) uploadBtn.title = 'Upload to ' + (target || 'project root');
 }
 
 // ── Data loading ────────────────────────────────────────────────────
@@ -87,7 +153,32 @@ async function loadData() {
     mica.files.listAll({ showHidden }),
     fetch('/api/canvas/config').then((r) => r.json()),
   ]);
-  if (fileList.status === 'fulfilled') entries = fileList.value || [];
+  if (fileList.status === 'fulfilled') {
+    // Build a path → mtime map of the previous listing so we can detect
+    // BOTH net-new entries AND existing entries whose content was just
+    // updated (same path, newer modifiedAt). Both classes glow via the
+    // same .fb-node--new class — "activity" is the unified signal.
+    const prevMtimes = new Map();
+    for (const e of entries) prevMtimes.set(e.path, e.modifiedAt);
+    const next = fileList.value || [];
+    // Skip diffing on the very first load (prev is empty) — otherwise
+    // the initial render would flash everything.
+    if (prevMtimes.size > 0) {
+      for (const e of next) {
+        // Suppress self-glow on the card's own state file (we write to
+        // it on every state persist; would otherwise glow on every save).
+        if (e.path === mica.filename) continue;
+        const prevMt = prevMtimes.get(e.path);
+        const isNew = prevMt === undefined;
+        const isUpdated = !isNew && e.modifiedAt && prevMt && e.modifiedAt !== prevMt;
+        if (isNew || isUpdated) {
+          markNew(e.path);
+          markNew(parentDir(e.path));
+        }
+      }
+    }
+    entries = next;
+  }
   if (cfg.status === 'fulfilled' && cfg.value && Array.isArray(cfg.value.pinned)) {
     pinned = new Set(cfg.value.pinned);
   }
@@ -141,6 +232,8 @@ function renderNode(node, byParent, depth) {
   row.dataset.path = node.path;
   row.dataset.kind = node.isFile ? 'file' : 'folder';
   if (selected === node.path) row.classList.add('fb-node--selected');
+  if (!node.isFile && activeFolder === node.path) row.classList.add('fb-node--active-folder');
+  if (newPaths.has(node.path)) row.classList.add('fb-node--new');
 
   const chev = window.document.createElement('span');
   chev.className = 'fb-chev';
@@ -178,13 +271,22 @@ function renderNode(node, byParent, depth) {
   row.addEventListener('click', () => {
     if (node.isFile) {
       selected = node.path;
+      // File click: parent folder becomes the active upload target so the
+      // upload button writes alongside the file the user just opened.
+      const slash = node.path.lastIndexOf('/');
+      setActiveFolder(slash === -1 ? null : node.path.slice(0, slash));
       renderTree();
       showPreview(node);
     } else {
       if (expanded.has(node.path)) expanded.delete(node.path);
       else expanded.add(node.path);
       persistState();
-      renderTree();
+      // Folder click also marks it active for upload — single click does
+      // both because the user usually wants those two things together.
+      // setActiveFolder() re-renders + persists, but only when the active
+      // folder actually changes; force a render here for the expand toggle.
+      if (activeFolder === node.path) renderTree();
+      else setActiveFolder(node.path);
     }
   });
 
@@ -361,11 +463,12 @@ treePaneEl.addEventListener('drop', async (ev) => {
   clearDropTargets();
   const files = ev.dataTransfer && ev.dataTransfer.files ? Array.from(ev.dataTransfer.files) : [];
   if (files.length === 0) return;
-  const targetFolder = dropTarget || canvasRoot;
+  // Drop on a folder row → that folder. Drop in empty pane → activeFolder
+  // if set, else project root. Mirrors the upload-button rule so users
+  // don't have to remember two different defaults.
+  const targetFolder = dropTarget || activeFolder || '';
   dropTarget = null;
   for (const file of files) {
-    // targetFolder is project-relative (from entries) or canvasRoot. Use the
-    // leading-/ project-root-absolute escape so canon doesn't canvas-relativize.
     const projectRel = targetFolder ? (targetFolder.replace(/\/$/, '') + '/' + file.name) : file.name;
     const target = '/' + projectRel;
     try {
@@ -385,13 +488,65 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(() => { refreshTimer = null; loadData(); }, 100);
 }
 
+// Watcher events just trigger a refresh; the diff inside loadData()
+// decides what to glow. Source-filtering (self-echo) only matters for
+// downstream re-render decisions — the diff naturally handles "is this
+// path new?" without needing to reason about who wrote it.
+//
+// `card-class-changed` is the dedicated channel for `.mica/card-classes/*`
+// activity — the server routes those through a separate event name, so
+// without subscribing here the filebrowser would silently miss any new
+// card-class files.
 const unsubs = [
   mica.on('file-created', (ev) => { if (!mica.isSelfEcho(ev)) scheduleRefresh(); }),
   mica.on('file-changed', (ev) => { if (!mica.isSelfEcho(ev) && ev.filename !== mica.filename) scheduleRefresh(); }),
   mica.on('file-deleted', () => scheduleRefresh()),
+  mica.on('card-class-changed', () => scheduleRefresh()),
 ];
 
 refreshBtn.addEventListener('click', () => loadData());
+
+// Click the active-folder badge to reset upload target to project root.
+// Quick escape hatch for users who clicked into a deep folder and want
+// to drop a file at the top level without navigating back.
+if (activeFolderEl) {
+  activeFolderEl.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    setActiveFolder(null);
+  });
+}
+
+// Click-to-upload: opens a hidden <input type="file" multiple>, writes each
+// chosen file into the active folder (set by clicking a folder / file in
+// the tree) or canvasRoot when nothing is active. The hidden input is
+// reused across clicks; resetting .value lets the user re-pick the same
+// file in a row without the change event being suppressed.
+if (uploadBtn && uploadInput) {
+  uploadBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    uploadInput.click();
+  });
+  uploadInput.addEventListener('change', async () => {
+    const files = Array.from(uploadInput.files || []);
+    uploadInput.value = '';
+    if (files.length === 0) return;
+    // No active folder → upload at project root (not canvasRoot).
+    const targetFolder = activeFolder || '';
+    for (const file of files) {
+      const projectRel = targetFolder
+        ? targetFolder.replace(/\/$/, '') + '/' + file.name
+        : file.name;
+      try {
+        await mica.files.write('/' + projectRel, file);
+      } catch (err) {
+        console.error('[filebrowser] upload failed:', projectRel, err);
+      }
+    }
+    loadData();
+  });
+}
 
 // Show-hidden toggle. Persisted alongside expand state so the choice
 // survives reloads. Re-fetches because /api/files needs the showHidden
@@ -475,6 +630,9 @@ if (resizerEl && rootEl) {
 mica.onDestroy(() => {
   if (refreshTimer) clearTimeout(refreshTimer);
   if (persistTimer) clearTimeout(persistTimer);
+  for (const t of glowTimers.values()) clearTimeout(t);
+  glowTimers.clear();
+  newPaths.clear();
   for (const u of unsubs) u();
   // Failsafe: if the card is destroyed mid-drag, clear the global cursor.
   document.body.classList.remove('fb-resizing');
@@ -485,4 +643,5 @@ await loadState();
 showHiddenInput.checked = showHidden;
 applyTreeWidth();  // Apply persisted width AFTER loadState populated treeWidth.
 await loadCanvasRoot();
+updateActiveFolderLabel();  // Apply persisted activeFolder + canvasRoot fallback.
 await loadData();

@@ -19,6 +19,17 @@ const toolsWrap = container.querySelector('#vc-tools');
 const toolsListEl = container.querySelector('#vc-tools-list');
 const audioEl = container.querySelector('#vc-audio');
 const metaEl = container.querySelector('#vc-meta');
+const voiceSelectEl = container.querySelector('#vc-voice-select');
+
+// Currently-selected Kokoro voice. Default matches the sidecar's
+// VOICE_TTS_VOICE fallback (af_bella). Loaded from this card's
+// instance file (a JSON blob {voice: "..."}) on init; written back
+// on every change. Sent to the server two ways: as a per-message
+// `voice:` field on every audioB64 payload, AND as a session-level
+// `set_voice` control message that updates voicePref so ambient
+// announcements pick up the change too.
+const DEFAULT_VOICE = 'af_bella';
+let currentVoice = DEFAULT_VOICE;
 
 // VAD-based always-listening pipeline.
 //
@@ -60,7 +71,14 @@ const SPEECH_RMS = 0.02;
 // to Qwen. The completeness-check on the server side catches the
 // remaining cases where the user pauses for >1.5s mid-thought.
 const SILENCE_MS = 1500;
-const MIN_UTTERANCE_MS = 350;
+// 200ms catches short single-word answers like "yes" / "no" / "ok"
+// (typical 200–300ms) without flooding STT with random blips. Server-
+// side Silero VAD rejects non-speech audio (0 segments → empty
+// transcript → silent drop in voiceAgent), so the cost of a slipped-
+// through tiny noise blip is just a wasted STT request, not a
+// hallucinated user message. Was 350ms; that bar required users to
+// drag out short answers ("yeeessss") to be heard.
+const MIN_UTTERANCE_MS = 200;
 const MAX_UTTERANCE_MS = 30000;
 
 function setStatus(label, state) {
@@ -69,6 +87,89 @@ function setStatus(label, state) {
 }
 function setMeta(text) {
   metaEl.textContent = text || '—';
+}
+
+// Reply text accumulator + markdown renderer.
+//
+// Streamed `assistant_speech_text` frames arrive sentence-by-sentence
+// during a turn; we append to `replyRaw` and re-render the whole
+// buffer to HTML on each frame. Markdown re-render is cheap for the
+// reply-panel-sized content (a few sentences to a few paragraphs);
+// re-rendering also handles the case where the final sentence
+// completes a markdown construct (e.g. closing fence) that was
+// half-formed in the prior frame.
+//
+// The renderer is a trimmed copy of card-classes/chat/card.js's
+// renderMarkdown — same supported subset (headings, bold/italic,
+// inline code, fenced blocks, tables, lists, line breaks). Mica's
+// answers are the only content fed in; LLM output is trusted enough
+// that we avoid a full sanitizer, but `<` / `>` / `&` are escaped
+// before any markup substitution to block accidental HTML injection.
+let replyRaw = '';
+
+function renderMarkdown(text) {
+  text = text.replace(/^```markdown\n([\s\S]*?)```$/gm, function(m, inner) { return inner; });
+  // Extract fenced code blocks.
+  const fenced = [];
+  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, function(m, lang, code) {
+    fenced.push('<pre style="background:rgba(0,0,0,0.3);padding:8px 10px;border-radius:6px;overflow-x:auto;margin:6px 0"><code style="font-size:12px;font-family:monospace">' + code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code></pre>');
+    return '__FENCED__' + (fenced.length - 1) + '__';
+  });
+  // Extract tables (consecutive lines starting with |).
+  const tables = [];
+  text = text.replace(/(^\|.+\|\n?)+/gm, function(block) {
+    const rows = block.trim().split('\n');
+    let html = '<table style="border-collapse:collapse;margin:6px 0;font-size:12px;width:100%">';
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri].trim();
+      if (/^\|[\s-:|]+\|$/.test(row)) continue;
+      const cells = row.split('|').filter(function(c, i, a) { return i > 0 && i < a.length - 1; });
+      const tag = ri === 0 ? 'th' : 'td';
+      html += '<tr>';
+      for (let ci = 0; ci < cells.length; ci++) {
+        const style = tag === 'th' ? 'background:rgba(255,255,255,0.05);font-weight:600;' : '';
+        html += '<' + tag + ' style="border:1px solid #333;padding:4px 8px;' + style + '">' + cells[ci].trim() + '</' + tag + '>';
+      }
+      html += '</tr>';
+    }
+    html += '</table>';
+    tables.push(html);
+    return '__TABLE__' + (tables.length - 1) + '__';
+  });
+  text = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px;font-size:12px;font-family:monospace">$1</code>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+    .replace(/\n\n/g, '<br/><br/>')
+    .replace(/\n/g, '<br/>');
+  // Wrap consecutive <li> runs in <ul>.
+  text = text.replace(/(?:<li>[\s\S]*?<\/li>(?:<br\/>)?)+/g, function(m) {
+    return '<ul>' + m.replace(/<br\/>/g, '') + '</ul>';
+  });
+  for (let fi = 0; fi < fenced.length; fi++) text = text.replace('__FENCED__' + fi + '__', fenced[fi]);
+  for (let ti = 0; ti < tables.length; ti++) text = text.replace('__TABLE__' + ti + '__', tables[ti]);
+  return text;
+}
+
+function setReplyRaw(text) {
+  replyRaw = text || '';
+  replyEl.innerHTML = renderMarkdown(replyRaw);
+}
+function appendReplyRaw(text) {
+  if (!text) return;
+  // Newline (not space) separator. A markdown table row needs to start
+  // its own line for the renderer to detect it; a single \n also acts
+  // as a soft break for prose, which is fine. Streaming sentences land
+  // one per line — pleasant for chat-style streaming UI and required
+  // for any structured content (tables, lists) to render correctly.
+  replyRaw += (replyRaw ? '\n' : '') + text;
+  replyEl.innerHTML = renderMarkdown(replyRaw);
 }
 
 // Sequential audio playback. We bypass the <audio> element entirely
@@ -83,6 +184,14 @@ let wavQueue = [];   // AudioBuffer[]
 let isPlayingQueue = false;
 let currentSource = null;  // AudioBufferSourceNode for the in-flight buffer
 const WAV_QUEUE_MAX = 12;
+// After a barge-in (user starts speaking / hits stop talking), discard
+// any `assistant_speech` frames that arrive within this window. Covers
+// the WS-flight race: server's fanout cancel takes ~50ms to land, but
+// frames already on the wire arrive afterward and would otherwise
+// requeue into wavQueue right after stopVoicePlayback emptied it.
+// 800ms is comfortable; the new user turn's TTS won't generate frames
+// for 1.5–3s anyway.
+let bargedInUntilMs = 0;
 
 function updateStopSpeakingButton() {
   const stopBtn = container.querySelector('#vc-stop-speaking');
@@ -102,6 +211,14 @@ function ensurePlaybackCtx() {
 }
 
 async function enqueueSpeechWav(b64) {
+  // Barge-in gate: drop frames that arrive within the post-barge window.
+  // The server's fanout cancel races with frames already on the wire;
+  // without this, those late frames would requeue right after the user
+  // told voice to shut up.
+  if (Date.now() < bargedInUntilMs) {
+    console.log('[voice] dropping assistant_speech frame (barged-in window)');
+    return;
+  }
   const bin = window.atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -146,6 +263,16 @@ function playNextWav() {
     }
     return;
   }
+  // Visibility gate: only the focused tab plays audio. Other tabs
+  // (background tab on the same device, a different device, or a
+  // different project) still render assistant_speech_text into the
+  // reply panel but stay silent. Drop the buffer rather than queue it
+  // — by the time the user refocuses, the answer is stale.
+  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+    console.log('[voice] dropping audio buffer (tab hidden)');
+    playNextWav();
+    return;
+  }
   const ctx = ensurePlaybackCtx();
   if (!ctx) {
     isPlayingQueue = false;
@@ -187,7 +314,35 @@ if (_stopSpeakingBtn) {
   _stopSpeakingBtn.addEventListener('click', function(e) {
     e.preventDefault();
     e.stopPropagation();
+    bargedInUntilMs = Date.now() + 800;
     stopVoicePlayback();
+    try { ch.send({ type: 'barge_in' }); } catch (_) { /* channel may be reconnecting */ }
+  });
+}
+
+// Visibility-gated playback + mic. When the tab hides:
+//   1. Stop active playback and drop the queue (audio gate).
+//   2. Turn the mic off — prevents continuous audio→STT→LLM→TTS work
+//      on a tab no one is listening to. User has to re-click mic on
+//      when they return (matches browser autoplay/gesture rules).
+//   3. Notify the server (`presence: false`) so it can skip TTS work
+//      for sessions where every subscriber is hidden.
+// The rule applies symmetrically across same-device tabs and across
+// devices — only the document-visible tab consumes upstream resources.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', function() {
+    const visible = document.visibilityState === 'visible';
+    if (!visible) {
+      if (isPlayingQueue || wavQueue.length > 0) {
+        console.log('[voice] tab hidden during playback — stopping');
+        stopVoicePlayback();
+      }
+      if (micOn) {
+        console.log('[voice] tab hidden — turning mic off');
+        turnMicOff();
+      }
+    }
+    try { ch.send({ type: 'presence', visible: visible }); } catch (_) {}
   });
 }
 
@@ -197,7 +352,7 @@ function resetReplyDisplay() {
   // moment the user asks a follow-up question. Use the explicit
   // "stop talking" button (or mica.onDestroy on card unmount) to
   // tear down audio.
-  replyEl.textContent = '';
+  setReplyRaw('');
   replyWrap.style.display = 'none';
   toolsListEl.innerHTML = '';
   toolsWrap.style.display = 'none';
@@ -267,11 +422,24 @@ async function turnMicOn() {
   // Unlock the playback AudioContext from this user-gesture click.
   // Without this, async audio frames arriving after a server round-trip
   // get blocked by Safari/Chrome's autoplay policy with NotAllowedError.
-  // The context, once resumed under a gesture, stays unlocked for the
-  // session lifetime.
+  //
+  // Force a fresh context on every mic-on. Safari can leave the prior
+  // context in a stale "running but silent" state after tab inactivity
+  // or output-device drift — `state` keeps reading "running" and
+  // `src.start()` stops throwing, but `ctx.destination` produces nothing.
+  // Page refresh recovers; recreating under the current gesture is the
+  // in-page equivalent. Side effect: any in-flight queued audio is cut
+  // off — that's the right call, mic-on means "ready for a new turn."
+  if (playbackCtx) {
+    try { playbackCtx.close(); } catch (_) {}
+    playbackCtx = null;
+  }
+  wavQueue = [];
+  isPlayingQueue = false;
+  currentSource = null;
   const playCtx = ensurePlaybackCtx();
   if (playCtx && playCtx.state === 'suspended') {
-    try { await playCtx.resume(); console.log('[voice] playback AudioContext resumed'); }
+    try { await playCtx.resume(); console.log('[voice] playback AudioContext (re)created and resumed'); }
     catch (e) { console.warn('[voice] resume() failed: ' + (e && e.message ? e.message : e)); }
   }
   let stream;
@@ -421,7 +589,7 @@ async function onUtteranceRecorderStopped() {
   }
   console.log('[voice] sending to server: ' + b64.length + ' b64chars mime=' + recordedMime);
   resetReplyDisplay();
-  ch.send({ audioB64: b64, audioMime: recordedMime });
+  ch.send({ audioB64: b64, audioMime: recordedMime, voice: currentVoice });
 }
 
 function checkVad() {
@@ -444,6 +612,18 @@ function checkVad() {
       speechActive = true;
       speechStartedAt = now;
       applyMicButtonState();
+      // Barge-in: if Mica is currently speaking, silence her right now
+      // so the user can take over the conversation. Server-side cancel
+      // also fires (via barge_in channel message) so no further TTS
+      // frames generate. Distinct from <tool name="abort"/>: this is
+      // local-audio interruption only, not a cascade to the delegated
+      // chat agent — Qwen keeps working.
+      if (isPlayingQueue || wavQueue.length > 0) {
+        console.log('[voice] barge-in: user started speaking during TTS playback');
+        bargedInUntilMs = now + 800;
+        stopVoicePlayback();
+        try { ch.send({ type: 'barge_in' }); } catch (_) { /* channel may be reconnecting */ }
+      }
     }
     silenceStartedAt = 0;
   } else if (speechActive) {
@@ -488,6 +668,22 @@ let _reconnectAttempts = 0;
 function _openVoiceChannel() {
   _ch = mica.openChannel('voice_session');
   if (_onDataCb) _ch.onData(_onDataCb);
+  // Initial presence: tell the server whether this tab is currently
+  // visible. The server uses this to skip TTS for sessions where
+  // every subscriber is hidden. Re-sent on every reconnect so the
+  // server's per-client state is in sync after a WS blip.
+  try {
+    const visible = typeof document !== 'undefined'
+      ? document.visibilityState === 'visible'
+      : true;
+    _ch.send({ type: 'presence', visible: visible });
+  } catch (_) {}
+  // Sync the currently-selected voice to the server so the session's
+  // voicePref matches the dropdown. Updates ambient TTS path which
+  // doesn't see per-message voice fields. Re-sent on reconnect.
+  try {
+    if (currentVoice) _ch.send({ type: 'set_voice', voice: currentVoice });
+  } catch (_) {}
   _ch.onClose(function() {
     console.warn('[voice] channel closed; will retry');
     if (_onCloseCb) {
@@ -509,6 +705,44 @@ const ch = {
   send: function(payload) { if (_ch) _ch.send(payload); },
 };
 
+// ── Voice selection (persisted to instance file) ────────────────
+//
+// Load saved voice on init (if any), apply to dropdown + currentVoice,
+// re-send set_voice so server matches persisted state. Dropdown
+// changes update currentVoice, persist, and notify the server. The
+// instance file is plain JSON: {"voice": "af_sky"}.
+async function loadVoiceState() {
+  try {
+    const raw = await mica.getContent();
+    if (!raw || !raw.trim()) return;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.voice === 'string' && parsed.voice.trim()) {
+      currentVoice = parsed.voice.trim();
+      if (voiceSelectEl) voiceSelectEl.value = currentVoice;
+      // Re-sync server in case the initial set_voice (during channel
+      // open) used the default. Idempotent on the server side.
+      try { ch.send({ type: 'set_voice', voice: currentVoice }); } catch (_) {}
+    }
+  } catch (_) { /* fresh card or non-JSON content; stick with default */ }
+}
+function persistVoiceState() {
+  // Fire-and-forget — errors here are non-fatal (worst case, the
+  // selection won't survive a reload).
+  mica.files.write(mica.filename, JSON.stringify({ voice: currentVoice })).catch(() => {});
+}
+if (voiceSelectEl) {
+  voiceSelectEl.value = currentVoice;
+  voiceSelectEl.addEventListener('change', function() {
+    const next = (voiceSelectEl.value || '').trim();
+    if (!next || next === currentVoice) return;
+    currentVoice = next;
+    persistVoiceState();
+    try { ch.send({ type: 'set_voice', voice: currentVoice }); } catch (_) {}
+    console.log('[voice] voice changed to ' + currentVoice);
+  });
+}
+loadVoiceState();
+
 let turnStartedAt = 0;
 let firstAudioMs = null;
 
@@ -521,7 +755,7 @@ ch.onData(function(data) {
     const msgs = Array.isArray(data.messages) ? data.messages : [];
     const lastAssistant = [...msgs].reverse().find(function(m) { return m.role === 'assistant'; });
     if (lastAssistant) {
-      replyEl.textContent = lastAssistant.content;
+      setReplyRaw(lastAssistant.content);
       replyWrap.style.display = '';
     }
     setStatus('Ready', 'ready');
@@ -599,7 +833,7 @@ ch.onData(function(data) {
     // A chat card on the canvas finished a turn — voice is about to
     // speak a 1-2 sentence summary. Reset the reply panel + label it
     // so the user doesn't think this came from their last utterance.
-    replyEl.textContent = '';
+    setReplyRaw('');
     replyWrap.style.display = '';
     const labelEl = container.querySelector('.vc-reply-label');
     if (labelEl) labelEl.textContent = '\u{1F514} ' + (data.agent || 'Agent') + ' (' + (data.file || 'card') + ')';
@@ -616,7 +850,7 @@ ch.onData(function(data) {
 
   if (t === 'assistant_speech_text') {
     replyWrap.style.display = '';
-    replyEl.textContent += (replyEl.textContent ? ' ' : '') + (data.text || '');
+    appendReplyRaw(data.text || '');
     return;
   }
 
@@ -632,8 +866,8 @@ ch.onData(function(data) {
   if (t === 'assistant') {
     // Already shown via assistant_speech_text frames, but if fanout was
     // empty (LLM didn't emit <say>) this carries the fallback text.
-    if (data.content && !replyEl.textContent) {
-      replyEl.textContent = data.content;
+    if (data.content && !replyRaw) {
+      setReplyRaw(data.content);
       replyWrap.style.display = '';
     }
     return;
@@ -657,6 +891,16 @@ ch.onData(function(data) {
   if (t === 'error') {
     setStatus('Error', 'error');
     setMeta(String(data.error || 'unknown error'));
+    return;
+  }
+
+  if (t === 'abort') {
+    // Server fired the abort tool (Mica recognized "stop" intent and
+    // emitted <tool name="abort"/>). Stop local audio playback and
+    // clear the visible reply panel — Mica's <say> confirmation
+    // ("OK, stopping.") will play right after via the normal TTS path.
+    stopVoicePlayback();
+    resetReplyDisplay();
     return;
   }
 });

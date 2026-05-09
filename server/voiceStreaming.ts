@@ -82,6 +82,11 @@ export interface SentenceFanoutOpts {
   voice?: string;
   /** Called for each frame, in strict sentence order for `audio` frames. */
   onFrame: (frame: FanoutFrame) => void;
+  /** When true, skip the TTS round-trip and emit no `audio` frames. Sentence
+   *  text frames still fire so the client can update its reply panel even when
+   *  no listener is currently audible. Used when every subscribed client is
+   *  hidden — saves Kokoro GPU on a stream nobody will hear. */
+  skipTts?: boolean;
 }
 
 export class SentenceFanout {
@@ -91,12 +96,19 @@ export class SentenceFanout {
   private chain: Promise<void> = Promise.resolve();
   /** Wall-clock time the first `audio` frame was emitted (for caller metrics). */
   public firstAudioAt: number | null = null;
+  /** Set true by cancel(). After this, feed/end/dispatch all short-circuit
+   *  and any in-flight TTS HTTP request gets aborted via abortInFlight. */
+  private cancelled = false;
+  /** Per-call AbortController for the in-flight TTS fetch. cancel() aborts
+   *  whichever request is currently waiting on Kokoro; subsequent dispatches
+   *  no-op anyway, so a single controller is enough. */
+  private abortInFlight: AbortController | null = null;
 
   constructor(private opts: SentenceFanoutOpts) {}
 
   /** Append more text from the LLM stream. Triggers TTS for every newly-completed sentence. */
   feed(delta: string): void {
-    if (!delta) return;
+    if (this.cancelled || !delta) return;
     this.pending += delta;
     this.cutCompleteSentences();
   }
@@ -104,9 +116,23 @@ export class SentenceFanout {
   /** Force-flush any remaining buffered text as a final sentence (no terminal punctuation).
    *  Call this when the LLM stream ends to capture trailing fragments. */
   end(): void {
+    if (this.cancelled) return;
     const tail = this.pending.trim();
     this.pending = "";
     if (tail) this.dispatch(tail);
+  }
+
+  /** Stop all further sentence emits and abort any in-flight TTS request.
+   *  Idempotent. After cancel() returns, drain() resolves promptly because
+   *  the chain has nothing else queued. Used by the voice agent's barge-in
+   *  path so user-spoken interruption silences the current TTS without
+   *  letting trailing sentences leak through. */
+  cancel(): void {
+    if (this.cancelled) return;
+    this.cancelled = true;
+    if (this.abortInFlight) {
+      try { this.abortInFlight.abort(); } catch { /* already torn down */ }
+    }
   }
 
   /** Resolves once every dispatched sentence's `audio` (or `tts_error`) frame has fired. */
@@ -126,10 +152,16 @@ export class SentenceFanout {
   }
 
   private dispatch(sentence: string): void {
+    if (this.cancelled) return;
     const idx = this.nextIdx++;
     // Emit the sentence text immediately so callers can render it before the
     // audio is back. The audio frame follows in-order.
     this.opts.onFrame({ type: "sentence", idx, text: sentence });
+
+    // skipTts: every subscriber is hidden — there's no audible listener.
+    // Keep the sentence text frame above so the reply panel still renders;
+    // skip the TTS fetch and the `audio` emit entirely. No GPU spent.
+    if (this.opts.skipTts) return;
 
     // Strip markdown formatting BEFORE sending to TTS. The on-screen text
     // (the `sentence` frame above) keeps the original markup so the chat
@@ -150,6 +182,11 @@ export class SentenceFanout {
     const p = (async () => {
       let wavBuf: Buffer | null = null;
       let errMsg: string | null = null;
+      // Per-sentence AbortController. cancel() aborts whichever fetch
+      // currently owns this slot; the catch below detects AbortError and
+      // skips the audio emit cleanly.
+      const abortCtl = new AbortController();
+      this.abortInFlight = abortCtl;
       try {
         const body: Record<string, unknown> = { text: ttsText };
         if (this.opts.voice) body.voice = this.opts.voice;
@@ -157,6 +194,7 @@ export class SentenceFanout {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal: abortCtl.signal,
         });
         if (!ttsResp.ok) {
           errMsg = `TTS failed for sentence ${idx}: ${ttsResp.status}`;
@@ -165,11 +203,18 @@ export class SentenceFanout {
         }
       } catch (err) {
         errMsg = `TTS request failed for sentence ${idx}: ${(err as Error).message}`;
+      } finally {
+        if (this.abortInFlight === abortCtl) this.abortInFlight = null;
       }
       // Wait for prior sentence's audio (or error) to flush before emitting
       // ours. `prior` resolves even if it errored — `tts_error` frames don't
       // throw — so a single failure doesn't stall the chain.
       await prior;
+      // After cancellation: skip the audio emit silently. The card already
+      // dropped local playback at barge-in; there's no listener for stale
+      // frames. tts_error gets noisy, audio frame would replay on the
+      // card if it arrives within the bargedInUntilMs window.
+      if (this.cancelled) return;
       if (errMsg) {
         this.opts.onFrame({ type: "tts_error", idx, message: errMsg });
         return;

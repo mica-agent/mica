@@ -741,7 +741,12 @@ app.post("/api/openrouter/validate", async (req, res) => {
         if (!r.ok) { errors.model = `Could not list models (HTTP ${r.status})`; return; }
         const data = await r.json() as { data?: Array<{ id?: string }> };
         const ids = new Set((data.data || []).map((m) => m.id).filter((x): x is string => typeof x === "string"));
-        if (!ids.has(model)) { errors.model = `Model "${model}" not found on OpenRouter`; }
+        // OpenRouter accepts provider-routing suffixes on any base model ID
+        // (e.g. ":nitro" → fastest provider, ":floor" → cheapest, ":online"
+        // → web search, ":free", ":beta"). They are routing modifiers, not
+        // separate catalog entries, so strip before lookup.
+        const baseModel = model.split(":")[0];
+        if (!ids.has(baseModel)) { errors.model = `Model "${baseModel}" not found on OpenRouter`; }
       }));
     }
     await Promise.all(calls);
@@ -1943,7 +1948,12 @@ app.get("/api/files/:filename", async (req, res) => {
     // unit, so headers always match the bytes actually emitted.
     const contentType = mimeTypes.lookup(filename) || "application/octet-stream";
     res.type(contentType as string);
-    res.sendFile(filePath, (err) => {
+    // dotfiles: "allow" — by default `send`/`sendFile` refuses any path
+    // segment starting with `.` and returns a 404. We legitimately serve
+    // dot-prefixed paths (`.mica/config.json`, `.qwen/agents/*.md`,
+    // top-level `.lsp.json`) when the filebrowser previews hidden files.
+    // Path traversal is already blocked by validateFilename above.
+    res.sendFile(filePath, { dotfiles: "allow" }, (err) => {
       if (err && !res.headersSent) {
         res.status(500).json({ error: err.message });
       }

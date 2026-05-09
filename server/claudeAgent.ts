@@ -517,7 +517,7 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 
 // -- Channel handler factory --
 
-const USER_IDLE_BEFORE_AGENT_MS = 15000; // Wait 15s of quiet before delivering file events to the agent.
+const USER_IDLE_BEFORE_AGENT_MS = 60000; // Wait 60s of quiet before delivering file events to the agent.
 // Purpose: don't react to in-progress user edits. Each incoming file-change event
 // re-arms the timer, so continuous typing (and short thinking pauses within 15s)
 // never fires. Broadcast to other card clients is a separate path and is unaffected —
@@ -594,7 +594,12 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     // projects share the same filename.
     const chatId = ctx.sessionId;
     let busy = false;
-    let queue: string[] = [];
+    // Each queued message carries its origin so the eventual assistant
+    // broadcast can be tagged with `viaVoice: source === "voice"` —
+    // voice's ambient gate uses this to decide whether to read the
+    // reply aloud (only voice-dispatched turns get TTS announcement).
+    interface QueuedMsg { text: string; source: "user" | "voice" | "file-changes" }
+    let queue: QueuedMsg[] = [];
     let activeAbort: AbortController | null = null;
     // Track current Claude SDK query handle so interrupt/destroy paths can
     // call q.interrupt() + q.close() — the canonical lifecycle methods.
@@ -654,28 +659,33 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       sessionState.coalesceBuffer.clear();
 
       const tail = hasSurvivors
-        ? "Review the canvas back context and any files that still exist. If any changes require your attention (e.g., @agent tasks in a todo, spec changes to review), respond. Otherwise, acknowledge briefly."
-        : "Note the deletions above. If none require action, acknowledge briefly.";
+        ? "DEFAULT: reply with one short acknowledgement sentence and stop. " +
+          "Do NOT read these files. Do NOT take action. " +
+          "ONLY take action if an explicit @<your-name> task is visible in the changes " +
+          "(e.g. plan.todo gained '@claude do X'), or a clear directive aimed at you " +
+          "appears. Otherwise the user is editing for their own reasons; don't intervene."
+        : "Files were deleted. DEFAULT: one short acknowledgement, no action.";
 
-      const message = `[File changes detected] The following files changed:\n${lines.join("\n")}\n\n${tail}`;
+      const message = `[File activity] These files changed since your last reply:\n${lines.join("\n")}\n\n${tail}`;
 
       if (busy) {
-        queue.push(message);
+        queue.push({ text: message, source: "file-changes" });
       } else {
-        processMessage(message);
+        processMessage(message, "file-changes");
       }
     }
 
     sessionState.deliverFn = deliverCoalescedEvents;
 
-    async function processMessage(message: string) {
+    async function processMessage(message: string, source: QueuedMsg["source"] = "user") {
       // Guard against concurrent invocations. If another processMessage is
       // mid-flight, queue this one instead of racing.
       if (busy) {
         console.log(`[claude-agent] processMessage called while busy — queueing: ${message.slice(0, 60)}`);
-        queue.push(message);
+        queue.push({ text: message, source });
         return;
       }
+      const turnSource = source;
       busy = true; sessionState.busy = true;
       markProjectActivity(sessionProject, +1);
       console.log(`[claude-agent] processMessage START: ${message.slice(0, 60)}`);
@@ -1166,6 +1176,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           content: resultText,
           agent: "Claude",
           filesChanged,
+          // Source attribution surfaced to listeners. voiceAgent's
+          // ambient gate uses `viaVoice` to decide whether to read
+          // this reply aloud (only voice-dispatched turns get TTS).
+          source: turnSource,
+          viaVoice: turnSource === "voice",
           ...(usage ? { usage } : {}),
           contextWindow: CLAUDE_CTX_WINDOW,
           // baselineTokens kept for back-compat with card.js readers; inputTokens
@@ -1214,7 +1229,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         // Empty response = model had nothing to say (common for reactive events)
         if (errMsg.includes("empty response")) {
           console.log(`[claude-agent] broadcasting assistant (empty-response path) for: ${message.slice(0, 60)}`);
-          ctx.broadcast({ type: "assistant", content: "No action needed.", agent: "Claude", filesChanged: false });
+          ctx.broadcast({ type: "assistant", content: "No action needed.", agent: "Claude", filesChanged: false, source: turnSource, viaVoice: turnSource === "voice" });
         } else {
           console.error(`[claude-agent] Error during ${message.slice(0, 40)}:`, errMsg);
           ctx.broadcast({ type: "error", error: errMsg });
@@ -1258,7 +1273,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             // we're transitioning the in-flight slot, not racing.
             // Temporarily release the guard so the recursive call proceeds.
             busy = false; sessionState.busy = false;
-            processMessage(next);
+            processMessage(next.text, next.source);
           });
         } else {
           busy = false; sessionState.busy = false;
@@ -1293,8 +1308,8 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
             // Delay slightly to let the UI settle
             setTimeout(() => {
-              if (!busy) processMessage(scanMessage);
-              else queue.push(scanMessage);
+              if (!busy) processMessage(scanMessage, "user");
+              else queue.push({ text: scanMessage, source: "user" });
             }, 2000);
           }
         });
@@ -1337,12 +1352,18 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         const message = msg.message;
         if (!message) return;
 
+        // Synthetic clientId from channelMgr.dispatchToFilename — voice
+        // dispatched this turn. The eventual `assistant` broadcast will
+        // be tagged with viaVoice:true so voice's ambient gate plays
+        // the reply aloud (vs silently dropping non-voice turns).
+        const turnSource: QueuedMsg["source"] = clientId === "voice-dispatch" ? "voice" : "user";
+
         if (busy) {
-          queue.push(message);
+          queue.push({ text: message, source: turnSource });
           return;
         }
 
-        processMessage(message);
+        processMessage(message, turnSource);
       },
 
       onDestroy() {

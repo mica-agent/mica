@@ -1118,7 +1118,7 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 
 // -- Channel handler factory --
 
-const USER_IDLE_BEFORE_AGENT_MS = 15000; // Wait 15s of quiet before delivering file events to the agent.
+const USER_IDLE_BEFORE_AGENT_MS = 60000; // Wait 60s of quiet before delivering file events to the agent.
 // Purpose: don't react to in-progress user edits. Each incoming file-change event
 // re-arms the timer, so continuous typing (and short thinking pauses within 15s)
 // never fires. Broadcast to other card clients is a separate path and is unaffected —
@@ -1351,10 +1351,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       sessionState.coalesceBuffer.clear();
 
       const tail = hasSurvivors
-        ? "Review the canvas back context and any files that still exist. If any changes require your attention (e.g., @agent tasks in a todo, spec changes to review), respond. Otherwise, acknowledge briefly."
-        : "Note the deletions above. If none require action, acknowledge briefly.";
+        ? "DEFAULT: reply with one short acknowledgement sentence and stop. " +
+          "Do NOT read these files. Do NOT take action. " +
+          "ONLY take action if an explicit @<your-name> task is visible in the changes " +
+          "(e.g. plan.todo gained '@qwen do X'), or a clear directive aimed at you " +
+          "appears. Otherwise the user is editing for their own reasons; don't intervene."
+        : "Files were deleted. DEFAULT: one short acknowledgement, no action.";
 
-      const message = `[File changes detected] The following files changed:\n${lines.join("\n")}\n\n${tail}`;
+      const message = `[File activity] These files changed since your last reply:\n${lines.join("\n")}\n\n${tail}`;
 
       if (busy) {
         enqueueMessage(message, "file-changes");

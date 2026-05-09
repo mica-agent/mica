@@ -2,10 +2,13 @@
   <div id="fb-tree" class="fb-tree" tabindex="0">
     <div id="fb-tree-header" class="fb-tree-header">
       <span class="fb-title">Project files</span>
+      <span id="fb-active-folder" class="fb-active-folder" title="Where the upload button writes. Click a folder in the tree to change; click here to reset to project root.">in / (project root)</span>
       <label id="fb-show-hidden-label" class="fb-toggle" title="Show files and directories starting with a dot (`.mica`, `.qwen`, etc.)">
         <input id="fb-show-hidden" type="checkbox" />
         <span>Hidden</span>
       </label>
+      <input id="fb-upload-input" type="file" multiple style="display:none;" />
+      <button id="fb-upload" class="fb-btn" title="Upload to the active folder">&#8682;</button>
       <button id="fb-refresh" class="fb-btn" title="Refresh listing">&#8634;</button>
     </div>
     <div id="fb-tree-body" class="fb-tree-body"></div>

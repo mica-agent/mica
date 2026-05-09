@@ -46,6 +46,7 @@ import {
   getVoiceServerStatus,
 } from "./voiceServers.js";
 import { SentenceFanout, cleanForTts } from "./voiceStreaming.js";
+import { tavilySearch, webFetch, timeAt } from "./voiceTools.js";
 
 // Cap on read_card output. The voice prompt budget is small; if a card is
 // huge the LLM should summarize it, not regurgitate. Truncated content
@@ -194,6 +195,77 @@ function parseField(inner: string, field: string): string {
   return m ? m[1].trim() : "";
 }
 
+// Card-class extensions whose handlers accept conversational
+// `{ message: string }` dispatches from the voice agent's
+// `send_to_card` tool. Anything outside this set (data cards,
+// terminal, process, voice itself) silently no-ops on a message
+// payload — voice should reject the dispatch and let the LLM
+// retry rather than pretend it worked. Mirrors the message-taking
+// handlers in server/index.ts § registerHandler block.
+const CHAT_CLASS_EXTENSIONS = new Set<string>([
+  "chat", "claude", "opencode",
+  "llm-chat", "llm-direct", "llm-agent",
+  "persona-chat",
+]);
+
+// Default agent name shown in the voice prompt when a chat card
+// hasn't written its own role description into its file body.
+// The user can always override per-card by editing the file via
+// the pen icon — that text becomes the role line.
+const AGENT_NAME_DEFAULTS: Record<string, string> = {
+  "chat": "Qwen",
+  "claude": "Claude Code",
+  "opencode": "OpenCode",
+  "llm-chat": "LLM",
+  "llm-direct": "LLM",
+  "llm-agent": "LLM agent",
+  "persona-chat": "Persona",
+};
+
+// Read a chat card's file body as its role description. Empty body
+// or read failure → empty string (caller drops the role section).
+// Markdown fences and newlines are flattened so the line stays
+// scannable in the prompt; truncated to ~200 chars to bound prompt
+// growth when a user pastes paragraphs in by mistake.
+async function readChatCardRole(project: string | null, filename: string): Promise<string> {
+  try {
+    const file = await readProjectFile(filename, project || undefined);
+    const collapsed = file.content
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/`[^`]*`/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!collapsed) return "";
+    return collapsed.length > 200 ? collapsed.slice(0, 200).trim() + "…" : collapsed;
+  } catch {
+    return "";
+  }
+}
+
+// Heuristic: does an `assistant` broadcast's content read as a
+// purely mechanical file-ops report (e.g. "Done. Created foo.md and
+// bar.ts.")? Used by the ambient gate to suppress TTS announcements
+// for these — reading lists of filenames aloud is noise; the chat
+// card's UI already shows the same info silently.
+//
+// Pairs with the agent's `filesChanged: true` flag. The flag tells us
+// "this turn touched files"; this heuristic confirms "and the spoken
+// content is dominated by file enumeration, not analysis."
+function isFileOnlyReply(content: string): boolean {
+  const cleaned = cleanForTts(content);
+  // Very short turns are almost certainly status-only ("Done. Updated x.").
+  if (cleaned.length < 80) return true;
+  // Strip filename-shaped tokens AND common file-action verbs; what's
+  // left is the analytical/conceptual content. If that's tiny, the
+  // turn was just enumeration.
+  const stripped = cleaned
+    .replace(/\b[\w/-]+\.\w{1,6}\b/g, "")
+    .replace(/\b(?:created|updated|edited|added|removed|deleted|wrote|modified|saved|fixed|done|file|files)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return stripped.split(/\s+/).filter((w) => w.length > 2).length < 6;
+}
+
 // Words that, when they're the last word of a transcript, strongly suggest
 // the user paused mid-thought rather than finishing. Voice should buffer
 // the partial and wait for the next utterance instead of dispatching.
@@ -210,8 +282,11 @@ const INCOMPLETE_TRAILING_WORDS = new Set([
   "and", "or", "but", "so", "because", "since", "while", "though",
   "although", "then", "plus", "also", "when", "whenever",
   "before", "after", "until", "unless",
-  // Fillers / hedges
-  "um", "uh", "hmm", "er", "like", "well", "actually",
+  // Fillers / hedges. "well" REMOVED — "as well", "do well", "oh well"
+  // are common complete sentence-enders. Better to dispatch a maybe-
+  // truncated turn than to stall the whole pipeline; the LLM can ask
+  // for clarification if needed.
+  "um", "uh", "hmm", "er", "like", "actually",
   // Articles / determiners (true mid-phrase markers — "I want a." is gibberish)
   "the", "a", "an", "some", "any",
   // Prepositions (always lead into something)
@@ -261,11 +336,71 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     ctx: SessionContext,
   ): Promise<ChannelHandler> {
     const sessionProject = ctx.project;
-    const voicePref: string | undefined =
+    // Mutable: starts from openChannel args, can be updated mid-session
+    // via the `set_voice` channel message when the user picks a voice
+    // from the card's dropdown. Drives both per-turn TTS (voice agent's
+    // own replies) and ambient announcements (chat-card replies read
+    // aloud) so a voice change applies everywhere.
+    let voicePref: string | undefined =
       typeof args.voice === "string" ? (args.voice as string) : undefined;
     const history: VoiceTurn[] = [];
     let activeAbort: AbortController | null = null;
+    // `busy` gates new USER utterances. True from STT through the LLM
+    // loop and action dispatch. Released BEFORE TTS so the user can ask
+    // a follow-up while the previous answer's audio is still draining —
+    // TTS is just confirmation, it shouldn't block conversation.
     let busy = false;
+    // `ttsActive` gates AMBIENT announcements (chat-card-finished pings).
+    // Held high through fanout.drain() so an ambient doesn't barge in
+    // mid-sentence over the user's own answer audio.
+    let ttsActive = false;
+    // The fanout currently emitting frames over this session's channel.
+    // Set when a fanout is actively draining (user-turn TTS or ambient
+    // announcement); null otherwise. The `barge_in` channel message
+    // calls cancel() on this so the user can speak to silence Mica
+    // without waiting for the LLM-recognized abort tool.
+    let currentFanout: SentenceFanout | null = null;
+    // Queued audio items waiting for the current turn to complete.
+    // The client sends audio via onUtteranceRecorderStopped() while a
+    // turn is in-flight; the server buffers these and processes them
+    // sequentially after the current turn finishes.
+    interface QueuedAudio {
+      audioB64: string;
+      audioMime: string;
+      voice?: string;
+    }
+    let queuedAudio: QueuedAudio[] = [];
+
+    // Tracks the most recent send_to_card dispatch so Mica's next-turn
+    // system prompt knows what's pending. Drives three behaviours from
+    // a single signal: (1) corrections re-dispatch to the SAME agent,
+    // (2) non-sequiturs are recognized as topic changes, (3) a
+    // user-said "stop" knows whom to cascade interrupt to. Cleared
+    // after 2 turns without re-delegation — older context is more
+    // likely a fresh request than a correction.
+    interface DelegationContext {
+      filename: string;     // e.g. "qwen.chat"
+      agentName: string;    // resolved via AGENT_NAME_DEFAULTS
+      summary: string;      // first ~150 chars of the dispatched <message>
+      turnsAgo: number;     // 0 = just dispatched; cleared at >2
+    }
+    let delegation: DelegationContext | null = null;
+
+    // Tracks the most recent ambient announcement from a delegated agent.
+    // Without this, Mica's history shows only her own user/assistant
+    // turns — she's blind to what just played as ambient TTS, so she
+    // can't recognize "yes" / "no" / answers as responses to a question
+    // the agent asked. We surface the announcement as a prompt hint
+    // alongside the delegation context. Cleared after one consumed
+    // user turn (the answer or non-answer drains it) or when delegation
+    // expires.
+    interface AmbientHint {
+      filename: string;
+      agentName: string;
+      preview: string;       // first ~250 chars of the ambient text
+      looksLikeQuestion: boolean;
+    }
+    let lastAmbient: AmbientHint | null = null;
 
     // Partial-utterance buffer. When the user pauses mid-thought, VAD
     // cuts the recording and STT returns a partial like "I want to know".
@@ -290,6 +425,19 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
       }
     }
 
+    // Per-client visibility. Updated by `presence` messages from the
+    // voice card and by onAttach/onDetach. Used to skip TTS work when
+    // every subscribed client is hidden — there's no audible listener,
+    // so Kokoro round-trips are wasted GPU. Default true on attach so a
+    // client that never sends presence (older card, or first frame
+    // before the visibilitychange listener fires) still hears audio.
+    const clientVisibility = new Map<string, boolean>();
+    function anyVisible(): boolean {
+      if (clientVisibility.size === 0) return false;
+      for (const v of clientVisibility.values()) if (v) return true;
+      return false;
+    }
+
     // ── Phase 2: ambient announcement queue ─────────────────────
     //
     // When any chat card on the same project broadcasts a completed
@@ -312,7 +460,8 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     interface AmbientItem {
       filename: string;
       agent: string;
-      text: string;
+      text: string;             // summary-mode: final ready-to-TTS text. full-mode: empty until drained.
+      rawContent?: string;       // full-mode only: raw broadcast content; summarized at drain time.
       mode: "summary" | "full";
     }
     const announcementQueue: AmbientItem[] = [];
@@ -320,45 +469,134 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     const muteSet = new Set<string>(); // filenames the user has muted (Phase 2.5)
     let announcementInFlight = false;
 
-    const FULL_READ_MAX_CHARS = 1500;
+    const VOICE_SUMMARY_CAP = 400;
+    const SUMMARIZE_INPUT_CAP = 3000;  // truncate huge replies before LLM
 
     function summarizeForAnnouncement(content: string): string {
-      // Take the first sentence, clean markdown/URLs, cap at ~140 chars.
-      const cleaned = cleanForTts(content);
-      const m = cleaned.match(/^(.{0,140}?[.!?])(\s|$)/);
-      const first = m ? m[1] : cleaned.slice(0, 140);
+      // Take the first sentence, cap at ~140 chars. Keep raw markdown —
+      // SentenceFanout applies cleanForTts per-sentence for the TTS
+      // round-trip while emitting raw text in the `sentence` frame,
+      // so the voice card's markdown renderer can format correctly.
+      const m = content.match(/^(.{0,140}?[.!?])(\s|$)/);
+      const first = m ? m[1] : content.slice(0, 140);
       return first.trim();
     }
 
-    function fullReadForAnnouncement(content: string): string {
-      // Strip markdown/URLs but keep the entire reply (cap at
-      // FULL_READ_MAX_CHARS). Adds a soft tail-marker if truncated so
-      // the listener knows there's more in the chat card.
-      const cleaned = cleanForTts(content);
-      if (cleaned.length <= FULL_READ_MAX_CHARS) return cleaned;
-      return cleaned.slice(0, FULL_READ_MAX_CHARS).trim() + " — there's more in the chat card.";
+    /** LLM-summarize a voice-dispatched agent reply for spoken delivery.
+     *  Replaces the previous "read up to 1500 raw chars" behaviour — full
+     *  TTS of dense analytical replies was running ~90s per turn. Now:
+     *  short replies (≤VOICE_SUMMARY_CAP) pass through unchanged; longer
+     *  replies go through one quick LLM call ("summarize in 2-3 spoken
+     *  sentences"); failure / timeout falls back to a structural truncate
+     *  with a "more in the chat card" tail. ~1s overhead per long reply,
+     *  in exchange for a 25-second readout instead of 90s. */
+    async function summarizeForVoice(content: string, agentName: string): Promise<string> {
+      const cleaned = cleanForTts(content).trim();
+      if (!cleaned) return "";
+      if (cleaned.length <= VOICE_SUMMARY_CAP) return cleaned;
+      const llmInput = cleaned.length > SUMMARIZE_INPUT_CAP
+        ? cleaned.slice(0, SUMMARIZE_INPUT_CAP)
+        : cleaned;
+      try {
+        console.log(`[voice-agent:ambient] summarizing ${cleaned.length}-char full reply via LLM`);
+        const resp = await fetch(LLM_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "voice",
+            messages: [
+              { role: "system", content:
+                `Summarize ${agentName}'s reply in 2-3 short spoken sentences for TTS readout. ` +
+                "Plain conversational English. No markdown, no lists, no code, no filenames — " +
+                "just the gist of what was said. Skip pleasantries; lead with the substance." },
+              { role: "user", content: llmInput },
+            ],
+            max_tokens: 120,
+            temperature: 0.3,
+            stream: false,
+            chat_template_kwargs: { enable_thinking: false },
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+        const summary = (data.choices?.[0]?.message?.content || "").trim();
+        if (summary) {
+          const final = summary.length > VOICE_SUMMARY_CAP
+            ? summary.slice(0, VOICE_SUMMARY_CAP).replace(/\s+\S*$/, "").trim() + "…"
+            : summary;
+          console.log(`[voice-agent:ambient] summary ${final.length} chars`);
+          return final;
+        }
+      } catch (err) {
+        console.warn(`[voice-agent:ambient] summarize failed, falling back: ${(err as Error).message}`);
+      }
+      // Fallback: cap at the same length, trim to nearest sentence boundary.
+      const truncate = cleaned.slice(0, VOICE_SUMMARY_CAP);
+      const lastBoundary = Math.max(
+        truncate.lastIndexOf(". "),
+        truncate.lastIndexOf("! "),
+        truncate.lastIndexOf("? "),
+      );
+      if (lastBoundary > VOICE_SUMMARY_CAP * 0.5) {
+        return truncate.slice(0, lastBoundary + 1).trim() + " More in the chat card.";
+      }
+      return truncate.trim() + "… more in the chat card.";
     }
 
     async function drainAnnouncementQueue(): Promise<void> {
-      if (announcementInFlight || busy) return;
+      if (announcementInFlight || busy || ttsActive) return;
       const next = announcementQueue.shift();
       if (!next) return;
       announcementInFlight = true;
       try {
+        // Full mode: LLM-summarize the rawContent now (deferred from
+        // enqueue time so a bursty stream queues without blocking on
+        // the LLM). summarizeForVoice handles short-content fast-path,
+        // LLM call for long content, structural-truncate fallback.
+        let fullText = next.text;
+        if (next.mode === "full" && next.rawContent !== undefined) {
+          fullText = await summarizeForVoice(next.rawContent, next.agent);
+          if (!fullText) {
+            console.log(`[voice-agent:ambient] empty summary, dropping announcement for ${next.filename}`);
+            return;
+          }
+        }
         // Summary mode prefixes "<Agent> just finished. " so the listener
-        // knows the source. Full-read mode just speaks the reply itself —
+        // knows the source. Full-read mode just speaks the summary itself —
         // the user dispatched it via voice and is expecting THE answer,
         // not a meta-announcement about it.
-        const text = next.mode === "full" ? next.text : `${next.agent} just finished. ${next.text}`;
+        const text = next.mode === "full" ? fullText : `${next.agent} just finished. ${fullText}`;
+        // Surface the ambient text to Mica's NEXT prompt build so she's
+        // not blind to what the user just heard. Particularly important
+        // when the agent's reply contains a question — without this
+        // hint, Mica's history shows only her own user/assistant turns
+        // and she can't recognize "yes"/"no" as answers to the agent's
+        // question. Only track ambient from the active delegation —
+        // unrelated chat cards' replies don't need a special hint.
+        if (delegation && next.filename === delegation.filename) {
+          lastAmbient = {
+            filename: next.filename,
+            agentName: next.agent,
+            preview: text.slice(0, 250),
+            looksLikeQuestion: /\?\s*$/.test(text.trim()) || /\?\s/.test(text),
+          };
+        }
         ctx.broadcast({
           type: "ambient_announcement_start",
           file: next.filename,
           agent: next.agent,
           mode: next.mode,
         });
+        // Skip Kokoro round-trip when no subscriber is currently visible.
+        // Sentence text frames still go out so a hidden tab will see the
+        // announcement when it next becomes visible.
+        const skipTts = !anyVisible();
+        if (skipTts) console.log(`[voice-agent:ambient] all subscribers hidden — skipping TTS for ${next.filename}`);
         const fanout = new SentenceFanout({
           ttsUrl: getTtsUrl(),
           voice: voicePref,
+          skipTts,
           onFrame: (f) => {
             if (f.type === "sentence") {
               ctx.broadcast({
@@ -379,9 +617,14 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             }
           },
         });
-        fanout.feed(text);
-        fanout.end();
-        await fanout.drain();
+        currentFanout = fanout;
+        try {
+          fanout.feed(text);
+          fanout.end();
+          await fanout.drain();
+        } finally {
+          if (currentFanout === fanout) currentFanout = null;
+        }
         ctx.broadcast({
           type: "ambient_announcement_done",
           file: next.filename,
@@ -396,9 +639,11 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     }
 
     // Subscribe to broadcasts from other sessions in the same project.
-    // The user picked the most aggressive ambient option: announce when
-    // ANY chat card finishes a turn. Skip the voice card itself, skip
-    // muted cards, dedupe by turn_id.
+    // Ambient quiet mode: only voice-dispatched turns announce, and
+    // file-only replies (mechanical "I created X" enumeration) stay
+    // silent even when voice-dispatched. Direct-typed-into-chat turns
+    // never produce a surprise audio announcement; user can read the
+    // chat card visually if they want to see what changed.
     const unsubscribeBroadcastListener = channelMgr.onAnyBroadcast(
       (project, filename, data) => {
         if (project !== sessionProject) return;
@@ -410,8 +655,22 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           turn_id?: string;
           agent?: string;
           viaVoice?: boolean;
+          filesChanged?: boolean;
         };
         if (d.type !== "assistant" || !d.content) return;
+        // Gate 1: only voice-dispatched turns get an ambient TTS.
+        // Direct chat-card use stays silent. micaAgent (and the other
+        // chat handlers, once plumbed) sets viaVoice:true when the
+        // turn was kicked off via the synthetic "voice-dispatch"
+        // clientId from channelMgr.dispatchToFilename.
+        if (d.viaVoice !== true) return;
+        // Gate 2: skip ambient when content is dominated by file-ops
+        // enumeration. The chat card already shows file changes
+        // visually; reading filenames aloud is noise.
+        if (d.filesChanged === true && isFileOnlyReply(d.content)) {
+          console.log(`[voice-agent:ambient] suppressing file-only reply from ${filename}`);
+          return;
+        }
         const turnId = typeof d.turn_id === "string" ? d.turn_id : "";
         // Dedupe: same turn_id seen twice on the same file = ignore.
         if (turnId && seenTurnIds.get(filename) === turnId) return;
@@ -421,15 +680,23 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
         // viaVoice:true, the user dispatched this turn THROUGH voice and
         // wants to hear the full reply, not a one-line summary.
         const mode: AmbientItem["mode"] = d.viaVoice === true ? "full" : "summary";
-        const text = mode === "full" ? fullReadForAnnouncement(d.content) : summarizeForAnnouncement(d.content);
-        if (!text) return;
+        // Summary mode: cheap synchronous first-sentence trim — used for
+        // direct-typed turns (already brief, no LLM needed).
+        // Full mode: store rawContent and defer the LLM summarize until
+        // drain time, so a bursty stream of voice-dispatched replies
+        // queues immediately and summarization serializes 1-at-a-time.
+        const item: AmbientItem = mode === "full"
+          ? { filename, agent, text: "", rawContent: d.content, mode }
+          : { filename, agent, text: summarizeForAnnouncement(d.content), mode };
+        if (mode === "summary" && !item.text) return;  // empty summary → skip
         // Cap queue to avoid flooding when many cards finish at once.
         if (announcementQueue.length >= ANNOUNCEMENT_QUEUE_MAX) {
           console.log(`[voice-agent:ambient] queue full, dropping announcement for ${filename}`);
           return;
         }
-        announcementQueue.push({ filename, agent, text, mode });
-        console.log(`[voice-agent:ambient] queued ${mode}-mode announcement for ${filename} (${text.length} chars)`);
+        announcementQueue.push(item);
+        const sizeHint = mode === "full" ? `${(d.content || "").length} raw chars` : `${item.text.length} chars`;
+        console.log(`[voice-agent:ambient] queued ${mode}-mode announcement for ${filename} (${sizeHint})`);
         setImmediate(() => { void drainAnnouncementQueue(); });
       },
     );
@@ -440,6 +707,16 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           type: "history",
           messages: history,
         });
+        // Default to visible until the client tells us otherwise. The
+        // voice card sends a `presence` message right after openChannel
+        // (and on every visibilitychange) — this default just covers
+        // the brief window before that message arrives, and any client
+        // that doesn't speak the presence protocol at all.
+        clientVisibility.set(clientId, true);
+      },
+
+      onDetach(clientId) {
+        clientVisibility.delete(clientId);
       },
 
       async onData(_clientId, data) {
@@ -449,6 +726,15 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           audioMime?: string;
           message?: string;
           voice?: string;
+          // Internal flag: set when the partial-expiry timer re-enters
+          // onData with the buffered text. Bypasses the completeness
+          // heuristic so we don't loop on a transcript whose trailing
+          // word still looks incomplete (the whole point of the timeout
+          // is "give up waiting and dispatch what we have").
+          _forceDispatch?: boolean;
+          // Presence ping: the voice card reports its tab visibility so
+          // the server can skip TTS work when every subscriber is hidden.
+          visible?: boolean;
         };
 
         // Diagnostic log: every inbound channel message. Helps debug
@@ -474,12 +760,78 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           ctx.broadcast({ type: "history", messages: [] });
           return;
         }
-        if (busy) {
-          ctx.broadcast({
-            type: "error",
-            error: "Voice card is busy with the previous turn — wait a moment.",
-          });
+        if (msg.type === "clear_queue") {
+          const n = queuedAudio.length;
+          queuedAudio.length = 0;
+          console.log(`[voice-agent] clear_queue: dropped ${n} items`);
           return;
+        }
+        if (msg.type === "presence") {
+          // Lightweight; not logged via the diagnostic line above
+          // (would spam every tab focus change).
+          clientVisibility.set(_clientId, !!msg.visible);
+          return;
+        }
+        if (msg.type === "barge_in") {
+          // User spoke / hit "stop talking" → silence Mica's TTS now.
+          // Distinct from <tool name="abort"/>: barge-in only stops
+          // local TTS playback and the active fanout. It does NOT
+          // cascade interrupt to the delegated chat agent and does
+          // NOT clear delegation context. The user can still speak
+          // their next utterance immediately; the new turn flows
+          // through the normal busy/queue path.
+          if (currentFanout) {
+            console.log(`[voice-agent] barge_in: cancelling active fanout`);
+            currentFanout.cancel();
+          }
+          return;
+        }
+        if (msg.type === "set_voice") {
+          // Card's voice-select dropdown was changed (or echoed on
+          // connect). Update session pref so subsequent ambient and
+          // user-turn TTS uses the new Kokoro voice. Sidecar accepts
+          // any of its built-in voice IDs per-request — no restart.
+          if (typeof msg.voice === "string" && msg.voice.trim()) {
+            const next = msg.voice.trim();
+            if (next !== voicePref) {
+              voicePref = next;
+              console.log(`[voice-agent] voicePref updated to ${voicePref}`);
+            }
+          }
+          return;
+        }
+        if (busy) {
+          // Queue the audio instead of rejecting. The server runs Mica's
+          // interrupt-or-queue decision logic (system prompt) and sends a
+          // `{ type: "queued", depth: N }` frame so the client can show
+          // the queue indicator. The audio is buffered and processed after
+          // the current turn completes.
+          queuedAudio.push({ audioB64: msg.audioB64, audioMime: msg.audioMime, voice: msg.voice });
+          const depth = queuedAudio.length;
+          ctx.broadcast({ type: "queued", depth });
+          console.log(`[voice-agent] audio queued (depth=${depth})`);
+          return;
+        }
+
+        // Bump delegation age. The next prompt build sees `turnsAgo`
+        // and either keeps the section or omits it (cleared at >2).
+        if (delegation) {
+          delegation.turnsAgo++;
+          if (delegation.turnsAgo > 2) {
+            console.log(`[voice-agent] delegation context expired (was: ${delegation.filename})`);
+            delegation = null;
+            lastAmbient = null;  // delegation gone → ambient hint stale
+          }
+        }
+        // Consume the ambient hint after one user turn. Either Mica acted
+        // on it (re-dispatched the user's answer) or she didn't; either
+        // way, replaying the same hint next turn would loop.
+        if (lastAmbient) {
+          // Defer the clear so this turn's prompt build still sees it.
+          // Use a closure-captured copy so the clear at the end doesn't
+          // race with concurrent ambient drains.
+          const consume = lastAmbient;
+          setImmediate(() => { if (lastAmbient === consume) lastAmbient = null; });
         }
 
         // Lazy-ensure voice servers are up.
@@ -583,7 +935,12 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // (ends with conjunction, filler, article, preposition, etc.),
           // buffer it and wait for the user to continue rather than
           // dispatching a half-formed request to Qwen.
-          if (!looksComplete(userText)) {
+          //
+          // _forceDispatch from the partial-expiry timer skips this —
+          // otherwise we'd re-buffer the same text every 4 seconds
+          // forever (the LLM never sees it, the user gets stuck in
+          // italics with no response).
+          if (!msg._forceDispatch && !looksComplete(userText)) {
             pendingPartial = userText;
             pendingPartialAt = Date.now();
             console.log(`[voice-agent] partial detected, buffering: ${JSON.stringify(userText.slice(0, 120))}`);
@@ -602,7 +959,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                 // Re-enter onData with the buffered text as a synthetic
                 // user message. This routes through the regular dispatch
                 // path including LLM tool loop.
-                handler.onData?.(_clientId, { message: expired, voice: msg.voice });
+                handler.onData?.(_clientId, { message: expired, voice: msg.voice, _forceDispatch: true });
               }
             }, PARTIAL_EXPIRY_MS);
             ctx.broadcast({ type: "done" });
@@ -621,15 +978,42 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           const cards = (await listCanvasFiles(sessionProject || undefined))
             .filter((c) => !c.name.startsWith(".") && c.name !== ctx.filename);
 
-          // Filename list for `send_to_card`. Even on a blank canvas this
-          // is short — voice still knows what's dispatchable.
-          const cardListLines = cards
+          // Full canvas listing for read_card / read_recent_replies /
+          // card_status — these tools work on any file.
+          const allCardsLines = cards
             .map((c) => {
               const dot = c.name.lastIndexOf(".");
               const kind = dot === -1 ? "file" : c.name.slice(dot + 1);
               return `  - ${c.name} (.${kind})`;
             })
             .join("\n");
+
+          // Chat-class-only listing for `send_to_card`. Each line carries
+          // the card's agent name (default per extension) and an optional
+          // role description read from the card's file body — written by
+          // the user via the pen icon (✎) on the card frame. Files-as-
+          // identity, no separate settings UI.
+          const chatCards = cards.filter((c) => {
+            const dot = c.name.lastIndexOf(".");
+            const ext = dot === -1 ? "" : c.name.slice(dot + 1).toLowerCase();
+            return CHAT_CLASS_EXTENSIONS.has(ext);
+          });
+          const chatCardRoles = await Promise.all(
+            chatCards.map((c) => readChatCardRole(sessionProject, c.name)),
+          );
+          const chatCardsLines = chatCards.length === 0
+            ? "  (none — open a .chat / .claude / .opencode / .llm-chat card to route work)"
+            : chatCards
+                .map((c, i) => {
+                  const dot = c.name.lastIndexOf(".");
+                  const ext = dot === -1 ? "" : c.name.slice(dot + 1).toLowerCase();
+                  const agentName = AGENT_NAME_DEFAULTS[ext] || ext;
+                  const role = chatCardRoles[i];
+                  return role
+                    ? `  - ${c.name} — ${agentName} — "${role}"`
+                    : `  - ${c.name} — ${agentName}`;
+                })
+                .join("\n");
 
           // Top 3 most-recently-modified cards, with relative ages, so
           // voice can answer "what's new?" without firing a tool. Section
@@ -682,22 +1066,24 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             `You are Mica's voice — the user's first contact on this canvas. ` +
             `Project: "${projectLabel}".\n\n` +
 
-            "**Be responsive above all.** Short replies, fast back-and-forth, never make the user wait while you over-think. One or two spoken sentences is almost always enough.\n\n" +
+            "**Be responsive above all.** Short replies, fast back-and-forth — reply in one or two spoken sentences. Speed beats thoroughness here.\n\n" +
 
-            "**Notice what's on the canvas, but don't depend on it.** When there's a project intent below, ground your suggestions in it. When there isn't, lean on your own knowledge — you're Qwen3.6, you know a lot — and engage with whatever the user brings. Don't announce the canvas state to the user; just behave appropriately for what's there.\n\n" +
+            "**Notice what's on the canvas, treat it as context.** When there's a project intent below, ground your suggestions in it. Otherwise lean on your own knowledge — you're Qwen3.6, you know a lot — and engage with whatever the user brings. Speak naturally about the topic; let the canvas inform your reply silently rather than announcing its state.\n\n" +
 
-            "**Work with the user as context emerges.** The first few exchanges may be loose — exploring an idea, kicking around possibilities. As the conversation surfaces what the user actually wants, start suggesting concrete moves: \"Want me to ask Qwen to draft a spec?\" \"Should I have it explore the X angle?\" Engage the chat agents and other tools more as the work crystallizes — not as a default.\n\n" +
+            "**Look it up when you can't be sure.** Your training data has a cutoff. Anything that moves — current events, today's news, a software's latest version, prices, schedules, who's in office, the current time anywhere, today's weather — call the `time` / `search` / `web_fetch` tools and speak the looked-up answer. Same for specific facts where guessing would mislead: a person's birth year, a city's population, an obscure spec's details. The tools take 1–3 seconds; that's far better than a confident wrong answer. When you're sure of something stable (general concepts, well-known history, your own opinions), answer directly.\n\n" +
 
-            "**Dispatch when there's real work.** When the user clearly wants something done that needs files, code, search, or planning — use `send_to_card` to route it. After dispatching, if a logical next step is obvious, mention it briefly. If not, just confirm and stop.\n\n" +
+            "**Work with the user as context emerges.** The first few exchanges may be loose — exploring an idea, kicking around possibilities. As the conversation surfaces what the user actually wants, start suggesting concrete moves: \"Want me to ask Qwen to draft a spec?\" \"Should I have it explore the X angle?\" Engage the chat agents and other tools more as the work crystallizes.\n\n" +
 
-            "Every word inside <say>…</say> is read aloud. No markdown, no lists, no code, no URLs in <say>.\n",
+            "**Dispatch when there's real work.** When the user clearly wants something done that needs files, code, search, or planning — use `send_to_card` to route it. After dispatching, mention an obvious follow-up if there is one, or just confirm briefly and stop.\n\n" +
+
+            "Every word inside <say>…</say> is read aloud. Keep <say> as plain conversational speech — no markdown, no lists, no code, no URLs.\n",
           );
 
           if (projectIntent) {
             promptParts.push(
               "## Project intent (from canvas/spec.md — already in your context)\n" +
               projectIntent + "\n\n" +
-              "Answer questions about the project from this section directly. Do NOT call read_card on spec.md; you already have its content above.\n",
+              "Answer questions about the project directly from the section above. The spec.md content is already loaded — read_card on it is redundant.\n",
             );
           }
 
@@ -708,10 +1094,45 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             );
           }
 
-          if (cardListLines) {
+          if (allCardsLines) {
             promptParts.push(
-              "## Cards available for send_to_card\n" +
-              cardListLines + "\n",
+              "## Cards on the canvas (use with read_card / read_recent_replies / card_status)\n" +
+              allCardsLines + "\n",
+            );
+          }
+
+          promptParts.push(
+            "## Chat cards (the only valid targets for send_to_card)\n" +
+            chatCardsLines + "\n",
+          );
+
+          if (delegation) {
+            const turnsLabel = delegation.turnsAgo === 0
+              ? "just now"
+              : delegation.turnsAgo === 1
+                ? "1 turn ago"
+                : `${delegation.turnsAgo} turns ago`;
+            // Optional inline ambient hint — the user just heard <agent>
+            // speak something via TTS. If it was a question, the user's
+            // next utterance is almost certainly the answer. Without
+            // this, Mica's history shows only her own user/assistant
+            // turns and she can't connect "yes" to the agent's "want
+            // me to use TypeScript?". Question detection is heuristic
+            // ('?' anywhere); the LLM judges intent.
+            const ambientHintLine = lastAmbient && lastAmbient.filename === delegation.filename
+              ? `\nAmbient just played from ${delegation.agentName}${lastAmbient.looksLikeQuestion ? " (CONTAINS A QUESTION — user is likely answering it)" : ""}: "${lastAmbient.preview}"\n`
+              : "";
+            promptParts.push(
+              "## Last delegation\n" +
+              `You delegated to ${delegation.filename} (${delegation.agentName}) ${turnsLabel}.\n` +
+              `Summary: "${delegation.summary}"\n` +
+              ambientHintLine + "\n" +
+              "When the user's next utterance is:\n" +
+              `- An answer to a question ${delegation.agentName} just asked (see ambient above if any) → re-dispatch the user's answer to ${delegation.filename} via send_to_card with their words as the <message>. Pair with a brief <say> confirming you sent it.\n` +
+              `- A correction or clarification of that delegation → re-dispatch to the SAME ${delegation.filename} with an updated <message>; pair it with a fresh <say> that says what you sent.\n` +
+              "- A follow-up or elaboration in the same context → answer directly (small clarifications) or re-dispatch to the same agent with the elaboration.\n" +
+              "- An unrelated topic (non-sequitur) → answer directly if you can, or open a fresh delegation. Don't conflate with the prior context.\n" +
+              `- An explicit stop intent (\"stop\", \"cancel\", \"never mind\", \"wait\", or paraphrase) → emit <tool name=\"abort\"/> + a brief <say> confirmation (\"OK, stopping\"). The server cascades the cancel to ${delegation.filename}.\n`,
             );
           }
 
@@ -721,15 +1142,37 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             `<tool name="read_card"><file>EXACT_FILENAME</file></tool>` + " — read a card's contents (markdown, spec, json, etc). Use when answering needs project-specific data you don't already have.\n" +
             `<tool name="card_status"><file>EXACT_FILENAME</file></tool>` + " — busy/idle hint for a chat card. Use for \"is Qwen still working?\".\n" +
             `<tool name="read_recent_replies"><file>EXACT_FILENAME</file><n>1</n></tool>` + " — fetch the last N assistant replies from a chat card. Use for \"what did Qwen just say?\".\n" +
-            `<tool name="send_to_card"><file>EXACT_FILENAME</file><message>WHAT_TO_DO</message></tool>` + " — forward to a chat card. Only when the user wants real work routed.\n",
+            `<tool name="send_to_card"><file>EXACT_FILENAME</file><message>WHAT_TO_DO</message></tool>` + " — forward to a chat card from the \"Chat cards\" section above. Targets outside that section are rejected. Pick by role description when present; pick by filename when names collide.\n" +
+            `<tool name="abort"/>` + " — user wants to stop. Cancels the last delegation (if any) and stops in-flight playback. Pair with a brief <say> confirmation (\"OK, stopping\").\n" +
+            `<tool name="search"><query>SEARCH_QUERY</query></tool>` + " — web search via Tavily. Use for facts you don't know (current events, latest versions, simple lookups). Returns top results; you summarize.\n" +
+            `<tool name="web_fetch"><url>URL</url></tool>` + " — fetch a URL and return its text. Use after search to drill into a specific result, or when the user gives a URL directly.\n" +
+            `<tool name="time"><tz>IANA_TIMEZONE</tz></tool>` + " — current time in the given IANA timezone (e.g. \"America/Los_Angeles\", \"Asia/Tokyo\"). Zero latency. Use whenever the user asks \"what time is it in X\".\n",
           );
 
           promptParts.push(
             "## Hard rules\n" +
-            "1. Tools go OUTSIDE <say>. NEVER nest a tool inside say tags — the XML would be read aloud.\n" +
-            "2. <file> MUST be a filename from the canvas list, copied verbatim. NEVER put a code path, output path, or URL there.\n" +
-            "3. <message> is plain English — NOT code, NOT XML.\n" +
-            "4. After dispatching, give a brief spoken confirmation in <say>. If a follow-up step is obvious, mention it.\n",
+            "1. Place every <tool> as a sibling of <say>, outside it. Tools and say blocks live side-by-side at the top level.\n" +
+            "2. For send_to_card, copy the <file> verbatim from the \"Chat cards\" section. Cards from \"Cards on the canvas\" are read-only — use them with read_card / read_recent_replies / card_status.\n" +
+            "3. Write <message> as plain English describing the work you want done.\n" +
+            "4. Speak only what's true. Claim a dispatch in <say> (\"I asked Qwen\", \"I sent that to X\") only when you also emit a matching <tool name=\"send_to_card\"> in the same response. When you're not dispatching, offer instead: \"want me to ask Qwen?\" or \"I can route that to Qwen if you'd like.\"\n" +
+            "5. Speak agent status only when you've verified it. Don't say \"Qwen finished\" / \"Qwen is still working\" / \"Qwen is busy\" from a guess — call <tool name=\"card_status\"> to check, then speak the verified state. When the user asks for status and you haven't checked, either call card_status now or say \"I'm not sure — want me to check?\". The ambient hint above (if present) IS verified ground truth — you can paraphrase it. Anything else about an agent's state is hallucination.\n" +
+            "6. After dispatching, give a brief spoken confirmation in <say>. If a follow-up step is obvious, mention it.\n",
+          );
+
+          promptParts.push(
+            "## Interrupt vs queue (your judgment)\n" +
+            "A user may speak while you're already processing a turn. You decide whether to\n" +
+            "interrupt (cancel the current turn and handle the new input) or queue (let the\n" +
+            "current turn finish, then handle the new input next).\n\n" +
+            "**Interrupt when:**\n" +
+            "- The user corrects themselves: \"actually I meant…\", \"no wait…\", \"correction…\"\n" +
+            "- The user says something unrelated to the current task (non-sequitur)\n" +
+            "- The user explicitly asks you to stop\n\n" +
+            "**Queue when:**\n" +
+            "- The user adds to the current task: \"also…\", \"and also…\", \"while you're at it…\"\n" +
+            "- The user is elaborating or following up on the current task\n\n" +
+            "**When unsure:** Briefly ask: \"Should I stop what I'm doing and handle that, or let it finish first?\"\n\n" +
+            "The user doesn't need to choose — you handle it. Only ask when you're genuinely uncertain.\n",
           );
 
           promptParts.push(
@@ -751,12 +1194,16 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             "User: who's Bruce Springsteen?\n" +
             "Assistant: <say>New Jersey rock musician — Born to Run, Born in the U.S.A., legendary live shows with the E Street Band.</say>\n\n" +
 
-            "# Project-specific lookup — read tool, then summarize\n" +
-            `Assistant: <tool name="read_recent_replies"><file>${exampleFilename}</file></tool><say>Qwen wrapped the architecture plan — four services and a five-stage retrieval pipeline. Want me to ask it to detail the riskiest one?</say>\n\n` +
+            "# Time-sensitive — use the time tool\n" +
+            "User: what time is it in Tokyo?\n" +
+            `Assistant: <tool name="time"><tz>Asia/Tokyo</tz></tool><say>Just past three in the morning in Tokyo.</say>\n\n` +
 
-            "# Out-of-scope — graceful redirect\n" +
-            "User: what's the weather?\n" +
-            "Assistant: <say>I don't have weather access from here — but the rest of your canvas is quiet.</say>",
+            "# Volatile fact — use search\n" +
+            "User: what's the latest version of three.js?\n" +
+            `Assistant: <tool name="search"><query>latest three.js version</query></tool><say>Latest is r158, released last month.</say>\n\n` +
+
+            "# Project-specific lookup — read tool, then summarize\n" +
+            `Assistant: <tool name="read_recent_replies"><file>${exampleFilename}</file></tool><say>Qwen wrapped the architecture plan — four services and a five-stage retrieval pipeline. Want me to ask it to detail the riskiest one?</say>`,
           );
 
           const systemPrompt = promptParts.join("\n");
@@ -781,7 +1228,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           //   iter 1: LLM sees the read results, emits the final <say>.
           // After the loop, action tools are dispatched (deferred so the
           // spoken confirmation is timed with the actual dispatch).
-          const READ_TOOLS = new Set(["read_card", "card_status", "read_recent_replies"]);
+          const READ_TOOLS = new Set(["read_card", "card_status", "read_recent_replies", "search", "web_fetch", "time"]);
           const allSayBlocks: Array<{ attrs: string; body: string; selfClosing: boolean }> = [];
           const pendingActionTools: Array<{ name: string; tb: { attrs: string; body: string; selfClosing: boolean } }> = [];
           let lastLlmRaw = "";
@@ -856,23 +1303,82 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             const says = extractBlocks(llmRaw, "say");
 
             // Categorize: read vs action. Unknown tools surface as errors.
+            // Reject send_to_card targets that aren't chat-class HERE so we
+            // can give the LLM a retry on iter 1 — the LLM committed its
+            // <say> alongside the bad tool, so we drop the say + the bad
+            // tool, feed the rejection back, and let it try again with the
+            // correct target. Without this retry, every misroute ships a
+            // misleading "OK, asked Qwen" to TTS and the user has no
+            // recovery path within the same turn.
             const reads: Array<typeof tools[number]> = [];
+            const iterSendRejections: Array<{ file: string; ext: string }> = [];
+            const iterPendingActions: Array<{ name: string; tb: typeof tools[number] }> = [];
             for (const tb of tools) {
               const name = parseToolName(tb.attrs);
               if (!name) continue;
-              if (READ_TOOLS.has(name)) reads.push(tb);
-              else pendingActionTools.push({ name, tb });
+              if (READ_TOOLS.has(name)) {
+                reads.push(tb);
+              } else if (name === "send_to_card") {
+                const file = parseField(tb.body, "file") || "";
+                const dot = file.lastIndexOf(".");
+                const ext = dot === -1 ? "" : file.slice(dot + 1).toLowerCase();
+                if (file && !CHAT_CLASS_EXTENSIONS.has(ext)) {
+                  iterSendRejections.push({ file, ext });
+                } else {
+                  iterPendingActions.push({ name, tb });
+                }
+              } else {
+                iterPendingActions.push({ name, tb });
+              }
             }
 
-            // On the final iteration, OR if no read tools were called,
-            // accept the say blocks and stop looping.
-            if (iter === 1 || reads.length === 0) {
+            // Final iteration, OR no follow-up needed (no reads, no
+            // rejections to retry): accept the say blocks + actions
+            // from this iter and stop looping.
+            const needsRetry = iter < 1 && iterSendRejections.length > 0;
+            if (iter === 1 || (reads.length === 0 && !needsRetry)) {
               allSayBlocks.push(...says);
+              pendingActionTools.push(...iterPendingActions);
+              // Surface the rejections so the override-speakable path
+              // below sees them and can replace the LLM's now-misleading
+              // <say> on the final iter (when retry didn't recover).
+              if (iter === 1 && iterSendRejections.length > 0) {
+                for (const r of iterSendRejections) {
+                  console.log(`[voice-agent] send_to_card retry rejected non-chat target: ${r.file} (.${r.ext})`);
+                  pendingActionTools.push({
+                    name: "send_to_card",
+                    tb: { attrs: ` name="send_to_card"`, body: `<file>${r.file}</file>`, selfClosing: false },
+                  });
+                }
+              }
               break;
             }
 
-            // Iter 0 with read tools: execute, append synthetic followup.
+            // Iter 0 with read tools and/or send_to_card rejections:
+            // execute reads, build synthetic followup with results +
+            // rejection notes, loop to iter 1 so the LLM can summarize
+            // and/or retry the dispatch.
             const readResultLines: string[] = [];
+            for (const r of iterSendRejections) {
+              console.log(`[voice-agent] send_to_card iter-0 rejected non-chat target: ${r.file} (.${r.ext}) — feeding back for retry`);
+              ctx.broadcast({
+                type: "tool_result",
+                name: "send_to_card",
+                ok: false,
+                file: r.file,
+                message: `"${r.file}" isn't a chat card — pick from "Chat cards".`,
+              });
+              readResultLines.push(
+                `<result tool="send_to_card" file="${r.file}" error="true">\n` +
+                `Rejected: "${r.file}" has extension .${r.ext} which isn't a chat card. ` +
+                `send_to_card only routes to chat-class cards listed under "Chat cards" in your context. ` +
+                `Pick one of those and emit a fresh <tool name="send_to_card"> with the correct <file>, plus a new <say>.\n` +
+                `</result>`,
+              );
+            }
+            // Add the iter-0's valid pending actions to the master list
+            // (only the rejected ones triggered the retry path).
+            pendingActionTools.push(...iterPendingActions);
             for (const tb of reads) {
               const name = parseToolName(tb.attrs)!;
               const file = parseField(tb.body, "file");
@@ -923,6 +1429,28 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                     count: replies.length,
                   });
                   readResultLines.push(`<result tool="read_recent_replies" file="${file}">\n${body}\n</result>`);
+                } else if (name === "search") {
+                  // Tavily web search; result body is already LLM-friendly
+                  // (numbered list of titles + snippets). See voiceTools.ts.
+                  const query = parseField(tb.body, "query") || "";
+                  const body = await tavilySearch(query);
+                  ctx.broadcast({ type: "tool_result", name, ok: true, query });
+                  readResultLines.push(`<result tool="search" query="${query.replace(/"/g, "&quot;")}">\n${body}\n</result>`);
+                } else if (name === "web_fetch") {
+                  // Generic URL fetch with SSRF guard + HTML→text strip.
+                  // Used after a search to drill into a specific result, or
+                  // when the user gives a URL directly.
+                  const url = parseField(tb.body, "url") || "";
+                  const body = await webFetch(url);
+                  ctx.broadcast({ type: "tool_result", name, ok: true, url });
+                  readResultLines.push(`<result tool="web_fetch" url="${url.replace(/"/g, "&quot;")}">\n${body}\n</result>`);
+                } else if (name === "time") {
+                  // IANA timezone → formatted current time. No network.
+                  // Empty <tz> defaults to the server's local timezone.
+                  const tz = parseField(tb.body, "tz") || "";
+                  const body = timeAt(tz);
+                  ctx.broadcast({ type: "tool_result", name, ok: true, tz });
+                  readResultLines.push(`<result tool="time" tz="${tz.replace(/"/g, "&quot;")}">\n${body}\n</result>`);
                 }
               } catch (err) {
                 const msg = (err as Error).message;
@@ -932,14 +1460,28 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             }
 
             // Append the LLM's tool-calling output and the synthetic
-            // tool-results as a follow-up turn so iter 1 can summarize.
+            // tool-results as a follow-up turn so iter 1 can summarize
+            // (read tools) and/or retry (rejected send_to_cards).
+            //
+            // Instruction wording depends on what's needed: a read-only
+            // followup tells the LLM "no more tools, just <say>"; a
+            // followup with send_to_card rejections needs the LLM to
+            // emit a corrected tool call AND a matching <say>. Mixing
+            // those instructions ("don't call tools" + "call this tool
+            // now") is what triggers hallucinated <say>s like "I asked
+            // Qwen…" without an actual dispatch.
             messages.push({ role: "assistant", content: llmRaw });
+            const followupInstruction = iterSendRejections.length > 0
+              ? `Your previous send_to_card was rejected (see <result error="true"> below). ` +
+                `Pick a <file> from the "Chat cards" section and emit a fresh <tool name="send_to_card"> with that file, ` +
+                `paired with a <say> that describes what you just dispatched. ` +
+                `When no chat card fits, emit a <say> alone that offers the user a chat card by name (e.g. "want me to ask Qwen?") — ` +
+                `keep <say> truthful: claim a dispatch only when a matching tool call goes out in the same response.`
+              : `Tool results below. Write your final spoken reply now using them. ` +
+                `Skip further tools — give a 1-2 sentence <say> answer.`;
             messages.push({
               role: "user",
-              content:
-                `Tool results below. Use them to write your final spoken reply now. ` +
-                `Do NOT call any more tools — give a 1-2 sentence <say> answer.\n\n` +
-                readResultLines.join("\n\n"),
+              content: followupInstruction + "\n\n" + readResultLines.join("\n\n"),
             });
           }
 
@@ -950,6 +1492,16 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // didn't already.
           let dispatchMaxQueueDepth = 0;
           let dispatchHadQueueing = false;
+          // Track send_to_card outcomes so we can override the LLM's
+          // (often misleading) <say> when a dispatch was rejected.
+          // The LLM speaks the confirmation alongside the tool call in
+          // the same iter — by the time validation fires, the say block
+          // is already chosen. If every send_to_card was rejected, the
+          // confirmation is a lie; override with the rejection so the
+          // user hears truth instead of "OK, asked Qwen" when nothing
+          // actually got asked.
+          const rejectedSendTargets: string[] = [];
+          let sendDispatchedOk = false;
           for (const { name, tb } of pendingActionTools) {
             ctx.broadcast({ type: "tool_call", name, args: tb.body.slice(0, 200) });
             try {
@@ -973,11 +1525,45 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                   });
                   continue;
                 }
+                // Reject non-chat targets early. Data cards (port-table,
+                // csv, json, terminal, process-backed cards…) silently
+                // ignore conversational payloads on their channels — the
+                // dispatch would "succeed" at the channel layer but
+                // nothing meaningful happens, leaving Mica's <say>
+                // confirmation a lie. Strict rejection lets the LLM
+                // retry within the same turn.
+                const dot = file.lastIndexOf(".");
+                const ext = dot === -1 ? "" : file.slice(dot + 1).toLowerCase();
+                if (!CHAT_CLASS_EXTENSIONS.has(ext)) {
+                  console.log(`[voice-agent] send_to_card rejected non-chat target: ${file} (.${ext})`);
+                  rejectedSendTargets.push(file);
+                  ctx.broadcast({
+                    type: "tool_result",
+                    name,
+                    ok: false,
+                    file,
+                    message: `"${file}" isn't a chat card — send_to_card only routes to chat-class cards. Pick one from the "Chat cards" list and retry.`,
+                  });
+                  continue;
+                }
                 const result = channelMgr.dispatchToFilename(
                   sessionProject,
                   file,
                   { message },
                 );
+                if (result.ok) {
+                  sendDispatchedOk = true;
+                  // Update delegation context so the next turn's prompt
+                  // shows what's pending. AGENT_NAME_DEFAULTS resolves
+                  // chat → "Qwen", claude → "Claude Code", etc.
+                  delegation = {
+                    filename: file,
+                    agentName: AGENT_NAME_DEFAULTS[ext] || ext,
+                    summary: message.slice(0, 150),
+                    turnsAgo: 0,
+                  };
+                  console.log(`[voice-agent] delegation tracked: ${file} (${delegation.agentName})`);
+                }
                 let detail: string;
                 if (!result.ok) {
                   detail = `card "${file}" isn't open — open it once first, then voice can route to it`;
@@ -1000,6 +1586,41 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                   message: detail,
                   clientCount: result.clientCount,
                   queueDepth: result.queueDepth,
+                });
+              } else if (name === "abort") {
+                // User-initiated stop. Side effects in order:
+                //  1. Drop queued audio so a "stop" doesn't get followed
+                //     by stale utterances queued during the current turn.
+                //  2. Cascade {type:"interrupt"} to the last delegation's
+                //     chat-card session if any. The target handler aborts
+                //     its in-flight LLM and broadcasts done.
+                //  3. Broadcast {type:"abort"} to the voice card so it
+                //     stops in-flight playback locally.
+                //  4. Clear delegation. The user just bailed; reset.
+                // Mica's <say> confirmation continues to TTS normally —
+                // that's the audible acknowledgement.
+                const droppedQueue = queuedAudio.length;
+                queuedAudio.length = 0;
+                let cascaded = false;
+                if (delegation) {
+                  console.log(`[voice-agent] abort tool: cascading interrupt to ${delegation.filename}`);
+                  const cascadeResult = channelMgr.dispatchToFilename(
+                    sessionProject,
+                    delegation.filename,
+                    { type: "interrupt" },
+                  );
+                  cascaded = cascadeResult.ok === true;
+                }
+                ctx.broadcast({ type: "abort" });
+                const cascadeTarget = delegation?.filename || null;
+                delegation = null;
+                ctx.broadcast({
+                  type: "tool_result",
+                  name,
+                  ok: true,
+                  cascaded,
+                  cascadeTarget,
+                  droppedQueue,
                 });
               } else {
                 ctx.broadcast({
@@ -1030,6 +1651,35 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           //   (c) Both <say> and tools missing — error.
           let speakable = allSayBlocks.map((s) => s.body).join(" ").trim();
           let usedFallback = false;
+
+          // Override the LLM's <say> when send_to_card was rejected and
+          // no other dispatch succeeded — the spoken confirmation is
+          // a lie ("OK, asked Qwen…") because the LLM committed to it
+          // before validation fired. Replace with a truthful note so
+          // the user knows nothing was actually routed and can retry.
+          if (rejectedSendTargets.length > 0 && !sendDispatchedOk) {
+            const target = rejectedSendTargets[0];
+            const rest = rejectedSendTargets.length - 1;
+            const tail = rest > 0 ? ` (and ${rest} other${rest === 1 ? "" : "s"})` : "";
+            speakable = `I tried to route that to ${target}${tail}, but only chat cards can take messages. Open a chat card first, then ask again.`;
+            usedFallback = true;
+            console.log(`[voice-agent] overrode LLM <say> due to rejected send_to_card: ${rejectedSendTargets.join(", ")}`);
+          }
+
+          // Hallucinated-dispatch safety net. The LLM regularly says "I
+          // asked Qwen" / "I routed that" / "I sent it to X" without
+          // emitting an actual <tool name="send_to_card">. The hard-rule
+          // in the system prompt curbs this but doesn't eliminate it.
+          // If we're about to speak a dispatch claim and no send_to_card
+          // actually succeeded, scrub the lie and surface a corrigible
+          // alternative instead.
+          else if (!sendDispatchedOk && speakable && /\b(?:asked|sent (?:that |it )?to|told|dispatched|routed (?:that|it)|forwarded (?:that|it)|kicked off|kicked it off|handed (?:that|it) (?:off|over))\b/i.test(speakable)) {
+            console.log(`[voice-agent] overrode LLM <say> due to hallucinated dispatch claim: ${JSON.stringify(speakable.slice(0, 200))}`);
+            speakable = chatCards.length > 0
+              ? `I didn't actually route that anywhere — want me to send it to ${chatCards[0].name}?`
+              : `I didn't route that anywhere — open a chat card first if you want me to forward work.`;
+            usedFallback = true;
+          }
           if (!speakable) {
             if (pendingActionTools.length === 0) {
               // (a) Plain answer with no <say>: speak the cleaned raw output.
@@ -1066,13 +1716,29 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             }
           }
 
+          // User-facing work (STT + LLM + dispatch) is done. Release `busy`
+          // BEFORE TTS so the user can ask a follow-up while the previous
+          // answer's audio is still playing. `ttsActive` keeps the ambient
+          // queue gated through TTS so a chat-card-finished ping doesn't
+          // barge in mid-sentence over the user's own answer.
+          busy = false;
+          // Drain any ambient announcements queued during STT/LLM. Their
+          // own gate (announcementInFlight + busy + ttsActive) keeps them
+          // serialized; if ttsActive is about to be true below, this no-ops.
+          setImmediate(() => { void drainAnnouncementQueue(); });
+
           if (speakable) {
-            console.log(`[voice-agent] speaking ${speakable.length} chars (fallback=${usedFallback})`);
+            // Skip Kokoro round-trip when no subscriber is currently visible.
+            // Sentence text still goes out so the reply panel updates; a tab
+            // that becomes visible later sees the answer text.
+            const skipTts = !anyVisible();
+            console.log(`[voice-agent] speaking ${speakable.length} chars (fallback=${usedFallback}${skipTts ? ", skipTts=true (no visible client)" : ""})`);
             ctx.broadcast({ type: "thinking", phase: "tts" });
             let audioFramesEmitted = 0;
             const fanout = new SentenceFanout({
               ttsUrl: getTtsUrl(),
               voice: msg.voice || voicePref,
+              skipTts,
               onFrame: (f) => {
                 if (f.type === "sentence") {
                   ctx.broadcast({
@@ -1092,9 +1758,17 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                 }
               },
             });
-            fanout.feed(speakable);
-            fanout.end();
-            await fanout.drain();
+            ttsActive = true;
+            currentFanout = fanout;
+            try {
+              fanout.feed(speakable);
+              fanout.end();
+              await fanout.drain();
+            } finally {
+              ttsActive = false;
+              if (currentFanout === fanout) currentFanout = null;
+              setImmediate(() => { void drainAnnouncementQueue(); });
+            }
             console.log(`[voice-agent] turn done — audio frames emitted=${audioFramesEmitted}`);
 
             history.push({ role: "assistant", content: speakable, raw: lastLlmRaw });
@@ -1110,10 +1784,22 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
 
           ctx.broadcast({ type: "done" });
         } finally {
+          // Belt-and-suspenders: an early throw before the explicit release
+          // above would otherwise leave `busy` stuck true. Setting it again
+          // is idempotent.
           busy = false;
-          // User turn done — flush any ambient announcements that arrived
-          // while we were busy.
+          ttsActive = false;
           setImmediate(() => { void drainAnnouncementQueue(); });
+          // Process queued audio items. Each item triggers a new turn.
+          // We use setImmediate to avoid re-entrant calls on the same onData
+          // stack. The new onData call will set busy=true again.
+          if (queuedAudio.length > 0) {
+            const next = queuedAudio.shift()!;
+            console.log(`[voice-agent] processing queued audio (depth=${queuedAudio.length})`);
+            setImmediate(() => {
+              void handler.onData?.(_clientId, { audioB64: next.audioB64, audioMime: next.audioMime, voice: next.voice });
+            });
+          }
         }
       },
 

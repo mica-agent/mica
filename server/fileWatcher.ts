@@ -166,20 +166,89 @@ export class FileWatcher extends EventEmitter {
       translate: (_r) => null,
     });
 
-    // Wrong-location watcher — observes the COMMON misplacement
-    // `<projectDir>/card-classes/<name>/` (without the leading `.mica/`).
-    // The validator `enforceCardClassPath` (server/cardValidators.ts, wired
-    // in server/index.ts) needs file-change events to fire its card-error
-    // broadcast, but neither the canvas watcher (rooted at canvasRoot) nor
-    // the .mica/card-classes watcher above sees writes here. Without this
-    // sub, an agent can silently create card-class files at the wrong path
-    // and burn many turns debugging the resulting render failure (real
-    // case: smoke test 9 took ~20 turns to self-diagnose).
+    // Non-canvas coverage. Two layers, both non-recursive — bounded
+    // inotify cost regardless of how big the project tree gets.
+    //
+    //   1. Project-root watcher (1 inotify): top-level file events +
+    //      lazy detection of `card-classes/` (wrong location) and brand-
+    //      new top-level subdirs (which trigger lazy install of layer 2).
+    //   2. Per-top-level-subdir watcher (≤ TOP_LEVEL_SUBDIR_CAP inotify):
+    //      direct-children file events inside each non-canvas, non-IGNORE,
+    //      non-dot subdir at the project root.
+    //
+    // Deeper nesting (e.g. <project>/foo/bar/baz.md) is NOT watched. The
+    // filebrowser's listAll is project-wide so deep files appear in the
+    // tree; its diff-on-refresh catches net-new entries whenever any
+    // event triggers a refresh. Trade-off: a git-cloned huge repo at the
+    // project root costs O(top-level-subdirs) watches, not O(total-dirs).
     //
     // Skip when canvasRoot is empty — the canvas watcher is then rooted
-    // at projectDir and already covers <projectDir>/card-classes/, so a
-    // second sub would double-emit through scheduleChange.
+    // at projectDir recursively and already covers everything below.
+    const TOP_LEVEL_SUBDIR_CAP = 50;
+    const topLevelWatchers = new Set<string>();
     if (normalizedRoot !== "") {
+      // Pre-populate knownFiles with top-level files so created/changed/
+      // deleted differentiation in handleFileChange works on first event.
+      try {
+        const rootEntries = await fs.promises.readdir(projectDir, { withFileTypes: true });
+        for (const e of rootEntries) {
+          if (e.name.startsWith(".") || IGNORE_DIRS.has(e.name) || e.name === normalizedRoot) continue;
+          if (e.isFile()) knownFiles.add(e.name);
+        }
+      } catch { /* directory just disappeared mid-init; subsequent events handle it */ }
+
+      // Install (or lazy-install) a non-recursive watcher on a single
+      // top-level subdir. Captures direct-children file events. Closure
+      // over the project-watch state so the rootWatcher below can call
+      // it when a new subdir appears later.
+      const installTopLevelSubdirWatch = async (subdir: string): Promise<void> => {
+        if (topLevelWatchers.has(subdir)) return;
+        if (topLevelWatchers.size >= TOP_LEVEL_SUBDIR_CAP) {
+          console.warn(
+            `[file-watcher] ${project}: top-level subdir cap (${TOP_LEVEL_SUBDIR_CAP}) ` +
+            `reached; skipping watch on ${subdir}. Files there appear in ` +
+            `listings but won't fire change events.`,
+          );
+          return;
+        }
+        const subdirAbs = path.join(projectDir, subdir);
+        try {
+          const ents = await fs.promises.readdir(subdirAbs, { withFileTypes: true });
+          for (const e of ents) {
+            if (e.name.startsWith(".") || IGNORE_DIRS.has(e.name)) continue;
+            if (e.isFile()) knownFiles.add(`${subdir}/${e.name}`);
+          }
+        } catch { /* dir may have just been deleted */ }
+        let watcher: fs.FSWatcher;
+        try {
+          watcher = fs.watch(subdirAbs, (_eventType, reported) => {
+            if (!reported) return;
+            if (reported.indexOf("/") !== -1 || reported.indexOf(path.sep) !== -1) return;
+            if (reported.startsWith(".") || IGNORE_DIRS.has(reported)) return;
+            this.scheduleChange(project, `${subdir}/${reported}`);
+          });
+        } catch (err) {
+          console.warn(`[file-watcher] ${project}: failed to watch top-level subdir ${subdir}: ${(err as Error).message}`);
+          return;
+        }
+        watcher.on("error", (err: Error) => {
+          console.warn(`[file-watcher] ${project}: watch error on ${subdir}: ${err.message}`);
+          // Drop from the set so a future re-create can re-install.
+          topLevelWatchers.delete(subdir);
+        });
+        subs.push({ watcher, dir: subdirAbs, translate: (_r) => null });
+        topLevelWatchers.add(subdir);
+      };
+
+      // Initial scan: install one watcher per surviving top-level subdir.
+      try {
+        const rootEntries = await fs.promises.readdir(projectDir, { withFileTypes: true });
+        for (const e of rootEntries) {
+          if (e.name.startsWith(".") || IGNORE_DIRS.has(e.name) || e.name === normalizedRoot) continue;
+          if (e.isDirectory()) await installTopLevelSubdirWatch(e.name);
+        }
+      } catch { /* noop */ }
+
       const wrongLocationAbs = path.join(projectDir, "card-classes");
       let wrongWatcher: fs.FSWatcher | null = null;
 
@@ -204,29 +273,50 @@ export class FileWatcher extends EventEmitter {
           console.warn(`[file-watcher] ${project}: failed to install wrong-location watcher:`, (err as Error).message);
         }
       };
+      if (fs.existsSync(wrongLocationAbs)) installWrongLocationWatcher();
 
-      if (fs.existsSync(wrongLocationAbs)) {
-        installWrongLocationWatcher();
-      } else {
-        // Lazy install: agent typically creates the wrong dir mid-session
-        // via `cp -r ... <project>/card-classes/<name>`. Watch project root
-        // non-recursively (bounded; no inotify-explosion risk) for the dir
-        // to appear, then install the recursive sub at that point.
-        const rootWatcher = fs.watch(projectDir, (_eventType, reported) => {
-          if (reported !== "card-classes") return;
-          if (!wrongWatcher && fs.existsSync(wrongLocationAbs)) {
-            installWrongLocationWatcher();
+      const rootWatcher = fs.watch(projectDir, (_eventType, reported) => {
+        if (!reported) return;
+        // Direct children only — `recursive: false` is the platform default
+        // here; bail if the platform handed us a deeper path anyway (HFS).
+        if (reported.indexOf("/") !== -1 || reported.indexOf(path.sep) !== -1) return;
+        // canvasRoot is covered by the recursive canvas watcher.
+        if (reported === normalizedRoot) return;
+        // Hidden / always-ignored entries (.mica, .git, node_modules, …).
+        if (reported.startsWith(".") || IGNORE_DIRS.has(reported)) return;
+
+        // Lazy hook for the wrong-location card-classes dir.
+        if (reported === "card-classes" && !wrongWatcher && fs.existsSync(wrongLocationAbs)) {
+          installWrongLocationWatcher();
+        }
+
+        // Stat to route the event:
+        //   - File → schedule a change (top-level file create/edit/delete).
+        //   - New directory → lazy-install its non-recursive sub-watch
+        //     so future file events inside it fire too.
+        //   - Stat error → likely a deletion; schedule a change so
+        //     handleFileChange can emit `deleted` if knownFiles had it.
+        const reportedName = reported;
+        fs.stat(path.join(projectDir, reportedName), (err, stats) => {
+          if (err) {
+            this.scheduleChange(project, reportedName);
+            return;
+          }
+          if (stats.isFile()) {
+            this.scheduleChange(project, reportedName);
+          } else if (stats.isDirectory() && !topLevelWatchers.has(reportedName)) {
+            void installTopLevelSubdirWatch(reportedName);
           }
         });
-        rootWatcher.on("error", (err: Error) => {
-          console.warn(`[file-watcher] ${project}: watch error on project root (lazy):`, err.message);
-        });
-        subs.push({
-          watcher: rootWatcher,
-          dir: projectDir,
-          translate: (_r) => null,
-        });
-      }
+      });
+      rootWatcher.on("error", (err: Error) => {
+        console.warn(`[file-watcher] ${project}: watch error on project root:`, err.message);
+      });
+      subs.push({
+        watcher: rootWatcher,
+        dir: projectDir,
+        translate: (_r) => null,
+      });
     }
 
     // Pinned files outside canvasRoot — install a watcher per unique parent

@@ -98,6 +98,29 @@ body.fb-resizing * {
 }
 .fb-toggle:hover { color: #ccc; }
 
+/* Tiny breadcrumb showing where the upload button will write. Truncates from
+   the LEFT so the leaf folder stays visible when the path gets long. */
+.fb-active-folder {
+  font-size: 10px;
+  color: #c4b5fd;
+  background: rgba(124, 58, 237, 0.12);
+  border: 1px solid rgba(124, 58, 237, 0.3);
+  border-radius: 3px;
+  padding: 1px 6px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+}
+.fb-active-folder:hover {
+  background: rgba(124, 58, 237, 0.22);
+  color: #fff;
+}
+
 .fb-tree-body {
   flex: 1;
   overflow-y: auto;
@@ -120,6 +143,24 @@ body.fb-resizing * {
 .fb-node:hover { background: rgba(255,255,255,0.05); }
 .fb-node--selected { background: rgba(124,58,237,0.22); color: #fff; }
 .fb-node--drop-target { background: rgba(74,222,128,0.18); outline: 1px solid rgba(74,222,128,0.5); }
+/* Active folder = where the upload button sends to. Subtle outline + folder
+   icon tint so the user can see at a glance which folder is the upload
+   target. Distinct from drop-target (drag-only) and selected (file preview). */
+.fb-node--active-folder {
+  outline: 1px solid rgba(124, 58, 237, 0.55);
+  background: rgba(124, 58, 237, 0.08);
+}
+.fb-node--active-folder .fb-icon--folder { color: #c4b5fd; }
+/* Glow for newly-added files/directories. Triggered by file-created events
+   from elsewhere (agent writes, drag drops from another tab, git pulls).
+   Capped at 8 concurrent glows in card.js to prevent flash-flooding the pane
+   during bulk events. */
+@keyframes fb-glow-fade {
+  0%   { background: rgba(255, 220, 100, 0.40); box-shadow: inset 0 0 0 1px rgba(255, 220, 100, 0.55); }
+  60%  { background: rgba(255, 220, 100, 0.20); box-shadow: inset 0 0 0 1px rgba(255, 220, 100, 0.30); }
+  100% { background: transparent; box-shadow: inset 0 0 0 1px transparent; }
+}
+.fb-node--new { animation: fb-glow-fade 2200ms ease-out forwards; }
 
 .fb-chev {
   width: 12px;

@@ -85,6 +85,10 @@ export function createLlmAgentHandler() {
 
         if (msg.type === "interrupt") {
           if (activeAbort) activeAbort.abort();
+          // Broadcast a final `done` so listeners (chat-card UI, voice
+          // ambient gate) see the turn end deterministically. Empty
+          // content marks it as cancelled.
+          ctx.broadcast({ type: "done", content: "" });
           return;
         }
 
@@ -96,6 +100,11 @@ export function createLlmAgentHandler() {
 
         const userMessage = msg.message?.trim();
         if (!userMessage) return;
+
+        // Synthetic clientId from channelMgr.dispatchToFilename — voice
+        // dispatched this turn. The eventual `done` broadcast carries
+        // viaVoice:true for any future ambient-gate broadening.
+        const turnSource: "user" | "voice" = _clientId === "voice-dispatch" ? "voice" : "user";
 
         history.push({ role: "user", content: userMessage });
         ctx.broadcast({ type: "user", content: userMessage });
@@ -172,7 +181,14 @@ export function createLlmAgentHandler() {
           if (assistantText) {
             history.push({ role: "assistant", content: assistantText });
           }
-          ctx.broadcast({ type: "done", content: assistantText });
+          ctx.broadcast({
+            type: "done",
+            content: assistantText,
+            // Source attribution; future-proofs the voice ambient gate
+            // if it later listens for done events from this handler.
+            source: turnSource,
+            viaVoice: turnSource === "voice",
+          });
 
         } catch (err) {
           if ((err as Error).name !== "AbortError") {

@@ -394,7 +394,8 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
     let sessionErrorMsg = "";
 
     let busy = false;
-    let queue: string[] = [];
+    interface QueuedMsg { text: string; source: "user" | "voice" | "file-changes" }
+    let queue: QueuedMsg[] = [];
     // Tracks the in-flight prompt so onData (interrupt) can abort it. Same
     // pattern as activeAbort in claudeAgent.ts.
     let activePromptAbort: AbortController | null = null;
@@ -779,8 +780,9 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
 
     // ── Per-turn process ────────────────────────────────────────
 
-    async function processMessage(message: string): Promise<void> {
-      if (busy) { queue.push(message); return; }
+    async function processMessage(message: string, source: QueuedMsg["source"] = "user"): Promise<void> {
+      if (busy) { queue.push({ text: message, source }); return; }
+      const turnSource = source;
       busy = true;
       markProjectActivity(sessionProject, +1);
       // Publish this session's project as the last-active opencode project.
@@ -968,6 +970,11 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           content: resultText,
           agent: "OpenCode",
           filesChanged,
+          // Source attribution surfaced to listeners. voiceAgent's
+          // ambient gate uses `viaVoice` to decide whether to read
+          // this reply aloud (only voice-dispatched turns get TTS).
+          source: turnSource,
+          viaVoice: turnSource === "voice",
           contextWindow: OPENCODE_CTX_WINDOW,
           baselineTokens: inputTokens,
           inputTokens,
@@ -988,7 +995,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         busy = false;
         if (queue.length > 0) {
           const next = queue.shift()!;
-          setImmediate(() => processMessage(next));
+          setImmediate(() => processMessage(next.text, next.source));
         }
       }
     }
@@ -1010,8 +1017,8 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
             initialScanDone = true;
             const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
             setTimeout(() => {
-              if (!busy) processMessage(scanMessage);
-              else queue.push(scanMessage);
+              if (!busy) processMessage(scanMessage, "user");
+              else queue.push({ text: scanMessage, source: "user" });
             }, 2000);
           }
         });
@@ -1074,8 +1081,13 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           return;
         }
 
-        if (busy) { queue.push(message); return; }
-        processMessage(message);
+        // Synthetic clientId from channelMgr.dispatchToFilename — voice
+        // dispatched this turn. The eventual `assistant` broadcast will
+        // be tagged with viaVoice:true so voice's ambient gate plays it.
+        const turnSource: QueuedMsg["source"] = clientId === "voice-dispatch" ? "voice" : "user";
+
+        if (busy) { queue.push({ text: message, source: turnSource }); return; }
+        processMessage(message, turnSource);
       },
 
       onDestroy() {
