@@ -91,6 +91,7 @@ import { SentenceFanout } from "./voiceStreaming.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
 import { createVoiceAgentHandler } from "./voiceAgent.js";
+import { createVoiceOmniAgentHandler } from "./voiceOmniAgent.js";
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
 import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
 import { stopOpencodeServer } from "./opencodeServer.js";
@@ -2783,6 +2784,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
   channelManager.registerHandler("voice", createVoiceAgentHandler(channelManager));  // .voice files -> canvas-aware voice assistant
+  channelManager.registerHandler("voice-omni", createVoiceOmniAgentHandler(channelManager));  // .voice-omni files -> Nemotron Omni audio-in voice (experiment)
   channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
   channelManager.registerHandler("opencode", createOpencodeAgentHandler(fileWatcher));  // .opencode files -> OpenCode agent (lazy-spawned opencode serve)
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
