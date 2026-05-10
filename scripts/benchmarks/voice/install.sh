@@ -65,6 +65,37 @@ python -m pip install \
   "imageio-ffmpeg>=0.5" \
   "silero-vad>=5.1" || die "pip install failed — see error above"
 
+# ── Pin cuDNN to match the SYSTEM's installed major.minor ────────
+# The 26.04 devcontainer ships system cuDNN at /usr/lib/aarch64-linux-gnu/.
+# Some sublibraries (libcudnn_engines_tensor_ir.so.9 in particular) are
+# loaded via dlopen from system paths even when torch's bundled cuDNN is
+# present in the venv. If the venv's cuDNN MAJOR.MINOR doesn't match the
+# system's, mixed-version sublibs load and CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH
+# crashes synthesis at runtime (Kokoro/Parakeet GPU init).
+#
+# Detect the system cuDNN's MAJOR.MINOR from its real-file symlink and
+# install a matching nvidia-cudnn-cu13. Torch's static "==9.20.0.48"
+# pin warning is informational; cuDNN ABI-compat across patch and minor
+# means the install works at runtime.
+SYS_CUDNN_MM=""
+for d in /usr/lib/aarch64-linux-gnu /usr/lib/x86_64-linux-gnu /usr/lib; do
+  if [ -e "$d/libcudnn.so" ]; then
+    real=$(readlink -f "$d/libcudnn.so")
+    SYS_CUDNN_MM=$(echo "$real" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    break
+  fi
+done
+if [ -n "$SYS_CUDNN_MM" ]; then
+  say "Aligning nvidia-cudnn-cu13 to system cuDNN $SYS_CUDNN_MM ..."
+  python -m pip install --quiet --force-reinstall \
+    "nvidia-cudnn-cu13>=$SYS_CUDNN_MM,<$(echo $SYS_CUDNN_MM | awk -F. '{print $1"."$2+1}')" \
+    || warn "cuDNN pin failed — TTS/STT may hit SUBLIBRARY_VERSION_MISMATCH at runtime"
+  python -c "import torch; assert torch.backends.cudnn.is_available(), 'cuDNN not available'; print('cuDNN check: OK')" \
+    || warn "torch.backends.cudnn.is_available() returned false — runtime TTS/STT will fail"
+else
+  warn "Could not find system cuDNN at /usr/lib/{aarch64,x86_64,}-linux-gnu; skipping pin"
+fi
+
 ok "Python deps installed"
 
 # ── Sample audio ─────────────────────────────────────────────────

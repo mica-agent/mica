@@ -87,7 +87,7 @@
 	},
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "bash -lc 'sudo chown -R vscode:vscode /home/vscode/.cache 2>/dev/null; command -v claude >/dev/null 2>&1 || (curl -fsSL https://claude.ai/install.sh | bash); claude --version || true'",
+	"postCreateCommand": "bash -lc 'sudo chown -R vscode:vscode /home/vscode/.cache 2>/dev/null; sudo mkdir -p /workspaces/testproj && sudo chown vscode:vscode /workspaces/testproj; command -v claude >/dev/null 2>&1 || (curl -fsSL https://claude.ai/install.sh | bash); claude --version || true'",
 
 	// Connect as non-root user with sudo access
 	"remoteUser": "vscode"
