@@ -404,8 +404,8 @@ function CloneForm({
   // the server's DEFAULT_CANVAS_ROOT is authoritative when the field is
   // left blank.
   const [docsDir, setDocsDir] = useState('canvas');
-  // Default to the first template (usually cloud-claude) so a cloned repo gets
-  // skills + agents out of the box. User can switch to "None" for a bare clone.
+  // Default to the first template so a cloned repo gets skills + agents out
+  // of the box. User can switch to "None" for a bare clone.
   const [template, setTemplate] = useState<string | null>(templates[0]?.name ?? null);
   const [cloning, setCloning] = useState(false);
 

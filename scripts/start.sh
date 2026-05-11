@@ -150,10 +150,11 @@ vllm serve $CHAT_MODEL \
   --enable-chunked-prefill \
   --trust-remote-code \
   --reasoning-parser qwen3 \
-  --tool-call-parser qwen3_xml \
+  --tool-call-parser qwen3_coder \
   --enable-auto-tool-choice \
+  --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}' \
   --limit-mm-per-prompt '{"image":4,"video":1}' \
-  --override-generation-config '{"temperature":0.3,"top_p":0.9,"top_k":20,"repetition_penalty":1.05}'
+  --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20}'
 EOF
 )
 

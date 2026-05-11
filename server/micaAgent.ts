@@ -30,6 +30,7 @@ import { markProjectActivity } from "./projectActivity.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
@@ -2067,6 +2068,19 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "thinking") {
                   const t = block.thinking || "";
                   console.log(`[mica-agent] THINKING block (${t.length} chars): ${t.slice(0, 120).replace(/\n/g, " ")}...`);
+                  // Parent-context thinking → progress event so the chat card's
+                  // detail panel shows the agent's reasoning between tool calls.
+                  // Without this, the panel sits at "Starting..." for the 5-30s
+                  // the agent thinks before its first tool call, giving the user
+                  // no signal that the system is working. 💭 prefix distinguishes
+                  // reasoning from tool calls (which carry no prefix or ⚠ for errors).
+                  if (!ptid && t) {
+                    ctx.broadcast({
+                      type: "progress",
+                      tool: "thinking",
+                      description: "💭 " + t.slice(0, 100).replace(/\n/g, " "),
+                    });
+                  }
                   // Subagent-context thinking → strip the live activity line
                   // for the matching panel. Truncate to 80 chars; display-only.
                   if (ptid && t) {
@@ -2474,6 +2488,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       } finally {
         recordTurnEnd(ctx.filename);
         markProjectActivity(sessionProject, -1);
+        // Surface any card-errors that survived the turn (i.e. agent didn't
+        // self-heal). Errors POSTed mid-turn are held in cardErrorBuffer and
+        // released here — milestone, not timer. Errors the agent fixed via
+        // /ok are already cleared from the buffer; the flush is a no-op
+        // for those.
+        if (sessionProject) flushProjectPendingErrors(sessionProject);
         console.log(`[mica-agent] processMessage DONE: ${message.slice(0, 60)} | queue depth: ${queue.length}`);
         // Hand off to next queued message WITHOUT releasing busy outside this
         // synchronous block. setImmediate's callback briefly clears busy then

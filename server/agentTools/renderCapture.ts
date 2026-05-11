@@ -59,6 +59,11 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
           body: JSON.stringify({
             model: "qwen3-vl-local",
             max_tokens: 400,
+            // Captioning is descriptive, not reasoning. Disable thinking so
+            // the 400-token budget goes to the actual description instead
+            // of `<think>` content that ends up in reasoning_content and
+            // leaves `choices[0].message.content` empty. Mirrors voiceAgent.
+            chat_template_kwargs: { enable_thinking: false },
             messages: [
               {
                 role: "system",

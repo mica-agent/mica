@@ -186,12 +186,11 @@ in the project files themselves.
 For card-class authoring, the canonical reference is the
 `create-card-class` skill that ships with each project template:
 
-- `templates/cloud-claude/.claude/skills/create-card-class/SKILL.md`
-  for Claude Code projects.
-- `templates/cloud-claude/.qwen/skills/create-card-class/SKILL.md`
-  for the Qwen variant of the same template.
 - `templates/dgx-spark-local/.qwen/skills/create-card-class/SKILL.md`
   for local-model projects.
+
+The cloud-Claude template was deleted 2026-05-11 and will be
+rebuilt; until then, `dgx-spark-local` is the only template.
 
 Sibling skills in the same directories cover related authoring
 tasks (`grow-canvas`, `decompose-task`, `doc-consistency`, and

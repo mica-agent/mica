@@ -111,6 +111,7 @@ import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata, enforceCardJsLint, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
 import { SERVICES, getService, getAllStatuses, writePasteKey, deletePasteKey, type PasteKeyService } from "./connections.js";
 import { recordValidatorError, clearValidatorError, getPendingValidatorErrors, clearProjectValidatorErrors, hasValidatorError } from "./validatorErrorBuffer.js";
+import { setCardErrorBroadcaster, recordPendingError, clearPendingError } from "./cardErrorBuffer.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 import {
   setActivityBroadcast,
@@ -1376,54 +1377,68 @@ void SERVICES;
 
 // ── Card error/ok reporting ─────────────────────────────────
 
+// Wire the card-error broadcaster. Errors are held in cardErrorBuffer
+// (in-memory pending Map) until either:
+//   (a) the card POSTs /ok and we cancel the pending broadcast, or
+//   (b) the agent's turn ends and we flush remaining pending errors, or
+//   (c) the safety-net fallback fires (FALLBACK_MS, agent crashed mid-turn).
+// The validator buffer is recorded immediately — agent sees the error in
+// next-turn buildContext regardless of whether the UI ever surfaces it.
+setCardErrorBroadcaster(({ project, filename, error }) => {
+  console.log(`[card-error] ${filename}: ${error.slice(0, 200)}`);
+  broadcastToProject(project, { type: "card-error", filename, error, surface: classifyErrorSurface(filename) });
+  const errorPreview = error.slice(0, 120).replace(/\n/g, " ");
+  broadcastToProject(project, {
+    type: "progress",
+    tool: "card-error",
+    description: `⚠ ${filename}: ${errorPreview}`,
+  });
+});
+
 app.post("/api/cards/:filename/error", (req, res) => {
   const { filename } = req.params;
   const { error } = req.body as { error?: string };
   if (error) {
-    console.log(`[card-error] ${filename}: ${error.slice(0, 200)}`);
-    // Broadcast so the chat card (or any subscriber) can surface the error
-    // with a "Send to agent" affordance. Project-scoped via existing helper.
     const proj = getRequestProject(req);
     if (proj) {
-      broadcastToProject(proj, { type: "card-error", filename, error, surface: classifyErrorSurface(filename) });
-      // ALSO record into the validator-error buffer so the runtime error
-      // reaches the agent's prompt context on its next turn (same pipeline
-      // as schema/path/lint validators). Without this, the agent has no
-      // visibility into runtime errors a card.js throws — `mica.reportError`
-      // hits the user's UI but the agent flies blind, debugging via
-      // render_capture screenshots alone. Wiring runtime errors through
-      // the same buffer means when card.js throws "L is not defined" or
-      // similar, the agent sees the exact error message + filename on the
-      // next turn and can fix without the user having to retype it.
+      // Record into validator buffer IMMEDIATELY — agent reads this on its
+      // next turn via buildContext. Independent of whether/when the UI sees.
       recordValidatorError(proj, filename, error);
-      // ALSO broadcast as a `progress` event so the chat card's step list
-      // shows the error inline with the agent's other actions. Without this,
-      // mid-turn errors only surface as bubbles in the chat (the agent's
-      // step list is silent), and the user has no live evidence the system
-      // is registering the error. Description is prefixed with ⚠ so it's
-      // visually distinct from agent tool calls. The buildContext-time
-      // broadcast at micaAgent.ts handles errors that pre-exist a turn;
-      // this one handles errors that fire during a turn.
-      const errorPreview = error.slice(0, 120).replace(/\n/g, " ");
-      broadcastToProject(proj, {
-        type: "progress",
-        tool: "card-error",
-        description: `⚠ ${filename}: ${errorPreview}`,
-      });
+      // Hold the UI broadcast pending — surfaces at agent turn-end if still
+      // active, or gets canceled by /ok if the card heals first.
+      recordPendingError(proj, filename, error);
     }
   }
   res.json({ ok: true });
 });
 
 app.post("/api/cards/:filename/ok", (req, res) => {
-  // Card rendered (or re-rendered) without throwing — clear any prior
-  // runtime-error buffer entry for this file. Self-healing: the agent
-  // stops seeing the error in its next-turn prompt as soon as the card
-  // successfully renders, mirroring the validator-clear-on-rewrite
-  // semantics. Browser-side: CardRuntime POSTs /ok after a successful
+  // Card rendered (or re-rendered) without throwing — clear both the
+  // validator buffer entry (agent's next turn won't see this error) and
+  // any pending UI broadcast (the user won't see a transient error that
+  // self-healed). Browser-side: CardRuntime POSTs /ok after a successful
   // mount or re-render.
   const proj = getRequestProject(req);
-  if (proj) clearValidatorError(proj, req.params.filename);
+  const filename = req.params.filename;
+  if (proj) {
+    const hadError = hasValidatorError(proj, filename);
+    clearValidatorError(proj, filename);
+    clearPendingError(proj, filename);
+    // Notify subscribers (CardRuntime's in-card error banner) that this
+    // card now renders cleanly. Only broadcast when there was actually an
+    // error — healthy cards POST /ok on every mount and we don't want to
+    // spam the cleared event. The banner stays up across the agent's
+    // edit-and-retry cycle until /ok lands, which guarantees render_capture's
+    // screenshot captures the error during iteration (no race between
+    // optimistic clearing and the next screenshot).
+    if (hadError) {
+      broadcastToProject(proj, {
+        type: "card-error-cleared",
+        filename,
+        surface: classifyErrorSurface(filename),
+      });
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -1891,8 +1906,23 @@ app.put("/api/canvas/config", async (req, res) => {
 // so this file stays focused on routing and session wiring.
 registerGitEndpoints(app, { getRequestProject });
 
-// LLM server status — for chat cards to show loading state
-app.get("/api/llm/status", (_req, res) => {
+// LLM server status — for chat cards to show loading state.
+// When MICA_DISABLE_LLAMA=1, chat inference is served by vLLM at LLAMA_URL
+// instead of llama-server, so probe that endpoint rather than the (intentionally
+// stopped) llama-server. Without this, the chat card's send button stays
+// disabled because llama-server status is permanently {ready:false}.
+app.get("/api/llm/status", async (_req, res) => {
+  if (process.env.MICA_DISABLE_LLAMA === "1") {
+    const url = process.env.LLAMA_URL;
+    if (!url) { res.json({ running: false, ready: false, progress: "no chat endpoint" }); return; }
+    try {
+      const r = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
+      res.json(r.ok ? { running: true, ready: true } : { running: false, ready: false, progress: "starting" });
+    } catch {
+      res.json({ running: false, ready: false, progress: "unreachable" });
+    }
+    return;
+  }
   res.json(getLlamaServerStatus());
 });
 

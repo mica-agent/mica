@@ -279,12 +279,11 @@ For card class authoring, the canonical reference is the
 `create-card-class` skill that ships with each project
 template:
 
-- `templates/cloud-claude/.claude/skills/create-card-class/SKILL.md`
-  (Claude Code projects)
-- `templates/cloud-claude/.qwen/skills/create-card-class/SKILL.md`
-  (Qwen variant)
 - `templates/dgx-spark-local/.qwen/skills/create-card-class/SKILL.md`
   (local-model projects)
+
+The cloud-Claude template was deleted 2026-05-11 and will be
+rebuilt; until then, `dgx-spark-local` is the only template.
 
 The skill is the agent-facing authoring reference. Authoring
 lessons learned during a session fold back into the skill, not

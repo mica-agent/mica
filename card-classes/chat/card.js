@@ -593,100 +593,15 @@ messagesEl.addEventListener("click", function(e) {
   });
 });
 
-// Render an error bubble for a card-error WebSocket event. Distinct red-tinted
-// styling so it's not mistaken for a regular assistant message. The "Send to
-// agent" button feeds a structured fix-request through the normal send() path.
-function addErrorBubble(filename, errorText) {
-  if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === "center") {
-    messagesEl.innerHTML = "";
-  }
-  const wrap = window.document.createElement("div");
-  wrap.style.cssText = "align-self:stretch;background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.4);border-radius:8px;padding:8px 10px;font-size:12px;";
-  // Tag with filename so card-error-cleared can find + remove this bubble.
-  wrap.dataset.cardErrorFilename = filename;
-  const header = window.document.createElement("div");
-  header.style.cssText = "color:#fca5a5;font-weight:600;margin-bottom:4px;";
-  header.textContent = "\u26A0 Card '" + filename + "' errored";
-  const pre = window.document.createElement("pre");
-  pre.style.cssText = "background:rgba(0,0,0,0.3);color:#fecaca;padding:6px 8px;border-radius:4px;margin:4px 0 8px;font-family:monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:120px;overflow-y:auto;";
-  pre.textContent = errorText;
-  const btn = window.document.createElement("button");
-  btn.textContent = "Ask agent to fix";
-  btn.style.cssText = "background:rgba(248,113,113,0.18);color:#fecaca;border:1px solid rgba(248,113,113,0.5);border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;";
-  btn.addEventListener("mouseenter", function() { btn.style.background = "rgba(248,113,113,0.32)"; });
-  btn.addEventListener("mouseleave", function() { btn.style.background = "rgba(248,113,113,0.18)"; });
-  btn.addEventListener("click", function() {
-    btn.disabled = true;
-    btn.style.opacity = "0.4";
-    btn.style.cursor = "default";
-    btn.textContent = "Sent";
-    inputEl.value =
-      "The card `" + filename + "` errored at runtime:\n\n```\n" + errorText + "\n```\n\n" +
-      "Read the card class files for this card, identify the cause, and fix it. " +
-      "After applying the fix the card will reload — verify the error is gone.";
-    send();
-  });
-  wrap.appendChild(header);
-  wrap.appendChild(pre);
-  wrap.appendChild(btn);
-  messagesEl.appendChild(wrap);
-  scrollBottom();
-}
+// Card-error events used to render a red bubble in the chat. Removed:
+// the agent auto-receives the error via validatorErrorBuffer (next-turn
+// buildContext injection), and the same error already surfaces in the
+// detail panel as a `progress` event (warning + filename + preview) via
+// cardErrorBuffer's milestone-based flush at agent turn-end. A bubble
+// would just duplicate what's already visible. `card-error` /
+// `card-error-cleared` broadcasts still flow over the project channel
+// for other surfaces (CardRuntime's in-card overlay).
 
-// De-dup card-error events: CARD_SHIM's setInterval / event-handler wrappers
-// can fire the same throw N times in a tight burst; one bubble per (filename,
-// error) per 2s is plenty.
-const _recentCardErrors = new Map();  // key → timestamp
-const _CARD_ERROR_DEDUP_MS = 2000;
-
-const _unsubCardError = mica.on("card-error", function(ev) {
-  if (!ev || !ev.filename || !ev.error) return;
-  // Surface gating: bubbles only fire for files with no in-card overlay
-  // path (.mica/ internals — class definitions, sidecars). Errors on
-  // canvas-root files (markdown, custom card classes) get tagged
-  // surface="overlay" by the server because CardRuntime mounts a red
-  // error box ON the broken card, and render_capture's vision caption
-  // feeds that error back to the agent through the visual channel.
-  // Bubble would just duplicate noise the user is already seeing
-  // spatially. Bubble cleanup logic below uses the same gate.
-  if (ev.surface && ev.surface !== "bubble") return;
-  // Skip self — the chat card showing its own error risks loops if Send-to-agent
-  // re-triggers the same throw, and is confusing UX. Server still logs it.
-  if (ev.filename === mica.filename) return;
-  const key = ev.filename + "::" + ev.error;
-  const now = Date.now();
-  const last = _recentCardErrors.get(key);
-  if (last && now - last < _CARD_ERROR_DEDUP_MS) return;
-  _recentCardErrors.set(key, now);
-  // Trim the dedup map so it doesn't grow unbounded over a long session.
-  if (_recentCardErrors.size > 200) {
-    const cutoff = now - _CARD_ERROR_DEDUP_MS;
-    for (const [k, t] of _recentCardErrors) if (t < cutoff) _recentCardErrors.delete(k);
-  }
-  addErrorBubble(ev.filename, ev.error);
-});
-mica.onDestroy(_unsubCardError);
-
-// Auto-remove bubbles when the server reports the file went errored → clean.
-// Server broadcasts `card-error-cleared` after a validator pass leaves the
-// buffer empty for a file that previously had an error. Drop matching bubbles
-// AND wipe the dedup map entry so a fresh error on the same file isn't
-// suppressed by the 2s window.
-const _unsubCardErrorCleared = mica.on("card-error-cleared", function(ev) {
-  if (!ev || !ev.filename) return;
-  // Same surface gate as `card-error` above — overlay-tagged clears never
-  // had a bubble to remove in this card; skip the DOM scan and dedup wipe.
-  if (ev.surface && ev.surface !== "bubble") return;
-  const matches = messagesEl.querySelectorAll(
-    '[data-card-error-filename="' + window.CSS.escape(ev.filename) + '"]'
-  );
-  matches.forEach(function(node) { node.remove(); });
-  // Drop dedup keys for this file so any new error renders immediately.
-  for (const k of Array.from(_recentCardErrors.keys())) {
-    if (k.startsWith(ev.filename + "::")) _recentCardErrors.delete(k);
-  }
-});
-mica.onDestroy(_unsubCardErrorCleared);
 
 function setStatus(text, dot, pulsing) {
   statusBar.style.display = "block";

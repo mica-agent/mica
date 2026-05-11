@@ -363,12 +363,11 @@ container isolation are on the horizon but not current.
 For building new card classes, the canonical reference is the
 `create-card-class` skill that ships with each project template:
 
-- `templates/cloud-claude/.claude/skills/create-card-class/SKILL.md`
-  for Claude Code projects.
-- `templates/cloud-claude/.qwen/skills/create-card-class/SKILL.md`
-  for the Qwen variant of the same template.
 - `templates/dgx-spark-local/.qwen/skills/create-card-class/SKILL.md`
   for local-model projects.
+
+The cloud-Claude template was deleted 2026-05-11 and will be
+rebuilt; until then, `dgx-spark-local` is the only template.
 
 The skill is written for the agent that will generate the card.
 This spec covers the contract. The skill covers the procedure.

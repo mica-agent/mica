@@ -49,6 +49,7 @@ import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
 import { loadProjectSubagents } from "./subagents.js";
 import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
 import { markProjectActivity } from "./projectActivity.js";
 import { setLastActiveOpencodeProject } from "./agentTools/registry.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
@@ -992,6 +993,10 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       } finally {
         recordTurnEnd(ctx.filename);
         markProjectActivity(sessionProject, -1);
+        // Surface any card-errors that survived the turn (agent didn't
+        // self-heal). Errors POSTed mid-turn are held in cardErrorBuffer
+        // and released here — milestone, not timer.
+        if (sessionProject) flushProjectPendingErrors(sessionProject);
         busy = false;
         if (queue.length > 0) {
           const next = queue.shift()!;

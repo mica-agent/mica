@@ -89,9 +89,15 @@ export function createLlmChatHandler() {
         // Per-message model override wins over the args default. Either way,
         // an explicit baseUrl bypasses the LLM_PORTS table entirely.
         const modelKey = msg.model || cfg.model || "coder";
+        // LLAMA_URL is a full URL (e.g. `http://172.17.0.1:8012`) since the
+        // vLLM consolidation; it covers the `coder` channel which used to be
+        // llama-server on the same port. Other model keys still use the
+        // local port table.
         const endpoint = cfg.baseUrl
           ? `${cfg.baseUrl.replace(/\/$/, "")}/v1/chat/completions`
-          : `http://127.0.0.1:${LLM_PORTS[modelKey] || LLM_PORTS.coder}/v1/chat/completions`;
+          : modelKey === "coder" && process.env.LLAMA_URL
+            ? `${process.env.LLAMA_URL.replace(/\/$/, "")}/v1/chat/completions`
+            : `http://127.0.0.1:${LLM_PORTS[modelKey] || LLM_PORTS.coder}/v1/chat/completions`;
 
         const messageForLlm: string | ContentBlock[] = userContent || userMessage || "";
         history.push({ role: "user", content: messageForLlm });

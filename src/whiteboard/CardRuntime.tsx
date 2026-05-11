@@ -261,14 +261,24 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
     return unsub;
   }, [filename]);
 
-  // Auto-clear the error banner when the card content changes (the agent
-  // edited card.js / metadata.json — a fresh attempt is coming). The next
-  // render either succeeds (banner stays cleared) or re-fires the same/new
-  // error (banner re-appears). Without this the banner persists forever
-  // showing a stale message even after the agent fixes the bug.
+  // Clear the error banner when the server confirms this card now renders
+  // cleanly. Server fires `card-error-cleared` after the card POSTs /ok
+  // (successful mount with no throw). The banner persists across the
+  // agent's edit-and-retry cycle until that signal lands — important
+  // because render_capture's screenshot must capture the banner while the
+  // card is still erroring. An optimistic clear on `[html]` changes would
+  // race the screenshot: agent edits → html prop changes → banner clears
+  // → screenshot captures cleared state → vision caption misses the error
+  // → agent flies blind. Wait for the explicit success milestone instead.
   useEffect(() => {
-    setCurrentError(null);
-  }, [html]);
+    const unsub = onSocketEvent("card-error-cleared", (data) => {
+      const evt = data as { filename?: string };
+      if (evt && evt.filename === filename) {
+        setCurrentError(null);
+      }
+    });
+    return unsub;
+  }, [filename]);
 
   // Render on mount or when html changes. Re-injects HTML and re-executes scripts.
   // Does NOT destroy sessions — channels survive via bridge dedup.

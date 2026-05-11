@@ -8,107 +8,28 @@ description: Build, create, make, or implement a card, widget, visualization, ch
 A **card class** defines a UI component. An **instance** is a file the class renders.
 
 A card class is four files at `.mica/card-classes/<ext>/`:
-`metadata.json`, `card.html`, `card.js`, `card.css`. Build path:
-copy the skeleton → edit in place → verify with `render_capture`.
-You never write any of the four files from scratch.
+`metadata.json`, `card.html`, `card.js`, `card.css`. Authored via
+the `mica_create_class` tool (NOT raw `write_file`). Verified with
+`render_capture`.
 
-For cross-skill discipline (reading, library reuse, API
-discipline, decomposition gates, approval flow, naming) see
-`.qwen/skills/_conventions.md`. Tenet numbers below refer to
-ARCHITECTURE.md / CLAUDE.md.
+This skill is invoked from `develop` step 4a *after* spec + approval
+land. The universal build flow — research → spec → approval → plan —
+lives in `develop/SKILL.md`; don't restate it here. For cross-skill
+discipline (reading, library reuse, API discipline, decomposition
+gates, approval flow, naming) see `.qwen/skills/_conventions.md`.
+Tenet numbers below refer to ARCHITECTURE.md / CLAUDE.md.
 
-## Step 0 — Check what already handles this
+## Before creating: check the registry
 
-Before authoring, introspect the registry. Reuse beats reinvent
-(tenet 15).
+`mica_list_classes()` returns the project-scoped + built-in classes
+already available. If a listed class matches your intent, use it.
+Do **not** create a project-scoped copy of a built-in (it just
+shadows the built-in for this project with no benefit). If a class
+might fit but you're not sure, `read_file
+.mica/card-classes/<name>/metadata.json` (or the upstream
+`card-classes/<name>/metadata.json` for built-ins) before deciding.
 
-```javascript
-const classes = await mica.cardClasses.list();
-// → [{ name: "mmd", builtIn: true, format: "html" }, ...]
-```
-
-If any listed class matches your intent, use it. Do **not**
-create a project-scoped copy of a built-in (it just shadows the
-built-in for this project with no benefit).
-
-If a class might fit but you're not sure, read its metadata or
-spec before deciding:
-
-```
-GET /api/card-classes/{name}/metadata.json
-GET /api/card-classes/{name}/spec.md
-```
-
-## Step 1 — Spec, then approval
-
-Before any `cp -r` of the skeleton, draft `canvas/spec.md` and
-post the approval gate (tenet 11 + tenet 14, see `_conventions.md`
-§ Approval flow). Implementation starts AFTER the user replies.
-
-Required spec.md sections:
-
-- `# <Card name>` + a one-paragraph elevator pitch
-- `## What it does` — user-visible behavior
-- `## Files` — the four card-class files with one-line roles
-- `## Dependencies` — every external library + Tier-1 verified URL
-- `## Subproblems and their solutions` — one row per recognizable
-  subproblem (`discover-library` per subproblem, not per card)
-- `## Behavior` — interactions, tick rates, persistence
-- `## Out of scope for v1`
-- `## Smoke test results` (filled after build)
-- `## Assumptions` (Tier-3 documented assumptions)
-
-Approval gate posts a one-liner: *"Drafted in `canvas/spec.md` —
-review and OK to build?"* Don't paste the spec content; user reads
-it on the canvas.
-
-**When to gate vs skip — library use, not line count.** Library
-choice is the highest-leverage decision a card-class build makes
-(tenet 16: APIs as authored, validate before relying). The spec
-is where library choices get surfaced and Tier-1 verified BEFORE
-metadata.json is written.
-
-**Always gate (draft spec.md, get approval) when ANY of these hold:**
-
-- The card needs any external library — Three.js, Chart.js,
-  Leaflet, FullCalendar, CodeMirror, Sortable.js, Mermaid, Marked,
-  D3, Plotly, etc. Library version + URL is what the spec
-  surfaces and what Tier-1 verifies.
-- The user's request uses words that imply substantial
-  visualization or interaction: *3D, scene, chart, graph, map,
-  calendar, editor, game, animation, viewer, dashboard,
-  visualization, render*. These almost always need libraries
-  even if the user doesn't say so.
-- The card has multiple subsystems (rendering + persistence +
-  events + cleanup) — the spec's `## Subproblems and their
-  solutions` table is the place to surface those before code.
-
-**Skip the gate ONLY when ALL of these hold:**
-
-- The card uses no external libraries (pure DOM + `mica.*` APIs).
-- Total expected code is < ~50 lines across all four files.
-- The user explicitly said "small", "trivial", "just a", or
-  similar (e.g., "just a counter card", "trivial toggle").
-
-Counter, toggle, single-button cards with no dependencies are
-genuinely small and the spec adds friction. Anything that touches
-a library — including the simplest chart or 3D scene — needs the
-spec gate to do library research right the first time. Skipping
-the gate on library-using cards produces stale-prior URLs and
-broken integrations; the iteration cost dwarfs the spec-drafting
-cost.
-
-## Step 2a — Run `discover-library` for every subproblem BEFORE writing code
-
-Before invoking `mica_create_class`, list the things the card actually does and run `discover-library` once per subproblem. Library is the default; bespoke is the exception that requires a documented "no library fits" decision.
-
-A "subproblem" is anything beyond plain DOM-glue: date / time-zone math, sun/moon position, geo distance, animation, charting, drag-drop, syntax highlighting, audio, color manipulation, calendaring, file diffing, parsing — anything that computes or transforms a value. If your spec mentions "compute X" or "render Y" or "format Z," each X/Y/Z gets a discover-library pass.
-
-Skipping this step is the recurring failure mode where the card.js ships ~300 lines of hand-rolled algorithms (Julian-date math, simplified solar calculators, geographic projections) that a 5-line library call replaces. Mica should not be reluctant to take on a dependency: discover-library's curl-verify guarantees the URL works and the bundle is UMD; once verified, the dependency cost is just a script tag in metadata.json.
-
-The skill documents its decision on canvas (spec.md / decisions.md / interfaces.md depending on project layout — see the skill body). When you next call `mica_create_class`, pull the verified scripts/styles URLs from those decisions into the call's `scripts` / `styles` arrays.
-
-## Step 2b — Use `mica_create_class` to author the class atomically
+## Author atomically with `mica_create_class`
 
 Card classes are authored via the `mica_create_class` tool, NOT raw `write_file`.
 The tool owns the directory location, name shape, and `metadata.json` schema —
@@ -116,6 +37,10 @@ the framework cannot place files at wrong paths or with wrong metadata when
 you go through the tool. Raw `write_file` to `.mica/card-classes/...` is
 reserved for *editing existing* class files; class creation is exclusively
 through this tool.
+
+Pull verified `scripts` / `styles` URLs from the canvas decision that
+`develop` step 1 wrote (`discover-library` records them in spec.md /
+decisions.md). Don't write CDN URLs from memory.
 
 ```
 mica_create_class({
@@ -143,9 +68,6 @@ Companion tools:
 - `mica_delete_card_instance({ filename })`
 - `mica_delete_class({ name, force? })`
 - `mica_list_classes()` — see what's registered before creating.
-
-For dependencies, ALWAYS invoke `discover-library` first (see "Dependencies"
-below).
 
 ## CANONICAL CARD.JS — copy this shape
 
@@ -586,29 +508,18 @@ mica.onDestroy(() => { unsub(); });
 Instance: create `docs/my.counter` with content `0`. Card
 appears on the canvas.
 
-## Verify before declaring done
+## Verify with `render_capture`
 
-Before saying the card is ready, smoke-test every external
-dependency (tenet 16). The full tier table is in
-`_conventions.md` § API discipline. Quick form:
+`render_capture({ filename: "canvas/my.<extension>" })` — inspect
+the PNG. JSON validity and `node -c` only prove syntax; only a
+visual check proves the card mounted, the layout works, and no
+error banner appears.
 
-- **Tier 1 — reachability.** For every CDN script/style URL in
-  `metadata.json.dependencies` and every tile-server / data URL
-  hardcoded in `card.js`: `curl -sI -L <url> | head -1` →
-  expect `HTTP/2 200` (302 chains fine if final is 200). Common
-  failures: missing `@scope/` prefix, version that never
-  published, wrong subpath inside the package.
-- **Tier 2 — shape.** For every REST endpoint or library global:
-  call once with sample params, confirm the fields/globals the
-  card uses actually exist (`L.terminator` vs `L.Terminator`).
-
-Then `render_capture({ filename: "canvas/my.<extension>" })` —
-inspect the PNG. JSON validity and `node -c` only prove syntax;
-only a visual check proves the card mounted, the layout works,
-and no error banner appears.
-
-Append a `## Smoke test results` table to `spec.md` with each
-URL, tier, and status.
+For every CDN script/style URL and every URL hardcoded in
+card.js, `curl -sI -L <url> | head -1` to confirm reachability
+before declaring done. Full tier table in `_conventions.md`
+§ API discipline. Append a `## Smoke test results` row to
+spec.md for each URL.
 
 ## Pitfalls
 
@@ -698,20 +609,15 @@ confirms they see content on screen. Don't add debug cubes /
 backgrounds / wrappers chasing a phantom — register the hook (or
 flip the flag) and re-capture.
 
-Symptom that points here: `render_capture` describes the canvas
-as "completely black" / "blank" / "transparent" while the user
-confirms they see content on screen. Don't add debug cubes /
-backgrounds / wrappers chasing a phantom — fix the renderer
-constructor and re-capture.
-
 ## References
 
+- `.qwen/skills/develop/SKILL.md` — universal build flow
+  (research, spec, approval, plan-or-inline) that gates this
+  skill.
 - `.qwen/skills/_conventions.md` — reading, reuse, API
   discipline, dispatch, decomposition gates, approval flow,
   naming.
 - `ARCHITECTURE.md` — authoritative `mica.*` API surface and
   framework internals.
-- `templates/_card-class-skeleton/` — the canonical four-file
-  starting point.
 - `card-classes/llm-chat/` + `server/plugins/llmChat.ts` —
   reference channel-handler pair.
