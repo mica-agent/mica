@@ -76,7 +76,6 @@ const horizonBtn = container.querySelector("#chat-horizon-btn");
 const archiveBtn = container.querySelector("#chat-archive-btn");
 const archivePanel = container.querySelector("#chat-archive-panel");
 const archiveListEl = container.querySelector("#chat-archive-list");
-const voiceBtn = container.querySelector("#chat-voice-btn");
 const queuePanel = container.querySelector("#chat-queue-panel");
 const queueListEl = container.querySelector("#chat-queue-list");
 const queueCountEl = container.querySelector("#chat-queue-count");
@@ -136,99 +135,13 @@ function addDetailLine(text) {
   if (detailExpanded) statusDetail.scrollTop = statusDetail.scrollHeight;
 }
 
-// ── Voice toggle + mic press-hold ────────────────────────────
-//
-// `voiceMode` is the 🔊 toggle (speak agent replies aloud). It's piggy-
-// backed on every send() payload so the server-side handler picks up
-// flips on the very next reply without the channel needing to reopen.
-// State is local to the card instance (no per-project persistence yet).
-let voiceMode = false;
-function applyVoiceBtnStyle() {
-  if (!voiceBtn) return;
-  // Change BOTH icon and styling so the toggle is unmistakable.
-  // 🔊 = on (speaker w/ waves), 🔇 = off (muted speaker w/ stroke).
-  voiceBtn.textContent = voiceMode ? "\u{1F50A}" : "\u{1F507}";
-  voiceBtn.style.color = voiceMode ? "#c4b5fd" : "#8b949e";
-  voiceBtn.style.background = voiceMode ? "rgba(124,58,237,0.18)" : "transparent";
-  voiceBtn.style.borderRadius = "4px";
-  voiceBtn.title = voiceMode
-    ? "Speaking agent replies aloud — click to mute"
-    : "Click to speak agent replies aloud (Kokoro TTS)";
-}
-applyVoiceBtnStyle();
-if (voiceBtn) {
-  voiceBtn.addEventListener("click", function(e) {
-    e.stopPropagation();
-    voiceMode = !voiceMode;
-    applyVoiceBtnStyle();
-    console.log("[chat] voice mode →", voiceMode);
-    // Tell the server immediately so the next agent reply respects the
-    // new state, even if the user toggles between sends.
-    try { ch.send({ type: "voice_mode", voiceMode: voiceMode }); } catch (_) { /* channel may not be open */ }
-    if (!voiceMode) stopVoicePlayback();
-  });
-} else {
-  console.warn("[chat] voice button missing from card HTML — toggle disabled");
-}
+// Voice INPUT and speech output both live in the .voice card class, not
+// here. Per CLAUDE.md tenet 3 (pipes, not policy): chat cards are pure
+// text. To hear agent replies aloud, drop a .voice card on the canvas —
+// Mica's voice agent subscribes to all chat-card broadcasts and renders
+// announcements via Kokoro. To talk TO the agent by voice, same.
 
-// Voice INPUT lives in the .voice card class, not here. The chat card
-// only consumes outbound TTS — when voiceMode is on, agent replies are
-// spoken via assistant_speech frames. To talk TO the agent by voice,
-// drop a .voice card on the canvas.
-
-// Sequential WAV playback. Each `assistant_speech` frame from the server
-// pushes a base64 WAV; we play them in order through a single hidden
-// <audio> element. New turn ⇒ flush the queue (interrupt prior speech).
-const speechAudio = window.document.createElement("audio");
-speechAudio.style.display = "none";
-container.appendChild(speechAudio);
-let speechQueue = [];
-let speechPlaying = false;
-let speechCurrentUrl = null;
-let speechActiveTurnId = null;
-function enqueueSpeechWav(b64) {
-  const bin = window.atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const blob = new window.Blob([bytes], { type: "audio/wav" });
-  const url = window.URL.createObjectURL(blob);
-  speechQueue.push(url);
-  if (!speechPlaying) playNextSpeechWav();
-}
-function playNextSpeechWav() {
-  const url = speechQueue.shift();
-  if (!url) {
-    speechPlaying = false;
-    return;
-  }
-  speechPlaying = true;
-  speechCurrentUrl = url;
-  speechAudio.src = url;
-  speechAudio.onended = function() {
-    if (speechCurrentUrl) window.URL.revokeObjectURL(speechCurrentUrl);
-    speechCurrentUrl = null;
-    playNextSpeechWav();
-  };
-  speechAudio.play().catch(function() { /* user can dismiss; keep queue moving */ playNextSpeechWav(); });
-}
-function stopVoicePlayback() {
-  try { speechAudio.pause(); } catch (_) {}
-  if (speechCurrentUrl) {
-    try { window.URL.revokeObjectURL(speechCurrentUrl); } catch (_) {}
-    speechCurrentUrl = null;
-  }
-  for (let i = 0; i < speechQueue.length; i++) {
-    try { window.URL.revokeObjectURL(speechQueue[i]); } catch (_) {}
-  }
-  speechQueue = [];
-  speechPlaying = false;
-}
-mica.onDestroy(stopVoicePlayback);
-
-// Open channel to server agent. Voice mode ships as openChannel args
-// (initial state) and as a per-message override on every ch.send() —
-// the server uses whichever arrived most recently.
-const ch = mica.openChannel("agent_session", { voiceMode: false });
+const ch = mica.openChannel("agent_session");
 
 // Hydrate the fuel gauge's rolling buffer from recent turn history. Lets
 // the gauge project headroom immediately after a card refresh instead of
@@ -1258,18 +1171,9 @@ ch.onData(function(data) {
         updateMeta();
       }
       break;
-    case "assistant_speech":
-      // Voice-mode TTS frame from server. data.wav_b64 is the WAV for one
-      // sentence; ordering is server-guaranteed. Skip if voice mode was
-      // toggled off after the request — late frames can still arrive.
-      if (voiceMode && typeof data.wav_b64 === "string") enqueueSpeechWav(data.wav_b64);
-      break;
-    case "assistant_speech_text":
-      // Per-sentence text frame for voice mode. Currently only used for
-      // potential future "highlight current sentence" UX; the assistant
-      // text bubble already shows the full reply via the regular
-      // `assistant` event, so no rendering needed here.
-      break;
+    // assistant_speech / assistant_speech_text events removed: speech
+    // rendering moved to the .voice card class. Server no longer emits
+    // these for chat cards (see server/micaAgent.ts).
     case "assistant":
       setBusy(false);
       stopBtn.style.display = "none";
@@ -1510,15 +1414,11 @@ function send() {
   // Server queues if busy — let the user keep typing while the agent works.
   // The {type:"queue"} broadcast that follows will update queuedCount + the
   // queue panel UI; no need to optimistically increment here.
-  const payload = { message: text || "(no prompt)", voiceMode };
+  const payload = { message: text || "(no prompt)" };
   if (pendingAttachment) {
     payload.attachmentFilename = pendingAttachment;
     clearAttachment();
   }
-  // New user turn → flush any audio still playing from the previous turn.
-  // Without this, the previous assistant's voice keeps speaking over the
-  // user's next request.
-  stopVoicePlayback();
   ch.send(payload);
   updateSendButton();
 }

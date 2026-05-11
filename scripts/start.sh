@@ -93,6 +93,90 @@ cd "$PROJECT_DIR"
 # Set workspace directory for the server (default: /workspaces/testproj for dev)
 export PROJECT_DIR="${PROJECT_DIR_OVERRIDE:-/workspaces/testproj}"
 
+# ── Chat vLLM container ─────────────────────────────────────────
+# Replaces the previous llama-server lifecycle. Qwen3.6-35B-A3B-NVFP4
+# in vllm/vllm-openai:cu130-nightly on port 8012 — same port the
+# backend's voice handler + chat agent already point at, so this is a
+# drop-in. vLLM continuous batching means voice + chat share this one
+# model with near-zero overhead.
+#
+# Set MICA_DISABLE_CHAT_VLLM=1 to skip (e.g. if iterating on frontend
+# only or running an external vLLM you've already started).
+if [ "${MICA_DISABLE_CHAT_VLLM:-0}" != "1" ]; then
+  # PROJECT_DIR gets overwritten to the workspace path lower in this
+  # script (it's the env the backend reads to scope its workspace).
+  # Use REPO_ROOT here, which always points at the Mica repo.
+  # shellcheck source=lib/vllm-container.sh
+  . "$REPO_ROOT/scripts/lib/vllm-container.sh"
+
+  CHAT_NAME="${CHAT_VLLM_NAME:-mica-chat}"
+  CHAT_IMAGE="${CHAT_VLLM_IMAGE:-vllm/vllm-openai:cu130-nightly}"
+  CHAT_MODEL="${CHAT_VLLM_MODEL:-RedHatAI/Qwen3.6-35B-A3B-NVFP4}"
+  CHAT_PORT="${CHAT_VLLM_PORT:-8012}"
+  # CHAT_HOST: from inside the devcontainer, host-published ports are
+  # at the docker bridge gateway (172.17.0.1), not localhost. From the
+  # host shell, localhost works. Override with CHAT_VLLM_HOST if your
+  # bridge IP differs. Set unconditionally so both the already-running
+  # and the fresh-start paths can reference it.
+  CHAT_HOST="${CHAT_VLLM_HOST:-172.17.0.1}"
+  HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
+  CHAT_HEALTH_TIMEOUT="${CHAT_VLLM_HEALTH_TIMEOUT:-1500}"
+
+  if vllm_container_running "$CHAT_NAME"; then
+    echo "Chat vLLM ($CHAT_NAME) already running on :$CHAT_PORT"
+  else
+    vllm_container_check_docker
+    vllm_container_remove_stopped "$CHAT_NAME"
+    vllm_container_pull_or_use "$CHAT_IMAGE"
+    echo "Starting chat vLLM ($CHAT_NAME) on port $CHAT_PORT..."
+    echo "  Model:  $CHAT_MODEL"
+    echo "  Logs:   $PID_DIR/chat.log"
+
+    # Steve Scargall's April 2026 Spark recipe for Qwen3.6-NVFP4.
+    # GPU mem 0.30 ≈ 36 GB; vLLM batching shares this between voice
+    # and chat. MTP-1 spec decode + flashinfer_cutlass MoE backend.
+    chat_cmd=$(cat <<EOF
+vllm serve $CHAT_MODEL \
+  --host 0.0.0.0 --port 8000 \
+  --served-model-name qwen-chat qwen3.6 qwen3-vl-local openai:qwen3-vl-local openai:local local coder qwen voice \
+  --quantization compressed-tensors \
+  --moe-backend flashinfer_cutlass \
+  --kv-cache-dtype fp8_e4m3 \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
+  --gpu-memory-utilization 0.40 \
+  --max-model-len 131072 \
+  --max-num-batched-tokens 8192 \
+  --enable-prefix-caching \
+  --enable-chunked-prefill \
+  --trust-remote-code \
+  --reasoning-parser qwen3 \
+  --tool-call-parser qwen3_xml \
+  --enable-auto-tool-choice \
+  --limit-mm-per-prompt '{"image":4,"video":1}' \
+  --override-generation-config '{"temperature":0.3,"top_p":0.9,"top_k":20,"repetition_penalty":1.05}'
+EOF
+)
+
+    vllm_container_run_detached \
+      "$CHAT_NAME" "$CHAT_IMAGE" "$CHAT_PORT:8000" \
+      "$PID_DIR/chat.cid" "$PID_DIR/chat.log" \
+      --gpus all --ipc=host --shm-size=16g \
+      -v "$HF_CACHE:/root/.cache/huggingface" \
+      -- \
+      "$chat_cmd" >/dev/null
+
+    vllm_container_wait_health "$CHAT_NAME" "http://$CHAT_HOST:$CHAT_PORT/health" "$CHAT_HEALTH_TIMEOUT"
+  fi
+  # The backend's startup auto-spawns llama-server unless this is set.
+  # Chat vLLM is up on the same port — we don't want both fighting.
+  export MICA_DISABLE_LLAMA=1
+  # Backend processes (chat/voice/render) reach the chat vLLM via the
+  # host docker bridge, not localhost. Export so server/{micaChat,
+  # micaAgent,voiceAgent,index}.ts all share one source of truth.
+  export LLAMA_URL="${LLAMA_URL:-http://$CHAT_HOST:$CHAT_PORT}"
+fi
+# ── End chat vLLM container ─────────────────────────────────────
+
 # Start backend. We invoke tsx, which itself spawns a node child running our
 # code. We record the *child* PID so that external kills (e.g. `kill -TERM`)
 # target the actual server process — its signal traps fire and the log captures

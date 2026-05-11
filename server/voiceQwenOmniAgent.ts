@@ -167,14 +167,13 @@ function formatRelativeAge(ms: number): string {
   return `${Math.floor(ageHr / 24)}d ago`;
 }
 
-// Omni LLM endpoint — the Nemotron-3-Nano-Omni vLLM container started by
-// scripts/start-omni.sh. Default targets the Linux Docker bridge gateway
-// (172.17.0.1), which is always reachable from a devcontainer to the host
-// in default Docker setups. host.docker.internal would also work on
-// Mac/Windows but doesn't resolve on Linux without --add-host. Override
-// via OMNI_URL env var if your bridge address differs.
-const LLM_URL = process.env.OMNI_URL || "http://172.17.0.1:8015/v1/chat/completions";
-const LLM_MODEL = process.env.OMNI_MODEL_NAME || "omni";
+// Qwen3-Omni LLM endpoint — the Qwen/Qwen3-Omni-30B-A3B-Instruct vLLM
+// container started by scripts/start-qwen-omni.sh, port 8016. Default
+// targets the Linux Docker bridge gateway (172.17.0.1), which is always
+// reachable from a devcontainer to the host. Override via QWEN_OMNI_URL
+// env var if your bridge address differs.
+const LLM_URL = process.env.QWEN_OMNI_URL || "http://172.17.0.1:8016/v1/chat/completions";
+const LLM_MODEL = process.env.QWEN_OMNI_MODEL_NAME || "qwen-omni";
 // Keep the last 8 turns (4 user + 4 assistant) in context. Voice exchanges
 // are short — much more would just bloat the prompt without helping.
 const MAX_HISTORY = 8;
@@ -383,7 +382,7 @@ function looksComplete(text: string): boolean {
   return true;
 }
 
-export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
+export function createVoiceQwenOmniAgentHandler(channelMgr: ChannelManager) {
   return async function voiceAgentFactory(
     _content: string,
     args: Record<string, unknown>,
@@ -566,7 +565,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
         ? raw.slice(0, PRESENT_INPUT_CAP)
         : raw;
       try {
-        console.log(`[voice-omni:ambient] presenting ${raw.length}-char reply for ${agentName} (request: ${JSON.stringify(userRequest.slice(0, 80))})`);
+        console.log(`[voice-qwen-omni:ambient] presenting ${raw.length}-char reply for ${agentName} (request: ${JSON.stringify(userRequest.slice(0, 80))})`);
         const resp = await fetch(LLM_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -603,11 +602,11 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
         const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
         const presentation = (data.choices?.[0]?.message?.content || "").trim();
         if (presentation) {
-          console.log(`[voice-omni:ambient] presented ${presentation.length} chars`);
+          console.log(`[voice-qwen-omni:ambient] presented ${presentation.length} chars`);
           return presentation;
         }
       } catch (err) {
-        console.warn(`[voice-omni:ambient] present failed, falling back to raw truncate: ${(err as Error).message}`);
+        console.warn(`[voice-qwen-omni:ambient] present failed, falling back to raw truncate: ${(err as Error).message}`);
       }
       const truncate = raw.slice(0, 1000);
       const lastBoundary = Math.max(
@@ -639,7 +638,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
             next.agent,
           );
           if (!fullText) {
-            console.log(`[voice-omni:ambient] empty presentation, dropping announcement for ${next.filename}`);
+            console.log(`[voice-qwen-omni:ambient] empty presentation, dropping announcement for ${next.filename}`);
             return;
           }
           const truncated = next.rawContent.length > REPLY_CONTENT_CAP;
@@ -658,7 +657,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
           if (recentAgentReplies.length > RECENT_REPLIES_MAX) {
             recentAgentReplies.length = RECENT_REPLIES_MAX;
           }
-          console.log(`[voice-omni:ambient] cached reply for ${next.filename} (${cachedContent.length}${truncated ? "/" + next.rawContent.length : ""} chars); cache depth=${recentAgentReplies.length}`);
+          console.log(`[voice-qwen-omni:ambient] cached reply for ${next.filename} (${cachedContent.length}${truncated ? "/" + next.rawContent.length : ""} chars); cache depth=${recentAgentReplies.length}`);
         }
         // Summary mode prefixes "<Agent> just finished. " so the listener
         // knows the source. Full-read mode just speaks the summary itself —
@@ -859,7 +858,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
             : msg.message
               ? `message (${msg.message.length} chars)`
               : "unknown";
-        console.log(`[voice-agent] onData ← ${shape}`);
+        console.log(`[voice-qwen-omni] onData ← ${shape}`);
 
         if (msg.type === "interrupt") {
           if (activeAbort) {
@@ -875,7 +874,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
         if (msg.type === "clear_queue") {
           const n = queuedAudio.length;
           queuedAudio.length = 0;
-          console.log(`[voice-agent] clear_queue: dropped ${n} items`);
+          console.log(`[voice-qwen-omni] clear_queue: dropped ${n} items`);
           return;
         }
         if (msg.type === "presence") {
@@ -893,7 +892,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
           // their next utterance immediately; the new turn flows
           // through the normal busy/queue path.
           if (currentFanout) {
-            console.log(`[voice-agent] barge_in: cancelling active fanout`);
+            console.log(`[voice-qwen-omni] barge_in: cancelling active fanout`);
             currentFanout.cancel();
           }
           return;
@@ -907,7 +906,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
             const next = msg.voice.trim();
             if (next !== voicePref) {
               voicePref = next;
-              console.log(`[voice-agent] voicePref updated to ${voicePref}`);
+              console.log(`[voice-qwen-omni] voicePref updated to ${voicePref}`);
             }
           }
           return;
@@ -921,7 +920,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
           queuedAudio.push({ audioB64: msg.audioB64, audioMime: msg.audioMime, voice: msg.voice });
           const depth = queuedAudio.length;
           ctx.broadcast({ type: "queued", depth });
-          console.log(`[voice-agent] audio queued (depth=${depth})`);
+          console.log(`[voice-qwen-omni] audio queued (depth=${depth})`);
           return;
         }
 
@@ -930,7 +929,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
         if (delegation) {
           delegation.turnsAgo++;
           if (delegation.turnsAgo > 2) {
-            console.log(`[voice-agent] delegation context expired (was: ${delegation.filename})`);
+            console.log(`[voice-qwen-omni] delegation context expired (was: ${delegation.filename})`);
             delegation = null;
             lastAmbient = null;  // delegation gone → ambient hint stale
           }
@@ -1001,7 +1000,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
             // The real "what the user said" is implicit in the audio that
             // the omni model now sees in its first user-turn content.
             userText = "[audio]";
-            console.log(`[voice-omni] audio received: mime=${audioMime} format=${fmt} bytes=${Math.floor(msg.audioB64.length * 3 / 4)}`);
+            console.log(`[voice-qwen-omni] audio received: mime=${audioMime} format=${fmt} bytes=${Math.floor(msg.audioB64.length * 3 / 4)}`);
           } else if (typeof msg.message === "string") {
             userText = msg.message.trim();
           }
@@ -1020,7 +1019,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
           // expires after PARTIAL_EXPIRY_MS to avoid stale prefixes.
           if (pendingPartial && Date.now() - pendingPartialAt < PARTIAL_EXPIRY_MS) {
             userText = `${pendingPartial} ${userText}`;
-            console.log(`[voice-agent] continuing buffered partial: ${JSON.stringify(userText.slice(0, 120))}`);
+            console.log(`[voice-qwen-omni] continuing buffered partial: ${JSON.stringify(userText.slice(0, 120))}`);
           }
           pendingPartial = null;
           clearPendingPartialTimer();
@@ -1042,7 +1041,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
           if (!audioPart && !msg._forceDispatch && !looksComplete(userText)) {
             pendingPartial = userText;
             pendingPartialAt = Date.now();
-            console.log(`[voice-agent] partial detected, buffering: ${JSON.stringify(userText.slice(0, 120))}`);
+            console.log(`[voice-qwen-omni] partial detected, buffering: ${JSON.stringify(userText.slice(0, 120))}`);
             ctx.broadcast({
               type: "transcript_partial",
               text: userText,
@@ -1051,7 +1050,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
             // Auto-flush if no follow-up arrives — dispatch what we have.
             pendingPartialTimer = setTimeout(() => {
               if (pendingPartial) {
-                console.log(`[voice-agent] partial expired after ${PARTIAL_EXPIRY_MS}ms, force-dispatching`);
+                console.log(`[voice-qwen-omni] partial expired after ${PARTIAL_EXPIRY_MS}ms, force-dispatching`);
                 const expired = pendingPartial;
                 pendingPartial = null;
                 pendingPartialTimer = null;
@@ -1065,7 +1064,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
             return;
           }
 
-          console.log(`[voice-agent] transcript dispatched (${userText.length} chars): ${JSON.stringify(userText)}`);
+          console.log(`[voice-qwen-omni] transcript dispatched (${userText.length} chars): ${JSON.stringify(userText)}`);
           ctx.broadcast({ type: "transcript", text: userText });
 
           history.push({ role: "user", content: userText });
@@ -1162,7 +1161,7 @@ export function createVoiceOmniAgentHandler(channelMgr: ChannelManager) {
           const promptParts: string[] = [];
 
           promptParts.push(
-            `/no_think You are Mica's voice — the user's first contact on this canvas. ` +
+            `You are Mica's voice — the user's first contact on this canvas. ` +
             `Project: "${projectLabel}".\n\n` +
 
             "**Be responsive above all.** Short replies, fast back-and-forth — reply in one or two spoken sentences. Speed beats thoroughness here.\n\n" +
@@ -1530,7 +1529,7 @@ ${r.content}
               // <say> on the final iter (when retry didn't recover).
               if (iter === 1 && iterSendRejections.length > 0) {
                 for (const r of iterSendRejections) {
-                  console.log(`[voice-agent] send_to_card retry rejected non-chat target: ${r.file} (.${r.ext})`);
+                  console.log(`[voice-qwen-omni] send_to_card retry rejected non-chat target: ${r.file} (.${r.ext})`);
                   pendingActionTools.push({
                     name: "send_to_card",
                     tb: { attrs: ` name="send_to_card"`, body: `<file>${r.file}</file>`, selfClosing: false },
@@ -1546,7 +1545,7 @@ ${r.content}
             // and/or retry the dispatch.
             const readResultLines: string[] = [];
             for (const r of iterSendRejections) {
-              console.log(`[voice-agent] send_to_card iter-0 rejected non-chat target: ${r.file} (.${r.ext}) — feeding back for retry`);
+              console.log(`[voice-qwen-omni] send_to_card iter-0 rejected non-chat target: ${r.file} (.${r.ext}) — feeding back for retry`);
               ctx.broadcast({
                 type: "tool_result",
                 name: "send_to_card",
@@ -1735,7 +1734,7 @@ ${r.content}
                 const dot = file.lastIndexOf(".");
                 const ext = dot === -1 ? "" : file.slice(dot + 1).toLowerCase();
                 if (!CHAT_CLASS_EXTENSIONS.has(ext)) {
-                  console.log(`[voice-agent] send_to_card rejected non-chat target: ${file} (.${ext})`);
+                  console.log(`[voice-qwen-omni] send_to_card rejected non-chat target: ${file} (.${ext})`);
                   rejectedSendTargets.push(file);
                   ctx.broadcast({
                     type: "tool_result",
@@ -1762,7 +1761,7 @@ ${r.content}
                     summary: message.slice(0, 150),
                     turnsAgo: 0,
                   };
-                  console.log(`[voice-agent] delegation tracked: ${file} (${delegation.agentName})`);
+                  console.log(`[voice-qwen-omni] delegation tracked: ${file} (${delegation.agentName})`);
                 }
                 let detail: string;
                 if (!result.ok) {
@@ -1803,7 +1802,7 @@ ${r.content}
                 queuedAudio.length = 0;
                 let cascaded = false;
                 if (delegation) {
-                  console.log(`[voice-agent] abort tool: cascading interrupt to ${delegation.filename}`);
+                  console.log(`[voice-qwen-omni] abort tool: cascading interrupt to ${delegation.filename}`);
                   const cascadeResult = channelMgr.dispatchToFilename(
                     sessionProject,
                     delegation.filename,
@@ -1863,7 +1862,7 @@ ${r.content}
             const tail = rest > 0 ? ` (and ${rest} other${rest === 1 ? "" : "s"})` : "";
             speakable = `I tried to route that to ${target}${tail}, but only chat cards can take messages. Open a chat card first, then ask again.`;
             usedFallback = true;
-            console.log(`[voice-agent] overrode LLM <say> due to rejected send_to_card: ${rejectedSendTargets.join(", ")}`);
+            console.log(`[voice-qwen-omni] overrode LLM <say> due to rejected send_to_card: ${rejectedSendTargets.join(", ")}`);
           }
 
           // Hallucinated-dispatch safety net — see voiceAgent.ts for the
@@ -1882,7 +1881,7 @@ ${r.content}
             const nameDrop = chatAgentNames.length > 0
               && new RegExp(`\\b(?:${chatAgentNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i").test(speakable);
             if (explicitClaim || implicitPromise || nameDrop) {
-              console.log(`[voice-omni] overrode LLM <say> due to hallucinated dispatch claim (explicit=${explicitClaim} implicit=${implicitPromise} nameDrop=${nameDrop}): ${JSON.stringify(speakable.slice(0, 200))}`);
+              console.log(`[voice-qwen-omni] overrode LLM <say> due to hallucinated dispatch claim (explicit=${explicitClaim} implicit=${implicitPromise} nameDrop=${nameDrop}): ${JSON.stringify(speakable.slice(0, 200))}`);
               if (implicitPromise && !explicitClaim && !nameDrop) {
                 speakable = "I didn't actually look that up. Want me to search the web for it?";
               } else {
@@ -1901,7 +1900,7 @@ ${r.content}
               if (cleaned) {
                 speakable = cleaned.slice(0, 600);
                 usedFallback = true;
-                console.log(`[voice-agent] LLM skipped <say> grammar; speaking cleaned text instead. raw=${JSON.stringify(lastLlmRaw.slice(0, 200))}`);
+                console.log(`[voice-qwen-omni] LLM skipped <say> grammar; speaking cleaned text instead. raw=${JSON.stringify(lastLlmRaw.slice(0, 200))}`);
               }
             } else {
               // (b) Tool dispatched but no spoken confirmation — synthesize
@@ -1925,7 +1924,7 @@ ${r.content}
                 speakable = "OK.";
               }
               usedFallback = true;
-              console.log(`[voice-agent] LLM dispatched tools without <say>; using default confirmation: ${JSON.stringify(speakable)}`);
+              console.log(`[voice-qwen-omni] LLM dispatched tools without <say>; using default confirmation: ${JSON.stringify(speakable)}`);
             }
           }
 
@@ -1945,7 +1944,7 @@ ${r.content}
             // Sentence text still goes out so the reply panel updates; a tab
             // that becomes visible later sees the answer text.
             const skipTts = !anyVisible();
-            console.log(`[voice-agent] speaking ${speakable.length} chars (fallback=${usedFallback}${skipTts ? ", skipTts=true (no visible client)" : ""})`);
+            console.log(`[voice-qwen-omni] speaking ${speakable.length} chars (fallback=${usedFallback}${skipTts ? ", skipTts=true (no visible client)" : ""})`);
             ctx.broadcast({ type: "thinking", phase: "tts" });
             let audioFramesEmitted = 0;
             const fanout = new SentenceFanout({
@@ -1967,7 +1966,7 @@ ${r.content}
                     wav_b64: f.wavB64,
                   });
                 } else {
-                  console.warn(`[voice-agent] ${f.message}`);
+                  console.warn(`[voice-qwen-omni] ${f.message}`);
                 }
               },
             });
@@ -1982,7 +1981,7 @@ ${r.content}
               if (currentFanout === fanout) currentFanout = null;
               setImmediate(() => { void drainAnnouncementQueue(); });
             }
-            console.log(`[voice-agent] turn done — audio frames emitted=${audioFramesEmitted}`);
+            console.log(`[voice-qwen-omni] turn done — audio frames emitted=${audioFramesEmitted}`);
 
             history.push({ role: "assistant", content: speakable, raw: lastLlmRaw });
             if (history.length > MAX_HISTORY) {
@@ -1991,7 +1990,7 @@ ${r.content}
             ctx.broadcast({ type: "assistant", content: speakable, fallback: usedFallback });
           } else if (pendingActionTools.length === 0) {
             // Truly empty response.
-            console.log(`[voice-agent] empty LLM response; raw=${JSON.stringify(lastLlmRaw.slice(0, 200))}`);
+            console.log(`[voice-qwen-omni] empty LLM response; raw=${JSON.stringify(lastLlmRaw.slice(0, 200))}`);
             ctx.broadcast({ type: "error", error: "Empty LLM response" });
           }
 
@@ -2008,7 +2007,7 @@ ${r.content}
           // stack. The new onData call will set busy=true again.
           if (queuedAudio.length > 0) {
             const next = queuedAudio.shift()!;
-            console.log(`[voice-agent] processing queued audio (depth=${queuedAudio.length})`);
+            console.log(`[voice-qwen-omni] processing queued audio (depth=${queuedAudio.length})`);
             setImmediate(() => {
               void handler.onData?.(_clientId, { audioB64: next.audioB64, audioMime: next.audioMime, voice: next.voice });
             });

@@ -338,13 +338,62 @@ When spawning subagents for implementation work:
 
 ## Scripts
 
-- `scripts/start.sh` — Start frontend (port 5173) + backend
-  (port 3002). Kills stale processes first.
-- `scripts/stop.sh` — Stop both servers.
-- `scripts/restart.sh` — Stop, then start.
+- `scripts/start.sh` — Boots the full Mica stack: frontend
+  (port 5173) + backend (port 3002) + chat vLLM container
+  (`mica-chat`, port 8012, `RedHatAI/Qwen3.6-35B-A3B-NVFP4` on
+  `vllm/vllm-openai:cu130-nightly`). Sidecars (Parakeet STT,
+  Kokoro TTS) auto-spawn on first voice request. Sets
+  `MICA_DISABLE_LLAMA=1` so the backend doesn't also try to start
+  the legacy llama-server. Set `MICA_DISABLE_CHAT_VLLM=1` to skip
+  the chat container (e.g. when iterating frontend-only).
+- `scripts/stop.sh` — Stops backend, frontend, voice sidecars,
+  and any leftover llama-server. **Leaves the chat vLLM container
+  warm by default** so restarts are seconds, not minutes (vLLM
+  cold-boot is 30-90s). Use `scripts/stop.sh --full` to also stop
+  the chat container (e.g. before `voices.sh start qwen-omni` to
+  free GPU for an A/B).
+- `scripts/restart.sh` — Stop, then start. Same `--full` flag
+  passes through; default keeps vLLM warm across restarts.
 - `scripts/status.sh` — Show running state and port status.
-- `scripts/start-vlm.sh` — Start vLLM server for VLM (Gemma 4);
-  not integrated into main agent path.
+- `scripts/voices.sh` — Subcommand controller for the optional
+  voice/omni experiment containers (`.voice-omni`,
+  `.voice-qwen-omni` card classes). Mutually exclusive on memory.
+  Usage: `voices.sh start nemotron|qwen-omni`,
+  `voices.sh stop nemotron|qwen-omni|all`, `voices.sh status`.
+- `scripts/lib/vllm-container.sh` — Internal helper sourced by
+  `start.sh` and `voices.sh`. Common docker-run lifecycle
+  (idempotency, pull-vs-local, log streaming, health-poll). Don't
+  invoke directly.
+- `scripts/start-{omni,qwen-omni}.sh` and matching stop scripts —
+  thin backwards-compat wrappers around `voices.sh`. Will be
+  removed once muscle memory updates.
+
+### Architecture decision (2026-05): vLLM consolidation
+
+Chat agent inference moved from llama-server (Q4 GGUF) to vLLM
+(`Qwen3.6-35B-A3B-NVFP4` on `cu130-nightly`). Reasons: ~30-40%
+faster on long outputs (NVFP4 + MTP-1 spec decode), single
+inference stack, vLLM continuous batching lets voice and chat
+share one model with near-zero overhead.
+
+The backend's `ensureLlamaServer()` path
+(`server/llamaServer.ts`) stays in the tree as a rollback option;
+set `MICA_DISABLE_CHAT_VLLM=1` and unset `MICA_DISABLE_LLAMA` to
+fall back to llama-server.
+
+### Where to run scripts (devcontainer vs host)
+
+Devcontainer uses **docker-outside-of-docker** — a single docker
+daemon (host's) reachable from both host shell and devcontainer
+terminal via the mounted `/var/run/docker.sock`. So:
+
+- **Run lifecycle scripts from inside the devcontainer terminal.**
+  That's where sidecars (Parakeet/Kokoro) and the backend live in
+  the PID namespace, so `stop.sh` can kill them. Container ops
+  (`docker stop mica-chat`) work too because the socket is shared.
+- Running from the host shell works for container-only ops
+  (`voices.sh start nemotron`, etc.) but won't see/kill sidecar
+  processes inside the devcontainer.
 
 ---
 

@@ -1,0 +1,59 @@
+<div class="vc-root">
+  <div class="vc-header">
+    <h2 class="vc-title">Voice</h2>
+    <p class="vc-subtitle" id="vc-subtitle">Click the mic to turn it on. Speak whenever — Mica will hear each phrase and reply.</p>
+    <label class="vc-voice-row">
+      <span class="vc-voice-label">Voice</span>
+      <select id="vc-voice-select" class="vc-voice-select">
+        <optgroup label="American Female">
+          <option value="af_bella">Bella (warm)</option>
+          <option value="af_sky">Sky (bright)</option>
+          <option value="af_heart">Heart (gentle)</option>
+          <option value="af_nicole">Nicole (clear)</option>
+          <option value="af_sarah">Sarah (mellow)</option>
+        </optgroup>
+        <optgroup label="American Male">
+          <option value="am_adam">Adam (calm)</option>
+          <option value="am_michael">Michael (deeper)</option>
+        </optgroup>
+        <optgroup label="British Female">
+          <option value="bf_emma">Emma</option>
+        </optgroup>
+        <optgroup label="British Male">
+          <option value="bm_george">George</option>
+        </optgroup>
+      </select>
+    </label>
+  </div>
+
+  <div class="vc-body">
+    <div class="vc-status" id="vc-status" data-state="idle">Mic off</div>
+
+    <button class="vc-talk" id="vc-talk" type="button" aria-label="Click to turn microphone on or off" data-mic="off">
+      <span class="vc-talk-icon" id="vc-talk-icon">🎙️</span>
+      <span class="vc-talk-label" id="vc-talk-label">Click to turn on</span>
+    </button>
+
+    <div class="vc-transcript-wrap" id="vc-transcript-wrap" style="display:none;">
+      <div class="vc-transcript-label">You said</div>
+      <div class="vc-transcript" id="vc-transcript">—</div>
+    </div>
+
+    <div class="vc-reply-wrap" id="vc-reply-wrap" style="display:none;">
+      <div class="vc-reply-label-row">
+        <div class="vc-reply-label">Mica</div>
+        <button class="vc-stop-speaking" id="vc-stop-speaking" title="Stop speaking now (clears the audio queue)" type="button" style="display:none;">stop talking</button>
+      </div>
+      <div class="vc-reply" id="vc-reply">—</div>
+    </div>
+
+    <div class="vc-tools" id="vc-tools" style="display:none;">
+      <div class="vc-tools-label">Routed</div>
+      <div class="vc-tools-list" id="vc-tools-list"></div>
+    </div>
+
+    <audio class="vc-audio" id="vc-audio" preload="auto" style="display:none;"></audio>
+
+    <div class="vc-meta" id="vc-meta">—</div>
+  </div>
+</div>

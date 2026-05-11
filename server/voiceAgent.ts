@@ -167,7 +167,11 @@ function formatRelativeAge(ms: number): string {
   return `${Math.floor(ageHr / 24)}d ago`;
 }
 
-const LLM_URL = "http://127.0.0.1:8012/v1/chat/completions";
+// Default targets 172.17.0.1 (Linux docker bridge gateway) so the
+// devcontainer reaches the host-published vLLM port. Override with
+// LLAMA_URL for rollback to in-container llama-server (127.0.0.1)
+// or any other base URL.
+const LLM_URL = (process.env.LLAMA_URL || "http://172.17.0.1:8012") + "/v1/chat/completions";
 // Keep the last 8 turns (4 user + 4 assistant) in context. Voice exchanges
 // are short — much more would just bloat the prompt without helping.
 const MAX_HISTORY = 8;
@@ -449,6 +453,23 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     }
     let lastAmbient: AmbientHint | null = null;
 
+    // Cache of recent agent replies. Mica's next-turn prompt surfaces
+    // these so she can answer follow-up questions ("more about the
+    // dough") from prompt-resident memory without dispatching again.
+    // Older content beyond the cache is still fetchable via
+    // read_recent_replies — Mica's prompt explains the choice.
+    // Newest at index 0; FIFO trim at RECENT_REPLIES_MAX.
+    interface CachedReply {
+      filename: string;
+      agent: string;
+      userRequest: string;        // user's voice utterance that triggered the dispatch
+      dispatchedMessage: string;  // what Mica sent via send_to_card
+      content: string;            // reply text, truncated to REPLY_CONTENT_CAP
+      truncated: boolean;         // true if content was clipped
+      receivedAt: number;         // unix ms for age display
+    }
+    const recentAgentReplies: CachedReply[] = [];
+
     // Partial-utterance buffer. When the user pauses mid-thought, VAD
     // cuts the recording and STT returns a partial like "I want to know".
     // Heuristic completeness check (looksComplete()) flags it; we stash
@@ -508,16 +529,33 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
       filename: string;
       agent: string;
       text: string;             // summary-mode: final ready-to-TTS text. full-mode: empty until drained.
-      rawContent?: string;       // full-mode only: raw broadcast content; summarized at drain time.
+      rawContent?: string;       // full-mode only: raw broadcast content; presented at drain time.
       mode: "summary" | "full";
+      // Captured at enqueue time so the presenter has the user's intent
+      // when drain fires later. Both empty for non-voice-dispatched items.
+      userRequest?: string;      // user's voice utterance that triggered the dispatch
+      dispatchedMessage?: string; // what Mica sent via send_to_card
     }
     const announcementQueue: AmbientItem[] = [];
     const seenTurnIds = new Map<string, string>(); // filename → last announced turn_id
     const muteSet = new Set<string>(); // filenames the user has muted (Phase 2.5)
     let announcementInFlight = false;
 
-    const VOICE_SUMMARY_CAP = 400;
-    const SUMMARIZE_INPUT_CAP = 3000;  // truncate huge replies before LLM
+    // Bounds for the new present-not-summarize model. See plan in
+    // /home/vscode/.claude/plans/question-check-logs-swirling-castle.md.
+    //   PRESENT_INPUT_CAP — chars shipped to LLM for the initial
+    //     presentation. 6000 leaves room for detailed answers; we cap
+    //     here so a 50K-char code dump doesn't blow the prompt.
+    //   RECENT_REPLIES_MAX — how many full agent replies we keep in
+    //     prompt-resident cache. 3 covers most multi-turn voice
+    //     interactions; older replies still reachable via
+    //     read_recent_replies.
+    //   REPLY_CONTENT_CAP — per-reply cap in the cache. Truncated tails
+    //     are fetchable via read_recent_replies; the truncation marker
+    //     tells Mica when to ask for more.
+    const PRESENT_INPUT_CAP = 6000;
+    const RECENT_REPLIES_MAX = 3;
+    const REPLY_CONTENT_CAP = 2000;
 
     function summarizeForAnnouncement(content: string): string {
       // Take the first sentence, cap at ~140 chars. Keep raw markdown —
@@ -529,23 +567,36 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
       return first.trim();
     }
 
-    /** LLM-summarize a voice-dispatched agent reply for spoken delivery.
-     *  Replaces the previous "read up to 1500 raw chars" behaviour — full
-     *  TTS of dense analytical replies was running ~90s per turn. Now:
-     *  short replies (≤VOICE_SUMMARY_CAP) pass through unchanged; longer
-     *  replies go through one quick LLM call ("summarize in 2-3 spoken
-     *  sentences"); failure / timeout falls back to a structural truncate
-     *  with a "more in the chat card" tail. ~1s overhead per long reply,
-     *  in exchange for a 25-second readout instead of 90s. */
-    async function summarizeForVoice(content: string, agentName: string): Promise<string> {
-      const cleaned = cleanForTts(content).trim();
-      if (!cleaned) return "";
-      if (cleaned.length <= VOICE_SUMMARY_CAP) return cleaned;
-      const llmInput = cleaned.length > SUMMARIZE_INPUT_CAP
-        ? cleaned.slice(0, SUMMARIZE_INPUT_CAP)
-        : cleaned;
+    /** Generate Mica's spoken presentation of an agent's reply.
+     *
+     *  Replaces the previous generic "summarize for voice" path. The key
+     *  difference: this gets BOTH the user's original voice request AND
+     *  what Mica actually dispatched to the agent, so it can produce a
+     *  response tuned to "did we answer the user's question" rather than
+     *  a generic distillation that drops detail.
+     *
+     *  No char-cap output bound — length is whatever the answer requires.
+     *  max_tokens caps the LLM at ~1200 chars worst case (well above
+     *  typical answers, doesn't artificially clip a step-list).
+     *
+     *  Short replies (≤300 cleaned chars) bypass the LLM and pass
+     *  through verbatim — the cost of a 6-sec LLM call isn't worth it
+     *  for a one-sentence answer that's already in the right shape. */
+    async function presentForVoice(
+      reply: string,
+      userRequest: string,
+      dispatchedMessage: string,
+      agentName: string,
+    ): Promise<string> {
+      const raw = reply.trim();
+      if (!raw) return "";
+      // Very short replies are already in the right shape for speech.
+      if (raw.length <= 300) return raw;
+      const llmInput = raw.length > PRESENT_INPUT_CAP
+        ? raw.slice(0, PRESENT_INPUT_CAP)
+        : raw;
       try {
-        console.log(`[voice-agent:ambient] summarizing ${cleaned.length}-char full reply via LLM`);
+        console.log(`[voice-agent:ambient] presenting ${raw.length}-char reply for ${agentName} (request: ${JSON.stringify(userRequest.slice(0, 80))})`);
         const resp = await fetch(LLM_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -553,42 +604,54 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             model: "voice",
             messages: [
               { role: "system", content:
-                `Summarize ${agentName}'s reply in 2-3 short spoken sentences for TTS readout. ` +
-                "Plain conversational English. No markdown, no lists, no code, no filenames — " +
-                "just the gist of what was said. Skip pleasantries; lead with the substance." },
-              { role: "user", content: llmInput },
+                "You're Mica's voice. The user asked an agent for help, and the agent " +
+                "replied. Your job: give the user a spoken response that ACTUALLY " +
+                "answers their question, using the agent's reply as source material. " +
+                "Preserve concrete details the user needs (numbers, measurements, " +
+                "names, exact steps). KEEP markdown structure when it's the right " +
+                "shape for the content — tables for tabular data, fenced code blocks " +
+                "for code, short bullet lists when comparing options. The reply panel " +
+                "renders markdown visually, and TTS strips it cleanly — so a table is " +
+                "read aloud as flowing prose but shown as a table on screen. Drop " +
+                "chatty meta-commentary, pleasantries, filenames, and phrases like " +
+                "'in summary' or 'the agent said'. Speak as if you're the one " +
+                "explaining it. Length is whatever the answer requires — short for a " +
+                "one-fact question, longer for an inherently detailed answer." },
+              { role: "user", content:
+                `User's voice request: "${userRequest}"\n\n` +
+                `What I asked ${agentName}: "${dispatchedMessage}"\n\n` +
+                `${agentName}'s reply:\n${llmInput}\n\n` +
+                `Now: speak the answer to the user.` },
             ],
-            max_tokens: 120,
+            max_tokens: 600,
             temperature: 0.3,
             stream: false,
             chat_template_kwargs: { enable_thinking: false },
           }),
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(10000),
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
-        const summary = (data.choices?.[0]?.message?.content || "").trim();
-        if (summary) {
-          const final = summary.length > VOICE_SUMMARY_CAP
-            ? summary.slice(0, VOICE_SUMMARY_CAP).replace(/\s+\S*$/, "").trim() + "…"
-            : summary;
-          console.log(`[voice-agent:ambient] summary ${final.length} chars`);
-          return final;
+        const presentation = (data.choices?.[0]?.message?.content || "").trim();
+        if (presentation) {
+          console.log(`[voice-agent:ambient] presented ${presentation.length} chars`);
+          return presentation;
         }
       } catch (err) {
-        console.warn(`[voice-agent:ambient] summarize failed, falling back: ${(err as Error).message}`);
+        console.warn(`[voice-agent:ambient] present failed, falling back to raw truncate: ${(err as Error).message}`);
       }
-      // Fallback: cap at the same length, trim to nearest sentence boundary.
-      const truncate = cleaned.slice(0, VOICE_SUMMARY_CAP);
+      // Fallback: truncate to ~1000 chars at a sentence boundary, append
+      // a tail telling Mica's downstream loop where the rest lives.
+      const truncate = raw.slice(0, 1000);
       const lastBoundary = Math.max(
         truncate.lastIndexOf(". "),
         truncate.lastIndexOf("! "),
         truncate.lastIndexOf("? "),
       );
-      if (lastBoundary > VOICE_SUMMARY_CAP * 0.5) {
-        return truncate.slice(0, lastBoundary + 1).trim() + " More in the chat card.";
+      if (lastBoundary > 500) {
+        return truncate.slice(0, lastBoundary + 1).trim() + " There's more in the chat card.";
       }
-      return truncate.trim() + "… more in the chat card.";
+      return truncate.trim() + "… there's more in the chat card.";
     }
 
     async function drainAnnouncementQueue(): Promise<void> {
@@ -597,17 +660,43 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
       if (!next) return;
       announcementInFlight = true;
       try {
-        // Full mode: LLM-summarize the rawContent now (deferred from
-        // enqueue time so a bursty stream queues without blocking on
-        // the LLM). summarizeForVoice handles short-content fast-path,
-        // LLM call for long content, structural-truncate fallback.
+        // Full mode: present the rawContent now (deferred from enqueue
+        // time so a bursty stream queues without blocking on the LLM).
+        // presentForVoice takes the user's voice request + what Mica
+        // dispatched, generating an answer-shaped response (not a
+        // generic summary). Short-content fast-path + LLM-with-fallback.
         let fullText = next.text;
         if (next.mode === "full" && next.rawContent !== undefined) {
-          fullText = await summarizeForVoice(next.rawContent, next.agent);
+          fullText = await presentForVoice(
+            next.rawContent,
+            next.userRequest || "",
+            next.dispatchedMessage || "",
+            next.agent,
+          );
           if (!fullText) {
-            console.log(`[voice-agent:ambient] empty summary, dropping announcement for ${next.filename}`);
+            console.log(`[voice-agent:ambient] empty presentation, dropping announcement for ${next.filename}`);
             return;
           }
+          // Cache the full reply so Mica's NEXT turn can drill in via
+          // prompt-resident memory (or via read_recent_replies for the
+          // truncated tail). Newest at index 0.
+          const truncated = next.rawContent.length > REPLY_CONTENT_CAP;
+          const cachedContent = truncated
+            ? next.rawContent.slice(0, REPLY_CONTENT_CAP).replace(/\s+\S*$/, "")
+            : next.rawContent;
+          recentAgentReplies.unshift({
+            filename: next.filename,
+            agent: next.agent,
+            userRequest: next.userRequest || "",
+            dispatchedMessage: next.dispatchedMessage || "",
+            content: cachedContent,
+            truncated,
+            receivedAt: Date.now(),
+          });
+          if (recentAgentReplies.length > RECENT_REPLIES_MAX) {
+            recentAgentReplies.length = RECENT_REPLIES_MAX;
+          }
+          console.log(`[voice-agent:ambient] cached reply for ${next.filename} (${cachedContent.length}${truncated ? "/" + next.rawContent.length : ""} chars); cache depth=${recentAgentReplies.length}`);
         }
         // Summary mode prefixes "<Agent> just finished. " so the listener
         // knows the source. Full-read mode just speaks the summary itself —
@@ -693,6 +782,12 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     // chat card visually if they want to see what changed.
     const unsubscribeBroadcastListener = channelMgr.onAnyBroadcast(
       (project, filename, data) => {
+        // Mica announces chat-card replies via ambient TTS so the user
+        // hears Qwen's output without having to look at the chat card.
+        // To suppress this entirely, set MICA_VOICE_AMBIENT=0. To suppress
+        // for a specific card, toggle that card's 🔊 to muted (its mute
+        // state is in muteSet, populated via channel messages).
+        if (process.env.MICA_VOICE_AMBIENT === "0") return;
         if (project !== sessionProject) return;
         if (filename === ctx.filename) return; // never echo our own replies
         if (muteSet.has(filename)) return;
@@ -732,8 +827,24 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
         // Full mode: store rawContent and defer the LLM summarize until
         // drain time, so a bursty stream of voice-dispatched replies
         // queues immediately and summarization serializes 1-at-a-time.
+        // Capture the user's intent at enqueue time so the presenter
+        // can tune the spoken response. For voice-dispatched (full mode),
+        // userRequest is the most recent user turn from history.
+        // dispatchedMessage is what Mica actually sent via send_to_card
+        // — already tracked on `delegation` for the active card.
+        const userRequest = mode === "full"
+          ? (() => {
+              for (let i = history.length - 1; i >= 0; i--) {
+                if (history[i].role === "user") return history[i].content;
+              }
+              return "";
+            })()
+          : undefined;
+        const dispatchedMessage = mode === "full" && delegation && filename === delegation.filename
+          ? delegation.summary
+          : undefined;
         const item: AmbientItem = mode === "full"
-          ? { filename, agent, text: "", rawContent: d.content, mode }
+          ? { filename, agent, text: "", rawContent: d.content, mode, userRequest, dispatchedMessage }
           : { filename, agent, text: summarizeForAnnouncement(d.content), mode };
         if (mode === "summary" && !item.text) return;  // empty summary → skip
         // Cap queue to avoid flooding when many cards finish at once.
@@ -1117,7 +1228,9 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
 
             "**Notice what's on the canvas, treat it as context.** When there's a project intent below, ground your suggestions in it. Otherwise lean on your own knowledge — you're Qwen3.6, you know a lot — and engage with whatever the user brings. Speak naturally about the topic; let the canvas inform your reply silently rather than announcing its state.\n\n" +
 
-            "**Look it up when you can't be sure.** Your training data has a cutoff. Anything that moves — current events, today's news, a software's latest version, prices, schedules, who's in office, the current time anywhere, today's weather — call the `time` / `search` / `web_fetch` tools and speak the looked-up answer. Same for specific facts where guessing would mislead: a person's birth year, a city's population, an obscure spec's details. The tools take 1–3 seconds; that's far better than a confident wrong answer. When you're sure of something stable (general concepts, well-known history, your own opinions), answer directly.\n\n" +
+            "**Look it up yourself first.** Your training data has a cutoff. Anything that moves — current events, today's news, a software's latest version, prices and stock quotes, schedules, scores, who's in office, the current time anywhere, today's weather — call the `time` / `search` / `web_fetch` tools and speak the looked-up answer. Same for specific facts where guessing would mislead: a person's birth year, a city's population, an obscure spec's details. The tools take 1–3 seconds; that's far better than a confident wrong answer. **Don't dispatch lookups to chat cards** — search/web_fetch live on YOUR side of the line. send_to_card is for real project work (files, code, planning), not facts you can pull in one search call. When you're sure of something stable (general concepts, well-known history, your own opinions), answer directly.\n\n" +
+
+            "**Never promise a lookup without doing it.** If you say \"let me check\", \"I'm pulling that up\", \"hold on\", \"one moment\" — you MUST emit the matching `<tool name=\"search\">` or `<tool name=\"web_fetch\">` in the same response. Don't narrate intent without action. Either call the tool now or skip the preamble and answer directly.\n\n" +
 
             "**Work with the user as context emerges.** The first few exchanges may be loose — exploring an idea, kicking around possibilities. As the conversation surfaces what the user actually wants, start suggesting concrete moves: \"Want me to ask Qwen to draft a spec?\" \"Should I have it explore the X angle?\" Engage the chat agents and other tools more as the work crystallizes.\n\n" +
 
@@ -1181,6 +1294,52 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
               "- An unrelated topic (non-sequitur) → answer directly if you can, or open a fresh delegation. Don't conflate with the prior context.\n" +
               `- An explicit stop intent (\"stop\", \"cancel\", \"never mind\", \"wait\", or paraphrase) → emit <tool name=\"abort\"/> + a brief <say> confirmation (\"OK, stopping\"). The server cascades the cancel to ${delegation.filename}.\n`,
             );
+          }
+
+          // ── Recent agent replies (prompt-resident working memory) ──
+          // The user often asks follow-ups on what they just heard
+          // ("more about the dough", "how long does it rest?", "what
+          // about the last step?"). Surface the recent reply text so
+          // Mica answers directly without re-dispatching. For truncated
+          // tails or older replies, read_recent_replies pages in more.
+          if (recentAgentReplies.length > 0) {
+            const ageStr = (ts: number) => {
+              const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+              if (sec < 60) return `${sec}s ago`;
+              if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+              return `${Math.floor(sec / 3600)}h ago`;
+            };
+            const lines: string[] = [];
+            lines.push("## Recent agent replies (your working memory)\n");
+            lines.push(
+              "You have the recent agent replies below in prompt-resident memory. " +
+              "For follow-up questions (\"more about X\", \"how long\", \"give me the steps\") " +
+              "answer directly from this text — no re-dispatch needed unless the user wants " +
+              "NEW work. If a reply is marked [TRUNCATED] and you need the tail, call " +
+              "`<tool name=\"read_recent_replies\"><file>FILENAME</file><n>1</n></tool>` " +
+              "to fetch the full text. Pick the entry matching the user's topic by filename + " +
+              "their original request.\n\n",
+            );
+            for (let i = 0; i < recentAgentReplies.length; i++) {
+              const r = recentAgentReplies[i];
+              const label = i === 0 ? "Most recent (just spoken aloud)" : `Earlier #${i}`;
+              const dispatchedLine = r.dispatchedMessage
+                ? `What you sent ${r.agent}: "${r.dispatchedMessage}"\n`
+                : "";
+              const userRequestLine = r.userRequest
+                ? `User's request: "${r.userRequest}"\n`
+                : "";
+              const truncMarker = r.truncated ? " [TRUNCATED — call read_recent_replies for full text]" : "";
+              lines.push(
+                `### ${label}\n` +
+                `Agent: ${r.agent} on ${r.filename}\n` +
+                userRequestLine +
+                dispatchedLine +
+                `Received: ${ageStr(r.receivedAt)}\n` +
+                `Reply text${truncMarker}:\n${r.content}\n\n`,
+              );
+            }
+            promptParts.push(lines.join(""));
           }
 
           promptParts.push(
@@ -1248,6 +1407,14 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             "# Volatile fact — use search\n" +
             "User: what's the latest version of three.js?\n" +
             `Assistant: <tool name="search"><query>latest three.js version</query></tool><say>Latest is r158, released last month.</say>\n\n` +
+
+            "# Price / current event — search, don't dispatch to a chat card\n" +
+            "User: what did Apple stock close at on Friday?\n" +
+            `Assistant: <tool name="search"><query>Apple AAPL stock close price Friday</query></tool><say>AAPL closed at $189.43, up about half a percent on the day.</say>\n\n` +
+
+            "# News update — search\n" +
+            "User: any updates on the redistricting fight?\n" +
+            `Assistant: <tool name="search"><query>redistricting news this week congressional map ruling</query></tool><say>Two big moves this week: a state judge blocked the amendment from the ballot, and Virginia's high court tossed the new congressional map.</say>\n\n` +
 
             "# Project-specific lookup — read tool, then summarize\n" +
             `Assistant: <tool name="read_recent_replies"><file>${exampleFilename}</file></tool><say>Qwen wrapped the architecture plan — four services and a five-stage retrieval pipeline. Want me to ask it to detail the riskiest one?</say>`,
@@ -1728,18 +1895,47 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           }
 
           // Hallucinated-dispatch safety net. The LLM regularly says "I
-          // asked Qwen" / "I routed that" / "I sent it to X" without
-          // emitting an actual <tool name="send_to_card">. The hard-rule
-          // in the system prompt curbs this but doesn't eliminate it.
-          // If we're about to speak a dispatch claim and no send_to_card
-          // actually succeeded, scrub the lie and surface a corrigible
-          // alternative instead.
-          else if (!sendDispatchedOk && speakable && /\b(?:asked|sent (?:that |it )?to|told|dispatched|routed (?:that|it)|forwarded (?:that|it)|kicked off|kicked it off|handed (?:that|it) (?:off|over))\b/i.test(speakable)) {
-            console.log(`[voice-agent] overrode LLM <say> due to hallucinated dispatch claim: ${JSON.stringify(speakable.slice(0, 200))}`);
-            speakable = chatCards.length > 0
-              ? `I didn't actually route that anywhere — want me to send it to ${chatCards[0].name}?`
-              : `I didn't route that anywhere — open a chat card first if you want me to forward work.`;
-            usedFallback = true;
+          // asked Qwen" / "I routed that" / "let me check with Qwen" /
+          // "I'll find out" without emitting an actual
+          // <tool name="send_to_card">. The hard-rule in the system
+          // prompt curbs this but doesn't eliminate it. Two checks:
+          //   (a) explicit dispatch verbs ("asked", "sent it to", ...)
+          //   (b) implicit promises ("let me check / find out / look
+          //       into / get back to you / pull that up", etc.)
+          //   (c) name-drop check: mentioning any chat card's agent
+          //       name (e.g. "Qwen") when we didn't actually dispatch.
+          // If any of those fire and no send_to_card succeeded, scrub
+          // the lie and surface a corrigible alternative.
+          else if (!sendDispatchedOk && speakable) {
+            const explicitClaim = /\b(?:asked|sent (?:that |it )?to|told|dispatched|routed (?:that|it)|forwarded (?:that|it)|kicked off|kicked it off|handed (?:that|it) (?:off|over))\b/i.test(speakable);
+            const implicitPromise = /\b(?:let me (?:check|find out|look into|see (?:what|if|whether)|ask|pull (?:that|it) up|get|get back|consult|verify|grab)|i(?:'ll| will) (?:check|find out|look into|see|ask|pull|get|consult|verify|grab|bring (?:that|it) up|run (?:that|it) by|pass (?:that|it) along)|i(?:'m| am) (?:checking|asking|looking|consulting)|hold on while|just a (?:moment|second|sec)|one (?:moment|second|sec)|give me a (?:moment|second|sec)|on it|let's see what|getting that for you)\b/i.test(speakable);
+            // Name-drop: any chat card's agent name appearing when we
+            // didn't dispatch. Use the chat-cards listing as ground truth.
+            const chatAgentNames = chatCards
+              .map((c) => {
+                const dot = c.name.lastIndexOf(".");
+                const ext = dot === -1 ? "" : c.name.slice(dot + 1).toLowerCase();
+                return AGENT_NAME_DEFAULTS[ext] || ext;
+              })
+              .filter(Boolean);
+            const nameDrop = chatAgentNames.length > 0
+              && new RegExp(`\\b(?:${chatAgentNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i").test(speakable);
+
+            if (explicitClaim || implicitPromise || nameDrop) {
+              console.log(`[voice-agent] overrode LLM <say> due to hallucinated dispatch claim (explicit=${explicitClaim} implicit=${implicitPromise} nameDrop=${nameDrop}): ${JSON.stringify(speakable.slice(0, 200))}`);
+              // Implicit promise alone ("let me check", "I'm pulling that up")
+              // means the LLM intended a lookup, not a dispatch. Offer search
+              // rather than send_to_card so we recover the right primitive.
+              // Explicit claims and name drops are dispatch lies — offer dispatch.
+              if (implicitPromise && !explicitClaim && !nameDrop) {
+                speakable = "I didn't actually look that up. Want me to search the web for it?";
+              } else {
+                speakable = chatCards.length > 0
+                  ? `I didn't actually route that anywhere — want me to send it to ${chatCards[0].name}?`
+                  : `I didn't route that anywhere — open a chat card first if you want me to forward work.`;
+              }
+              usedFallback = true;
+            }
           }
           if (!speakable) {
             if (pendingActionTools.length === 0) {

@@ -54,6 +54,7 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let recordedMime = '';
 let speechStartedAt = 0;       // when VAD first saw speech in this recording
+let bargeCandidateStartedAt = 0; // when high-energy frames started during TTS playback (resets if rms drops)
 let speechActive = false;
 let silenceStartedAt = 0;
 let lastSpeechMs = 0;          // captured at endUtterance() so onstop can read it
@@ -65,6 +66,20 @@ let suppressNextUtterance = false; // turnMicOff() sets this so the final partia
 // rejects fan/keyboard noise. SILENCE_MS controls how long a pause must
 // be before we treat it as end-of-utterance.
 const SPEECH_RMS = 0.02;
+// Barge-in (interrupting Mica's TTS) is gated by SUSTAINED speech-level
+// activity. Same RMS threshold as ordinary speech detection (so normal
+// conversational volume triggers) but requires the energy stay above
+// threshold for BARGE_IN_DURATION_MS continuously — that filters the
+// false-positive sources (cough/click/chair-creak/keyboard-tap), which
+// are all sub-150ms transients that decay fast.
+// Tuning notes:
+//   - Bump BARGE_IN_RMS if Mica's own speaker echo trips barge (rare;
+//     speaker→mic bleed is usually well below 0.02 RMS).
+//   - Bump BARGE_IN_DURATION_MS if false positives still occur (e.g.
+//     500 for very rapid mid-noisy environments). Trade-off: laggier
+//     barge response.
+const BARGE_IN_RMS = SPEECH_RMS;
+const BARGE_IN_DURATION_MS = 150;
 // 1500ms silence to end an utterance. 800ms tripped on normal mid-
 // sentence thinking pauses and shipped partial transcripts ("I want
 // to know") to STT/LLM, which then dispatched a confused half-request
@@ -612,18 +627,6 @@ function checkVad() {
       speechActive = true;
       speechStartedAt = now;
       applyMicButtonState();
-      // Barge-in: if Mica is currently speaking, silence her right now
-      // so the user can take over the conversation. Server-side cancel
-      // also fires (via barge_in channel message) so no further TTS
-      // frames generate. Distinct from <tool name="abort"/>: this is
-      // local-audio interruption only, not a cascade to the delegated
-      // chat agent — Qwen keeps working.
-      if (isPlayingQueue || wavQueue.length > 0) {
-        console.log('[voice] barge-in: user started speaking during TTS playback');
-        bargedInUntilMs = now + 800;
-        stopVoicePlayback();
-        try { ch.send({ type: 'barge_in' }); } catch (_) { /* channel may be reconnecting */ }
-      }
     }
     silenceStartedAt = 0;
   } else if (speechActive) {
@@ -635,6 +638,33 @@ function checkVad() {
   // Force-cut overly long utterances (catch-all for stuck VAD).
   if (speechActive && speechStartedAt > 0 && now - speechStartedAt >= MAX_UTTERANCE_MS) {
     endUtterance();
+  }
+
+  // ── Barge-in detection (separate path) ─────────────────────────────
+  // Only consider barging while Mica is actually speaking. Require BOTH
+  // a louder threshold AND sustained activity to filter out short/quiet
+  // false positives (coughs, clicks, fan noise, keyboard taps).
+  const ttsActive = isPlayingQueue || wavQueue.length > 0;
+  if (ttsActive && Date.now() >= bargedInUntilMs) {
+    if (rms > BARGE_IN_RMS) {
+      if (bargeCandidateStartedAt === 0) {
+        bargeCandidateStartedAt = now;
+      } else if (now - bargeCandidateStartedAt >= BARGE_IN_DURATION_MS) {
+        console.log(`[voice] barge-in: ${(now - bargeCandidateStartedAt)}ms of sustained activity at rms=${rms.toFixed(3)} (threshold ${BARGE_IN_RMS}) during TTS playback`);
+        bargedInUntilMs = now + 800;
+        bargeCandidateStartedAt = 0;
+        stopVoicePlayback();
+        try { ch.send({ type: 'barge_in' }); } catch (_) { /* channel may be reconnecting */ }
+      }
+    } else {
+      // Activity dropped — reset candidate. A real interruption sustains;
+      // a transient drops back to silence after one window.
+      bargeCandidateStartedAt = 0;
+    }
+  } else {
+    // No TTS playing, or we're inside the post-barge cooldown — keep the
+    // candidate reset so we don't carry stale state into the next playback.
+    bargeCandidateStartedAt = 0;
   }
 }
 

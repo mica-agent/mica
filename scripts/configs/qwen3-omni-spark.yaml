@@ -1,0 +1,73 @@
+# vLLM-Omni deploy config for Qwen3-Omni-30B-A3B-Instruct on DGX Spark.
+# Adapted from vllm-omni's qwen3_omni.yaml (multi-GPU H100 default) — all
+# three stages co-located on GPU 0 with shared 128 GB unified memory.
+#
+# Memory budget (121 GiB free GPU at startup):
+#   Stage 0 Thinker  (LLM, 60 GB BF16):  0.55 → 66 GiB
+#   Stage 1 Talker   (TTS-like):         0.15 → 18 GiB
+#   Stage 2 code2wav (vocoder):          0.05 → 6 GiB
+#   ────────────────────────────────────────
+#   Total:                               0.75 → 90 GiB
+#                                        leaves 30 GiB for KV / activations / mmap
+#
+# Pass to vllm-omni via: --deploy-config /app/configs/qwen3-omni-spark.yaml
+async_chunk: true
+
+connectors:
+  connector_of_shared_memory:
+    name: SharedMemoryConnector
+    extra:
+      codec_chunk_frames: 25
+      codec_left_context_frames: 25
+
+stages:
+  - stage_id: 0
+    max_num_batched_tokens: 8192
+    max_num_seqs: 2
+    max_model_len: 8192
+    gpu_memory_utilization: 0.55
+    trust_remote_code: true
+    enable_prefix_caching: true
+    devices: "0"
+    default_sampling_params:
+      temperature: 0.4
+      top_p: 0.9
+      top_k: 1
+      max_tokens: 2048
+      seed: 42
+      repetition_penalty: 1.05
+
+  - stage_id: 1
+    max_num_batched_tokens: 8192
+    max_num_seqs: 2
+    gpu_memory_utilization: 0.15
+    trust_remote_code: true
+    enable_prefix_caching: false
+    devices: "0"
+    input_connectors:
+      from_stage_0: connector_of_shared_memory
+    default_sampling_params:
+      temperature: 0.9
+      top_k: 50
+      max_tokens: 4096
+      seed: 42
+      repetition_penalty: 1.05
+
+  - stage_id: 2
+    max_num_batched_tokens: 16384
+    max_num_seqs: 1
+    gpu_memory_utilization: 0.05
+    enforce_eager: true
+    trust_remote_code: true
+    enable_prefix_caching: false
+    async_scheduling: false
+    devices: "0"
+    input_connectors:
+      from_stage_1: connector_of_shared_memory
+    default_sampling_params:
+      temperature: 0.0
+      top_p: 1.0
+      top_k: -1
+      max_tokens: 65536
+      seed: 42
+      repetition_penalty: 1.1

@@ -36,6 +36,22 @@ export function cleanForTts(text: string): string {
   let s = text;
   // Fenced code blocks ``` ``` → short placeholder (don't read code aloud).
   s = s.replace(/```[\s\S]*?```/g, " code block. ");
+  // Markdown tables: contiguous `|...|` lines → comma-separated prose,
+  // with the alignment-row (`|---|---|`) skipped. Without this, TTS would
+  // read "vertical bar Item vertical bar Price vertical bar" for every
+  // row. Must run before the bullet/heading strips so the per-line `|`
+  // markers are gone before whitespace collapses everything onto a line.
+  s = s.replace(/(?:^\|.*\|\s*$\n?)+/gm, (block) => {
+    const rows = block.trim().split(/\n/);
+    const out: string[] = [];
+    for (const r of rows) {
+      const trimmed = r.trim();
+      if (/^\|[\s\-:|]+\|$/.test(trimmed)) continue;
+      const cells = trimmed.replace(/^\||\|$/g, "").split("|").map((c) => c.trim()).filter(Boolean);
+      if (cells.length) out.push(cells.join(", "));
+    }
+    return out.length ? out.join(". ") + ". " : "";
+  });
   // Inline code `foo` → keep content, drop ticks.
   s = s.replace(/`([^`\n]+)`/g, "$1");
   // Markdown links [text](url) → keep just the text.

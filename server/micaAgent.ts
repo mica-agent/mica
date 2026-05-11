@@ -1190,12 +1190,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     // use sessionProject — the user can switch projects without redirecting
     // this session's writes to the wrong .mica/chats directory.
     const sessionProject = ctx.project;
-    // Voice mode — when the chat card's 🔊 toggle is on, the card sends
-    // `{ voiceMode: true }` either as openChannel args (initial state) or
-    // as a per-message override. Mutable so the toggle takes effect on
-    // the next reply without needing to reopen the channel. When false,
-    // the sentence-streaming code path is skipped — zero overhead.
-    let voiceMode = args && args.voiceMode === true;
+    // Speech rendering moved out of the chat agent: per CLAUDE.md tenet 3
+    // (pipes, not policy), chat cards are pure text. If a .voice card is
+    // on the canvas, Mica's voice agent subscribes to this chat agent's
+    // broadcasts and announces replies via Kokoro. Chat agent never emits
+    // assistant_speech frames anymore.
     let voicePref = args && typeof args.voice === "string" ? (args.voice as string) : undefined;
     // Chat history is keyed by the session's stable UUID (the file's per-card
     // sidecar id). Stable across renames; isolated per file even if two
@@ -2401,49 +2400,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           viaVoice: turnSource === "voice",
         });
 
-        // Voice mode: speak the assistant reply sentence-by-sentence.
-        // Fire-and-forget — TTS frames flow over the open channel as
-        // sentences finish synthesizing, well after this handler returns.
-        // The card sequences playback via `assistant_speech` frames.
-        // No-op when voiceMode is false (the common case).
-        if (voiceMode && resultText) {
-          const voiceStatus = getVoiceServerStatus();
-          if (!voiceStatus.disabled && voiceStatus.tts.ready) {
-            const fanout = new SentenceFanout({
-              ttsUrl: getTtsUrl(),
-              voice: voicePref,
-              onFrame: (f) => {
-                if (f.type === "audio") {
-                  ctx.broadcast({
-                    type: "assistant_speech",
-                    sentence_idx: f.idx,
-                    wav_b64: f.wavB64,
-                    turn_id: turnId,
-                  });
-                } else if (f.type === "sentence") {
-                  ctx.broadcast({
-                    type: "assistant_speech_text",
-                    sentence_idx: f.idx,
-                    text: f.text,
-                    turn_id: turnId,
-                  });
-                } else {
-                  // tts_error — surface via console; card stays graceful.
-                  console.warn(`[mica-agent:voice] ${f.message}`);
-                }
-              },
-            });
-            fanout.feed(resultText);
-            fanout.end();
-            // Don't await — let TTS frames stream while the rest of the
-            // turn's bookkeeping (recordTurn etc) runs in parallel.
-            void fanout.drain().catch((err) => {
-              console.warn(`[mica-agent:voice] drain failed: ${(err as Error).message}`);
-            });
-          } else {
-            console.log(`[mica-agent:voice] skipped (disabled=${voiceStatus.disabled} ttsReady=${voiceStatus.tts.ready})`);
-          }
-        }
+        // (Speech rendering moved to the .voice card. The chat agent emits
+        // only `assistant` broadcasts; the voice agent listens and renders
+        // ambient TTS via Kokoro.)
 
         void recordTurn(sessionProject, {
           turn_id: turnId,
@@ -2749,15 +2708,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           type?: string;
           message?: string;
           attachmentFilename?: string;
-          voiceMode?: boolean;
           voice?: string;
           id?: string;            // for cancel_queued
           _voiceMeta?: { onQueued?: (depth: number) => void };
         };
 
-        // Voice toggle: every send may carry an updated voiceMode flag,
-        // so the chat card's 🔊 button takes effect on the very next reply.
-        if (typeof msg.voiceMode === "boolean") voiceMode = msg.voiceMode;
         if (typeof msg.voice === "string") voicePref = msg.voice;
 
         if (msg.type === "interrupt") {

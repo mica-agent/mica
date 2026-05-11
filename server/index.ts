@@ -92,6 +92,7 @@ import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
 import { createVoiceAgentHandler } from "./voiceAgent.js";
 import { createVoiceOmniAgentHandler } from "./voiceOmniAgent.js";
+import { createVoiceQwenOmniAgentHandler } from "./voiceQwenOmniAgent.js";
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
 import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
 import { stopOpencodeServer } from "./opencodeServer.js";
@@ -1118,7 +1119,7 @@ app.post("/api/voice/converse", async (req, res) => {
   });
 
   try {
-    const llmResp = await fetch(`http://127.0.0.1:8012/v1/chat/completions`, {
+    const llmResp = await fetch(`${process.env.LLAMA_URL || "http://172.17.0.1:8012"}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2785,6 +2786,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
   channelManager.registerHandler("voice", createVoiceAgentHandler(channelManager));  // .voice files -> canvas-aware voice assistant
   channelManager.registerHandler("voice-omni", createVoiceOmniAgentHandler(channelManager));  // .voice-omni files -> Nemotron Omni audio-in voice (experiment)
+  channelManager.registerHandler("voice-qwen-omni", createVoiceQwenOmniAgentHandler(channelManager));  // .voice-qwen-omni files -> Qwen3-Omni audio-in voice (A/B/C experiment)
   channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
   channelManager.registerHandler("opencode", createOpencodeAgentHandler(fileWatcher));  // .opencode files -> OpenCode agent (lazy-spawned opencode serve)
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
