@@ -124,9 +124,9 @@ export function pathFromReadInput(input: Record<string, unknown>): string {
 // retries. The full skill body costs tokens only when actually needed.
 
 const CARD_CLASS_FILE_RX = /\.mica\/card-classes\/[^/]+\/(card\.(?:js|html|css)|metadata\.json)$/;
-const CREATE_CARD_CLASS_SKILL_RX = /\.(?:qwen|claude)\/skills\/create-card-class\/SKILL\.md$/;
+const CARD_CLASS_HANDBOOK_SKILL_RX = /\.(?:qwen|claude)\/skills\/card-class-handbook\/SKILL\.md$/;
 
-/** If `filePath` is a card-class authoring file and the create-card-class skill
+/** If `filePath` is a card-class authoring file and the card-class-handbook skill
  *  hasn't been read in `readFiles`, returns the deny reason. Otherwise null. */
 export function checkCardClassPrecondition(
   filePath: string,
@@ -134,22 +134,22 @@ export function checkCardClassPrecondition(
 ): string | null {
   if (!CARD_CLASS_FILE_RX.test(filePath)) return null;
   for (const p of readFiles) {
-    if (CREATE_CARD_CLASS_SKILL_RX.test(p)) return null;
+    if (CARD_CLASS_HANDBOOK_SKILL_RX.test(p)) return null;
   }
-  return "Read `.qwen/skills/create-card-class/SKILL.md` (or `.claude/skills/create-card-class/SKILL.md` for Claude) before writing card class code. The Mica API surface (mica.files.*, mica.openChannel, channel sessions, file events) is documented there. Improvising leads to invented endpoints, wrong field names (e.g. file.name vs file.path), and fictional registries (e.g. Mica.registerCardClass — does not exist). Read the skill, then retry.";
+  return "Invoke `skill('card-class-handbook')` before writing card class code. The handbook is the contract `mica_create_class` / `mica_edit_class_file` enforce — CANONICAL CARD.JS shape, CARD_SHIM globals (`container` / `mica` are injected — do NOT redeclare), mica.* API, channel handlers, pitfalls. Improvising leads to invented endpoints, wrong field names (e.g. file.name vs file.path), and fictional registries (e.g. Mica.registerCardClass — does not exist). Load the handbook, then retry.";
 }
 
 // Design-doc files that bake in library/dependency decisions. Writing one
-// without running the discover-library workflow first is the failure mode
+// without running the discover-dependency workflow first is the failure mode
 // where the agent ships bespoke implementations and back-rationalizes them
 // with invented user constraints ("User specified 'no external libraries'"
 // when no such thing was said). Empirical: world clock 6 with qwen-code SDK
-// produced exactly that confabulation when discover-library wasn't invoked.
+// produced exactly that confabulation when discover-dependency wasn't invoked.
 //
 // Match is intentionally loose — basename only — so it catches design docs
 // regardless of which folder the project's canvasRoot is configured to.
 const DESIGN_DOC_RX = /(?:^|\/)(spec|decomposition|interfaces)\.md$/;
-const DISCOVER_LIBRARY_SKILL_RX = /\.(?:qwen|claude)\/skills\/discover-library\/SKILL\.md$/;
+const DISCOVER_DEPENDENCY_SKILL_RX = /\.(?:qwen|claude)\/skills\/discover-dependency\/SKILL\.md$/;
 
 // Paths the agent should NEVER write directly via raw write_file. Each
 // has a structured tool that owns the path's invariants — bypassing the
@@ -196,10 +196,10 @@ export function checkProtectedPathPrecondition(filePath: string): string | null 
 }
 
 /** If `filePath` is a design doc (spec.md, decomposition.md, interfaces.md)
- *  and the discover-library skill hasn't been read in `readFiles`, returns
+ *  and the discover-dependency skill hasn't been read in `readFiles`, returns
  *  the deny reason. Otherwise null.
  *
- *  Why this exists: the discover-library skill has a guard ("If the user
+ *  Why this exists: the discover-dependency skill has a guard ("If the user
  *  said no external libraries — confirm before assuming") that fires only
  *  inside the skill's workflow. When the agent skips the skill entirely
  *  and writes spec/decomposition straight from priors, the guard never
@@ -212,9 +212,9 @@ export function checkLibraryDiscoveryPrecondition(
 ): string | null {
   if (!DESIGN_DOC_RX.test(filePath)) return null;
   for (const p of readFiles) {
-    if (DISCOVER_LIBRARY_SKILL_RX.test(p)) return null;
+    if (DISCOVER_DEPENDENCY_SKILL_RX.test(p)) return null;
   }
-  return "Read `.qwen/skills/discover-library/SKILL.md` (or `.claude/skills/discover-library/SKILL.md` for Claude) before writing or modifying spec.md / decomposition.md / interfaces.md. Design docs that bake in library choices without running the discover-library workflow tend to default to bespoke implementations and back-rationalize the choice with invented user constraints (\"User specified 'no external libraries'\" when nothing of the sort was said). The skill takes <30 seconds: search → curl-verify → record the decision per subproblem. Library is the default; bespoke is the exception that requires a documented \"no library fits because Z\" reason. Read the skill, then retry.";
+  return "Read `.qwen/skills/discover-dependency/SKILL.md` (or `.claude/skills/discover-dependency/SKILL.md` for Claude) before writing or modifying spec.md / decomposition.md / interfaces.md. Design docs that bake in library choices without running the discover-dependency workflow tend to default to bespoke implementations and back-rationalize the choice with invented user constraints (\"User specified 'no external libraries'\" when nothing of the sort was said). The skill takes <30 seconds: search → curl-verify → record the decision per subproblem. Library is the default; bespoke is the exception that requires a documented \"no library fits because Z\" reason. Read the skill, then retry.";
 }
 
 const METADATA_JSON_RX = /\.mica\/card-classes\/([^/]+)\/metadata\.json$/;
@@ -333,13 +333,13 @@ export async function enforceCardClassMetadata(
       // exists for the brief window between `cp -r skeleton` and the
       // agent's followup `edit metadata.json`. Showing a red error during
       // that gap is spammy; the agent's STEP 0 mandatory grep check (in
-      // the create-card-class skill) catches it on the authoring side
+      // the card-class-handbook skill) catches it on the authoring side
       // before the work continues, so the framework doesn't need to alarm.
       // We don't auto-rewrite the placeholder because the framework can't
       // know what `extension` / `defaultTitle` the user wants — only the
       // mismatch path below has a known authoritative value (the dir name).
       opts.onAutoFix?.(
-        `\`${dirName}/metadata.json\` still has skeleton placeholders (\`extension: ".${bare}"\`${typeof parsed.defaultTitle === "string" && /REPLACE_ME/i.test(parsed.defaultTitle) ? `, \`defaultTitle: "${parsed.defaultTitle}"\`` : ""}) — agent should replace these per the create-card-class skill's STEP 0.`,
+        `\`${dirName}/metadata.json\` still has skeleton placeholders (\`extension: ".${bare}"\`${typeof parsed.defaultTitle === "string" && /REPLACE_ME/i.test(parsed.defaultTitle) ? `, \`defaultTitle: "${parsed.defaultTitle}"\`` : ""}) — agent should replace these per the card-class-handbook skill's STEP 0.`,
       );
       return;
     }
@@ -523,7 +523,7 @@ export async function enforceDecompositionConsistency(
 
 // ── Dependency URL reachability (Tier 1) ──────────────────────
 //
-// The create-card-class skill mandates Tier-1 verification of every CDN
+// The card-class-handbook skill mandates Tier-1 verification of every CDN
 // URL in metadata.json.dependencies BEFORE saving. Smoke test 5
 // (2026-04-29) showed the agent skipping this — picked stale Three.js
 // URLs from training priors, hit a runtime error, picked NEW stale
@@ -643,7 +643,7 @@ export async function enforceDependenciesReachable(
 
   opts.onError?.(
     `\`${dirName}/metadata.json\` declares dependency URLs that don't resolve:\n${failureLines}\n\n` +
-    `Tier-1 verification (per the create-card-class skill) must pass BEFORE these go in metadata.json. ` +
+    `Tier-1 verification (per the card-class-handbook skill) must pass BEFORE these go in metadata.json. ` +
     `Common causes: wrong version, missing \`@scope/\` prefix, wrong subpath. Look up the real URL via:\n` +
     `  • npm registry: \`curl -s https://registry.npmjs.org/<pkg>\` → \`dist-tags.latest\` + \`main\` field\n` +
     `  • jsdelivr file index: \`https://www.jsdelivr.com/package/npm/<pkg>\` lists every file in the published tarball\n` +
@@ -679,7 +679,7 @@ export function contentFromWriteInput(input: Record<string, unknown>): string | 
 // `export`/`import`, function-declared-but-never-called wrappers, redeclared
 // CARD_SHIM globals (`container`/`mica`), invented APIs (`Mica.registerCardClass`).
 //
-// Each detector below targets a pattern the create-card-class skill
+// Each detector below targets a pattern the card-class-handbook skill
 // explicitly forbids. When a write produces card.js with one of these
 // patterns, we surface a card-error broadcast — the chat agent sees it on
 // its next turn and self-corrects before the user notices a broken card.
@@ -709,13 +709,29 @@ function _detectModuleSyntax(content: string): string | null {
 
 function _detectInventedAPIs(content: string): string | null {
   if (/\bMica\.registerCardClass\s*\(/.test(content)) {
-    return "card.js calls `Mica.registerCardClass(...)` — this API does NOT exist. Mica has no class-registration model. Remove the class wrapper and the registerCardClass call; write top-level code that uses `container` and `mica` directly (both injected as globals). See create-card-class/SKILL.md § FORBIDDEN.";
+    return "card.js calls `Mica.registerCardClass(...)` — this API does NOT exist. Mica has no class-registration model. Remove the class wrapper and the registerCardClass call; write top-level code that uses `container` and `mica` directly (both injected as globals). See card-class-handbook/SKILL.md § FORBIDDEN.";
   }
   if (/\bthis\.context\.api\.\w+\s*\(/.test(content)) {
-    return "card.js calls `this.context.api.X(...)` — this API does NOT exist. Mica injects `mica` as a global with `mica.files.*`, `mica.on`, etc. Read `.qwen/skills/create-card-class/SKILL.md` (or `.claude/skills/...`) for the actual API surface.";
+    return "card.js calls `this.context.api.X(...)` — this API does NOT exist. Mica injects `mica` as a global with `mica.files.*`, `mica.on`, etc. Read `.qwen/skills/card-class-handbook/SKILL.md` (or `.claude/skills/...`) for the actual API surface.";
   }
   if (/\bthis\.context\.template\b/.test(content)) {
     return "card.js references `this.context.template` — this property does NOT exist. card.html is loaded by the runtime separately; read it via DOM queries against `container` (e.g. `container.querySelector('#my-id')`).";
+  }
+  return null;
+}
+
+/** CARD_SHIM is the internal name of the wrapper-prelude STRING in
+ *  src/whiteboard/CardRuntime.tsx — not a runtime global. The handbook uses
+ *  the name to refer to the contract ("CARD_SHIM injects `container` and
+ *  `mica`"), and agents sometimes mistake the name for a reference-able
+ *  symbol, writing things like `CARD_SHIM.onInit(...)` or `if (CARD_SHIM)
+ *  {...}`. At runtime the literal `CARD_SHIM` resolves to nothing and the
+ *  card throws `ReferenceError: CARD_SHIM is not defined` at mount. Pre-write
+ *  lint catches it as a same-turn tool error so the broken file never lands. */
+function _detectCardShimLiteralReference(content: string): string | null {
+  const stripped = _stripCommentsAndStrings(content);
+  if (/\bCARD_SHIM\b/.test(stripped)) {
+    return "card.js references the literal symbol `CARD_SHIM` — this is NOT a runtime global, it's the internal name we use in docs for the wrapper prelude that runs in CardRuntime.tsx. There are no `CARD_SHIM.onInit`, `CARD_SHIM.lifecycle`, or similar hooks. The shim's effect is invisible to card.js: it just makes `container` and `mica` available as globals, scopes `document.*` to the container, and auto-cleans timers/listeners on unmount. Remove every `CARD_SHIM` reference and use `container` / `mica` directly. For cleanup, register callbacks with `mica.onDestroy(() => ...)`.";
   }
   return null;
 }
@@ -766,7 +782,7 @@ function _detectWrappedNotCalled(content: string): string | null {
   // Allow trailing whitespace/comments only — otherwise we'd false-positive
   // on files that have legitimate post-function code.
   if (after.length === 0) {
-    return `card.js wraps everything in \`function ${fnName}(...) {…}\` but never calls it. Mica injects card.js as the body of \`(async function(mica,_c){…})()\`, so top-level code runs immediately — but a bare function declaration just declares; it doesn't run. The card will mount with the HTML shell but no behavior. Either remove the wrapper (write top-level code directly using the injected \`container\` and \`mica\` globals), OR convert to an IIFE so it runs: \`(function(){ /* your code */ })();\`. See create-card-class/SKILL.md § "✅ CORRECT — card.js runs as top-level code".`;
+    return `card.js wraps everything in \`function ${fnName}(...) {…}\` but never calls it. Mica injects card.js as the body of \`(async function(mica,_c){…})()\`, so top-level code runs immediately — but a bare function declaration just declares; it doesn't run. The card will mount with the HTML shell but no behavior. Either remove the wrapper (write top-level code directly using the injected \`container\` and \`mica\` globals), OR convert to an IIFE so it runs: \`(function(){ /* your code */ })();\`. See card-class-handbook/SKILL.md § "✅ CORRECT — card.js runs as top-level code".`;
   }
   // If `after` exists but doesn't include a call to fnName, it's still suspect,
   // but more permissive than we want here — skip and let runtime handle it.
@@ -806,7 +822,7 @@ function _detectUnmodifiedSkeleton(content: string): string | null {
   if (codeLines.length <= 5) {
     return null; // unmodified skeleton — transient post-cp state, suppress
   }
-  return "card.js still contains the skeleton's placeholder code (header comment + `bodyEl.textContent = content || '(empty)'`) AND has been edited with additional code. The card will mount but the placeholder render will still obscure your behavior. Per the create-card-class skill, the skeleton is the STARTING shape — REPLACE the placeholder lines with your logic, don't just edit around them. Specifically: remove the `bodyEl.textContent = content || '(empty)'` line and the typical-patterns comment block.";
+  return "card.js still contains the skeleton's placeholder code (header comment + `bodyEl.textContent = content || '(empty)'`) AND has been edited with additional code. The card will mount but the placeholder render will still obscure your behavior. Per the card-class-handbook skill, the skeleton is the STARTING shape — REPLACE the placeholder lines with your logic, don't just edit around them. Specifically: remove the `bodyEl.textContent = content || '(empty)'` line and the typical-patterns comment block.";
 }
 
 function _detectParseError(content: string): string | null {
@@ -849,6 +865,7 @@ export function lintCardJsContent(content: string): string | null {
   const checks: Array<(c: string) => string | null> = [
     _detectModuleSyntax,
     _detectInventedAPIs,
+    _detectCardShimLiteralReference,
     _detectRedeclaredGlobals,
     _detectWrappedNotCalled,
     _detectUnmodifiedSkeleton,

@@ -31,6 +31,7 @@ import { recordTurn, recordSubagent } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
+import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
@@ -437,7 +438,7 @@ function formatListingEntry(name: string, sizeBytes: number, meta: { title: stri
 const MICA_API_REFERENCE_BLOCK =
   `## Mica APIs — discover, don't memorize\n\n` +
   `Cards run inside a CARD_SHIM that injects \`mica.*\` (files, openChannel, on, fetch, getContent, onDestroy, etc.) and \`container\` (the root DOM node). Specs and card.js code that bypass this — \`fetch('/api/files/...')\`, \`localStorage\`, direct calls to llama-server / OpenRouter — are wrong. Cards NEVER own LLM endpoints; LLM access is server-side via channel handlers reached through \`mica.openChannel\`.\n\n` +
-  `**Before writing any spec or card.js:** invoke the \`create-card-class\` skill. Its body is the canonical reference for the \`mica.*\` surface (parameter shapes, edge cases, anti-patterns). Don't paraphrase from memory.\n\n` +
+  `**Before writing any spec or card.js:** invoke the \`card-class-handbook\` skill. Its body is the canonical reference for the \`mica.*\` surface (parameter shapes, edge cases, anti-patterns). Don't paraphrase from memory.\n\n` +
   `**Before writing any LLM-driven card class:** \`curl http://localhost:3002/api/handlers\` returns the live registry of reusable channel handlers (llm-direct, llm-agent, plus any others) with their \`name\`, \`whenToUse\`, \`argsSchema\`, and example card.js. Pick by \`whenToUse\`, declare \`"handler": "<name>"\` in your card class metadata.json, pass args via \`mica.openChannel\`. No server plugin required; agents do not write server code.`;
 
 /** Canvas baseline injected into every subagent's systemPrompt so the
@@ -485,7 +486,7 @@ export async function buildSubagentCanvasContext(
   // `localStorage`) and the resulting card class loses Mica's
   // affordances: SSRF protection, canvas-native persistence,
   // cross-window sync, channel pubsub, lifecycle hooks. Tight summary
-  // here; full reference lives in the `create-card-class` skill body
+  // here; full reference lives in the `card-class-handbook` skill body
   // (which subagents can `read_file` if they need details).
   parts.push(MICA_API_REFERENCE_BLOCK);
 
@@ -1009,55 +1010,55 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   // Skill tool — surface which skill is being invoked.
   if (n === "skill") {
     const skill = String(input.skill || input.name || "");
-    return skill ? `skill: ${skill}` : "skill";
+    return skill ? `📚 skill: ${skill}` : "📚 skill";
   }
   // Subagent dispatch — surface the subagent name + short description.
   if (bareName === "agent" || bareName === "task" || bareName === "Task" || bareName === "Agent") {
     const subagent = String(input.subagent_type || input.agent || "");
     const desc = String(input.description || "").slice(0, 60);
-    if (subagent && desc) return `subagent: ${subagent} (${desc})`;
-    if (subagent) return `subagent: ${subagent}`;
-    if (desc) return `subagent: ${desc}`;
-    return "subagent dispatch";
+    if (subagent && desc) return `🤖 subagent: ${subagent} (${desc})`;
+    if (subagent) return `🤖 subagent: ${subagent}`;
+    if (desc) return `🤖 subagent: ${desc}`;
+    return "🤖 subagent dispatch";
   }
   // Web fetch — surface the URL (truncated).
   if (n === "webfetch" || n === "fetch") {
     const url = String(input.url || input.link || "");
-    return url ? `web_fetch: ${url.slice(0, 100)}` : "web_fetch";
+    return url ? `🌐 web_fetch: ${url.slice(0, 100)}` : "🌐 web_fetch";
   }
   // Web search — surface the query.
   if (n === "websearch") {
     const q = String(input.query || input.q || "");
-    return q ? `web_search: ${q.slice(0, 80)}` : "web_search";
+    return q ? `🔍 web_search: ${q.slice(0, 80)}` : "🔍 web_search";
   }
   // Mica card-class tools — surface the class name + file when relevant.
   if (n === "micacreateclass") {
     const cls = String(input.name || "");
-    return cls ? `create class: ${cls}` : "create class";
+    return cls ? `🆕 create class: ${cls}` : "🆕 create class";
   }
   if (n === "micaeditclassfile") {
     const cls = String(input.class || "");
     const file = String(input.file || "");
-    return cls && file ? `edit class: ${cls}/${file}` : cls ? `edit class: ${cls}` : "edit class file";
+    return cls && file ? `📝 edit class: ${cls}/${file}` : cls ? `📝 edit class: ${cls}` : "📝 edit class file";
   }
   if (n === "micacreatecardinstance") {
     const ext = String(input.class_extension || "");
     const fn = String(input.filename || "");
-    return ext && fn ? `create instance: ${fn}${ext}` : "create card instance";
+    return ext && fn ? `🃏 create instance: ${fn}${ext}` : "🃏 create card instance";
   }
   if (n === "micadeleteclass") {
-    return `delete class: ${String(input.name || "")}`.trim();
+    return `🗑 delete class: ${String(input.name || "")}`.trim();
   }
   if (n === "micadeletecardinstance") {
-    return `delete instance: ${String(input.filename || "")}`.trim();
+    return `🗑 delete instance: ${String(input.filename || "")}`.trim();
   }
   if (n === "micalistclasses") {
-    return "list card classes";
+    return "📋 list card classes";
   }
   // Render capture — surface which card.
   if (n === "rendercapture") {
     const fn = String(input.filename || "");
-    return fn ? `screenshot: ${fn}` : "screenshot";
+    return fn ? `📸 screenshot: ${fn}` : "📸 screenshot";
   }
   // Shell/bash
   // The substring heuristics below apply to SDK BUILT-IN tools (read_file,
@@ -1067,28 +1068,28 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   if (!isMcp) {
     if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
       const firstLine = cmd.split("\n")[0].slice(0, 120);
-      return firstLine ? `$ ${firstLine}` : `Running command`;
+      return firstLine ? `💻 $ ${firstLine}` : `💻 Running command`;
     }
     // File read
     if (n.includes("read") || n === "cat" || n === "viewfile") {
-      return `Read ${fileName || "file"}`;
+      return `📖 Read ${fileName || "file"}`;
     }
     // File write
     if (n.includes("write") || n.includes("create") || n === "savefile") {
-      return `Write ${fileName || "file"}`;
+      return `💾 Write ${fileName || "file"}`;
     }
     // File edit
     if (n.includes("edit") || n.includes("patch") || n.includes("replace")) {
-      return `Edit ${fileName || "file"}`;
+      return `✏️ Edit ${fileName || "file"}`;
     }
     // Search/grep
     if (n.includes("grep") || n.includes("search") || n.includes("glob") || n.includes("find")) {
       const pattern = String(input.pattern || input.query || input.regex || "");
-      return pattern ? `Search: ${pattern.slice(0, 60)}` : `Searching files`;
+      return pattern ? `🔎 Search: ${pattern.slice(0, 60)}` : `🔎 Searching files`;
     }
     // List files
     if (n.includes("list") || n === "ls") {
-      return `List ${filePath || "files"}`;
+      return `📂 List ${filePath || "files"}`;
     }
   }
   // Todo write (qwen built-in)
@@ -1096,10 +1097,10 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
     const todos = (input.todos as Array<{ content?: string }> | undefined) || [];
     if (todos.length > 0) {
       const inProgress = todos.find((t) => (t as { status?: string }).status === "in_progress");
-      if (inProgress?.content) return `todo: ${inProgress.content.slice(0, 80)}`;
-      return `todo (${todos.length} item${todos.length === 1 ? "" : "s"})`;
+      if (inProgress?.content) return `✅ todo: ${inProgress.content.slice(0, 80)}`;
+      return `✅ todo (${todos.length} item${todos.length === 1 ? "" : "s"})`;
     }
-    return "todo update";
+    return "✅ todo update";
   }
   // Fallback — show tool name + any useful input. For MCP tools that
   // didn't match a specific rule above, fall back to the first string-
@@ -1388,9 +1389,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       busy = true; sessionState.busy = true;
       markProjectActivity(sessionProject, +1);
       console.log(`[mica-agent] processMessage START: ${message.slice(0, 60)}`);
+      // Reset the per-turn render_capture cap. Fresh user message ⇒ fresh
+      // budget for screenshot verifications. Without this the cap leaks
+      // across turns and a single project would only ever get the first 5
+      // captures before being refused forever.
+      resetRenderCaptureCount(sessionProject);
 
       // Per-turn read tracking. Used by checkCardClassPrecondition to refuse
-      // card-class authoring writes until the agent has read the create-card-class
+      // card-class authoring writes until the agent has read the card-class-handbook
       // skill in this same turn. Reset each processMessage so the requirement
       // is per-turn rather than per-session (skills fall out of context as
       // history scrolls; safer to require a fresh read).
@@ -1937,6 +1943,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // each returning TASK_STOP_NOT_FOUND, contributing to a 50-turn
             // cap exhaustion / FatalTurnLimitedError exit-53). `agent` stays;
             // only the async-management peers are excluded.
+            // NOTE: do not add `web_fetch` here. The Qwen SDK's
+            // extractShellOperations translates `curl <URL>` into a virtual
+            // web_fetch(domain) operation, and excludeTools entries are
+            // merged into permissionsDeny (see SDK getPermissionsDeny). So
+            // denying web_fetch also denies every curl call — agents lose
+            // URL verification, npm registry lookups, and the entire
+            // discover-dependency smoke-test path. The web_fetch deterrent
+            // stays in the prelude prose only.
             excludeTools: ["task_stop", "send_message"],
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,

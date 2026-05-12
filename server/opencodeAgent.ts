@@ -50,6 +50,7 @@ import { markAgentWrite } from "./writeSource.js";
 import { loadProjectSubagents } from "./subagents.js";
 import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
+import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
 import { markProjectActivity } from "./projectActivity.js";
 import { setLastActiveOpencodeProject } from "./agentTools/registry.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
@@ -307,46 +308,46 @@ function describeOpencodeTool(toolName: string, input: Record<string, unknown>):
   if (n === "task" || n === "agent") {
     const sub = String(input.subagent_type || input.agent || "");
     const desc = String(input.description || "").slice(0, 60);
-    if (sub && desc) return `subagent: ${sub} (${desc})`;
-    if (sub) return `subagent: ${sub}`;
-    if (desc) return `subagent: ${desc}`;
-    return "subagent dispatch";
+    if (sub && desc) return `🤖 subagent: ${sub} (${desc})`;
+    if (sub) return `🤖 subagent: ${sub}`;
+    if (desc) return `🤖 subagent: ${desc}`;
+    return "🤖 subagent dispatch";
   }
   if (n === "webfetch" || n === "fetch") {
     const url = String(input.url || input.link || "");
-    return url ? `web_fetch: ${url.slice(0, 100)}` : "web_fetch";
+    return url ? `🌐 web_fetch: ${url.slice(0, 100)}` : "🌐 web_fetch";
   }
   if (n === "websearch") {
     const q = String(input.query || input.q || "");
-    return q ? `web_search: ${q.slice(0, 80)}` : "web_search";
+    return q ? `🔍 web_search: ${q.slice(0, 80)}` : "🔍 web_search";
   }
   if (n === "skill") {
     // opencode's skill tool surfaces the skill name in `name` (per its
     // docstring); be tolerant to alternative key names.
     const skill = String(input.name || input.skill || input.skill_name || "");
-    return skill ? `skill: ${skill}` : "skill";
+    return skill ? `📚 skill: ${skill}` : "📚 skill";
   }
   if (n === "todowrite") {
     // input shape: { todos: Todo[] }. Show count instead of dumping JSON.
     const todos = Array.isArray((input as { todos?: unknown }).todos)
       ? (input.todos as unknown[]).length
       : 0;
-    return todos > 0 ? `todos: ${todos} item${todos === 1 ? "" : "s"}` : "todowrite";
+    return todos > 0 ? `✅ todos: ${todos} item${todos === 1 ? "" : "s"}` : "✅ todowrite";
   }
   if (n === "applypatch") {
-    return `Patch ${fileName || "file"}`;
+    return `🩹 Patch ${fileName || "file"}`;
   }
   if (!isMcp) {
     if (n.includes("bash") || n.includes("shell")) {
       const firstLine = cmd.split("\n")[0].slice(0, 120);
-      return firstLine ? `$ ${firstLine}` : "Running command";
+      return firstLine ? `💻 $ ${firstLine}` : "💻 Running command";
     }
-    if (n === "read") return `Read ${fileName || "file"}`;
-    if (n === "write") return `Write ${fileName || "file"}`;
-    if (n === "edit") return `Edit ${fileName || "file"}`;
+    if (n === "read") return `📖 Read ${fileName || "file"}`;
+    if (n === "write") return `💾 Write ${fileName || "file"}`;
+    if (n === "edit") return `✏️ Edit ${fileName || "file"}`;
     if (n === "glob" || n === "grep") {
       const p = String(input.pattern || input.query || "");
-      return p ? `Search: ${p.slice(0, 60)}` : "Searching files";
+      return p ? `🔎 Search: ${p.slice(0, 60)}` : "🔎 Searching files";
     }
   }
   // MCP / unknown — surface name + first useful field
@@ -786,6 +787,9 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       const turnSource = source;
       busy = true;
       markProjectActivity(sessionProject, +1);
+      // Reset the per-turn render_capture cap. Fresh user message ⇒ fresh
+      // budget for screenshot verifications. See renderCaptureCounter.ts.
+      resetRenderCaptureCount(sessionProject);
       // Publish this session's project as the last-active opencode project.
       // The mica-builtins MCP bridge runs once per opencode-serve and can't
       // pass session-scoped headers; Mica's /api/tools/* endpoints fall back

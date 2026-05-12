@@ -1,7 +1,7 @@
 // mica_install_skills — clone a third-party skills package into the project
 // so future turns can invoke its skills via the `skill` tool. Fits into the
 // canonical agent flow:
-//   discover-library: "use Three.js 0.158.0"
+//   discover-dependency: "use Three.js 0.158.0"
 //   → check if a Three.js skills package exists ("threejs-skills")
 //   → mica_install_skills source="threejs-skills"
 //   → next turn: agent has Three.js-specific procedural guidance available
@@ -180,7 +180,7 @@ export const installSkillsTool: AgentToolDef<typeof inputSchema> = {
   name: "mica_install_skills",
   description:
     "Install a third-party skills package into the current project so future turns can " +
-    "invoke its skills via the `skill` tool. Use this AFTER `discover-library` identifies a " +
+    "invoke its skills via the `skill` tool. Use this AFTER `discover-dependency` identifies a " +
     "library that has a known skills package (e.g. Three.js → 'threejs-skills'). The package " +
     "is cloned into both `.qwen/skills/<name>/` (qwen-code SDK) and `.claude/skills/<name>/` " +
     "(Claude / opencode), so all three agent backends pick up the new skills automatically " +

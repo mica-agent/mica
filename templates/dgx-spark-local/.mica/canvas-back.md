@@ -19,7 +19,7 @@ The `participate-fully` skill encodes how to read changes and decide what to do.
 
 ## Writing card code
 
-Before writing or modifying any `card.js`, you MUST first read `.qwen/skills/create-card-class/SKILL.md`. The Mica API surface (`mica.files.*`, `mica.openChannel`, `mica.on`, etc.) is documented there — do NOT improvise raw `fetch('/api/files/...')` calls.
+Before writing or modifying any `card.js`, you MUST first read `.qwen/skills/card-class-handbook/SKILL.md`. The Mica API surface (`mica.files.*`, `mica.openChannel`, `mica.on`, etc.) is documented there — do NOT improvise raw `fetch('/api/files/...')` calls.
 
 ## Per-turn behavior (apply EVERY turn, before sending your reply)
 

@@ -350,7 +350,7 @@ Server-side validators run on agent file writes. Two layers:
   `checkProtectedPathPrecondition` (refuses raw `write_file` to
   layout.json + card-class internals, redirects to the structured
   tool), `checkLibraryDiscoveryPrecondition` (gates spec.md /
-  decomposition.md / interfaces.md until the discover-library
+  decomposition.md / interfaces.md until the discover-dependency
   skill is read), `checkCardClassMetadataConsistency` (extension
   must match dir name). Hook is dead under qwen's `permissionMode:
   yolo` for write tools — known limitation.
@@ -1164,7 +1164,7 @@ Reason: writing `card.js` from an empty page repeatedly invites
 class-wrappers, ES-module syntax, and invented base-class APIs
 that CARD_SHIM does not support. Starting from the skeleton
 keeps the generated code on the correct shape. The
-`create-card-class` skill leads with this rule.
+`card-class-handbook` skill leads with this rule.
 
 ### Self-describing card classes — metadata.json
 

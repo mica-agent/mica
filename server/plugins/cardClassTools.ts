@@ -100,33 +100,55 @@ export async function createClassImpl(
     .map(p => p.charAt(0).toUpperCase() + p.slice(1))
     .join(" ");
 
-  // Idempotency: check whether the class already exists.
-  //   - All metadata matches → no-op success.
-  //   - Dir exists but metadata.json is missing/corrupt → REGENERATE it.
-  //     This is the recovery path: when an earlier partial tool run or a
-  //     heredoc bypass left files in the dir without valid metadata, we
-  //     write the missing piece rather than fail.
-  //   - Metadata exists with conflicting config → refuse (delete first).
+  // Idempotency + in-place metadata update:
+  //   - Dir exists, metadata.json missing/corrupt → REGENERATE it (recovery).
+  //   - Existing extension differs → REFUSE (changing extension renames the
+  //     class, which would orphan existing instance files — that's a delete-
+  //     and-recreate operation, not an update).
+  //   - Existing extension matches → fall through to overwrite metadata.json
+  //     with the new args. This lets the agent re-call mica_create_class to
+  //     change badge / defaultTitle / dependencies / scripts / styles /
+  //     handler / primaryFile WITHOUT delete-then-recreate (which wastes
+  //     5+ tool calls and forces re-writing card.html/js from scratch since
+  //     the new class starts with stubs).
+  //   The fall-through path below writes metadata.json unconditionally;
+  //   card.html/card.js/card.css are only touched if the agent passed
+  //   explicit content (existing files are preserved).
   const dir = classDir(project, name);
   const metadataPath = join(dir, "metadata.json");
+  let updateChanges: string[] | null = null;
   if (existsSync(metadataPath)) {
     try {
-      const existing = JSON.parse(await readFile(metadataPath, "utf-8")) as { extension?: string; badge?: string };
-      if (existing.extension === extension && existing.badge === badge) {
+      const existing = JSON.parse(await readFile(metadataPath, "utf-8")) as {
+        extension?: string;
+        badge?: string;
+        defaultTitle?: string;
+        dependencies?: { scripts?: string[]; styles?: string[] };
+        handler?: string;
+        primaryFile?: string;
+      };
+      if (existing.extension !== extension) {
         return {
+          isError: true,
           content: [{
             type: "text",
-            text: `Card class "${name}" already exists at ${dir} with matching extension and badge. No-op (idempotent). To replace, delete first via mica_delete_class.`,
+            text: `Card class "${name}" already exists at ${dir} with extension "${existing.extension}". You're trying to set extension "${extension}". Changing the extension renames the routing key and would orphan existing instance files. To rename: (a) delete via mica_delete_class, (b) rename instance files to the new extension, (c) recreate. To change other fields (badge/defaultTitle/dependencies/scripts/styles/handler/primaryFile), call mica_create_class again with the SAME extension and the new values — metadata.json updates in place without disturbing card.html/card.js/card.css.`,
           }],
         };
       }
-      return {
-        isError: true,
-        content: [{
-          type: "text",
-          text: `Card class "${name}" already exists at ${dir} with different config (existing: ext=${existing.extension}, badge=${existing.badge}). Delete first via mica_delete_class to replace.`,
-        }],
-      };
+      // Extension matches. Compute the diff for a clear return message.
+      const changes: string[] = [];
+      if (existing.badge !== badge) changes.push(`badge "${existing.badge}" → "${badge}"`);
+      if (existing.defaultTitle !== defaultTitle) changes.push(`defaultTitle "${existing.defaultTitle}" → "${defaultTitle}"`);
+      const exScripts = (existing.dependencies?.scripts ?? []).join(",");
+      const nwScripts = (args.scripts ?? []).join(",");
+      if (exScripts !== nwScripts) changes.push(`scripts (${(existing.dependencies?.scripts ?? []).length} → ${(args.scripts ?? []).length})`);
+      const exStyles = (existing.dependencies?.styles ?? []).join(",");
+      const nwStyles = (args.styles ?? []).join(",");
+      if (exStyles !== nwStyles) changes.push(`styles (${(existing.dependencies?.styles ?? []).length} → ${(args.styles ?? []).length})`);
+      if ((existing.handler ?? "") !== (args.handler ?? "")) changes.push(`handler "${existing.handler ?? ""}" → "${args.handler ?? ""}"`);
+      if ((existing.primaryFile ?? "") !== (args.primaryFile ?? "")) changes.push(`primaryFile "${existing.primaryFile ?? ""}" → "${args.primaryFile ?? ""}"`);
+      updateChanges = changes;
     } catch { /* metadata corrupt — fall through to recovery write below */ }
   }
 
@@ -172,7 +194,7 @@ export async function createClassImpl(
   if (typeof args.card_js === "string") {
     await writeFile(jsPath, args.card_js, "utf-8");
   } else if (!existsSync(jsPath)) {
-    // Canonical card.js stub — six-step shape from create-card-class
+    // Canonical card.js stub — six-step shape from card-class-handbook
     // SKILL.md § "CANONICAL CARD.JS". Demonstrates the pattern with a
     // working counter; agent edits the body of `render()` and step 5
     // (timers / library teardown) instead of writing card.js from scratch.
@@ -226,20 +248,27 @@ export async function createClassImpl(
     args.card_js ? null : "card.js",
   ].filter(Boolean) as string[];
 
+  const isUpdate = updateChanges !== null;
+  const verb = isUpdate
+    ? (updateChanges!.length > 0 ? "Updated card class" : "Re-wrote card class (no metadata changes)")
+    : `Created card class`;
+
   return {
     content: [{
       type: "text",
       text: [
-        `Created card class "${name}" at .mica/card-classes/${name}/`,
+        `${verb} "${name}" at .mica/card-classes/${name}/`,
         `  extension: ${extension}`,
         `  badge: ${badge}`,
         `  files: ${writtenFiles.join(", ")}`,
-        stubsUsed.length > 0 ? `  stubs (edit to fill in): ${stubsUsed.join(", ")}` : "",
+        isUpdate && updateChanges!.length > 0 ? `  metadata changes: ${updateChanges!.join("; ")}` : "",
+        isUpdate ? `  card.html/card.js/card.css preserved (only touched when explicit content passed).` : "",
+        !isUpdate && stubsUsed.length > 0 ? `  stubs (edit to fill in): ${stubsUsed.join(", ")}` : "",
         ``,
-        `Create instances with mica_create_card_instance({ class_extension: "${extension}", filename: "<bare-name>" }).`,
-        `If you used stubs, edit them now via write_file at the absolute paths:`,
-        `  ${join(dir, "card.html")}`,
-        `  ${join(dir, "card.js")}`,
+        !isUpdate ? `Create instances with mica_create_card_instance({ class_extension: "${extension}", filename: "<bare-name>" }).` : "",
+        !isUpdate && stubsUsed.length > 0 ? `If you used stubs, edit them now via mica_edit_class_file:` : "",
+        !isUpdate && stubsUsed.length > 0 ? `  ${join(dir, "card.html")}` : "",
+        !isUpdate && stubsUsed.length > 0 ? `  ${join(dir, "card.js")}` : "",
       ].filter(Boolean).join("\n"),
     }],
   };

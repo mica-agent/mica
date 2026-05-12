@@ -22,7 +22,7 @@ Use the FIRST trigger that fits. Don't pile multiple proposals into one turn.
 | Data shape / entities / relationships become a topic | `data-model.mmd` (mermaid) |
 | Project shape is clear enough that a newcomer would benefit from orientation | `README.md` |
 | Shell access is needed for a specific task ("can you run X?") | `terminal.terminal` |
-| Specialized data needs structured editing not covered above | propose a new card class via the `create-card-class` skill |
+| Specialized data needs structured editing not covered above | propose a new card class via the `card-class-handbook` skill |
 
 **Use the existing class, don't invent.** For mermaid specifically: the extension is `.mmd` (NOT `.mermaid`) and the built-in `mmd` card class renders it. Do NOT create a custom "diagram" or project-scoped `mmd` class — `mica.cardClasses.list()` will show `mmd` is already there. Same logic for any entry in the table above: these extensions map to built-in classes; use them directly.
 
@@ -67,4 +67,4 @@ Pick one. Wait. The next gap will still be there next turn.
 
 - `participate-fully` — runs every turn, decides what to do based on what changed. May trigger you when a file change reveals a gap.
 - `doc-consistency` — once a card is created, sibling docs may need updates. That skill handles the propagation.
-- `create-card-class` — for cases where no existing card class fits the need. You propose; that skill builds the class.
+- `card-class-handbook` — for cases where no existing card class fits the need. You propose; that skill builds the class.

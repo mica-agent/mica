@@ -990,7 +990,7 @@ export async function listTemplates(): Promise<TemplateMeta[]> {
   const out: TemplateMeta[] = [];
   const entries = await readdir(TEMPLATES_DIR, { withFileTypes: true });
   for (const e of entries) {
-    if (!e.isDirectory() || e.name.startsWith(".")) continue;
+    if (!e.isDirectory() || e.name.startsWith(".") || e.name.startsWith("_")) continue;
     let description = "";
     try {
       const back = await readFile(join(TEMPLATES_DIR, e.name, ".mica", "canvas-back.md"), "utf-8");

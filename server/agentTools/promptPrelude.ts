@@ -13,12 +13,18 @@ These tools come from Mica itself — same names, same input/output shape, same 
 
 \`render_capture\` — capture a PNG of a card on the canvas and return a vision-model description of what's actually visible. Use after building or editing a card class to verify the rendered output matches the spec — the canvas may render with broken layout / missing markers / wrong colors / runtime errors that source-only review can't catch. Input: \`{ filename: 'canvas/<name>.<ext>' }\`. Output: text. The browser tab must be open to the project's canvas; the model that captions runs locally via llama-server's vision encoder.
 
+### Web tools — \`web_search\` + \`curl\` are fast; \`web_fetch\` is slow and removed
+
+\`web_fetch\` is **NOT** a plain HTTP fetch despite the name — it downloads the page AND routes the bytes through an LLM with your \`prompt:\` field for interpretation, taking 4+ minutes per call against the local model. **It is excluded from this agent's tool set entirely.** Use \`web_search\` for snippets and \`run_shell_command "curl -s ..."\` for everything else.
+
+For library discovery: \`curl -s https://registry.npmjs.org/<pkg>\` returns latest version + main entry as JSON in ~200ms. \`curl -s https://data.jsdelivr.com/v1/package/npm/<pkg>\` lists every file in the published tarball. \`curl -sI -L <url>\` verifies a CDN URL responds 200. No LLM round-trip; the answer is in the bytes.
+
 ### File-write decision rule
 
 Four paths in a Mica project have structured tools that own their schema and lint. Use the structured tool for these; \`write_file\` is right for everything else.
 
 - \`.mica/card-classes/<name>/card.{js,html,css}\` → \`mica_edit_class_file\`
-- \`.mica/card-classes/<name>/metadata.json\` → \`mica_create_class\` (it serializes from typed inputs)
+- \`.mica/card-classes/<name>/metadata.json\` → \`mica_create_class\` (it serializes from typed inputs; re-call with same name + same extension to UPDATE existing metadata in place — DO NOT delete-then-recreate to change a dependency or badge)
 - new card instance under canvas-root (e.g. \`canvas/foo.world-clock\`) → \`mica_create_card_instance\`
 - \`.mica/layout.json\` → don't write at all (runtime state owned by the canvas card)
 
@@ -26,7 +32,7 @@ Everything else — \`spec.md\`, \`decomposition.md\`, \`questions.md\`, \`READM
 
 ### Build flow — invoke \`develop\` first
 
-For any build-shaped request ("build / create / implement / make / write / design / ship / develop / construct" — for a card class, standalone program, doc set, or any non-trivial artifact), your FIRST tool call is \`skill('develop')\`. That skill owns the universal flow: spec on canvas → plan-or-inline gate → library discovery → execute (branches by artifact type to \`create-card-class\` or \`write_file\` or task decomposition) → canvas update → verify → doc-consistency reconcile.
+For any build-shaped request ("build / create / implement / make / write / design / ship / develop / construct" — for a card class, standalone program, doc set, or any non-trivial artifact), your FIRST tool call is \`skill('develop')\`. That skill owns the universal flow: spec on canvas → plan-or-inline gate → library discovery → execute (branches by artifact type to \`card-class-handbook\` or \`write_file\` or task decomposition) → canvas update → verify → doc-consistency reconcile.
 
-Do NOT invoke \`create-card-class\`, \`decompose-task\`, or any other build-flow skill directly without first invoking \`develop\` — those are downstream specifics that \`develop\` dispatches to at the right step. Skipping \`develop\` means skipping the plan-before-build and canvas-update invariants that apply to every build regardless of artifact type.`;
+Do NOT invoke \`card-class-handbook\`, \`decompose-task\`, or any other build-flow skill directly without first invoking \`develop\` — those are downstream specifics that \`develop\` dispatches to at the right step. Skipping \`develop\` means skipping the plan-before-build and canvas-update invariants that apply to every build regardless of artifact type.`;
 }

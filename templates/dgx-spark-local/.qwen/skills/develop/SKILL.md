@@ -1,6 +1,6 @@
 ---
 name: develop
-description: FIRST tool call for any build-shaped request — "build / create / implement / make / write / design / ship / develop / construct" — for any artifact type (card class, standalone program, doc set). Owns plan-before-build, canvas-update, and doc-consistency invariants. Dispatches to artifact-specific skills (`create-card-class`, `decompose-task`) at the appropriate step. Invoke this BEFORE `decompose-task` or `create-card-class` — those are downstream specifics; develop is the universal gate. Skip ONLY for bug fixes (use `fix-bug`), pure Q&A, or when the user explicitly overrides ("just do it directly").
+description: FIRST tool call for any build-shaped request — "build / create / implement / make / write / design / ship / develop / construct" — for any artifact type (card class, standalone program, doc set). Owns plan-before-build, canvas-update, and doc-consistency invariants. Dispatches to artifact-specific skills (`card-class-handbook`, `decompose-task`) at the appropriate step. Invoke this BEFORE `decompose-task` or `card-class-handbook` — those are downstream specifics; develop is the universal gate. Skip ONLY for bug fixes (use `fix-bug`), pure Q&A, or when the user explicitly overrides ("just do it directly").
 ---
 
 # develop — top-level build flow
@@ -32,7 +32,7 @@ universal.
 First, identify the subproblems. For each subproblem that involves
 non-trivial domain work — rendering, time zones, sun/moon position,
 geo math, drag-and-drop, charts, parsing, audio, file diffing, etc.
-— invoke `skill('discover-library')`. Verify the libraries are
+— invoke `skill('discover-dependency')`. Verify the libraries are
 reachable (CDN URLs return 200) before committing them to the
 spec. If a `<lib>-skills` package exists, install via
 `mica_install_skills` so the library's patterns are in your
@@ -63,7 +63,7 @@ new doc dimension is needed.
 
 **Approval gate (tenet 14)**: After writing the spec, **your turn
 ENDS**. Do NOT invoke any further tools this turn — not
-`create-card-class`, not `decompose-task`, nothing. Your chat
+`card-class-handbook`, not `decompose-task`, nothing. Your chat
 reply is: *"Drafted spec.md — review and OK to build?"* If the
 request had vague areas the spec couldn't pin down (color choices,
 exact edge behavior, library tradeoffs you couldn't pick between,
@@ -89,13 +89,18 @@ Decomposition gates. Default to inline.
 
 #### 4a. Canvas artifact
 
-Invoke `skill('create-card-class')`. That skill owns the
-Mica-specific tool sequence (`mica_create_class`,
-`mica_edit_class_file`), the canonical CARD.JS shape, the
-CARD_SHIM contract, and `render_capture` verification.
+Invoke `skill('card-class-handbook')` BEFORE calling
+`mica_create_class`. The handbook is the contract those tools
+enforce — CANONICAL CARD.JS shape, CARD_SHIM globals
+(`container`, `mica` are injected — do NOT redeclare), metadata
+schema, channel handlers, `render_capture` verification. Without
+it in working memory, common violations (top-level CARD_SHIM
+redeclaration, IIFE wrapping, `document.getElementById` instead
+of `container.querySelector`) surface only as post-write lint
+errors and burn iteration cycles.
 
 If you took the decompose path at step 3, `component-coder`
-dispatches per file follow `create-card-class`'s contract per
+dispatches per file follow `card-class-handbook`'s contract per
 dispatch.
 
 #### 4b. Standalone program / tool
@@ -129,7 +134,7 @@ what was built still lives on canvas.
 
 - **Canvas**: `render_capture` on the instance. Iterate with
   `mica_edit_class_file` partial edits if the visual diff is
-  wrong. `create-card-class` covers this in detail.
+  wrong. `card-class-handbook` covers this in detail.
 - **Standalone**: run tests, start the process, probe the
   endpoint, exec the script. Report what passed and what didn't.
 - **Doc-only**: review in chat; ask user to confirm.
@@ -152,7 +157,7 @@ doc be misled by the new code?"
   One-line request → one-line spec. The gate stays.
 - **Moving past plan-or-inline without recording the decision**
   (in spec or decomposition.md).
-- **Invoking `create-card-class` or `decompose-task` directly,
+- **Invoking `card-class-handbook` or `decompose-task` directly,
   skipping this skill.** Those are downstream specifics; this
   skill owns the universal invariants they rely on.
 - **Writing code without invoking the appropriate sub-skill** —

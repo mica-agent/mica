@@ -54,7 +54,7 @@ Once you know the root cause, change only what's needed:
 
 If the fix would naturally exceed ~50 lines, stop and reconsider. Either the bug is bigger than reported, or you're fixing too much.
 
-If the fix would require >20 lines of new bespoke logic in an area where libraries exist (rendering, math, parsing, networking, dates, charts), invoke `discover-library` instead. See `_conventions.md` § Reuse before reinventing. A library-shaped fix replaces both the bug and the surrounding fragile code with a maintained dependency. Library decision goes in `spec.md § Subproblems and their solutions`.
+If the fix would require >20 lines of new bespoke logic in an area where libraries exist (rendering, math, parsing, networking, dates, charts), invoke `discover-dependency` instead. See `_conventions.md` § Reuse before reinventing. A library-shaped fix replaces both the bug and the surrounding fragile code with a maintained dependency. Library decision goes in `spec.md § Subproblems and their solutions`.
 
 ### 4. Verify the bug is gone AND check for regressions
 
@@ -98,11 +98,11 @@ If `bug-fixer` is not registered (`agents/bug-fixer.md` doesn't exist), inline i
 
 ## Card runtime errors — "Failed to load dependency"
 
-When the chat surfaces `[card-error] Failed to load dependency: Failed to load <url-or-name>`, the diagnostic order matters. The full debug procedure is in `create-card-class/SKILL.md` § Pitfalls. Quick form (tenet 16: validate inputs):
+When the chat surfaces `[card-error] Failed to load dependency: Failed to load <url-or-name>`, the diagnostic order matters. The full debug procedure is in `card-class-handbook/SKILL.md` § Pitfalls. Quick form (tenet 16: validate inputs):
 
 1. **Verify the URL.** `curl -sI -L "<exact URL from the error>" | head -1`. If 404, the URL is wrong — fix `metadata.json`, don't guess a replacement, look it up via npm registry or jsdelivr.
 2. **If the URL is reachable but the card still fails:** the file loaded but doesn't match the card's assumption. Check global/namespace (`L.terminator` vs `L.Terminator`), version semantics, MIME type. `web_fetch` the URL and grep for the global the card calls.
-3. **Only if both above pass** does the bug live in the card-class loading path — see `create-card-class/SKILL.md` for `card.html` rules.
+3. **Only if both above pass** does the bug live in the card-class loading path — see `card-class-handbook/SKILL.md` for `card.html` rules.
 
 **Anti-pattern:** re-reading `metadata.json` hoping for clarity. The URL it's failing on is exactly what's there; re-reading produces no new information. The model can loop on this until the SDK kills the process. Break out: do `curl` first.
 

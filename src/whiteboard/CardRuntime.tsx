@@ -75,11 +75,17 @@ var document=new Proxy(_rd,{get:function(t,p){
   };
   var v=t[p];return typeof v==='function'?v.bind(t):v;
 }});
+// _em: build an error-report string with both message AND stack. Chrome's
+// stack starts with the message; Firefox's doesn't. Detect and avoid
+// duplicating. Note: all escape sequences below use double-backslash so
+// they survive interpolation into this template literal (single backslash
+// would be processed at template-eval time, breaking the generated JS).
+function _em(e){var m=(e&&e.message)||String(e);var s=e&&e.stack?String(e.stack):'';return s&&s.indexOf(m)>=0?s:(s?m+'\\n'+s:m)}
 function _reportError(e){
   // Route through mica.reportError so the bridge handles the URL with the
   // proper project-relative filename. mica.filename is now canvas-relative
   // (no canvasRoot prefix) and would 404 the card-error endpoint.
-  try{mica.reportError(e&&e.message?e.message:String(e));}catch(_){}
+  try{mica.reportError(_em(e));}catch(_){}
 }
 // _runCb: run a callback, reporting BOTH synchronous throws AND async
 // rejections (when the callback is async and returns a Promise). Card
@@ -375,6 +381,8 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             // Refresh path (mica.refresh() re-runs). Same error contract
             // as the initial script: chain reporting off the async
             // IIFE's promise so post-await rejections reach the server.
+            // Outer .catch grabs both message AND stack — without the stack,
+            // the agent has no file:line and has to grep the whole card.
             newScript.textContent =
               `(function(){` +
               `const _m=document.currentScript.__mica;` +
@@ -384,12 +392,36 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
               `console.error("[card-runtime] Script error in ${filename}:",e);` +
               // Route through the bridge so the proper project-relative filename
               // is used for the URL (mica.filename is canvas-relative now).
-              `try{_m.reportError((e&&e.message)||String(e));}catch(_){}` +
+              `try{` +
+              `var _m1=(e&&e.message)||String(e);` +
+              `var _s1=e&&e.stack?String(e.stack):'';` +
+              `_m.reportError(_s1&&_s1.indexOf(_m1)>=0?_s1:(_s1?_m1+'\\n'+_s1:_m1));` +
+              `}catch(_){}` +
               `});` +
-              `})()`;
+              `})()` +
+              `\n//# sourceURL=card.js`;
             oldScript.remove();
             (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
-            el.appendChild(newScript);
+            // Wrap appendChild in try/catch: if card.js has a syntax error,
+            // Chrome throws SyntaxError from appendChild ("Failed to execute
+            // 'appendChild' on 'Node': Invalid or unexpected token"). Without
+            // this guard the error propagates up to the React render loop
+            // and breaks the page. POST it to /error so the agent sees it
+            // the same way it sees runtime errors. Mirrors the safety net
+            // in executeInlineScripts (the initial-mount path).
+            try {
+              el.appendChild(newScript);
+            } catch (parseErr) {
+              const msg = (parseErr as Error)?.message || String(parseErr);
+              console.error(`[card-runtime] Refresh-path parse failed in ${filename}:`, parseErr);
+              fetch(`/api/cards/${encodeURIComponent(filename)}/error`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-Mica-Project": project },
+                body: JSON.stringify({
+                  error: `card.js fails to parse at mount: ${msg}. The script wrapper rejected it before any code ran. Common causes: top-level \`export\`/\`import\`, unbalanced braces, accidentally pasted non-JS content. Mica wraps card.js in \`(async function(mica,_c){…})()\` — the file must be valid as a function body.`,
+                }),
+              }).catch(() => {});
+            }
           });
         }
       });
@@ -795,11 +827,20 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             `})` +
             `.catch(function(e){` +
             `console.error("[card-runtime] Script error in ${filename}:",e);` +
+            // Capture both message AND stack. Chrome's stack starts with the
+            // message line ("TypeError: …\n  at …"); Firefox's doesn't. Detect
+            // and avoid duplicating. The stack is what gives the agent file
+            // path + line + column — without it, the agent has to grep the
+            // whole card looking for the symbol that threw.
+            `var _m1=(e&&e.message)||String(e);` +
+            `var _s1=e&&e.stack?String(e.stack):'';` +
+            `var _err=_s1&&_s1.indexOf(_m1)>=0?_s1:(_s1?_m1+'\\n'+_s1:_m1);` +
             `fetch(${errUrlLit},` +
             `{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_ph),` +
-            `body:JSON.stringify({error:(e&&e.message)||String(e)})}).catch(()=>{});` +
+            `body:JSON.stringify({error:_err})}).catch(()=>{});` +
             `});` +
-            `})()`;
+            `})()` +
+            `\n//# sourceURL=card.js`;
           oldScript.remove();
           (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
           // Wrap in try/catch: appending a <script> with invalid syntax
@@ -897,12 +938,22 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             gap: 8,
             background: "rgba(220, 38, 38, 0.95)",
             color: "#fff",
-            padding: "8px 10px 8px 12px",
+            // Generous vertical padding so text has visible breathing room
+            // above and below; otherwise the box looks like it "just barely
+            // fits" the text. min-height gives a single-line error the same
+            // visual weight as a multi-line one. Long errors that still
+            // don't fit get max-height + scroll inside the box instead of
+            // silently clipping past the card boundary.
+            padding: "24px 18px 24px 20px",
             fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
-            fontSize: 12,
-            lineHeight: 1.4,
+            fontSize: 13,
+            lineHeight: 1.55,
             borderRadius: 6,
             boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+            minHeight: 72,
+            maxHeight: "calc(100% - 16px)",
+            overflowY: "auto",
+            boxSizing: "border-box",
           }}
         >
           <div style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>

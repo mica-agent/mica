@@ -49,7 +49,7 @@ Any clause shaped *"decompose BUT [softer reason]"* fails this gate. The BUT is 
 
 **Quick decline checklist:**
 
-- Single card class (≤500 LOC across 4 files) — recommend `create-card-class`.
+- Single card class (≤500 LOC across 4 files) — recommend `card-class-handbook`.
 - Single feature added to an existing card class — inline.
 - Bug fix — recommend `fix-bug`.
 - Adding/removing items from a list a card maintains — inline.
@@ -121,7 +121,7 @@ The pattern is domain-neutral: code projects split `spec.md` by component; resea
 
 ## Job 2.5: Library-first per subproblem
 
-Before committing any subcomponent's contract that includes implementation logic, invoke the `discover-library` skill for each recognizable subproblem (tenet 15, see `_conventions.md` § Reuse-before-reinvent for the full decision tree).
+Before committing any subcomponent's contract that includes implementation logic, invoke the `discover-dependency` skill for each recognizable subproblem (tenet 15, see `_conventions.md` § Reuse-before-reinvent for the full decision tree).
 
 Outputs land in your artifacts: chosen library + verified URL → `interfaces.md § Library versions`; "use X / no library fits because Y" rationale → `decomposition.md § Subcomponents` Honors line; full per-subproblem table → `spec.md § Subproblems and their solutions`.
 
@@ -268,7 +268,7 @@ done: <N> tasks queued in <plan-file>; decomposition.md <created|updated>; <spli
 On gate decline:
 
 ```
-declined: parent can inline this work — recommend create-card-class skill or direct edits. <one-line reason>
+declined: parent can inline this work — recommend card-class-handbook skill or direct edits. <one-line reason>
 ```
 
 On precondition failure (spec not approved):

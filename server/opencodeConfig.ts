@@ -47,6 +47,12 @@ export async function buildOpencodeConfig(): Promise<Config> {
   config.permission = {
     edit: "allow",
     bash: "allow",
+    // webfetch stays allowed. We tried denying it (it routes pages through
+    // the LLM and costs 4+ min per call on local models), but the SDK
+    // translates `curl <URL>` to a virtual webfetch operation for
+    // permission checks — denying webfetch also denies every curl,
+    // which breaks discover-dependency's smoke-test path. The webfetch
+    // deterrent stays in the prelude prose only.
     webfetch: "allow",
     external_directory: "allow",
     doom_loop: "allow",

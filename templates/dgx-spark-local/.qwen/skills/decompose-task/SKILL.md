@@ -1,6 +1,6 @@
 ---
 name: decompose-task
-description: Invoke whenever the user uses a build verb — "build", "create", "implement", "make", "develop", "ship", "construct" — for any non-trivial artifact, regardless of size. The verb is the trigger; do not gate on "is this complex enough." Tiny tasks produce tiny plans (1-2 items) — that overhead is acceptable because the orchestrator path is where decisions get documented (spec.md → interfaces.md → plan.todo → component-coder dispatches), where library research happens (`discover-library` per subproblem), and where card-class authoring routes through the Mica tools (`mica_create_class`, `mica_edit_class_file`). Skip ONLY for: bug fixes (use `fix-bug` instead), pure Q&A ("what does X do?"), doc-only edits ("update spec to say Z"), or when the user explicitly overrides ("just do it directly", "skip the planning"). Subagents (especially component-coder) inherit the working set; doing the work inline burns the parent's slot context with file reads and tool results that decompose-task would have isolated.
+description: Invoke whenever the user uses a build verb — "build", "create", "implement", "make", "develop", "ship", "construct" — for any non-trivial artifact, regardless of size. The verb is the trigger; do not gate on "is this complex enough." Tiny tasks produce tiny plans (1-2 items) — that overhead is acceptable because the orchestrator path is where decisions get documented (spec.md → interfaces.md → plan.todo → component-coder dispatches), where library research happens (`discover-dependency` per subproblem), and where card-class authoring routes through the Mica tools (`mica_create_class`, `mica_edit_class_file`). Skip ONLY for: bug fixes (use `fix-bug` instead), pure Q&A ("what does X do?"), doc-only edits ("update spec to say Z"), or when the user explicitly overrides ("just do it directly", "skip the planning"). Subagents (especially component-coder) inherit the working set; doing the work inline burns the parent's slot context with file reads and tool results that decompose-task would have isolated.
 ---
 
 # Orchestrate decomposed work — but don't decompose yourself
@@ -16,7 +16,7 @@ For cross-skill discipline (decomposition gates, approval flow, dispatch shape) 
 (a) Real architectural seams (named integration boundaries, distinct contracts).
 (b) Integrated whole exceeds the parent's working set.
 
-If either fails, drop the orchestrator path: invoke `create-card-class` for card-class work, `fix-bug` for bugs, or do edits directly. **Default to inline.** Almost any non-trivial task has nameable seams in the abstract — that's not the question. The question is whether the parent's *actual incapacity* to do the work in one slot justifies the overhead.
+If either fails, drop the orchestrator path: invoke `card-class-handbook` for card-class work, `fix-bug` for bugs, or do edits directly. **Default to inline.** Almost any non-trivial task has nameable seams in the abstract — that's not the question. The question is whether the parent's *actual incapacity* to do the work in one slot justifies the overhead.
 
 The full procedure (including non-arguments — "reusable design memory", "narrative cleanliness", "future flexibility") is in `_conventions.md` § Decomposition gates. Read it before invoking this skill if you're uncertain.
 

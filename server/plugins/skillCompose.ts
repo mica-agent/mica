@@ -19,7 +19,7 @@ interface Turn {
 // references without ballooning the prompt.
 function loadExemplar(): string {
   try {
-    const path = join(process.cwd(), "skills/coding/create-card-class/SKILL.md");
+    const path = join(process.cwd(), "skills/coding/card-class-handbook/SKILL.md");
     const full = readFileSync(path, "utf-8");
     const lines = full.split("\n").slice(0, 55);
     return lines.join("\n").trim();

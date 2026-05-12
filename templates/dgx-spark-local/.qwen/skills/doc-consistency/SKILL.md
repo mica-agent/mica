@@ -19,7 +19,7 @@ The threshold is **inkling**, not certainty. Err toward asking. The cost is one 
 
 - **Cascade-proof.** You don't auto-write multiple docs in one turn. The user is the cap. Nothing loops.
 - **Tolerates misjudgment.** You don't have to be RIGHT about whether the doc needs updating — sensing "maybe" is enough to ask. That's a much lower bar than the rule it replaces.
-- **Matches the spec-first approval gate** (STEP 0.75 of `create-card-class`). Same shape: stop, ask, defer to the user.
+- **Matches the spec-first approval gate** (STEP 0.75 of `card-class-handbook`). Same shape: stop, ask, defer to the user.
 - **Closes the "I did the minimum, done" loophole.** Asking IS a minimum action — smaller than updating. So your bias toward minimum action actually triggers the rule instead of skipping it.
 
 **The ask is inline in your chat reply, NOT in `canvas/questions.md`.** Questions in questions.md are for async / batched items the user reads later. A doc-update ask is a synchronous gate — it goes where the user is already looking (the chat). Don't fight the participate-fully skill's "questions go to questions.md" rule — that's for a different kind of question.

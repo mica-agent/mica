@@ -276,10 +276,10 @@ Read these first:
 - `internal/VISION.md` — design intent for things not yet built
 
 For card class authoring, the canonical reference is the
-`create-card-class` skill that ships with each project
+`card-class-handbook` skill that ships with each project
 template:
 
-- `templates/dgx-spark-local/.qwen/skills/create-card-class/SKILL.md`
+- `templates/dgx-spark-local/.qwen/skills/card-class-handbook/SKILL.md`
   (local-model projects)
 
 The cloud-Claude template was deleted 2026-05-11 and will be

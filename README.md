@@ -184,9 +184,9 @@ in the project files themselves.
   `## Testing` runtime walkthrough.
 
 For card-class authoring, the canonical reference is the
-`create-card-class` skill that ships with each project template:
+`card-class-handbook` skill that ships with each project template:
 
-- `templates/dgx-spark-local/.qwen/skills/create-card-class/SKILL.md`
+- `templates/dgx-spark-local/.qwen/skills/card-class-handbook/SKILL.md`
   for local-model projects.
 
 The cloud-Claude template was deleted 2026-05-11 and will be

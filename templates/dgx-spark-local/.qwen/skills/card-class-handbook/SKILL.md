@@ -1,9 +1,9 @@
 ---
-name: create-card-class
-description: Build, create, make, or implement a card, widget, visualization, chart, dashboard, calculator, viewer, browser, editor, game, or any interactive UI that appears on the Mica canvas. Use whenever the user asks for something visual or interactive, even if they don't say "card".
+name: card-class-handbook
+description: Knowledge reference for authoring Mica card classes — the CANONICAL CARD.JS shape, CARD_SHIM contract (`container` and `mica` are injected globals — DO NOT redeclare), metadata.json schema, mica.* API, channel handlers, and pitfalls. Load this BEFORE calling `mica_create_class` or `mica_edit_class_file`. The handbook is the contract those tools enforce; without it in working memory, common violations (top-level CARD_SHIM-global redeclaration, IIFE wrapping, `document.getElementById` instead of `container.querySelector`) recur and burn iteration cycles fixing post-write lint errors. Dispatched from `develop` step 4a.
 ---
 
-# Create a Card Class
+# Card-Class Handbook
 
 A **card class** defines a UI component. An **instance** is a file the class renders.
 
@@ -12,12 +12,19 @@ A card class is four files at `.mica/card-classes/<ext>/`:
 the `mica_create_class` tool (NOT raw `write_file`). Verified with
 `render_capture`.
 
-This skill is invoked from `develop` step 4a *after* spec + approval
-land. The universal build flow — research → spec → approval → plan —
-lives in `develop/SKILL.md`; don't restate it here. For cross-skill
-discipline (reading, library reuse, API discipline, decomposition
-gates, approval flow, naming) see `.qwen/skills/_conventions.md`.
-Tenet numbers below refer to ARCHITECTURE.md / CLAUDE.md.
+This handbook is the knowledge object you load before calling
+`mica_create_class` or `mica_edit_class_file` — it teaches the
+CANONICAL CARD.JS shape and CARD_SHIM contract those tools enforce.
+The verb "card-class-handbook" in the dispatch language refers to
+loading this handbook into context, not to a separate action: the
+*action* is `mica_create_class`; this handbook is the *rules*.
+
+Loaded from `develop` step 4a *after* spec + approval land. The
+universal build flow — research → spec → approval → plan — lives in
+`develop/SKILL.md`; don't restate it here. For cross-skill discipline
+(reading, library reuse, API discipline, decomposition gates,
+approval flow, naming) see `.qwen/skills/_conventions.md`. Tenet
+numbers below refer to ARCHITECTURE.md / CLAUDE.md.
 
 ## Before creating: check the registry
 
@@ -39,7 +46,7 @@ reserved for *editing existing* class files; class creation is exclusively
 through this tool.
 
 Pull verified `scripts` / `styles` URLs from the canvas decision that
-`develop` step 1 wrote (`discover-library` records them in spec.md /
+`develop` step 1 wrote (`discover-dependency` records them in spec.md /
 decisions.md). Don't write CDN URLs from memory.
 
 ```
@@ -60,6 +67,16 @@ Returns `{ ok: true, dir: ".mica/card-classes/world-clock/", paths: { ... } }`.
 If you omit `card_js` entirely, the tool writes a working stub in the
 canonical shape (below) — edit the body via `mica_edit_class_file`,
 don't rewrite from scratch.
+
+**Re-call to UPDATE metadata in place.** When you need to change a
+dependency, badge, defaultTitle, scripts, styles, handler, or
+primaryFile on an existing class, just call `mica_create_class` again
+with the same `name` and same `extension`. The metadata.json updates;
+card.html / card.js / card.css are preserved (only touched if you pass
+explicit content). **DO NOT** delete-then-recreate to change metadata —
+that wastes 5+ tool calls and forces you to rewrite card.html and
+card.js from stubs. Only changing `extension` requires a delete (it's
+a rename that would orphan existing instances).
 
 Companion tools:
 - `mica_edit_class_file({ class, file: "card.js"|"card.html"|"card.css", content?, old_string?, new_string? })` — edit a class file with PRE-WRITE lint. For card.js, the lint that catches top-level redeclaration of CARD_SHIM globals (`mica`, `container`), ESM `import`/`export`, and other common mistakes runs BEFORE the write. Lint failures come back as a same-turn tool error so you can fix and retry without burning a card-error broadcast cycle. Use this INSTEAD of `write_file`/`edit` when modifying class files.
@@ -117,8 +134,8 @@ the same skeleton:
   `const renderer = new THREE.WebGLRenderer();` `container.appendChild(renderer.domElement);`. Then your script-scoped state in step 2 references it.
 - **Library teardown goes IN step 5** — `mica.onDestroy(() => { renderer.dispose(); /* dispose textures, geometries, controls */ });`. Without this, the canvas leaks GPU memory across remounts.
 
-When `discover-library` selects a third-party library, run
-`mica_install_skills` for it (see `discover-library/SKILL.md` step 4). The
+When `discover-dependency` selects a third-party library, run
+`mica_install_skills` for it (see `discover-dependency/SKILL.md` step 4). The
 installed library skill describes its disposers, init-order quirks, and
 version-specific gotchas — read that skill BEFORE filling in the body, so
 the body lands right the first time.
@@ -145,7 +162,7 @@ and rewrite the section to match.
 in `card.html`. External libraries go in
 `metadata.json.dependencies.scripts`/`.styles`.
 
-**Dependencies — invoke `discover-library` FIRST.** If your card needs ANY external library (Three.js, Chart.js, Leaflet, D3, anything), your next action is to invoke the `discover-library` skill BEFORE writing card.js or metadata.json. The skill does the curl-verification, picks a working CDN URL, and records the decision on canvas. Don't write CDN URLs from memory — it's how stale versions, ESM-only URLs that don't load in card.js's classic-script context, and hallucinated paths sneak in. One curl-verified UMD URL beats three rounds of "Failed to load dependency" debugging.
+**Dependencies — invoke `discover-dependency` FIRST.** If your card needs ANY external library (Three.js, Chart.js, Leaflet, D3, anything), your next action is to invoke the `discover-dependency` skill BEFORE writing card.js or metadata.json. The skill does the curl-verification, picks a working CDN URL, and records the decision on canvas. Don't write CDN URLs from memory — it's how stale versions, ESM-only URLs that don't load in card.js's classic-script context, and hallucinated paths sneak in. One curl-verified UMD URL beats three rounds of "Failed to load dependency" debugging.
 
 ### `metadata.json`
 

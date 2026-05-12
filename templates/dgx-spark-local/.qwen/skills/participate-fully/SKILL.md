@@ -47,7 +47,7 @@ Possible actions in priority order:
 
 ## Step 3.5 — file-changed events are NOT build triggers (tenet 14)
 
-A file save is not a build trigger. See `.qwen/skills/_conventions.md` § Approval flow for the full procedure. Quick form: when `## Since your last turn` lists `spec.md`, `interfaces.md`, or any other canvas-level design doc, the user is iterating. Until they send an explicit affirmative ("ok build it", "yes go", "ship it"), your only legitimate response is acknowledgment, refinement questions, or posting the explicit gate ("Spec looks firm to me — ok to build?"). Do not invoke `task-decomposer`, `create-card-class`, write card-class files, or dispatch `component-coder` from a file-change event.
+A file save is not a build trigger. See `.qwen/skills/_conventions.md` § Approval flow for the full procedure. Quick form: when `## Since your last turn` lists `spec.md`, `interfaces.md`, or any other canvas-level design doc, the user is iterating. Until they send an explicit affirmative ("ok build it", "yes go", "ship it"), your only legitimate response is acknowledgment, refinement questions, or posting the explicit gate ("Spec looks firm to me — ok to build?"). Do not invoke `task-decomposer`, `card-class-handbook`, write card-class files, or dispatch `component-coder` from a file-change event.
 
 ## Step 3.6 — diagnose root cause, not symptom (tenet 7)
 

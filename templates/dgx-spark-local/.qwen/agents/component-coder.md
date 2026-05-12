@@ -91,7 +91,7 @@ When the spec passes both checks, implement the named API directly. No re-deriva
 
 If the spec is older and describes work in browser-vanilla terms (`localStorage`, raw `fetch()`, `BroadcastChannel`), substitute the `mica.*` equivalent and **note the substitution in your summary**. See `_conventions.md` § Reuse before reinventing for the decision tree. Common substitutions: persistence → `mica.files.write`; HTTP → `mica.fetch`; cross-card → `mica.openChannel` or canvas files + `mica.on`; cleanup → `mica.onDestroy`; errors → `mica.reportError`. Only keep a browser primitive if the spec explicitly says "ephemeral, this-tab-only" or similar with rationale.
 
-For full mica.* parameter shapes, the `create-card-class` skill has the table; `read_file` it if unsure.
+For full mica.* parameter shapes, the `card-class-handbook` skill has the table; `read_file` it if unsure.
 
 ## When writing
 

@@ -41,7 +41,7 @@ Before writing custom code, walk the decision tree in order:
    in Mica.
 
 3. **Is there an established 3rd-party library?** Invoke the
-   `discover-library` skill. The threshold is: if you would
+   `discover-dependency` skill. The threshold is: if you would
    write >20 lines of bespoke logic in an area where libraries
    commonly exist (rendering, math, parsing, networking, dates,
    charts, geometry, layout), search first.
@@ -126,7 +126,7 @@ it"*, *"yes go ahead"*, *"let's build"*, *"ship it"*, *"start
 implementation"* — before any of these actions:
 
 - Invoking `task-decomposer`
-- Invoking `create-card-class`
+- Invoking `card-class-handbook`
 - Writing card-class files (`.mica/card-classes/<ext>/...`)
 - Dispatching `component-coder`
 
@@ -139,7 +139,7 @@ spec or design-doc edit is:
 - Optionally posting the gate: *"Spec looks firm to me — ok to
   build?"* A question is not a build action.
 
-This rule covers `create-card-class` the same as `task-decomposer`:
+This rule covers `card-class-handbook` the same as `task-decomposer`:
 no card-class files written in response to a file-change event.
 
 ## Naming and hygiene

@@ -79,7 +79,7 @@ Substitutions to make:
 
 Substitution summary line example: `"Substituted spec's 'IndexedDB for chat persistence' → mica.files.write('canvas/chat.json', ...) — canvas-native, syncs cross-tab. Flag if spec wanted browser-only."`
 
-For full API parameter shapes, the `create-card-class` skill at `.qwen/skills/create-card-class/SKILL.md` (or `.claude/skills/...`) has the table. You can `read_file` it if you're unsure about a primitive — but it's not in your baseline by default, so don't load it speculatively.
+For full API parameter shapes, the `card-class-handbook` skill at `.qwen/skills/card-class-handbook/SKILL.md` (or `.claude/skills/...`) has the table. You can `read_file` it if you're unsure about a primitive — but it's not in your baseline by default, so don't load it speculatively.
 
 ## When writing
 
