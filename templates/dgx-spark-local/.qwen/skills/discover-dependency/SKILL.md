@@ -30,17 +30,32 @@ Whenever you're about to design or implement a subproblem that pulls from outsid
 - **During bug fixes** (via `fix-bug`): if your fix would need >30 lines of new bespoke code, or pulls in a new external resource, run this skill first.
 - **Recursively, per subproblem.** Picking Leaflet for the map does NOT discharge discovery for sub-features built on top: a day/night terminator overlay is its own library subproblem (`leaflet.terminator`); the tile server is its own asset/service subproblem; the marker icons are their own asset subproblem.
 
-## Tool choice — `mcp__tavily__tavily_search` + `curl`, NOT `web_fetch`
+## Tool choice — pick by content shape
 
-**Tool naming gotcha.** `mcp__tavily__tavily_search` is the actual registered name — the bare `tavily_search` returns "tool not found." Pass `max_results: 5` as a **number** (not the string `"5"` — the MCP schema rejects string values with a "tool not available" error). Both world11 failures came from this.
+Two real costs on each external call: **wall clock** (how long the tool takes) and **context bloat** (how much of the response sits in chat history for the rest of the session). The cheapest tool depends on the response shape.
 
-**`🌐 web_fetch` is not `curl`.** Despite the name, it downloads the page AND routes it through an LLM with your `prompt:` field for interpretation. On local-model projects (this one), that LLM call is the same throughput-limited Qwen serving the chat agent — a single `web_fetch` against a 100KB npm or GitHub page costs **4+ minutes** of wall clock and queues behind your own turn. `curl` returns bytes in ~200ms with no LLM involvement.
+**Tool naming gotcha.** `mcp__tavily__tavily_search` is the actual registered name — the bare `tavily_search` returns "tool not found." Pass `max_results: 5` as a **number** (not the string `"5"` — the MCP schema rejects string values with a "tool not available" error).
 
-**The rule.** `web_fetch` is for *reading* a long document (interpretive question, answer requires skim-level understanding). `mcp__tavily__tavily_search` + `curl` is for *finding* a fact, URL, or version string (the answer is a pattern a person could Ctrl-F for).
+| Content shape | Tool | Why |
+|---|---|---|
+| Structured JSON (npm registry, jsdelivr listings, GitHub API) | `curl -s ... \| head -c N` | Already structured; small response; grep-friendly. |
+| Plain markdown (README.md, CHANGELOG.md, docs/*.md) | `curl -sL ... \| head -c 8000` | Dense; low cruft; scan directly with no LLM round-trip. |
+| Single-fact URL verification (format, status, methods) | `mica_inspect_url` | ~500B structured JSON regardless of source size; the body bytes never enter chat history. |
+| Finding a thing you don't know (plugin name, free-tier API) | `mcp__tavily__tavily_search` (max_results: 5) | Returns title + snippet + URL per result; cap to 5 for context budget. |
+| HTML page with structural cruft (docs sites, blog posts, multi-answer SO threads) | `web_fetch` with a SPECIFIC prompt | ~4 min wall clock but **only the extracted answer enters context** — saves 50KB+ of nav/sidebar/footer from permanent history. |
 
-Discovery is always the second case. **Never `web_fetch` an npm or GitHub page during this skill** — `curl https://registry.npmjs.org/<pkg>` returns the same info as structured JSON in 200ms.
+**`web_fetch` is not banned — it's specialized.** It downloads a page AND routes it through an LLM with your `prompt:` field, which makes it ~4 min wall clock on local-model projects but **compact** in context cost: only the LLM's extracted answer enters history, regardless of whether the source was 5KB or 200KB. That's a net win when:
 
-`web_fetch` IS appropriate (rarely) when reading a long changelog for breaking changes, an RFC for protocol details, or a multi-answer StackOverflow thread for the accepted recommendation. Picking a library version, verifying an image URL, or finding an API endpoint is not.
+- The page is HTML with lots of cruft (nav, sidebar, footer, embedded scripts) and your question targets one paragraph.
+- The page is long-form prose (RFC, multi-answer SO thread, lengthy changelog) and curl would dump it all into permanent context.
+
+It's a net loss when:
+
+- The response is small JSON (npm/jsdelivr — use curl).
+- The response is dense markdown (README — use curl).
+- You need bytes verification (URL format/status — use mica_inspect_url).
+
+**The rule of thumb**: estimate the response size BEFORE picking. If you'd expect ≤ 5KB of dense content, curl. If you'd expect 30KB+ of HTML/markup, web_fetch with a specific prompt. The wall-clock difference (200ms vs 4 min) is one variable; the permanent context bloat across the rest of the session is the other.
 
 ## The one universal rule
 
@@ -111,7 +126,7 @@ For each library subproblem:
    Raw `curl -sI -L | head -1` is fine when you just want a status code; `mica_inspect_url` is the default for any dependency you're about to commit to `metadata.json`.
 4. **Search only if recall fails**: `mcp__tavily__tavily_search "<problem> javascript library"` (max_results: 5) — for genuinely niche libraries you don't recognize.
 
-**Library structured-data sources** (use these BEFORE `web_fetch` — they're 200ms structured JSON):
+**Library structured-data sources** (curl wins here — 200ms structured JSON, no LLM round-trip):
 
 ```bash
 # Latest version + main entry path
@@ -130,7 +145,7 @@ curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 2000
 3. **Community wrappers / alternative plugins**: `mcp__tavily__tavily_search "<plugin-name> script tag CDN"` or `"<feature> <ecosystem> plugin"`. One ESM-only repo doesn't mean the feature is unavailable in the ecosystem — there is usually more than one plugin per feature, and at least one of them ships a UMD bundle.
 4. **Bespoke as last resort, with documented rationale**. Going bespoke before steps 1–3 silently commits the user to N lines of custom code they didn't ask for. If you go bespoke anyway, the spec MUST list which alternatives were tried and why each was rejected — so the user can override with a known-working alternative they recognize.
 
-Use `curl` for README / file-listing scans — READMEs are plain markdown that you can scan directly in ~200ms. **Do NOT `web_fetch` the README** — it routes the page through the chat LLM (4+ minute cost) for no interpretive benefit on a document you'd skim for `<script` tags.
+Use `curl` for README / file-listing scans — READMEs are dense markdown that scans directly in ~200ms with no LLM round-trip. (`web_fetch` is the right tool for HTML-heavy docs sites with structural cruft, NOT for plain markdown READMEs — see § Tool choice.)
 
 Concrete recurring failure — **Three.js OrbitControls**: The Three.js npm package on cdn.jsdelivr.net **does not ship a UMD OrbitControls at any currently-distributed version** — `examples/jsm/controls/OrbitControls.js` (ESM) is the only published copy. The classic `examples/js/controls/OrbitControls.js` path was never published in the npm tarball, so jsdelivr/unpkg return 404 across the board. **Don't probe a grid of versions hoping to find UMD OrbitControls — you won't.** Three options: (a) build without it (manual camera math, often 10-15 lines), (b) use a community UMD wrapper like `@vladkrutenyuk/three-umd`, (c) inline the ESM source — brittle last resort.
 
