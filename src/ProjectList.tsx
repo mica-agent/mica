@@ -398,18 +398,17 @@ function CloneForm({
 }) {
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
-  // Default to `canvas` for cloned repos — most repos have their own `docs/`,
-  // and putting Mica's canvas there would mix seed cards with the repo's
-  // documentation. `canvas/` keeps them separate. This is a UI prefill;
-  // the server's DEFAULT_CANVAS_ROOT is authoritative when the field is
-  // left blank.
-  const [docsDir, setDocsDir] = useState('canvas');
   // Default to "None" — a bare clone. Cloning a Mica-shaped repo (one that
   // already carries .mica/ + .qwen/) shouldn't overlay extra template files
   // on top; the publisher's skills and agents are already there. User opts
   // into a template only when cloning a non-Mica repo that needs Mica
   // scaffolding added.
   const [template, setTemplate] = useState<string | null>(null);
+  // Canvas directory — only meaningful when a template is selected (it
+  // remaps where the template's seed cards land). For bare clones the
+  // cloned .mica/config.json already specifies canvasRoot, so we hide
+  // the field. Empty = use the template's default ("canvas").
+  const [docsDir, setDocsDir] = useState('');
   const [cloning, setCloning] = useState(false);
 
   return (
@@ -419,7 +418,7 @@ function CloneForm({
         e.preventDefault();
         if (!url.trim() || cloning) return;
         setCloning(true);
-        onSubmit(url.trim(), name.trim(), docsDir.trim(), template);
+        onSubmit(url.trim(), name.trim(), template ? docsDir.trim() : '', template);
       }}
     >
       <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 500, color: '#ddd' }}>Clone Repository</h3>
@@ -442,16 +441,6 @@ function CloneForm({
           style={inputStyle}
         />
       </label>
-      <label style={labelStyle}>
-        Canvas directory
-        <input
-          value={docsDir}
-          onChange={(e) => setDocsDir(e.target.value)}
-          placeholder="canvas"
-          style={inputStyle}
-        />
-        <span style={{ fontSize: 11, color: '#666' }}>Where Mica places canvas cards (kept separate from the repo&apos;s own files)</span>
-      </label>
       {templates.length > 0 && (
         <label style={labelStyle}>
           Overlay template
@@ -466,6 +455,18 @@ function CloneForm({
             ))}
           </select>
           <span style={{ fontSize: 11, color: '#666' }}>Adds skills, agents, and seed cards alongside the cloned repo</span>
+        </label>
+      )}
+      {template && (
+        <label style={labelStyle}>
+          Canvas directory (optional)
+          <input
+            value={docsDir}
+            onChange={(e) => setDocsDir(e.target.value)}
+            placeholder="canvas"
+            style={inputStyle}
+          />
+          <span style={{ fontSize: 11, color: '#666' }}>Where the template&apos;s seed cards land. Leave empty for &quot;canvas&quot;.</span>
         </label>
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
