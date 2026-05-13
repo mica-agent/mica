@@ -254,6 +254,35 @@ export function registerGitEndpoints(app: Express, opts: RegisterOpts): void {
     res.json({ ok: true, stdout: r.stdout, stderr: r.stderr });
   });
 
+  app.post("/api/git/set-remote", async (req, res) => {
+    const cwd = resolveCwd(req, res, getRequestProject);
+    if (!cwd) return;
+    const url = (req.body as { url?: unknown } | undefined)?.url;
+    if (typeof url !== "string" || !url.trim()) {
+      res.status(400).json({ ok: false, error: "url required" });
+      return;
+    }
+    const trimmed = url.trim();
+    // Light validation: URL should look like a git remote — http(s)://, ssh,
+    // or git@host:path/repo.git. Reject obvious garbage early so the user
+    // gets a clear error instead of a cryptic git failure.
+    if (!/^(https?:\/\/|git@|ssh:\/\/)/i.test(trimmed)) {
+      res.status(400).json({ ok: false, error: "remote URL must start with https://, http://, ssh://, or git@" });
+      return;
+    }
+    // Use set-url if origin already exists, otherwise add. set-url returns
+    // an error if origin is missing; add returns an error if origin exists.
+    // Probe first via `remote get-url origin` (exits 0 if exists).
+    const probe = await runGit(cwd, ["remote", "get-url", "origin"]);
+    const action = probe.ok ? ["remote", "set-url", "origin", trimmed] : ["remote", "add", "origin", trimmed];
+    const r = await runGit(cwd, action);
+    if (!r.ok) {
+      res.status(400).json({ ok: false, error: r.stderr || r.stdout });
+      return;
+    }
+    res.json({ ok: true, url: trimmed, action: probe.ok ? "updated" : "added" });
+  });
+
   app.post("/api/git/init", async (req, res) => {
     const cwd = resolveCwd(req, res, getRequestProject);
     if (!cwd) return;

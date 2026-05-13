@@ -43,6 +43,23 @@
     <button id="gr-commit" class="gr-btn gr-btn--primary" disabled>Commit</button>
   </div>
 
+  <!-- Remote-setup flow: appears when Push is clicked but no remote is
+       configured. User pastes an existing repo URL, or creates one on
+       GitHub first (link below) and pastes it back. -->
+  <div id="gr-remote-setup" class="gr-remote-setup" style="display:none;">
+    <div class="gr-remote-setup-title">No remote configured</div>
+    <div class="gr-remote-setup-body">
+      Paste an existing repo URL, or
+      <a id="gr-remote-create" href="https://github.com/new" target="_blank" rel="noopener noreferrer">create one on GitHub →</a>
+      and paste the URL back here.
+    </div>
+    <input id="gr-remote-url" type="text" class="gr-remote-url" placeholder="https://github.com/user/repo.git" autocomplete="off" spellcheck="false" />
+    <div class="gr-remote-actions">
+      <button id="gr-remote-cancel" class="gr-btn">Cancel</button>
+      <button id="gr-remote-submit" class="gr-btn gr-btn--primary">Set remote &amp; push</button>
+    </div>
+  </div>
+
   <div class="gr-log-head">
     <span class="gr-log-title">Activity</span>
     <button id="gr-log-clear" class="gr-log-clear" title="Clear activity log">Clear</button>

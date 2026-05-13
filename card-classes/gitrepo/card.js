@@ -16,6 +16,10 @@ const commitBtn = container.querySelector('#gr-commit');
 const toastEl = container.querySelector('#gr-toast');
 const logEl = container.querySelector('#gr-log');
 const logClearBtn = container.querySelector('#gr-log-clear');
+const remoteSetupEl = container.querySelector('#gr-remote-setup');
+const remoteUrlEl = container.querySelector('#gr-remote-url');
+const remoteSubmitBtn = container.querySelector('#gr-remote-submit');
+const remoteCancelBtn = container.querySelector('#gr-remote-cancel');
 
 const sectionEls = {
   staged: container.querySelector('.gr-section[data-bucket="staged"]'),
@@ -209,6 +213,12 @@ async function doCommit() {
 }
 
 async function doPush() {
+  // No remote yet: open the setup flow instead of letting git push
+  // produce a cryptic "No configured push destination" error.
+  if (state && state.hasGit && !state.hasRemote) {
+    openRemoteSetup();
+    return;
+  }
   setBusy(true);
   const r = await gitFetch('/api/git/push', { method: 'POST' });
   setBusy(false);
@@ -218,6 +228,38 @@ async function doPush() {
   }
   showToast('Pushed' + (r.data && r.data.stderr ? '\n\n' + r.data.stderr : ''), true);
   refreshStatus();
+}
+
+function openRemoteSetup() {
+  if (!remoteSetupEl) return;
+  remoteSetupEl.style.display = 'flex';
+  if (remoteUrlEl) {
+    remoteUrlEl.value = '';
+    setTimeout(() => remoteUrlEl.focus(), 0);
+  }
+}
+function closeRemoteSetup() {
+  if (remoteSetupEl) remoteSetupEl.style.display = 'none';
+}
+async function doSetRemoteAndPush() {
+  const url = remoteUrlEl ? remoteUrlEl.value.trim() : '';
+  if (!url) {
+    showToast('Enter a repo URL first', false);
+    return;
+  }
+  setBusy(true);
+  const r = await gitFetch('/api/git/set-remote', { method: 'POST', body: { url: url } });
+  if (!r.ok) {
+    setBusy(false);
+    showToast('Set remote failed: ' + r.error, false);
+    return;
+  }
+  closeRemoteSetup();
+  showToast('Remote ' + ((r.data && r.data.action) || 'set') + ': ' + url, true);
+  // Refresh status so hasRemote flips to true, then push.
+  await refreshStatus();
+  setBusy(false);
+  await doPush();
 }
 
 async function doPull() {
@@ -247,6 +289,12 @@ async function doInit() {
 // ── Wire up ─────────────────────────────────────────────────────────
 refreshBtn.addEventListener('click', refreshStatus);
 pushBtn.addEventListener('click', doPush);
+if (remoteSubmitBtn) remoteSubmitBtn.addEventListener('click', doSetRemoteAndPush);
+if (remoteCancelBtn) remoteCancelBtn.addEventListener('click', closeRemoteSetup);
+if (remoteUrlEl) remoteUrlEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); doSetRemoteAndPush(); }
+  else if (e.key === 'Escape') { closeRemoteSetup(); }
+});
 pullBtn.addEventListener('click', doPull);
 commitBtn.addEventListener('click', doCommit);
 initBtn.addEventListener('click', doInit);

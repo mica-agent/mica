@@ -251,3 +251,46 @@
   font-style: italic;
   padding: 4px 0;
 }
+
+.gr-remote-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  margin: 0 10px 8px;
+  background: rgba(96,165,250,0.08);
+  border: 1px solid rgba(96,165,250,0.3);
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.gr-remote-setup-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #93c5fd;
+}
+.gr-remote-setup-body {
+  font-size: 11px;
+  color: #8b949e;
+  line-height: 1.4;
+}
+.gr-remote-setup-body a {
+  color: #93c5fd;
+  text-decoration: none;
+}
+.gr-remote-setup-body a:hover { text-decoration: underline; }
+.gr-remote-url {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #e6edf3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  outline: none;
+}
+.gr-remote-url:focus { border-color: #7c3aed; }
+.gr-remote-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
