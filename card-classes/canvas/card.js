@@ -24,8 +24,6 @@ const emptyEl = container.querySelector('.project-empty');
 const metaOverlay = container.querySelector('#canvas-meta-overlay');
 const metaOverlayBackdrop = container.querySelector('.canvas-meta-overlay-backdrop');
 const metaOverlayClose = container.querySelector('#canvas-meta-overlay-close');
-const bulkCollapseBtn = container.querySelector('#canvas-bulk-collapse');
-const bulkExpandBtn = container.querySelector('#canvas-bulk-expand');
 const libraryToggleBtn = container.querySelector('#canvas-library-toggle');
 
 // Library toggle — flips whether THIS project's path lives in
@@ -98,21 +96,6 @@ metaOverlayClose.addEventListener('click', closeMetaOverlay);
 window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && metaOverlay.style.display !== 'none') closeMetaOverlay();
 });
-
-// Bulk collapse / expand — apply the new state to every card in the
-// freeform area. Persists via the same toggleCardCollapse() path the
-// individual minimize button uses, so there's a single source of truth
-// for layout.json updates.
-bulkCollapseBtn.addEventListener('click', () => applyBulkCollapse(true));
-bulkExpandBtn.addEventListener('click', () => applyBulkCollapse(false));
-function applyBulkCollapse(collapsed) {
-    const all = Array.from(freeform.querySelectorAll('.wb-card'));
-    all.forEach((card) => {
-        const name = card.getAttribute('data-filename');
-        if (!name) return;
-        toggleCardCollapse(name, collapsed);
-    });
-}
 
 // Scope /api/* calls to this card's project. Canvas layout, canvas-root, and
 // project-scoped card-classes all live per-project — two tabs on different
