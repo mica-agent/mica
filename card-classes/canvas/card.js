@@ -83,6 +83,10 @@ function openMetaOverlay() {
     metaOverlay.style.display = 'flex';
     void refreshLibraryToggleState();
 }
+// Host-side surfaces (e.g. the orphan-card placeholder in CardFrame.tsx)
+// can request the gear-menu overlay via a window event. Matches the
+// pattern used by mica-toggle-collapse for cross-boundary signaling.
+window.addEventListener('mica-open-canvas-settings', openMetaOverlay);
 function closeMetaOverlay() {
     metaOverlay.style.display = 'none';
 }

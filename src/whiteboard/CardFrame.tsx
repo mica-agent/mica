@@ -352,12 +352,36 @@ export default function CardFrame({ project, file, canvasRoot, onEdit, onDelete,
         // could also happen transiently while a class was still being
         // written; now card-class-changed forces a re-check, so if it's
         // visible here it's genuinely unknown. Loudly visible so the user
-        // or agent notices.
+        // or agent notices. The library hint covers the common case:
+        // an instance left behind after its source library project was
+        // removed from include-projects.json (or deleted from disk).
         <div className="wb-card-body" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, gap: 10, color: "#888" }}>
           <div style={{ fontSize: 40, fontWeight: 700, color: "#555", letterSpacing: 2 }}>???</div>
           <div style={{ fontSize: 12, textAlign: "center", lineHeight: 1.5 }}>
             No card class for <code style={{ color: "#c9a45d", background: "rgba(255,255,255,0.04)", padding: "1px 6px", borderRadius: 3 }}>.{file.name.split(".").pop()?.toLowerCase() || ""}</code>
           </div>
+          <div style={{ fontSize: 11, textAlign: "center", lineHeight: 1.5, color: "#6e7681", maxWidth: 280 }}>
+            This card may have been created from a library project that isn&apos;t currently loaded.
+          </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              window.dispatchEvent(new CustomEvent("mica-open-canvas-settings"));
+            }}
+            style={{
+              background: "rgba(96,165,250,0.15)",
+              border: "1px solid rgba(96,165,250,0.4)",
+              color: "#93c5fd",
+              padding: "4px 12px",
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 11,
+              fontFamily: "inherit",
+            }}
+          >
+            Open canvas settings
+          </button>
         </div>
       ) : (
         <div className="wb-card-body" style={{ padding: 16, color: "#666" }}>Loading...</div>
