@@ -404,9 +404,12 @@ function CloneForm({
   // the server's DEFAULT_CANVAS_ROOT is authoritative when the field is
   // left blank.
   const [docsDir, setDocsDir] = useState('canvas');
-  // Default to the first template so a cloned repo gets skills + agents out
-  // of the box. User can switch to "None" for a bare clone.
-  const [template, setTemplate] = useState<string | null>(templates[0]?.name ?? null);
+  // Default to "None" — a bare clone. Cloning a Mica-shaped repo (one that
+  // already carries .mica/ + .qwen/) shouldn't overlay extra template files
+  // on top; the publisher's skills and agents are already there. User opts
+  // into a template only when cloning a non-Mica repo that needs Mica
+  // scaffolding added.
+  const [template, setTemplate] = useState<string | null>(null);
   const [cloning, setCloning] = useState(false);
 
   return (
