@@ -81,6 +81,17 @@ For each one, tag it:
 
 **Enumerate candidates first.** For each subproblem (especially library / plugin / service ones), write down 3–5 candidate options — mix kinds where relevant (a library plus a bespoke fallback). Recall-first; `mcp__tavily__tavily_search` (max_results: 5) only when recall genuinely fails for a category. Don't pre-filter to your favorite — list alternatives even if you wouldn't pick them. The candidate space becomes visible to the user when you record it on canvas (Step 4), so they can redirect *before* you commit to one.
 
+**Pick on positive fit, not elimination.** Once 2–3 candidates pass the tech-bar (UMD-loadable, CORS-clean — Step 3a-3c verification), choose using **positive signals**, not "the one I have more training data on":
+
+- **Native feature match** (highest weight). Search prior art: `<library> <feature>`. If candidate A has a plugin or built-in that solves your specific sub-feature in one line and candidate B requires writing it from scratch, A wins regardless of which library you recall better.
+- **Prior art density**. Search `"<exact use case>" site:github.com stars:>20`, or `<use case> <library> example codepen`. Lots of working examples = well-trodden path = less debug time. A smaller-star library where many repos solve your exact use case beats a bigger-star library where no one has done it.
+- **User-facing quality**. For visible UI (maps, charts, image viewers, 3D scenes): prefer libraries that ship pre-built visual primitives over libraries that hand you a blank canvas and require you to assemble the look yourself, even when the latter is technically capable. The output should feel like the modern web, not a textbook diagram.
+- **Plugin ecosystem breadth**. Quick `<library> plugins` or `<library> awesome list` search. Many plugins = many of your future needs (interactivity, animation, time controls, data overlays) are already someone's solved problem.
+
+**Discard ONLY for hard blockers**, not for unfamiliarity: not UMD-compatible (won't load via `<script>`), confirmed hard CORS issue, genuinely abandoned (no commits in 5+ years, no recent published versions). *"I have less training data on this one"* is **not** a hard blocker — that's exactly what Mica's curated `<library>-skills` packs exist for. Use `mica_list_skill_packages` and `mica_install_skills` to load the missing context BEFORE rejecting a candidate.
+
+**Sequence the work**: positive-fit search FIRST (cheap; one or two tavily/curl calls), then tech-verify the leading candidate (`mica_inspect_url`). Don't run `mica_inspect_url` on every candidate's URLs before you've decided which one fits — that's the elimination-first failure mode that wastes tool calls verifying candidates you'll discard for non-tech reasons anyway.
+
 #### 3a — LIBRARY subproblems
 
 Recall-first. You're a coding model with a large training corpus. For libraries that appear in public code thousands of times — Three.js, Leaflet, D3, Chart.js, FullCalendar, Sortable.js, CodeMirror, Marked, Mermaid, Plotly, Tone.js, Pixi.js, Day.js, Luxon, Big.js, Fuse.js — **you already know**: canonical package name, known-stable version range, CDN URL shape, whether addons are UMD or ESM-only, the one-line "hello world" call. Don't pretend you don't.
