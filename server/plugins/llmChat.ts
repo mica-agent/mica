@@ -8,10 +8,18 @@
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 import type { HandlerManifest } from "../handlerManifest.js";
 
-const LLM_PORTS: Record<string, number> = {
-  coder: 8012,
-  vlm: 8013,
-};
+// Default OpenAI-compatible endpoint when neither `baseUrl` nor LLAMA_URL
+// is set. Post-vLLM-consolidation the chat container is on 8012 (served
+// from the docker-host gateway in the devcontainer; 127.0.0.1 works from
+// the host). The card discovers served model names via `list_models` →
+// /v1/models and populates its dropdown from the response.
+const DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8012";
+
+function resolveBaseUrl(cfg: { baseUrl?: string }): string {
+  if (cfg.baseUrl) return cfg.baseUrl.replace(/\/$/, "");
+  if (process.env.LLAMA_URL) return process.env.LLAMA_URL.replace(/\/$/, "");
+  return DEFAULT_LLM_BASE_URL;
+}
 
 // Content can be a plain string or OpenAI-style multimodal content blocks
 type ContentBlock =
@@ -66,7 +74,7 @@ export function createLlmChatHandler() {
           if (activeAbort) activeAbort.abort();
           // Broadcast `done` so a chat-card UI listening on it unsticks
           // its busy state. Empty content marks the turn as cancelled.
-          ctx.broadcast({ type: "done", content: "", model: cfg.model || "coder" });
+          ctx.broadcast({ type: "done", content: "", model: cfg.model || "" });
           return;
         }
 
@@ -74,6 +82,28 @@ export function createLlmChatHandler() {
           history.length = 0;
           if (cfg.systemPrompt) history.push({ role: "system", content: cfg.systemPrompt });
           ctx.broadcast({ type: "history", messages: [] });
+          return;
+        }
+
+        if (msg.type === "list_models") {
+          // Card asks for the served-model-name list from the configured
+          // endpoint. Hit /v1/models and broadcast back. The card filters
+          // & populates its dropdown.
+          const baseUrl = resolveBaseUrl(cfg);
+          try {
+            const modelsResp = await fetch(`${baseUrl}/v1/models`, {
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!modelsResp.ok) {
+              ctx.broadcast({ type: "models", models: [], error: `HTTP ${modelsResp.status}` });
+              return;
+            }
+            const data = (await modelsResp.json()) as { data?: Array<{ id: string }> };
+            const ids = (data.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string");
+            ctx.broadcast({ type: "models", models: ids });
+          } catch (err) {
+            ctx.broadcast({ type: "models", models: [], error: (err as Error).message });
+          }
           return;
         }
 
@@ -86,18 +116,17 @@ export function createLlmChatHandler() {
         // viaVoice:true so voice's ambient gate plays the reply aloud.
         const turnSource: "user" | "voice" = _clientId === "voice-dispatch" ? "voice" : "user";
 
-        // Per-message model override wins over the args default. Either way,
-        // an explicit baseUrl bypasses the LLM_PORTS table entirely.
-        const modelKey = msg.model || cfg.model || "coder";
-        // LLAMA_URL is a full URL (e.g. `http://172.17.0.1:8012`) since the
-        // vLLM consolidation; it covers the `coder` channel which used to be
-        // llama-server on the same port. Other model keys still use the
-        // local port table.
-        const endpoint = cfg.baseUrl
-          ? `${cfg.baseUrl.replace(/\/$/, "")}/v1/chat/completions`
-          : modelKey === "coder" && process.env.LLAMA_URL
-            ? `${process.env.LLAMA_URL.replace(/\/$/, "")}/v1/chat/completions`
-            : `http://127.0.0.1:${LLM_PORTS[modelKey] || LLM_PORTS.coder}/v1/chat/completions`;
+        // Per-message model override wins over the args default. The model
+        // name is whatever the served-model-name list of the configured
+        // endpoint exposes (post-vLLM-consolidation: qwen-vl, qwen-voice,
+        // etc.). The card populates its dropdown by hitting /v1/models on
+        // attach via the `list_models` message, so users see live names.
+        const modelKey = msg.model || cfg.model;
+        if (!modelKey) {
+          ctx.broadcast({ type: "error", error: "No model selected — pick one from the dropdown." });
+          return;
+        }
+        const endpoint = `${resolveBaseUrl(cfg)}/v1/chat/completions`;
 
         const messageForLlm: string | ContentBlock[] = userContent || userMessage || "";
         history.push({ role: "user", content: messageForLlm });

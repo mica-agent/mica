@@ -73,6 +73,15 @@ var tokenCount = 0;
 
 var ch = mica.openChannel('llm_session');
 
+// Request the served-model-name list from the endpoint vLLM exposes at
+// /v1/models. Server fetches and broadcasts back via { type: 'models' }.
+// Filter out the openai:-prefixed aliases (those are SDK-bound names not
+// meant for direct user selection); the bare names (qwen-vl, qwen-voice,
+// etc.) are the friendly ones. If the fetch fails, the dropdown stays at
+// "Loading models…" — user sees it didn't populate, can retry by re-opening
+// the card.
+ch.send({ type: 'list_models' });
+
 // Poll LLM server status until ready
 var llmReady = false;
 var startupShown = false;
@@ -207,6 +216,21 @@ function playChime() {
 
 ch.onData(function(data) {
   switch (data.type) {
+    case 'models':
+      // Populate the dropdown with names from /v1/models. Drop openai:-
+      // prefixed entries (SDK-bound aliases). Preserve any name we don't
+      // recognize — vLLM operators may register custom aliases.
+      var names = (data.models || []).filter(function(n) {
+        return typeof n === 'string' && !n.startsWith('openai:');
+      });
+      if (names.length === 0) {
+        modelSelect.innerHTML = '<option value="" disabled selected>No models available' + (data.error ? ' (' + data.error + ')' : '') + '</option>';
+      } else {
+        modelSelect.innerHTML = names.map(function(n) {
+          return '<option value="' + n + '">' + n + '</option>';
+        }).join('');
+      }
+      break;
     case 'history':
       messagesEl.innerHTML = '';
       if (data.messages && data.messages.length > 0) {

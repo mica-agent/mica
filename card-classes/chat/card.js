@@ -242,6 +242,11 @@ function escapeHtml(s) {
 }
 
 function renderMarkdown(text) {
+  // Trim leading/trailing whitespace before any rendering. Without this,
+  // a reply starting with "\n\nFoo" (common — models emit a leading
+  // paragraph break) becomes "<br/><br/>Foo" after the \n\n→<br/><br/>
+  // pass below, leaving visible empty space at the top of the bubble.
+  text = text.replace(/^\s+|\s+$/g, "");
   text = text.replace(/^```markdown\n([\s\S]*?)```$/gm, function(m, inner) { return inner; });
 
   // Extract fenced code blocks
@@ -681,7 +686,8 @@ function renderSubagentStrip() {
     // unambiguous: the indent says "below the parent," the connector
     // says "this is one of N children," and the icon says state.
     const connector = (i === all.length - 1) ? "&#9492;&#9472;" : "&#9500;&#9472;";  // └─ : ├─
-    const activity = (s.lastActivity || "starting...").slice(0, 80);
+    const rawActivity = s.lastActivity || "starting...";
+    const activity = rawActivity.length > 80 ? rawActivity.slice(0, 80) + "…" : rawActivity;
     lines.push(
       '<div style="color:' + color + ';">' +
         '<span style="color:#6e7681;">' + connector + '</span> ' +

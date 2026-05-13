@@ -29,7 +29,8 @@ import {
 import { markProjectActivity } from "./projectActivity.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
-import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { recordSkillInvocation } from "./skillInvocationTracker.js";
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
 import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
 import { captureCard } from "./screenshot.js";
@@ -212,6 +213,92 @@ function isBackgroundWithoutRedirect(cmd: string): boolean {
 }
 
 /**
+ * Check whether a tool call attempts to write a path that's owned by a
+ * Mica-structured tool. If yes, deny with a message routing the agent to
+ * the correct tool.
+ *
+ * Closes the bypass route observed in the world7 build: the agent invokes
+ * discover-dependency and skips both the spec gate AND the
+ * `mica_create_class` handbook gate by using `write_file` directly on
+ * metadata.json. Each Mica-structured tool runs schema validation,
+ * pre-write lint, AND the toolPrerequisites.ts predicate framework — none
+ * of which fire for plain `write_file`. The agent that's compressed the
+ * develop flow in working memory takes the path of least resistance
+ * (write_file) and silently bypasses the architecture.
+ *
+ * This check restores ordering: blocking write_file/edit on the protected
+ * paths leaves the agent with only the structured tools, which then fire
+ * the predicate gates that enforce spec → handbook → build sequence.
+ *
+ * Returns a deny result with self-teaching guidance (which tool to use,
+ * what that tool does that write_file doesn't); the agent's tool-result
+ * loop reads it and retries with the correct tool.
+ */
+function checkProtectedPath(toolName: string, input: Record<string, unknown>): { behavior: "deny"; message: string } | null {
+  // Only intercept generic file-write tools. The structured Mica tools
+  // (mica_create_class, mica_edit_class_file, mica_create_card_instance,
+  // mica_delete_*) are the RIGHT path for these files — they go to their
+  // own handlers, not through this check.
+  if (toolName !== "write_file" && toolName !== "edit" && toolName !== "Edit") return null;
+
+  const rawPath = (input.file_path as string) || (input.path as string) || "";
+  if (!rawPath) return null;
+  // Normalize: strip leading absolute-path prefix so the regex matches on
+  // the canonical relative shape regardless of how the agent expressed it.
+  const normalized = rawPath.replace(/\\/g, "/");
+
+  // Card-class source files: <...>.mica/card-classes/<name>/<file>
+  const classFile = normalized.match(/\.mica\/card-classes\/[^/]+\/(metadata\.json|card\.html|card\.js|card\.css)$/);
+  if (classFile) {
+    const file = classFile[1];
+    if (file === "metadata.json") {
+      return {
+        behavior: "deny",
+        message:
+          `Refused: ${rawPath} is a Mica card-class metadata file. ` +
+          `Use \`mica_create_class\` instead — it serializes the metadata ` +
+          `from typed inputs, validates the schema, runs the pre-write lint, ` +
+          `and triggers the predicate gates (spec must exist, ` +
+          `\`skill('card-class-handbook')\` must be invoked). Re-call with ` +
+          `the same \`name\` + \`extension\` to UPDATE metadata in place — ` +
+          `card.html/js/css are preserved unless you pass them. \`write_file\` ` +
+          `bypasses all of this and routinely produces files the validators ` +
+          `auto-fix or reject.`,
+      };
+    }
+    // card.html / card.js / card.css
+    return {
+      behavior: "deny",
+      message:
+        `Refused: ${rawPath} is a card-class source file. ` +
+        `Use \`mica_edit_class_file\` instead — it runs the pre-write lint ` +
+        `(catches CARD_SHIM-globals redeclaration, ESM \`import\`/\`export\`, ` +
+        `IIFE wrappers, etc. before the file is written) and supports two ` +
+        `edit modes: partial (\`old_string\` + \`new_string\`) preserves all ` +
+        `surrounding code untouched, full replace (\`content=\`) overwrites ` +
+        `the whole file. \`write_file\` bypasses the lint AND, in full-replace ` +
+        `mode, repeatedly regresses working code (e.g. drops a texture-loader ` +
+        `block from a Three.js card.js).`,
+    };
+  }
+
+  // .mica/layout.json — runtime state owned by the canvas card class.
+  if (/\.mica\/layout\.json$/.test(normalized)) {
+    return {
+      behavior: "deny",
+      message:
+        `Refused: ${rawPath} is runtime layout state owned by the canvas ` +
+        `card class. Don't write it directly — layout changes happen when ` +
+        `the user drags/resizes cards on the canvas. If you're trying to ` +
+        `position a new card on the canvas, use \`mica_create_card_instance\` ` +
+        `and the canvas will pick a position automatically.`,
+    };
+  }
+
+  return null;
+}
+
+/**
  * Guards the agent's tool use. Blocks Bash commands that would kill Mica itself.
  * Everything else is auto-approved (yolo behavior preserved).
  */
@@ -290,12 +377,13 @@ async function getQuery() {
  *  (captureCard, vision caption, etc.) runs server-side via /api/tools/*
  *  loopback so qwen, Claude, and opencode all share the same impl.
  *  Replaces the in-process render_capture handler that lived here. */
-function buildMicaToolsMcpServer(sessionProject: string | null): unknown | null {
+function buildMicaToolsMcpServer(sessionProject: string | null, sessionChatFilename: string | null): unknown | null {
   if (!sessionProject || !_tool || !_createSdkMcpServer) return null;
   return buildAgentToolsMcpServer({
     toolFn: _tool,
     createServerFn: _createSdkMcpServer,
     sessionProject,
+    sessionChatFilename,
     // Match Claude + opencode: same server name across all three agents
     // means tool calls show up consistently in logs (mcp__mica-builtins__X)
     // and the agent system prompt's prose stays accurate.
@@ -679,7 +767,16 @@ export async function buildContext(
   // closes that feedback loop. Errors persist in the buffer until the file is
   // rewritten (validator silence on the next save automatically clears).
   if (project) {
-    const pendingErrors = getPendingValidatorErrors(project);
+    const { fresh: pendingErrors, filteredStale } = getFreshPendingValidatorErrors(project, getProjectDir(project));
+    if (filteredStale.length > 0) {
+      // Stale entries — class files were edited after the error was recorded,
+      // so the browser hasn't yet POSTed /ok (to clear) or /error (to refresh
+      // ts). Logging without injecting keeps the path auditable without
+      // dispatching the agent to debug a phantom (see Plan: stale-error
+      // reactivity loop).
+      const staleNames = filteredStale.map((e) => e.filename).join(", ");
+      console.log(`[buildContext:${project}] filtered ${filteredStale.length} stale validator/runtime error(s) (class edited after error): ${staleNames}`);
+    }
     if (pendingErrors.length > 0) {
       // Direct evidence of agent receiving validator/runtime errors. The
       // buffer→prompt path is otherwise unobservable (the assembled system
@@ -989,6 +1086,21 @@ Each chat card on the canvas is meant to hold one ongoing conversation about one
 
 // -- Tool use description --
 
+// Append "…" whenever displayed text omits content. truncDots handles plain
+// length truncation; firstLineDots handles "show first line of a multi-line
+// command" where dropped subsequent lines also count as truncation.
+function truncDots(s: string, n: number): string {
+  if (!s || s.length <= n) return s;
+  return s.slice(0, n) + "…";
+}
+
+function firstLineDots(s: string, n: number): string {
+  if (!s) return s;
+  const first = s.split("\n")[0];
+  const truncated = first.length > n || s.length > first.length;
+  return truncated ? first.slice(0, n) + "…" : first;
+}
+
 function describeToolUse(name: string, input: Record<string, unknown>): string {
   if (!input) return name;
   // Strip MCP server prefix (e.g. `mcp__mica-card-class__mica_create_class`
@@ -1015,7 +1127,7 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   // Subagent dispatch — surface the subagent name + short description.
   if (bareName === "agent" || bareName === "task" || bareName === "Task" || bareName === "Agent") {
     const subagent = String(input.subagent_type || input.agent || "");
-    const desc = String(input.description || "").slice(0, 60);
+    const desc = truncDots(String(input.description || ""), 60);
     if (subagent && desc) return `🤖 subagent: ${subagent} (${desc})`;
     if (subagent) return `🤖 subagent: ${subagent}`;
     if (desc) return `🤖 subagent: ${desc}`;
@@ -1024,12 +1136,12 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   // Web fetch — surface the URL (truncated).
   if (n === "webfetch" || n === "fetch") {
     const url = String(input.url || input.link || "");
-    return url ? `🌐 web_fetch: ${url.slice(0, 100)}` : "🌐 web_fetch";
+    return url ? `🌐 web_fetch: ${truncDots(url, 100)}` : "🌐 web_fetch";
   }
   // Web search — surface the query.
   if (n === "websearch") {
     const q = String(input.query || input.q || "");
-    return q ? `🔍 web_search: ${q.slice(0, 80)}` : "🔍 web_search";
+    return q ? `🔍 web_search: ${truncDots(q, 80)}` : "🔍 web_search";
   }
   // Mica card-class tools — surface the class name + file when relevant.
   if (n === "micacreateclass") {
@@ -1060,6 +1172,38 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
     const fn = String(input.filename || "");
     return fn ? `📸 screenshot: ${fn}` : "📸 screenshot";
   }
+  // URL inspection (mica_inspect_url) — server-side dependency-URL probe.
+  if (n === "micainspectururl" || n === "inspecturl") {
+    const url = String(input.url || "");
+    return url ? `🔬 inspect URL: ${truncDots(url, 100)}` : "🔬 inspect URL";
+  }
+  // Skill-package discovery + install.
+  if (n === "micalistskillpackages") {
+    const q = String(input.query || "");
+    return q ? `📦 list skill packs: ${q}` : "📦 list skill packs";
+  }
+  if (n === "micainstallskills") {
+    const src = String(input.source || "");
+    return src ? `📥 install skills: ${src}` : "📥 install skills";
+  }
+  // Tavily web tools — same shape as web_fetch / web_search, but registered
+  // under MCP so they skip the heuristic block below. Match by stripped name.
+  if (n === "tavilysearch") {
+    const q = String(input.query || "");
+    return q ? `🔍 tavily search: ${truncDots(q, 80)}` : "🔍 tavily search";
+  }
+  if (n === "tavilyextract") {
+    const url = String(input.url || (Array.isArray(input.urls) ? input.urls[0] : "") || "");
+    return url ? `🌐 tavily extract: ${truncDots(String(url), 100)}` : "🌐 tavily extract";
+  }
+  if (n === "tavilycrawl") {
+    const url = String(input.url || "");
+    return url ? `🕸 tavily crawl: ${truncDots(url, 100)}` : "🕸 tavily crawl";
+  }
+  if (n === "tavilymap") {
+    const url = String(input.url || "");
+    return url ? `🗺 tavily map: ${truncDots(url, 100)}` : "🗺 tavily map";
+  }
   // Shell/bash
   // The substring heuristics below apply to SDK BUILT-IN tools (read_file,
   // write_file, grep_search, glob, etc.). MCP-prefixed tools skip them and
@@ -1067,7 +1211,7 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   // google_books_search that shouldn't be conflated with filesystem search.
   if (!isMcp) {
     if (n.includes("bash") || n.includes("shell") || n === "executecommand" || n === "runcmd") {
-      const firstLine = cmd.split("\n")[0].slice(0, 120);
+      const firstLine = firstLineDots(cmd, 120);
       return firstLine ? `💻 $ ${firstLine}` : `💻 Running command`;
     }
     // File read
@@ -1085,7 +1229,7 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
     // Search/grep
     if (n.includes("grep") || n.includes("search") || n.includes("glob") || n.includes("find")) {
       const pattern = String(input.pattern || input.query || input.regex || "");
-      return pattern ? `🔎 Search: ${pattern.slice(0, 60)}` : `🔎 Searching files`;
+      return pattern ? `🔎 Search: ${truncDots(pattern, 60)}` : `🔎 Searching files`;
     }
     // List files
     if (n.includes("list") || n === "ls") {
@@ -1097,7 +1241,7 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
     const todos = (input.todos as Array<{ content?: string }> | undefined) || [];
     if (todos.length > 0) {
       const inProgress = todos.find((t) => (t as { status?: string }).status === "in_progress");
-      if (inProgress?.content) return `✅ todo: ${inProgress.content.slice(0, 80)}`;
+      if (inProgress?.content) return `✅ todo: ${truncDots(inProgress.content, 80)}`;
       return `✅ todo (${todos.length} item${todos.length === 1 ? "" : "s"})`;
     }
     return "✅ todo update";
@@ -1106,11 +1250,11 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   // didn't match a specific rule above, fall back to the first string-
   // valued input field as a hint (typically a query, url, or similar
   // identifier that's more informative than just the tool name).
-  let hint = cmd ? `: ${cmd.split("\n")[0].slice(0, 60)}` : fileName ? `: ${fileName}` : "";
+  let hint = cmd ? `: ${firstLineDots(cmd, 60)}` : fileName ? `: ${fileName}` : "";
   if (!hint) {
     for (const [, v] of Object.entries(input)) {
       if (typeof v === "string" && v.length > 0 && v.length <= 200) {
-        hint = `: ${v.slice(0, 60)}`;
+        hint = `: ${truncDots(v, 60)}`;
         break;
       }
     }
@@ -1214,7 +1358,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       id: string;
       text: string;
       attach?: string;
-      source: "user" | "voice" | "file-changes";
+      source: "user" | "voice" | "file-changes" | "recovery";
       queuedAt: number;
     }
     let queue: QueuedItem[] = [];
@@ -1352,12 +1496,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       sessionState.coalesceBuffer.clear();
 
       const tail = hasSurvivors
-        ? "DEFAULT: reply with one short acknowledgement sentence and stop. " +
-          "Do NOT read these files. Do NOT take action. " +
-          "ONLY take action if an explicit @<your-name> task is visible in the changes " +
-          "(e.g. plan.todo gained '@qwen do X'), or a clear directive aimed at you " +
-          "appears. Otherwise the user is editing for their own reasons; don't intervene."
-        : "Files were deleted. DEFAULT: one short acknowledgement, no action.";
+        ? "Review what changed and respond proportionally. Short acknowledgement " +
+          "for small or incidental edits; for substantive changes (spec, plan, " +
+          "decisions, doc updates) read the relevant file(s), engage with what " +
+          "you noticed, and offer next steps. Do NOT take destructive or " +
+          "build-shaped actions (creating cards, writing code, deleting files) " +
+          "without explicit user confirmation — propose first."
+        : "Files were deleted. Respond with a brief acknowledgement; no action.";
 
       const message = `[File activity] These files changed since your last reply:\n${lines.join("\n")}\n\n${tail}`;
 
@@ -1522,15 +1667,22 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         } else {
           baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
           apiKey = "dummy";
-          // Model label for local llama-server. The name is informational from
-          // llama-server's perspective (it uses whatever's loaded at startup),
-          // but the Qwen SDK uses it to pick supported modalities via regex
-          // match: /^qwen3-vl-/ → { image: true, video: true }. Our local
-          // GGUF is Qwen3.6-35B-A3B with mmproj loaded (see llamaServer.ts),
-          // so we tag it as "qwen3-vl-local" to unlock the SDK's image path
-          // for mica.render.capture tool-result delivery. Without this
-          // relabel the SDK strips image content to "[Unsupported modality]"
-          // text before sending.
+          // The qwen-code SDK gates image modality off the model name via a
+          // hardcoded regex: `/^qwen3-vl-/` → enables `{ image: true,
+          // video: true }`. Any other name strips image content to
+          // "[Unsupported modality]" text BEFORE sending to the model — which
+          // breaks render_capture tool-result delivery and any image-bearing
+          // input. So the SDK-facing alias MUST start with `qwen3-vl-`.
+          //
+          // Naming convention (see scripts/start.sh for the canonical list):
+          //   - SDK callers (here, plugins/llmAgent.ts): use `qwen3-vl-local`.
+          //     The `qwen3-vl-` prefix is load-bearing; do NOT rename to
+          //     `qwen-vl` here without first removing the SDK regex constraint.
+          //   - Direct vLLM callers (renderCapture.ts, etc.): use `qwen-vl`.
+          //     Semantic name; not subject to the SDK regex.
+          //   - Voice callers: use `qwen-voice`.
+          // vLLM serves all three names from the same Qwen3.6-35B-A3B-NVFP4
+          // container today.
           modelName = cardSettings.model || "qwen3-vl-local";
         }
         console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
@@ -1545,7 +1697,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // received the same errors that surfaced in the bubble UI without
         // the user needing to manually escalate.
         if (sessionProject) {
-          const incomingErrors = getPendingValidatorErrors(sessionProject);
+          // Match the buildContext injection: count only fresh errors so the
+          // UI agrees with what the agent actually sees this turn. Stale
+          // entries (class edited after error, pending browser re-verify)
+          // are deliberately suppressed and shouldn't surface as "Received
+          // N errors" in the progress feed.
+          const { fresh: incomingErrors } = getFreshPendingValidatorErrors(sessionProject, getProjectDir(sessionProject));
           if (incomingErrors.length > 0) {
             const files = Array.from(new Set(incomingErrors.map((e) => e.filename)));
             const desc = incomingErrors.length === 1
@@ -1679,6 +1836,19 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         async function canUseToolInner(toolName: string, input: Record<string, unknown>) {
           const safety = await guardTool(toolName, input);
           if (safety.behavior === "deny") return safety;
+
+          // Protected-path check — blocks write_file / edit on paths owned
+          // by Mica-structured tools (mica_create_class for metadata.json,
+          // mica_edit_class_file for card.{js,html,css}, .mica/layout.json
+          // not writable at all). The agent's tool-result loop reads the
+          // structured rejection and retries with the correct tool, which
+          // then fires its own predicate gates (spec must exist, handbook
+          // must be invoked) — restoring the develop flow's ordering.
+          const protectedCheck = checkProtectedPath(toolName, input);
+          if (protectedCheck) {
+            console.log(`[protected-path] ${toolName} blocked: ${(input.file_path as string) || (input.path as string) || ""}`);
+            return protectedCheck;
+          }
 
           // Track which files the agent has read this turn (for precondition checks).
           if (toolName === "read_file" || toolName === "Read") {
@@ -1991,7 +2161,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               // mica_delete_card_instance, mica_delete_class,
               // mica_list_classes. The previous standalone mica-card-class
               // SDK MCP was retired in favor of this unified surface.
-              const builtinsServer = buildMicaToolsMcpServer(sessionProject);
+              const builtinsServer = buildMicaToolsMcpServer(sessionProject, ctx.filename);
               if (builtinsServer) servers["mica-builtins"] = builtinsServer;
               // mica-tools: project-scoped third-party CLI tools, declared in
               // <project>/.mica/tools.json. Each tool there becomes a callable
@@ -2043,6 +2213,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // and route through the error broadcast below.
         let sdkResultError: string | null = null;
 
+        // Thinking-only termination guard. Qwen3.6 can emit a final assistant
+        // event whose only block is `thinking` (no `text`, no `tool_use`),
+        // after which the SDK signals `result +0ms` and the turn ends with
+        // no visible output. We flip this flag per parent-context assistant
+        // event so the post-loop check below can detect that pattern and
+        // trigger a one-shot recovery re-prompt. Defaults true so a turn
+        // with no assistant events (early error, abort) doesn't get flagged.
+        let lastAssistantHadAction = true;
+
         // Track in-flight subagent task invocations (tool_use_id → nothing,
         // Set is sufficient). beginSubagentTask was called in canUseTool; we
         // call endSubagentTask when the matching tool_result arrives so the
@@ -2092,7 +2271,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     ctx.broadcast({
                       type: "progress",
                       tool: "thinking",
-                      description: "💭 " + t.slice(0, 100).replace(/\n/g, " "),
+                      description: "💭 " + truncDots(t.replace(/\n/g, " "), 100),
                     });
                   }
                   // Subagent-context thinking → strip the live activity line
@@ -2102,13 +2281,24 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                       type: "subagent_event",
                       tool_use_id: ptid,
                       kind: "thinking",
-                      summary: t.slice(0, 80).replace(/\n/g, " "),
+                      summary: truncDots(t.replace(/\n/g, " "), 80),
                     });
                   }
                 }
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[mica-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
                   toolCallCounts[block.name] = (toolCallCounts[block.name] || 0) + 1;
+                  // Skill-invocation observer — records which skills the agent
+                  // has invoked in this chat session so predicate gates in
+                  // toolPrerequisites.ts can ask "has the agent read the
+                  // handbook yet?" (etc.) without baking the same knowledge
+                  // into prose the model compresses across turns.
+                  if (block.name === "skill") {
+                    const skillArg = (block.input as { skill?: string } | undefined)?.skill;
+                    if (typeof skillArg === "string" && skillArg) {
+                      recordSkillInvocation(sessionProject, ctx.filename, skillArg);
+                    }
+                  }
                   // Parent-context tool_use → progress event (drives the chat
                   // card's live status line + step count). Subagent-context
                   // tool_use (ptid non-empty) → subagent_event ONLY (drives
@@ -2200,6 +2390,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "text" && block.text) turnText += block.text;
               }
               if (turnText) resultText = turnText;
+              // Parent-context only: did this event produce any visible action?
+              // Subagent thinking-only events are the subagent's concern; our
+              // guard fires on parent-turn termination.
+              if (!ptid) {
+                const hasToolUse = msg.content.some(
+                  (b) => b.type === "tool_use" && b.name,
+                );
+                lastAssistantHadAction = Boolean(turnText) || hasToolUse;
+              }
             }
           }
 
@@ -2318,7 +2517,40 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           outstandingSubagentTasks.clear();
         }
 
-        if (!resultText.trim()) {
+        // Thinking-only termination guard. When the model's final assistant
+        // event was a thinking block with no text or tool_use, the SDK ended
+        // the turn but the user sees nothing. Re-prompt once with a synthetic
+        // continuation so the agent gets a chance to actually write the
+        // reply or fire the next tool. Cap at one retry per real user turn —
+        // source === "recovery" means we're already inside the retry; if it
+        // recurs there, give up rather than loop.
+        const thinkingOnlyTermination =
+          !lastAssistantHadAction && !resultText.trim() && !sdkResultError;
+        if (thinkingOnlyTermination && source !== "recovery") {
+          console.log(
+            `[mica-agent] thinking-only turn detected; enqueueing recovery re-prompt for: ${message.slice(0, 60)}`,
+          );
+          ctx.broadcast({
+            type: "progress",
+            tool: "thinking-only-recovery",
+            description: "⚠ Reasoning-only turn — auto-continuing.",
+          });
+          resultText = "_(Reasoning-only turn — continuing.)_";
+          enqueueMessage(
+            "Your previous turn ended with internal reasoning but produced no visible " +
+              "reply or tool call. Continue now: either write the user-visible reply, or " +
+              "call the next tool. Reasoning-only output is not shown to the user.",
+            "recovery",
+          );
+        } else if (thinkingOnlyTermination && source === "recovery") {
+          console.log(`[mica-agent] thinking-only recurred on recovery — giving up`);
+          ctx.broadcast({
+            type: "progress",
+            tool: "thinking-only-recovery",
+            description: "⚠ Recovery turn ended without visible output — giving up.",
+          });
+          resultText = "_(The agent ended without a visible reply. Try rephrasing your question.)_";
+        } else if (!resultText.trim()) {
           resultText = filesChanged ? "Done -- I made changes." : "Done.";
         }
 
@@ -2603,7 +2835,10 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "qwen3-vl-local",
+            // Direct vLLM call — uses the semantic `qwen-vl` alias (not the
+            // SDK-required `qwen3-vl-local`). See ~line 1620 for the naming
+            // convention.
+            model: "qwen-vl",
             messages: llmMessages,
             max_tokens: 1024,
           }),
@@ -2655,7 +2890,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           ttft_ms: firstTokenAt.t !== null ? firstTokenAt.t - requestStart : null,
           chat_id: chatId,
           agent: "qwen",
-          model: "qwen3-vl-local",
+          model: "qwen-vl",
           input_tokens: typeof usageObj.prompt_tokens === "number" ? usageObj.prompt_tokens : 0,
           output_tokens: typeof usageObj.completion_tokens === "number" ? usageObj.completion_tokens : 0,
           baseline_tokens: 0,
