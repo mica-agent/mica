@@ -18,6 +18,7 @@ import { promisify } from "util";
 import { existsSync } from "fs";
 import { join } from "path";
 import { projectDir } from "../files.js";
+import { broadcastProjectListChanged } from "../projectActivity.js";
 
 const execFile = promisify(execFileCb);
 
@@ -295,6 +296,10 @@ export function registerGitEndpoints(app: Express, opts: RegisterOpts): void {
       res.status(500).json({ ok: false, error: r.stderr || r.stdout });
       return;
     }
+    // Notify any open ProjectList so the "git" indicator appears next
+    // to this project without a manual refresh — hasGit is derived
+    // server-side from the presence of .git/.
+    broadcastProjectListChanged();
     res.json({ ok: true });
   });
 }
