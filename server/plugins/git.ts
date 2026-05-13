@@ -206,7 +206,20 @@ export function registerGitEndpoints(app: Express, opts: RegisterOpts): void {
   app.post("/api/git/push", async (req, res) => {
     const cwd = resolveCwd(req, res, getRequestProject);
     if (!cwd) return;
-    const r = await runGit(cwd, ["push"], { timeout: 60_000 });
+    let r = await runGit(cwd, ["push"], { timeout: 60_000 });
+    // First-push case: a fresh branch has no upstream tracking ref, so
+    // `git push` errors with "no upstream branch" and suggests
+    // --set-upstream. The button can't ask the user to drop into a
+    // terminal for that — auto-retry with the current branch as the
+    // tracking target. This is the one-time setup almost everyone wants;
+    // modern git ships push.autoSetupRemote=true for the same reason.
+    if (!r.ok && /no upstream branch/i.test(r.stderr || "")) {
+      const branchR = await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+      const branch = branchR.ok ? branchR.stdout.trim() : "";
+      if (branch && branch !== "HEAD") {
+        r = await runGit(cwd, ["push", "--set-upstream", "origin", branch], { timeout: 60_000 });
+      }
+    }
     if (!r.ok) {
       res.status(400).json({ ok: false, error: r.stderr || r.stdout, stdout: r.stdout, stderr: r.stderr });
       return;

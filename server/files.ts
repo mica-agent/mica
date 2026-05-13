@@ -232,15 +232,13 @@ export function getWorkspaceName(): string {
 
 /** Get a project's display name from its .mica config or directory name. */
 export async function getProjectName(project?: string): Promise<string> {
+  // Project identity = directory name. We used to read `name` from
+  // .mica/config.json, but storing it in a tracked file caused drift on
+  // every clone (publisher's name vs receiver's directory) — receivers
+  // saw a permanent uncommitted modification they shouldn't push. The
+  // directory IS the identity; the field was redundant.
   if (!project) return getWorkspaceName();
-  try {
-    const configPath = join(micaDir(project), "config.json");
-    const raw = await readFile(configPath, "utf-8");
-    const config = JSON.parse(raw);
-    return config.name || project;
-  } catch {
-    return project;
-  }
+  return project;
 }
 
 export interface ProjectInfo {
@@ -328,11 +326,11 @@ export async function initProject(projectName: string, canvasRoot?: string): Pro
 
   const root = canvasRoot || DEFAULT_CANVAS_ROOT;
 
-  // Create config.json if it doesn't exist
+  // Create config.json if it doesn't exist. No `name` field — identity
+  // comes from the directory name (see getProjectName).
   const configPath = join(dir, "config.json");
   if (!existsSync(configPath)) {
     const config: Record<string, unknown> = {
-      name: projectName,
       canvasClass: DEFAULT_CANVAS_CLASS,
       canvasRoot: root,
       pinned: [],
@@ -372,15 +370,7 @@ export async function renameProject(oldName: string, newName: string): Promise<v
   if (!existsSync(oldDir)) throw new Error(`Project not found: ${oldName}`);
   if (existsSync(newDir)) throw new Error(`Project already exists: ${newName}`);
   await rename(oldDir, newDir);
-
-  // Update config.json name if it exists
-  try {
-    const configPath = join(newDir, ".mica", "config.json");
-    const raw = await readFile(configPath, "utf-8");
-    const config = JSON.parse(raw);
-    config.name = newName;
-    await writeFile(configPath, JSON.stringify(config, null, 2), "utf-8");
-  } catch { /* no config to update */ }
+  // No config.json `name` field to sync — identity follows the directory.
 }
 
 /** Delete a project directory entirely. */
@@ -1130,15 +1120,16 @@ export async function overlayTemplate(
     await cp(srcRoot, dstRoot, { recursive: true, force: false, errorOnExist: false });
   }
 
-  // Patch config.json: set name, canvasRoot override, template lineage. Keeps
-  // any other fields the template or initProject already wrote.
+  // Patch config.json: canvasRoot override, template lineage. Keeps any
+  // other fields the template or initProject already wrote. No `name` —
+  // identity follows the directory.
   try {
     const configPath = join(dst, ".mica", "config.json");
     let config: Record<string, unknown> = {};
     if (existsSync(configPath)) {
       try { config = JSON.parse(await readFile(configPath, "utf-8")); } catch { /* ignore parse errors */ }
     }
-    config.name = projectName;
+    delete config.name;
     // Always write canvasRoot so downstream readers (readCanvasConfig, the
     // canvas card's card.js) don't fall back to their legacy "docs" default
     // when the template's seeds actually live in "canvas/" (or wherever the
@@ -1453,6 +1444,24 @@ export async function cloneProjectFromRepo(
     timeout: 120000,
     maxBuffer: 10 * 1024 * 1024,
   });
+
+  // Strip any legacy `name` field from the cloned .mica/config.json.
+  // Older projects shipped the field; we now derive identity from the
+  // directory (see getProjectName). Removing it on clone prevents
+  // receivers from seeing a phantom uncommitted change every time.
+  const clonedConfigPath = join(dst, ".mica", "config.json");
+  if (existsSync(clonedConfigPath)) {
+    try {
+      const raw = await readFile(clonedConfigPath, "utf-8");
+      const cfg = JSON.parse(raw) as Record<string, unknown>;
+      if ("name" in cfg) {
+        delete cfg.name;
+        await writeFile(clonedConfigPath, JSON.stringify(cfg, null, 2), "utf-8");
+      }
+    } catch (err) {
+      console.warn(`[mica] could not strip legacy name from cloned config.json: ${(err as Error).message}`);
+    }
+  }
 
   // Overlay the template BEFORE initProject. `overlayTemplate` uses
   // `cp` with `force: false`, so running it before initProject lets the
