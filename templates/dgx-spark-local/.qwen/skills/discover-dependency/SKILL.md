@@ -123,6 +123,15 @@ curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 2000
 
 **ESM vs UMD — check for EACH addon, not just the core.** card.js runs as a **classic script**, not a module — it cannot `import`. So every script tag in `metadata.json.dependencies.scripts` must be a **UMD** (or IIFE) bundle that exposes its API as a window global. ESM-only files load, parse, and silently fail: the global never appears, your card throws `<Symbol> is not defined` at first call. Libraries with addons/plugins (Three.js, Leaflet, D3) often ship core as UMD but addons as ESM-only — Tier-1 reachability passes; runtime use throws.
 
+**ESM-only candidate? Try four fallbacks before going bespoke.** The first failed CDN path on an addon/plugin is not the end of discovery — many plugins publish ESM as the "modern" entry but ship a UMD bundle the package's `package.json` doesn't advertise. In order:
+
+1. **README**: `curl -sL https://raw.githubusercontent.com/<owner>/<repo>/<branch>/README.md | head -c 8000`. Search for `<script` tags in the quickstart example — that's the canonical script-tag path the author documents. UMD/IIFE distributions are almost always mentioned here when they exist.
+2. **Full file listing on jsdelivr**: `curl -s https://data.jsdelivr.com/v1/package/npm/<pkg>` and look for `.umd.js`, `.iife.js`, or `dist/<name>.js` paths that the npm package's main entry doesn't point at.
+3. **Community wrappers / alternative plugins**: `mcp__tavily__tavily_search "<plugin-name> script tag CDN"` or `"<feature> <ecosystem> plugin"`. One ESM-only repo doesn't mean the feature is unavailable in the ecosystem — there is usually more than one plugin per feature, and at least one of them ships a UMD bundle.
+4. **Bespoke as last resort, with documented rationale**. Going bespoke before steps 1–3 silently commits the user to N lines of custom code they didn't ask for. If you go bespoke anyway, the spec MUST list which alternatives were tried and why each was rejected — so the user can override with a known-working alternative they recognize.
+
+Use `curl` for README / file-listing scans — READMEs are plain markdown that you can scan directly in ~200ms. **Do NOT `web_fetch` the README** — it routes the page through the chat LLM (4+ minute cost) for no interpretive benefit on a document you'd skim for `<script` tags.
+
 Concrete recurring failure — **Three.js OrbitControls**: The Three.js npm package on cdn.jsdelivr.net **does not ship a UMD OrbitControls at any currently-distributed version** — `examples/jsm/controls/OrbitControls.js` (ESM) is the only published copy. The classic `examples/js/controls/OrbitControls.js` path was never published in the npm tarball, so jsdelivr/unpkg return 404 across the board. **Don't probe a grid of versions hoping to find UMD OrbitControls — you won't.** Three options: (a) build without it (manual camera math, often 10-15 lines), (b) use a community UMD wrapper like `@vladkrutenyuk/three-umd`, (c) inline the ESM source — brittle last resort.
 
 #### 3b — ASSET subproblems
