@@ -4,6 +4,8 @@
 // File operations are scoped to a specific project within the workspace.
 
 import { readFile, writeFile, unlink, readdir, stat, mkdir, rename, rm, cp, symlink } from "fs/promises";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { homedir } from "os";
 import { join, relative, dirname, basename, sep } from "path";
 import { existsSync } from "fs";
 import { exec as execCb } from "child_process";
@@ -57,6 +59,15 @@ export async function getCardClassMeta(ext: string, project: string | null | und
 
   const candidates: string[] = [];
   if (project) candidates.push(join(WORKSPACE_DIR, project, ".mica", "card-classes", className));
+  // Library-project search path — same precedence as resolveCardClassDir
+  // (project > library > built-in). Without this, library-resolved cards
+  // appear in the list endpoint and render their HTML, but the channel
+  // manager's metadata.handler lookup misses the file and falls back to
+  // extension-name-as-handler — so a card declaring handler="process"
+  // tries to open a channel for "gpu-monitor" and fails.
+  for (const libPath of getIncludeProjects()) {
+    candidates.push(join(libPath, ".mica", "card-classes", className));
+  }
   candidates.push(join(process.cwd(), "card-classes", className));
 
   for (const dir of candidates) {
@@ -81,6 +92,68 @@ export async function getCardClassMeta(ext: string, project: string | null | und
  *  so fresh reads pick up edited metadata.json without a server restart. */
 export function clearCardClassMetaCache(): void {
   classMetaCache.clear();
+}
+
+// ── Library-project card-class resolution ────────────────────
+//
+// A Mica project can be marked as a "library project," which makes its
+// `.mica/card-classes/<name>/` available to every other project on this
+// machine via the card-class resolver. The include list lives in
+// `~/.mica/include-projects.json`. Card classes are edited in their home
+// project (under that project's git); other projects resolve them
+// transparently. No copy-on-share, no sync, no special user directory.
+
+const INCLUDE_PROJECTS_FILE = join(homedir(), ".mica", "include-projects.json");
+
+/** Read the user's library-project include list. Missing or malformed
+ *  files return an empty list — never throw. Absolute paths only. */
+export function getIncludeProjects(): string[] {
+  if (!existsSync(INCLUDE_PROJECTS_FILE)) return [];
+  try {
+    const data = JSON.parse(readFileSync(INCLUDE_PROJECTS_FILE, "utf-8"));
+    if (!data || !Array.isArray(data.include)) return [];
+    return data.include.filter((p: unknown) => typeof p === "string" && p.length > 0);
+  } catch (err) {
+    console.warn(`[files] include-projects.json malformed: ${(err as Error).message}`);
+    return [];
+  }
+}
+
+/** Append a project path to the include list (idempotent). Creates the
+ *  parent directory + file on first write. Clears the card-class meta
+ *  cache so subsequent reads pick up the newly-visible library cards. */
+export function addIncludeProject(absPath: string): void {
+  const current = getIncludeProjects();
+  if (current.includes(absPath)) return;
+  current.push(absPath);
+  mkdirSync(dirname(INCLUDE_PROJECTS_FILE), { recursive: true });
+  writeFileSync(INCLUDE_PROJECTS_FILE, JSON.stringify({ include: current }, null, 2));
+  clearCardClassMetaCache();
+}
+
+/** Remove a project path from the include list (idempotent). Clears the
+ *  card-class meta cache so subsequent reads stop seeing the removed
+ *  library's cards. */
+export function removeIncludeProject(absPath: string): void {
+  const current = getIncludeProjects();
+  const next = current.filter((p) => p !== absPath);
+  if (next.length === current.length) return;
+  mkdirSync(dirname(INCLUDE_PROJECTS_FILE), { recursive: true });
+  writeFileSync(INCLUDE_PROJECTS_FILE, JSON.stringify({ include: next }, null, 2));
+  clearCardClassMetaCache();
+}
+
+/** Find a card class in the library-project search path. Returns the
+ *  absolute path to the class directory, or null if not found. Skips
+ *  libraries whose directories no longer exist. */
+export function findCardClassInLibraries(className: string): { dir: string; libraryProject: string } | null {
+  for (const libPath of getIncludeProjects()) {
+    const classDir = join(libPath, ".mica", "card-classes", className);
+    if (existsSync(join(classDir, "card.html"))) {
+      return { dir: classDir, libraryProject: libPath };
+    }
+  }
+  return null;
 }
 
 // Backwards-compatible alias used by other modules

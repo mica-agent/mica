@@ -26,9 +26,62 @@ const metaOverlayBackdrop = container.querySelector('.canvas-meta-overlay-backdr
 const metaOverlayClose = container.querySelector('#canvas-meta-overlay-close');
 const bulkCollapseBtn = container.querySelector('#canvas-bulk-collapse');
 const bulkExpandBtn = container.querySelector('#canvas-bulk-expand');
+const libraryToggleBtn = container.querySelector('#canvas-library-toggle');
+
+// Library toggle — flips whether THIS project's path lives in
+// ~/.mica/include-projects.json. When on, this project's card classes
+// resolve in every other project on the machine. We probe the API on
+// every overlay-open to keep state in sync (file could change on disk
+// from CLI or another window). The current project's absolute path is
+// computed by the server side — we send `mica.project` and let the
+// server resolve to WORKSPACE_DIR/<project>.
+let currentProjectAbsPath = null;  // populated on first overlay-open
+async function refreshLibraryToggleState() {
+    if (!libraryToggleBtn) return;
+    try {
+        const resp = await fetch('/api/library-projects', { headers: projectHeaders() });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const list = Array.isArray(data.include) ? data.include : [];
+        // We don't know our own abs path; ask /api/project (returns the
+        // project's absolute path under WORKSPACE_DIR).
+        if (!currentProjectAbsPath) {
+            const projResp = await fetch('/api/project', { headers: projectHeaders() });
+            if (projResp.ok) {
+                const j = await projResp.json();
+                if (typeof j.path === 'string') currentProjectAbsPath = j.path;
+            }
+        }
+        const on = currentProjectAbsPath ? list.includes(currentProjectAbsPath) : false;
+        libraryToggleBtn.textContent = on ? '📚 Library: on' : '📚 Library: off';
+        libraryToggleBtn.style.background = on ? 'rgba(96,165,250,0.2)' : '';
+    } catch { /* silent — toggle just stays at last state */ }
+}
+if (libraryToggleBtn) {
+    libraryToggleBtn.addEventListener('click', async () => {
+        if (!currentProjectAbsPath) await refreshLibraryToggleState();
+        if (!currentProjectAbsPath) {
+            libraryToggleBtn.textContent = '📚 Library: error';
+            return;
+        }
+        const isOn = libraryToggleBtn.textContent.includes('on');
+        const method = isOn ? 'DELETE' : 'POST';
+        try {
+            await fetch('/api/library-projects', {
+                method,
+                headers: projectHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ path: currentProjectAbsPath }),
+            });
+            await refreshLibraryToggleState();
+        } catch (err) {
+            console.error('[canvas] library toggle failed:', err);
+        }
+    });
+}
 
 function openMetaOverlay() {
     metaOverlay.style.display = 'flex';
+    void refreshLibraryToggleState();
 }
 function closeMetaOverlay() {
     metaOverlay.style.display = 'none';
@@ -914,7 +967,14 @@ let toolbarBuildGen = 0;
 
 function buildToolbar() {
     const myGen = ++toolbarBuildGen;
-    toolbar.innerHTML = '';
+    // Build the new content in a detached fragment so the visible toolbar
+    // doesn't go through an empty state while the /api/card-classes fetch
+    // is in flight. Prior implementation cleared `toolbar.innerHTML` first,
+    // which (combined with `.project-toolbar { flex-wrap: wrap }`) caused
+    // the bar to collapse from 2 rows to 1 row for ~50-100ms per rebuild
+    // and the canvas to shift up/down each time — visible as flicker during
+    // agent builds that rewrite card-class files repeatedly.
+    const fragment = window.document.createDocumentFragment();
 
     // Tidy button — lives on the LEFT of the toolbar (append first). The
     // async card-class buttons land after the spacer, so the final layout
@@ -1114,14 +1174,16 @@ function buildToolbar() {
         applyBounds();
         persistLayout();
     });
-    toolbar.appendChild(tidyBtn);
+    fragment.appendChild(tidyBtn);
 
     // Spacer — pushes the card-creation buttons (added below) to the right.
     const spacer = window.document.createElement('span');
     spacer.className = 'toolbar-spacer';
-    toolbar.appendChild(spacer);
+    fragment.appendChild(spacer);
 
-    // Dynamically load card classes and create buttons
+    // Dynamically load card classes and create buttons. The fetch is async,
+    // but we append into the detached fragment — the visible toolbar keeps
+    // showing the previous build's buttons until the swap below.
     fetch('/api/card-classes', { headers: projectHeaders() }).then(r => r.json()).then(classes => {
         if (myGen !== toolbarBuildGen) return;  // a newer build superseded us
         // Skip canvas (that is us) and meta cards (infrastructure shells
@@ -1136,10 +1198,22 @@ function buildToolbar() {
             const btn = window.document.createElement('button');
             btn.className = 'toolbar-btn';
             btn.textContent = `+ ${name.charAt(0).toUpperCase()}${name.slice(1)}`;
-            btn.title = classes[name].builtIn ? 'Built-in card class' : 'Project card class';
-            if (!classes[name].builtIn) {
+            // Scope-aware styling so the toolbar tells you where a card comes
+            // from at a glance: project-scoped (green-italic), library (blue),
+            // or built-in (default). `scope` is the canonical field; older
+            // builds without it fall back to the legacy builtIn boolean.
+            const scope = classes[name].scope || (classes[name].builtIn ? 'builtin' : 'project');
+            if (scope === 'library') {
+                const libPath = classes[name].libraryProject || '';
+                const libName = libPath.split('/').filter(Boolean).pop() || libPath;
+                btn.title = `From library project: ${libName}`;
+                btn.style.borderColor = 'rgba(96,165,250,0.4)';
+            } else if (scope === 'project') {
+                btn.title = 'Project card class';
                 btn.style.borderColor = 'rgba(74,222,128,0.3)';
                 btn.style.fontStyle = 'italic';
+            } else {
+                btn.title = 'Built-in card class';
             }
 
             btn.addEventListener('click', () => {
@@ -1157,14 +1231,20 @@ function buildToolbar() {
                     body: JSON.stringify({ content }),
                 }).catch(err => { console.error('[canvas] Card creation failed:', err); });
             });
-            toolbar.appendChild(btn);
+            fragment.appendChild(btn);
         });
 
         // Gear button — rightmost. Appending AFTER the + creation buttons
         // so the DOM order is [Tidy][spacer][+ buttons][gear]; the spacer
         // pushes creation buttons + gear to the right together, and within
         // that group the gear lands at the far right edge.
-        if (myGen === toolbarBuildGen) appendGearButton();
+        appendGearButton(fragment);
+
+        // Atomic swap — replace the old toolbar contents with the freshly
+        // built fragment in a single DOM operation. No empty intermediate
+        // state, no layout shift, no canvas reflow.
+        if (myGen !== toolbarBuildGen) return;
+        toolbar.replaceChildren(fragment);
     }).catch(err => { console.error('[canvas] Failed to load card classes:', err); });
 }
 
@@ -1173,7 +1253,11 @@ function buildToolbar() {
 // do, a menu is ceremony. If future settings accrue, they'll live IN the
 // meta overlay itself (a settings panel) rather than fragmenting the
 // toolbar into tiny icons.
-function appendGearButton() {
+//
+// Takes the destination as an argument (toolbar or a detached fragment)
+// so buildToolbar can stage the gear into the same fragment as the other
+// buttons and swap atomically.
+function appendGearButton(target) {
     const btn = window.document.createElement('button');
     btn.className = 'toolbar-btn canvas-gear-btn';
     btn.textContent = '⚙';
@@ -1182,7 +1266,7 @@ function appendGearButton() {
         e.stopPropagation();
         openMetaOverlay();
     });
-    toolbar.appendChild(btn);
+    target.appendChild(btn);
 }
 
 buildToolbar();

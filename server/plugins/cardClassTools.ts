@@ -10,7 +10,7 @@ import { join } from "path";
 import { mkdir, writeFile, readFile, rm, readdir, stat, access } from "fs/promises";
 import { existsSync } from "fs";
 import { z } from "zod";
-import { WORKSPACE_DIR, micaDir, readCanvasConfig, clearCardClassMetaCache } from "../files.js";
+import { WORKSPACE_DIR, micaDir, readCanvasConfig, clearCardClassMetaCache, findCardClassInLibraries } from "../files.js";
 import { lintCardJsContent } from "../cardValidators.js";
 
 // SDK loader — these are populated lazily once micaAgent loads the SDK.
@@ -514,6 +514,24 @@ export async function editClassFileImpl(
   const name = nameResult.name;
   const dir = classDir(project, name);
   if (!existsSync(dir)) {
+    // Before claiming "doesn't exist," check whether the class lives in a
+    // library project (visible via the resolver but not editable from this
+    // project). The user's mental model: "open the home project to edit."
+    const lib = findCardClassInLibraries(name);
+    if (lib) {
+      const libName = lib.libraryProject.split("/").filter(Boolean).pop() || lib.libraryProject;
+      return {
+        isError: true,
+        content: [{
+          type: "text",
+          text:
+            `Card class "${name}" lives in library project '${libName}' (${lib.libraryProject}). ` +
+            `Open that project to edit — changes there propagate to every project using it. ` +
+            `If you want a forked copy local to this project instead, use mica_create_class to ` +
+            `make a new class here (it will shadow the library version for this project only).`,
+        }],
+      };
+    }
     return { isError: true, content: [{ type: "text", text: `Card class "${name}" does not exist at ${dir}. Create it first via mica_create_class.` }] };
   }
 

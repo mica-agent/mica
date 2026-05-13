@@ -72,6 +72,10 @@ import {
   micaDir,
   validateProjectName,
   markProjectOpened,
+  getIncludeProjects,
+  addIncludeProject,
+  removeIncludeProject,
+  findCardClassInLibraries,
   type FileMeta,
   type CardSettings,
 } from "./files.js";
@@ -111,6 +115,7 @@ import { markWriteSource, consumeWriteSource } from "./writeSource.js";
 import { enforceCardClassMetadata, enforceCardJsLint, enforceDecompositionConsistency, enforceDependenciesReachable } from "./cardValidators.js";
 import { SERVICES, getService, getAllStatuses, writePasteKey, deletePasteKey, type PasteKeyService } from "./connections.js";
 import { recordValidatorError, clearValidatorError, getPendingValidatorErrors, clearProjectValidatorErrors, hasValidatorError } from "./validatorErrorBuffer.js";
+import { clearChatSession as clearSkillInvocations, clearProjectSkillInvocations } from "./skillInvocationTracker.js";
 import { setCardErrorBroadcaster, recordPendingError, clearPendingError } from "./cardErrorBuffer.js";
 import { resolveCapture, failCapture, renderHandler, setBroadcast as setScreenshotBroadcast } from "./screenshot.js";
 import {
@@ -427,6 +432,7 @@ app.put("/api/projects/:project/rename", async (req, res) => {
     channelManager.destroyAllForProject(oldName);
     evictCardIdsForProject(oldName);
     clearProjectValidatorErrors(oldName);
+    clearProjectSkillInvocations(oldName);
     await renameProject(oldName, newName);
     // Activity counters were keyed by the old name; clear them so they
     // don't appear under a stale identity if the old name is reused later.
@@ -448,6 +454,7 @@ app.delete("/api/projects/:project", async (req, res) => {
     channelManager.destroyAllForProject(name);
     evictCardIdsForProject(name);
     clearProjectValidatorErrors(name);
+    clearProjectSkillInvocations(name);
     await deleteProject(name);
     clearProjectActivity(name);
     broadcastProjectListChanged();
@@ -493,12 +500,16 @@ app.post("/api/projects/:project/open", async (req, res) => {
 
 const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
 
-// Resolve card class directory: project .mica/card-classes/:name first, then built-in
+// Resolve card class directory. Three layers in order: current project's
+// .mica/card-classes/, each library project's .mica/card-classes/ (search
+// path from ~/.mica/include-projects.json), then built-in.
 function resolveCardClassDir(className: string, project: string | null): string | null {
   if (project) {
     const projectScoped = join(micaDir(project), "card-classes", className);
     if (existsSync(join(projectScoped, "card.html"))) return projectScoped;
   }
+  const lib = findCardClassInLibraries(className);
+  if (lib) return lib.dir;
   const builtIn = join(CARD_CLASSES_DIR, className);
   if (existsSync(join(builtIn, "card.html"))) return builtIn;
   return null;
@@ -543,13 +554,14 @@ app.get("/api/card-classes", async (req, res) => {
   const { readdir: rd } = await import("fs/promises");
   const classes: Record<string, unknown> = {};
 
-  // Built-in
+  // Built-in (lowest priority)
   try {
     const entries = await rd(CARD_CLASSES_DIR);
     for (const name of entries) {
       const dir = join(CARD_CLASSES_DIR, name);
       if (existsSync(join(dir, "card.html"))) {
         classes[name] = {
+          scope: "builtin",
           builtIn: true,
           format: "html",
           hasCss: existsSync(join(dir, "card.css")),
@@ -560,7 +572,34 @@ app.get("/api/card-classes", async (req, res) => {
     }
   } catch { /* no card-classes dir */ }
 
-  // Project-scoped (overrides built-in)
+  // Library projects (overrides built-in; ordered — earlier in the include
+  // list wins, matching resolveCardClassDir's behavior).
+  for (const libPath of getIncludeProjects()) {
+    const libDir = join(libPath, ".mica", "card-classes");
+    if (!existsSync(libDir)) continue;
+    try {
+      const entries = await rd(libDir);
+      for (const name of entries) {
+        // Earlier library wins; skip if a library already claimed this name.
+        const existing = classes[name] as { scope?: string } | undefined;
+        if (existing?.scope === "library") continue;
+        const dir = join(libDir, name);
+        if (existsSync(join(dir, "card.html"))) {
+          classes[name] = {
+            scope: "library",
+            libraryProject: libPath,
+            builtIn: false,
+            format: "html",
+            hasCss: existsSync(join(dir, "card.css")),
+            hasJs: existsSync(join(dir, "card.js")),
+            hasMetadata: existsSync(join(dir, "metadata.json")),
+          };
+        }
+      }
+    } catch { /* unreadable library dir — skip silently */ }
+  }
+
+  // Project-scoped (overrides library + built-in)
   const reqProject = getRequestProject(req);
   if (reqProject) {
     try {
@@ -570,6 +609,7 @@ app.get("/api/card-classes", async (req, res) => {
         const dir = join(projDir, name);
         if (existsSync(join(dir, "card.html"))) {
           classes[name] = {
+            scope: "project",
             builtIn: false,
             format: "html",
             hasCss: existsSync(join(dir, "card.css")),
@@ -594,6 +634,50 @@ app.get("/api/card-classes", async (req, res) => {
   }
 
   res.json(classes);
+});
+
+// Library projects — projects whose .mica/card-classes/ contents are
+// available to every other project on this machine via the card-class
+// resolver. The list lives in ~/.mica/include-projects.json. UI manages
+// this list via the canvas gear menu; CLI does the same job via
+// scripts/library-project.sh.
+app.get("/api/library-projects", (_req, res) => {
+  res.json({ include: getIncludeProjects() });
+});
+
+app.post("/api/library-projects", jsonParser, (req, res) => {
+  const p = (req.body as { path?: unknown } | undefined)?.path;
+  if (typeof p !== "string" || !p) {
+    res.status(400).json({ error: "Body must be { path: string }" });
+    return;
+  }
+  if (!existsSync(p)) {
+    res.status(400).json({ error: `Path does not exist: ${p}` });
+    return;
+  }
+  // Soft warning: a library project should have .mica/card-classes/ to be
+  // useful, but we don't require it (empty libraries are valid and might
+  // grow later).
+  try {
+    addIncludeProject(p);
+    res.json({ include: getIncludeProjects() });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/library-projects", jsonParser, (req, res) => {
+  const p = (req.body as { path?: unknown } | undefined)?.path;
+  if (typeof p !== "string" || !p) {
+    res.status(400).json({ error: "Body must be { path: string }" });
+    return;
+  }
+  try {
+    removeIncludeProject(p);
+    res.json({ include: getIncludeProjects() });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // Channel-handler registry — each entry describes a built-in (or developer-
@@ -1498,6 +1582,12 @@ app.post("/api/chats/:chatId/clear", async (req, res) => {
     if (proj) {
       broadcastToProject(proj, { type: "chat-cleared", chatId });
     }
+    // Fresh-thread also wipes the per-session skill-invocation tracker —
+    // the model's working memory after a thread reset has no handbook
+    // context, so the tracker must reflect that. Look up the filename for
+    // this chatId via the channel manager (chatId is the session id).
+    const sessionInfo = channelManager.findFilenameBySession(chatId);
+    if (sessionInfo) clearSkillInvocations(sessionInfo.project, sessionInfo.filename);
     res.json({ ok: true, archived });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -2299,6 +2389,12 @@ const wss = new WebSocketServer({ server, path: "/ws/cards" });
 const wsClients = new Set<WebSocket>();
 const wsChannels = new Map<WebSocket, Set<string>>();
 const wsCardChannels = new Map<WebSocket, Map<string, string>>();
+// In-flight channel_open promises, keyed by client id. Lets channel_data
+// arriving before channel_open finishes (legitimate race when the card.js
+// fires open + start back-to-back; ws.on("message") processes each as a
+// separate async task) wait for the open to complete instead of being
+// silently dropped. Cleared when the open resolves.
+const pendingChannelOpens = new Map<string, Promise<void>>();
 // Per-WS subscribed project (one project per tab). Used by broadcastToProject
 // to fan out file events only to interested clients.
 const wsProjects = new Map<WebSocket, string>();
@@ -2466,10 +2562,16 @@ wss.on("connection", (ws) => {
               wsChannels.get(ws)?.delete(oldCid);
             }
 
-            await channelManager.open(cid, sessionId, wsProject, fname, fn as string, channelArgs, msgTabId, onData, onClose);
-            if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
-            wsChannels.get(ws)!.add(cid);
-            cardMap.set(cardKey, cid);
+            const openPromise = channelManager.open(cid, sessionId, wsProject, fname, fn as string, channelArgs, msgTabId, onData, onClose);
+            pendingChannelOpens.set(cid, openPromise.then(() => { /* swallow */ }).catch(() => { /* errored open — pending channel_data will check has() and drop */ }));
+            try {
+              await openPromise;
+              if (!wsChannels.has(ws)) wsChannels.set(ws, new Set());
+              wsChannels.get(ws)!.add(cid);
+              cardMap.set(cardKey, cid);
+            } finally {
+              pendingChannelOpens.delete(cid);
+            }
           }
         } catch (err) {
           const errMsg = (err as Error).message;
@@ -2507,6 +2609,19 @@ wss.on("connection", (ws) => {
         const cid = id as string;
         if (channelManager.has(cid)) {
           channelManager.sendData(cid, (msg as { data?: unknown }).data);
+          break;
+        }
+        // Race path: channel_open for this cid may still be in flight.
+        // Without this wait, the message is silently dropped — observed when
+        // a card's card.js fires openChannel + ch.send back-to-back and the
+        // open's metadata fs reads (especially library-project resolution)
+        // are slower than the next WS message.
+        const pending = pendingChannelOpens.get(cid);
+        if (pending) {
+          await pending;
+          if (channelManager.has(cid)) {
+            channelManager.sendData(cid, (msg as { data?: unknown }).data);
+          }
         }
         break;
       }
@@ -2631,6 +2746,10 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
     const sessionId = channelManager.findSessionByFilename(event.project, event.filename);
     if (sessionId) channelManager.destroySession(sessionId);
     deleteCardId(event.project, event.filename).catch(() => { /* best-effort */ });
+    // Drop any per-card buffers tied to the deleted file (validator errors
+    // were already cleared above, but skill-invocation tracker entries for
+    // chat cards specifically need clearing too).
+    clearSkillInvocations(event.project, event.filename);
     return;
   }
 
