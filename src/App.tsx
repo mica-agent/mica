@@ -13,6 +13,57 @@ export default function App() {
   const [activeProject, setActiveProject] = useState<ProjectInfo | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [wasConnected, setWasConnected] = useState(false);
+  // Library-project state for the header icons. libraryPaths is the set
+  // of absolute paths currently in ~/.mica/include-projects.json;
+  // exportedClasses is the active project's project-scoped card class
+  // names (what it would expose if it were a library). Both refreshed
+  // when the active project changes or when the canvas card class
+  // fires the mica-libraries-changed event after a toggle.
+  const [libraryPaths, setLibraryPaths] = useState<Set<string>>(new Set());
+  const [exportedClasses, setExportedClasses] = useState<string[]>([]);
+
+  const loadLibraryPaths = useCallback(async () => {
+    try {
+      const API_BASE = import.meta.env.VITE_MICA_API || '';
+      const res = await fetch(`${API_BASE}/api/library-projects`);
+      if (!res.ok) return;
+      const data = await res.json() as { include?: string[] };
+      setLibraryPaths(new Set(Array.isArray(data.include) ? data.include : []));
+    } catch { /* silent — header just won't show the icon */ }
+  }, []);
+
+  useEffect(() => { void loadLibraryPaths(); }, [loadLibraryPaths]);
+
+  // Refresh library set after the canvas card class toggles a library
+  // on/off. The toggle fires a window event so the header here can
+  // re-render its 📚 icon without polling.
+  useEffect(() => {
+    const handler = () => { void loadLibraryPaths(); };
+    window.addEventListener('mica-libraries-changed', handler);
+    return () => window.removeEventListener('mica-libraries-changed', handler);
+  }, [loadLibraryPaths]);
+
+  // Pull the project-scoped card classes for the active project. Used
+  // as the tooltip on the 📚 icon — "shared, exports: gpu-monitor, ...".
+  useEffect(() => {
+    if (!activeProject) { setExportedClasses([]); return; }
+    let cancelled = false;
+    const API_BASE = import.meta.env.VITE_MICA_API || '';
+    fetch(`${API_BASE}/api/card-classes`, { headers: { 'X-Mica-Project': activeProject.name } })
+      .then((r) => r.ok ? r.json() : null)
+      .then((d: Record<string, { scope?: string; meta?: boolean }> | null) => {
+        if (cancelled || !d) return;
+        const names = Object.keys(d).filter((name) => {
+          const entry = d[name];
+          return entry?.scope === 'project' && !entry?.meta;
+        }).sort();
+        setExportedClasses(names);
+      })
+      .catch(() => { if (!cancelled) setExportedClasses([]); });
+    return () => { cancelled = true; };
+  }, [activeProject]);
+
+  const isCurrentShared = activeProject ? libraryPaths.has(activeProject.path) : false;
 
   useEffect(() => onConnectionChange((val) => {
     setWsConnected(val);
@@ -108,6 +159,28 @@ export default function App() {
             <span style={{ color: '#666', fontSize: 12 }}>{workspace.name}</span>
             <span style={{ color: '#555' }}>/</span>
             <span style={{ fontWeight: 600, fontSize: 14 }}>{activeProject.name}</span>
+            {isCurrentShared && (
+              <span
+                title={
+                  exportedClasses.length === 0
+                    ? 'Shared as a library project (no card classes exported yet)'
+                    : `Shared as a library project\nExports:\n  ${exportedClasses.join('\n  ')}`
+                }
+                style={{ fontSize: 13, cursor: 'help' }}
+              >
+                📚
+              </span>
+            )}
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent('mica-open-canvas-settings'))}
+              title="Canvas settings (library, meta cards)"
+              style={{
+                background: 'none', border: 'none', color: '#888', cursor: 'pointer',
+                fontSize: 14, padding: '2px 6px', borderRadius: 4,
+              }}
+            >
+              ⚙
+            </button>
           </>
         ) : (
           <span style={{ fontWeight: 600, fontSize: 14 }}>{workspace.name}</span>

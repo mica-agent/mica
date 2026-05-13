@@ -73,6 +73,9 @@ if (libraryToggleBtn) {
                 body: JSON.stringify({ path: currentProjectAbsPath }),
             });
             await refreshLibraryToggleState();
+            // Notify the host (App.tsx header) so the 📚 icon next to the
+            // project name re-renders without polling.
+            window.dispatchEvent(new CustomEvent('mica-libraries-changed'));
         } catch (err) {
             console.error('[canvas] library toggle failed:', err);
         }
