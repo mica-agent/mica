@@ -326,9 +326,15 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
                 </div>
                 <div style={{ fontSize: 12, color: '#666', marginTop: 2, display: 'flex', gap: 8 }}>
                   {project.hasGit && <span style={{ color: '#f97316' }}>git</span>}
-                  {project.hasMica && <span style={{ color: '#4ade80' }}>mica</span>}
                   {!project.hasMica && <span style={{ color: '#888' }}>not initialized</span>}
-                  {(project.activeTurns ?? 0) > 0 && <span style={{ color: '#4ade80' }}>active</span>}
+                  {/*
+                    "mica" badge removed — it lit green for every project with
+                    a .mica/ directory, i.e. every Mica project, which mixed
+                    it up visually with the "agent active" signal.
+                    "active" text badge removed too — the pulsing green dot
+                    rendered before the project name (activeDotStyle) already
+                    conveys active processing more clearly than duplicate text.
+                  */}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
