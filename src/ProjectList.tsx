@@ -37,6 +37,10 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>(readInitialSort);
   const [showConnections, setShowConnections] = useState(false);
+  // Set of project absolute paths currently configured as libraries
+  // (~/.mica/include-projects.json). Used to render a 📚 icon next to
+  // shared projects in the listing. Refreshed alongside the project list.
+  const [libraryPaths, setLibraryPaths] = useState<Set<string>>(new Set());
 
   // Persist sort preference across sessions. Wrapped in try/catch because
   // private-browsing modes throw on localStorage writes.
@@ -76,10 +80,24 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
     }
   }, []);
 
+  const loadLibraryPaths = useCallback(async () => {
+    try {
+      const API_BASE = import.meta.env.VITE_MICA_API || '';
+      const res = await fetch(`${API_BASE}/api/library-projects`);
+      if (!res.ok) return;
+      const data = await res.json() as { include?: string[] };
+      const list = Array.isArray(data.include) ? data.include : [];
+      setLibraryPaths(new Set(list));
+    } catch (err) {
+      console.error('Failed to load library projects:', err);
+    }
+  }, []);
+
   useEffect(() => {
     loadProjects();
+    loadLibraryPaths();
     fetchTemplates().then(setTemplates).catch((err) => console.error('Failed to load templates:', err));
-  }, [loadProjects]);
+  }, [loadProjects, loadLibraryPaths]);
 
   // Live updates from the server. Two events to handle:
   //   - project-activity-changed: an agent turn started / ended for a project.
@@ -297,6 +315,14 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
                     />
                   )}
                   {project.name}
+                  {libraryPaths.has(project.path) && (
+                    <span
+                      title="Shared as a library project — its card classes are available to other projects on this machine"
+                      style={{ fontSize: 12 }}
+                    >
+                      📚
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, color: '#666', marginTop: 2, display: 'flex', gap: 8 }}>
                   {project.hasGit && <span style={{ color: '#f97316' }}>git</span>}
