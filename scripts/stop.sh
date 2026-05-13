@@ -91,7 +91,10 @@ done
 # backend. When the backend dies, they re-parent to PID 1 instead of
 # exiting and continue holding GPU memory until killed explicitly.
 # Match by command name (the venv-python paths are unambiguous).
-sidecar_pids=$(ps aux | grep -E "voice-(stt|tts)-server\.py" | grep -v grep | awk '{print $2}')
+# `|| true` keeps the empty-result case from tripping `set -e` / pipefail:
+# `grep` returns 1 when no sidecars are running, which would otherwise exit
+# the script before the container-teardown block below.
+sidecar_pids=$(ps aux | grep -E "voice-(stt|tts)-server\.py" | grep -v grep | awk '{print $2}' || true)
 if [ -n "$sidecar_pids" ]; then
   echo "Killing voice sidecars (Parakeet/Kokoro): $(echo $sidecar_pids | tr '\n' ' ')"
   for pid in $sidecar_pids; do
@@ -110,7 +113,7 @@ fi
 # ── Leftover llama-server (rollback path / pre-vLLM-migration) ──
 # Defensive: if you fall back to llama-server while iterating, this
 # catches it on stop.sh too. Safe no-op once nobody runs llama-server.
-llama_pids=$(ps aux | grep -E "llama-server" | grep -v grep | awk '{print $2}')
+llama_pids=$(ps aux | grep -E "llama-server" | grep -v grep | awk '{print $2}' || true)
 if [ -n "$llama_pids" ]; then
   echo "Killing llama-server processes: $(echo $llama_pids | tr '\n' ' ')"
   for pid in $llama_pids; do

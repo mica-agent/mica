@@ -129,12 +129,35 @@ async function handleRequest(project: string, req: ScreenshotRequest): Promise<v
     return;
   }
 
-  const dataUrl = canvas.toDataURL("image/png");
+  // Downscale before encoding. Qwen3-VL's processor maps image pixels to
+  // tokens at a fixed rate (~28×28 patches); a 3092×1438 capture produces
+  // 4365 image tokens and overruns the per-image token budget (cap 4095),
+  // which surfaces as a 400 from vLLM. 1280px on the long side keeps
+  // description quality intact and stays comfortably under the cap.
+  const MAX_LONG_SIDE = 1280;
+  const longSide = Math.max(canvas.width, canvas.height);
+  let outCanvas: HTMLCanvasElement = canvas;
+  if (longSide > MAX_LONG_SIDE) {
+    const scale = MAX_LONG_SIDE / longSide;
+    const w = Math.max(1, Math.round(canvas.width * scale));
+    const h = Math.max(1, Math.round(canvas.height * scale));
+    const scaled = document.createElement("canvas");
+    scaled.width = w;
+    scaled.height = h;
+    const ctx = scaled.getContext("2d");
+    if (ctx) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(canvas, 0, 0, w, h);
+      outCanvas = scaled;
+    }
+  }
+  const dataUrl = outCanvas.toDataURL("image/png");
   // data:image/png;base64,AAA... — server strips the prefix.
   const body = JSON.stringify({
     data: dataUrl,
-    width: canvas.width,
-    height: canvas.height,
+    width: outCanvas.width,
+    height: outCanvas.height,
   });
 
   try {

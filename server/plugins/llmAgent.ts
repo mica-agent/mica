@@ -132,6 +132,10 @@ export function createLlmAgentHandler() {
             : userMessage;
 
           const projectDir = ctx.project ? join(WORKSPACE_DIR, ctx.project) : WORKSPACE_DIR;
+          // SDK-bound: the qwen-code SDK gates image modality off the model
+          // name via `/^qwen3-vl-/` regex (see micaAgent.ts ~line 1620 for the
+          // full naming convention). Do NOT rename to `qwen-vl` here without
+          // first removing the SDK regex constraint.
           const modelName = cfg.model || "qwen3-vl-local";
 
           const q = queryFn({
@@ -217,7 +221,7 @@ export const manifest: HandlerManifest = {
     required: ["systemPrompt"],
     properties: {
       systemPrompt: { type: "string", description: "Required. The full system prompt — defines role, constraints, tool usage style. NOT appended to a Mica preset; this IS the prompt." },
-      model: { type: "string", description: "Model id. Default: 'qwen3-vl-local' (the local llama-server model)." },
+      model: { type: "string", description: "Model id. Default: 'qwen3-vl-local' (the SDK-bound alias for the local Qwen3.6-35B-A3B-NVFP4 vLLM; the `qwen3-vl-` prefix is required by the qwen-code SDK's modality regex)." },
       excludeTools: { type: "array", items: { type: "string" }, description: "Tool names to block. Common values: 'write_file', 'edit', 'run_shell_command', 'agent'. Default: no exclusions (yolo mode)." },
       historyKey: { type: "string", description: "Optional. Shared in-process key — multiple cards passing the same value share transcript history. Live streaming remains per-card; sync happens on the next turn." },
     },

@@ -601,7 +601,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "voice",
+            model: "qwen-voice",
             messages: [
               { role: "system", content:
                 "You're Mica's voice. The user asked an agent for help, and the agent " +
@@ -1456,7 +1456,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  model: "voice",
+                  model: "qwen-voice",
                   messages,
                   max_tokens: 280,
                   temperature: 0.5,
@@ -1921,7 +1921,16 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             const nameDrop = chatAgentNames.length > 0
               && new RegExp(`\\b(?:${chatAgentNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i").test(speakable);
 
-            if (explicitClaim || implicitPromise || nameDrop) {
+            // Suppress nameDrop when the agent name is wrapped in offer
+            // phrasing ("want me to ask Qwen?", "should I have Qwen…",
+            // "I could ask Qwen") — that's a legit dispatch OFFER, not a
+            // hallucinated claim. The system prompt explicitly encourages
+            // this phrasing, so flagging it would override good behavior
+            // with the worse canned fallback.
+            const offerPhrasing = /\b(?:want me to|do you want me to|would you (?:like|want) me to|should i|shall i|i could (?:ask|have|send|route|forward|run by)|i can (?:ask|have|send|route|forward|run by)|let me know if you want)\b/i.test(speakable);
+            const nameDropIsOffer = nameDrop && !explicitClaim && !implicitPromise && offerPhrasing;
+
+            if ((explicitClaim || implicitPromise || nameDrop) && !nameDropIsOffer) {
               console.log(`[voice-agent] overrode LLM <say> due to hallucinated dispatch claim (explicit=${explicitClaim} implicit=${implicitPromise} nameDrop=${nameDrop}): ${JSON.stringify(speakable.slice(0, 200))}`);
               // Implicit promise alone ("let me check", "I'm pulling that up")
               // means the LLM intended a lookup, not a dispatch. Offer search
@@ -1935,6 +1944,8 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                   : `I didn't route that anywhere — open a chat card first if you want me to forward work.`;
               }
               usedFallback = true;
+            } else if (nameDropIsOffer) {
+              console.log(`[voice-agent] nameDrop suppressed (offer phrasing detected): ${JSON.stringify(speakable.slice(0, 200))}`);
             }
           }
           if (!speakable) {

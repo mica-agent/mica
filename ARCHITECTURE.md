@@ -1268,6 +1268,26 @@ of this doc and are now built:
   editing. Purely frontend. No backend changes needed. The
   data model is in place; the UI layer is pending.
 
+- **Canvas-artifact-naming resolver.** The predicates in
+  `server/toolPrerequisites.ts` hardcode the spec / research
+  artifact layout: `canvas/<className>-spec.md`,
+  `canvas/<className>-research.md`. That same convention is
+  encoded in the develop / research-candidates skill prose at
+  `templates/dgx-spark-local/.qwen/skills/*` — dual-owned
+  coupling. Change either and the other has to follow. Works
+  today because card classes can't be renamed (`<className>`
+  is a stable identity handle), so the paths are pinned. When
+  rename support lands, OR when non-default skill suites need
+  a different layout, OR when a project has multiple specs
+  per class (e.g. v2 alongside v1), this becomes a wall.
+  The fix: a small resolver (`server/canvasPaths.ts`) backed
+  by `.mica/config.json` `naming` — every predicate goes
+  through the resolver; skills read the same config. Defer
+  until rename support or a concrete second-naming-need
+  triggers it; the in-file note at
+  `server/toolPrerequisites.ts:70` documents the constraint
+  for the next reader.
+
 ### Open questions
 
 - Workspace-tier card classes at `~/.mica/card-classes/`:

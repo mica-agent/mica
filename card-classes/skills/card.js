@@ -41,6 +41,16 @@ function projectHeaders(extra) {
 }
 
 function loadSkills() {
+  // Defensive: if mica.project isn't bound yet (rare race when the card
+  // mounts before the host's bridge fully populates), retry after a tick
+  // rather than firing a header-less request that the server can't scope.
+  // The server's listSkills returns [] when no project is supplied — the
+  // empty result silently rendered as "no skills" pre-fix.
+  var proj = (typeof mica !== 'undefined' && mica.project) || '';
+  if (!proj) {
+    setTimeout(loadSkills, 100);
+    return;
+  }
   fetch('/api/skills', { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(data) {
     skills = data || [];
     render();

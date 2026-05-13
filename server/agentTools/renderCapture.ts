@@ -133,7 +133,7 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "qwen3-vl-local",
+            model: "qwen-vl",
             max_tokens: 400,
             // Captioning is descriptive, not reasoning. Disable thinking so
             // the 400-token budget goes to the actual description instead

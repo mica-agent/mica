@@ -135,10 +135,35 @@ if [ "${MICA_DISABLE_CHAT_VLLM:-0}" != "1" ]; then
     # Steve Scargall's April 2026 Spark recipe for Qwen3.6-NVFP4.
     # GPU mem 0.30 ≈ 36 GB; vLLM batching shares this between voice
     # and chat. MTP-1 spec decode + flashinfer_cutlass MoE backend.
+    #
+    # Served-model-name convention:
+    #   - `qwen-vl`   — semantic alias for direct vLLM callers
+    #                   (renderCapture, micaAgent's captioning fetch). Today
+    #                   this resolves to the same Qwen3.6 multimodal vLLM
+    #                   as everything else; when a dedicated VL model lands,
+    #                   only this alias re-points.
+    #   - `qwen-voice` — semantic alias for voiceAgent. Same container today;
+    #                   re-points if we move voice to Qwen-Omni or similar.
+    #   - `qwen3-vl-local` — SDK-bound alias. The qwen-code SDK gates image
+    #                   modality off the model name via `/^qwen3-vl-/` regex
+    #                   (see server/micaAgent.ts ~line 1620). Required for
+    #                   SDK callers (the chat agent loop, plugins/llmAgent.ts);
+    #                   they CANNOT use `qwen-vl` without losing image-bearing
+    #                   tool results. Keep this alias until the SDK constraint
+    #                   is removed upstream.
+    #   - `openai:qwen-vl` — opencode bridge's OpenAI-API-compatible alias.
+    #   - `openai:qwen3-vl-local` — SDK-bound path's OpenAI-prefixed form.
+    #                   micaAgent.ts and plugins/llmAgent.ts build
+    #                   `openai:${modelName}` strings for SDK calls, so both
+    #                   the bare and `openai:`-prefixed SDK-bound names need
+    #                   to be served.
+    # Convention rules: no version numbers, no quantization, no hosting in
+    # served names — those belong in $CHAT_MODEL only. Roles map to aliases
+    # one-to-one (today + future-pointing). See ARCHITECTURE.md decisions.
     chat_cmd=$(cat <<EOF
 vllm serve $CHAT_MODEL \
   --host 0.0.0.0 --port 8000 \
-  --served-model-name qwen-chat qwen3.6 qwen3-vl-local openai:qwen3-vl-local openai:local local coder qwen voice \
+  --served-model-name qwen-vl qwen-voice openai:qwen-vl qwen3-vl-local openai:qwen3-vl-local \
   --quantization compressed-tensors \
   --moe-backend flashinfer_cutlass \
   --kv-cache-dtype fp8_e4m3 \
