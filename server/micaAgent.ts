@@ -1837,6 +1837,27 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           const safety = await guardTool(toolName, input);
           if (safety.behavior === "deny") return safety;
 
+          // write_file requires file_path. Qwen has been observed calling
+          // it with only `content` (file_path omitted); the SDK then
+          // returns a generic error and the agent often abandons the
+          // write — most visibly after the develop skill where the spec
+          // composition lives in the agent's context but never reaches
+          // disk. Catch this at the boundary with a same-turn structured
+          // hint so the agent retries with the right argument.
+          if (toolName === "write_file" || toolName === "Write") {
+            const fp = (input as { file_path?: unknown }).file_path;
+            if (typeof fp !== "string" || fp.length === 0) {
+              return {
+                behavior: "deny" as const,
+                message:
+                  `${toolName} requires a non-empty 'file_path' argument; you passed only 'content'. ` +
+                  `Retry with file_path specified — e.g. for a spec: ` +
+                  `${toolName}({ file_path: 'canvas/<name>-spec.md', content: '...' }). ` +
+                  `Do not announce the spec as drafted until the file exists.`,
+              };
+            }
+          }
+
           // Protected-path check — blocks write_file / edit on paths owned
           // by Mica-structured tools (mica_create_class for metadata.json,
           // mica_edit_class_file for card.{js,html,css}, .mica/layout.json
