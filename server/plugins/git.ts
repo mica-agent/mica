@@ -62,6 +62,19 @@ function validatePaths(paths: unknown): string[] | { error: string } {
 
 /** Run `git <args>` in cwd and return captured stdout/stderr. Never
  *  throws — on non-zero exit, returns { ok: false, code, stdout, stderr }. */
+/** Strip noise from git's stderr before it reaches the card. Credential
+ *  helpers configured in global git config (commonly the `gh` shim) write
+ *  shell errors to stderr when the helper binary isn't actually installed
+ *  on this machine; git silently falls through to the next helper and the
+ *  operation succeeds, but the user sees an "error" line in the card. */
+function stripStderrNoise(stderr: string): string {
+  if (!stderr) return stderr;
+  return stderr
+    .split("\n")
+    .filter((line) => !/gh auth git-credential.*No such file or directory/.test(line))
+    .join("\n");
+}
+
 async function runGit(cwd: string, args: string[], opts: { maxBuffer?: number; timeout?: number } = {}): Promise<{
   ok: boolean; code: number; stdout: string; stderr: string;
 }> {
@@ -71,14 +84,14 @@ async function runGit(cwd: string, args: string[], opts: { maxBuffer?: number; t
       maxBuffer: opts.maxBuffer ?? 5 * 1024 * 1024,
       timeout: opts.timeout ?? 30_000,
     });
-    return { ok: true, code: 0, stdout, stderr };
+    return { ok: true, code: 0, stdout, stderr: stripStderrNoise(stderr) };
   } catch (err) {
     const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
     return {
       ok: false,
       code: typeof e.code === "number" ? e.code : 1,
       stdout: e.stdout || "",
-      stderr: e.stderr || (e.message ?? "git failed"),
+      stderr: stripStderrNoise(e.stderr || (e.message ?? "git failed")),
     };
   }
 }

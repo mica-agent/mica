@@ -14,6 +14,8 @@ const panelsEl = container.querySelector('#gr-panels');
 const commitMsgEl = container.querySelector('#gr-commit-msg');
 const commitBtn = container.querySelector('#gr-commit');
 const toastEl = container.querySelector('#gr-toast');
+const logEl = container.querySelector('#gr-log');
+const logClearBtn = container.querySelector('#gr-log-clear');
 
 const sectionEls = {
   staged: container.querySelector('.gr-section[data-bucket="staged"]'),
@@ -33,7 +35,38 @@ function showToast(text, ok) {
   if (toastTimer) clearTimeout(toastTimer);
   // Longer dwell for errors (they need reading); okay toasts clear fast.
   toastTimer = setTimeout(() => { toastEl.style.display = 'none'; }, ok ? 2500 : 8000);
+  appendLog(text, ok);
 }
+
+const LOG_MAX_ENTRIES = 100;
+function appendLog(text, ok) {
+  if (!logEl) return;
+  // Drop the empty placeholder once we have a real entry.
+  const empty = logEl.querySelector('.gr-log-empty');
+  if (empty) empty.remove();
+  const entry = window.document.createElement('div');
+  entry.className = 'gr-log-entry ' + (ok ? 'gr-log-entry--ok' : 'gr-log-entry--err');
+  const ts = window.document.createElement('span');
+  ts.className = 'gr-log-ts';
+  ts.textContent = new Date().toLocaleTimeString([], { hour12: false });
+  const msg = window.document.createElement('span');
+  msg.className = 'gr-log-msg';
+  msg.textContent = text;
+  entry.appendChild(ts);
+  entry.appendChild(msg);
+  logEl.appendChild(entry);
+  // Cap entries — drop oldest if we exceed the limit.
+  while (logEl.children.length > LOG_MAX_ENTRIES) {
+    logEl.firstChild.remove();
+  }
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function clearLog() {
+  if (!logEl) return;
+  logEl.innerHTML = '<div class="gr-log-empty">no activity</div>';
+}
+clearLog();  // seed the placeholder
+if (logClearBtn) logClearBtn.addEventListener('click', clearLog);
 
 function setBusy(b) {
   busy = b;

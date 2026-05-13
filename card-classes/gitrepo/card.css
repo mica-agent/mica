@@ -194,3 +194,60 @@
   border-color: rgba(74,222,128,0.4);
   color: #a6f7cf;
 }
+
+.gr-log-head {
+  display: flex;
+  align-items: baseline;
+  padding: 4px 10px 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #6e7681;
+  flex-shrink: 0;
+}
+.gr-log-title { flex: 1; }
+.gr-log-clear {
+  background: none;
+  border: none;
+  color: #6e7681;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.gr-log-clear:hover { color: #c9d1d9; }
+
+.gr-log {
+  /* Reserve ~15% of the card's height for the activity log; scroll its
+     own content. The flex-basis keeps it proportional as the card
+     resizes; min-height keeps it readable on small cards. */
+  flex: 0 0 15%;
+  min-height: 60px;
+  overflow-y: auto;
+  padding: 4px 10px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 11px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+.gr-log-entry {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.gr-log-entry:last-child { border-bottom: none; }
+.gr-log-ts {
+  flex: 0 0 auto;
+  color: #6e7681;
+}
+.gr-log-msg { flex: 1 1 auto; }
+.gr-log-entry--ok .gr-log-msg { color: #a6f7cf; }
+.gr-log-entry--err .gr-log-msg { color: #fecaca; }
+.gr-log-empty {
+  color: #6e7681;
+  font-style: italic;
+  padding: 4px 0;
+}
