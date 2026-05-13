@@ -25,7 +25,7 @@ import { recordTurn, recordSubagent } from "./metrics.js";
 import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
-import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { markProjectActivity } from "./projectActivity.js";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
@@ -143,12 +143,13 @@ async function getQuery() {
 /** Build Claude SDK's mica-builtins MCP server. Mirrors the qwen wiring
  *  in micaAgent.ts; both go through buildAgentToolsMcpServer with each
  *  SDK's own tool/createSdkMcpServer helpers. */
-function buildClaudeBuiltinsMcpServer(sessionProject: string | null): unknown | null {
+function buildClaudeBuiltinsMcpServer(sessionProject: string | null, sessionChatFilename: string | null): unknown | null {
   if (!sessionProject || !_claudeTool || !_claudeCreateSdkMcpServer) return null;
   return buildAgentToolsMcpServer({
     toolFn: _claudeTool,
     createServerFn: _claudeCreateSdkMcpServer,
     sessionProject,
+    sessionChatFilename,
     serverName: "mica-builtins",
   });
 }
@@ -223,7 +224,11 @@ export async function buildContext(agentFilename: string, project: string | null
   // malformed file the validator already diagnosed reaches the agent on its
   // very next turn instead of waiting for the user to re-prompt.
   if (project) {
-    const pendingErrors = getPendingValidatorErrors(project);
+    const { fresh: pendingErrors, filteredStale } = getFreshPendingValidatorErrors(project, getProjectDir(project));
+    if (filteredStale.length > 0) {
+      const staleNames = filteredStale.map((e) => e.filename).join(", ");
+      console.log(`[buildContext:${project}] (claude) filtered ${filteredStale.length} stale validator/runtime error(s) (class edited after error): ${staleNames}`);
+    }
     if (pendingErrors.length > 0) {
       // Direct evidence of agent receiving validator/runtime errors. See
       // micaAgent.ts comment at the same site — buffer→prompt path is
@@ -723,7 +728,9 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         // the chat-card progress feed (see micaAgent.ts comment at the same
         // site for full rationale).
         if (sessionProject) {
-          const incomingErrors = getPendingValidatorErrors(sessionProject);
+          // Match the buildContext injection — count only fresh errors so
+          // the UI agrees with what the agent sees this turn.
+          const { fresh: incomingErrors } = getFreshPendingValidatorErrors(sessionProject, getProjectDir(sessionProject));
           if (incomingErrors.length > 0) {
             const files = Array.from(new Set(incomingErrors.map((e) => e.filename)));
             const desc = incomingErrors.length === 1
@@ -965,7 +972,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             // migrate here in Phase 2). Same handlers as qwen + opencode
             // via /api/tools/* loopback. See server/agentTools/registry.ts.
             ...(() => {
-              const builtinsServer = buildClaudeBuiltinsMcpServer(sessionProject);
+              const builtinsServer = buildClaudeBuiltinsMcpServer(sessionProject, ctx.filename);
               return builtinsServer ? { mcpServers: { "mica-builtins": builtinsServer } } : {};
             })(),
             // Clear CLAUDECODE — if Mica is launched from inside a Claude Code shell

@@ -1880,7 +1880,10 @@ ${r.content}
               .filter(Boolean);
             const nameDrop = chatAgentNames.length > 0
               && new RegExp(`\\b(?:${chatAgentNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i").test(speakable);
-            if (explicitClaim || implicitPromise || nameDrop) {
+            const offerPhrasing = /\b(?:want me to|do you want me to|would you (?:like|want) me to|should i|shall i|i could (?:ask|have|send|route|forward|run by)|i can (?:ask|have|send|route|forward|run by)|let me know if you want)\b/i.test(speakable);
+            const nameDropIsOffer = nameDrop && !explicitClaim && !implicitPromise && offerPhrasing;
+
+            if ((explicitClaim || implicitPromise || nameDrop) && !nameDropIsOffer) {
               console.log(`[voice-qwen-omni] overrode LLM <say> due to hallucinated dispatch claim (explicit=${explicitClaim} implicit=${implicitPromise} nameDrop=${nameDrop}): ${JSON.stringify(speakable.slice(0, 200))}`);
               if (implicitPromise && !explicitClaim && !nameDrop) {
                 speakable = "I didn't actually look that up. Want me to search the web for it?";
@@ -1890,6 +1893,8 @@ ${r.content}
                   : `I didn't route that anywhere — open a chat card first if you want me to forward work.`;
               }
               usedFallback = true;
+            } else if (nameDropIsOffer) {
+              console.log(`[voice-qwen-omni] nameDrop suppressed (offer phrasing detected): ${JSON.stringify(speakable.slice(0, 200))}`);
             }
           }
           if (!speakable) {

@@ -26,7 +26,7 @@ const execFileP = promisify(execFile);
 // Curated lookup table — well-known library → skills repo. Hint list, not a
 // registry. Agent can also pass `github:owner/repo` or full URL directly.
 // Expand as the ecosystem grows; ship empty rather than wrong.
-const KNOWN_SKILL_PACKAGES: Record<string, string> = {
+export const KNOWN_SKILL_PACKAGES: Record<string, string> = {
   three: "https://github.com/cloudai-x/threejs-skills.git",
   threejs: "https://github.com/cloudai-x/threejs-skills.git",
   "three.js": "https://github.com/cloudai-x/threejs-skills.git",

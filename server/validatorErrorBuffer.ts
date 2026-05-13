@@ -25,6 +25,9 @@
 // in-flight world consistently. Persist later if the same error needs to
 // span restarts.
 
+import { statSync, readdirSync, existsSync } from "node:fs";
+import { join, basename } from "node:path";
+
 interface BufferedError {
   filename: string;
   error: string;
@@ -78,4 +81,81 @@ export function clearProjectValidatorErrors(project: string): void {
  *  GOES from errored → clean, not on every clean write. */
 export function hasValidatorError(project: string, filename: string): boolean {
   return buffer.get(project)?.has(filename) ?? false;
+}
+
+/** Derive the absolute path of the card class directory associated with
+ *  an errored file, or null if the filename doesn't map to a class.
+ *  - Instance file (`canvas/foo.bar`) → `<projectDir>/.mica/card-classes/bar/`.
+ *    Uses the dotted-extension convention; the extension after the LAST
+ *    dot is the class name.
+ *  - Class file (`.mica/card-classes/bar/card.js`) → its own directory.
+ *  - Anything else → null. */
+function deriveClassDir(filename: string, projectDir: string): string | null {
+  if (!filename || !projectDir) return null;
+  if (filename.includes("card-classes/")) {
+    // ".mica/card-classes/bar/card.js" → projectDir/.mica/card-classes/bar
+    const m = filename.match(/(.*card-classes\/[^/]+)\/[^/]+$/);
+    if (m) return join(projectDir, m[1]);
+    return null;
+  }
+  // Instance: extension after the last dot is the class name.
+  const base = basename(filename);
+  const lastDot = base.lastIndexOf(".");
+  if (lastDot <= 0) return null;
+  const ext = base.slice(lastDot + 1);
+  if (!ext || ext.includes("/")) return null;
+  return join(projectDir, ".mica", "card-classes", ext);
+}
+
+/** True if any file inside the class directory associated with `filename`
+ *  was modified after `errorTs`. Used to skip stale validator/runtime
+ *  errors when the agent has rewritten class files since the error was
+ *  recorded — typically the window between an agent edit and the next
+ *  browser remount (which would POST /ok to clear the buffer entry).
+ *  Returns false (treat as fresh) when no class directory can be derived
+ *  or it doesn't exist on disk: do not silently drop errors we can't
+ *  reason about. */
+function classWasEditedAfter(
+  filename: string,
+  errorTs: number,
+  projectDir: string,
+): boolean {
+  const classDir = deriveClassDir(filename, projectDir);
+  if (!classDir || !existsSync(classDir)) return false;
+  try {
+    for (const entry of readdirSync(classDir)) {
+      const fullPath = join(classDir, entry);
+      try {
+        if (statSync(fullPath).mtimeMs > errorTs) return true;
+      } catch { /* unreadable entry, skip */ }
+    }
+  } catch { /* unreadable directory, treat as not-edited */ }
+  return false;
+}
+
+/** Like getPendingValidatorErrors, but filters out entries where any
+ *  file in the related card class directory has mtime newer than the
+ *  error timestamp. Those errors are pending re-verification — the
+ *  agent has edited the class but the browser hasn't yet remounted to
+ *  POST `/ok` (which would clear the entry) or POST `/error` again
+ *  (which would refresh `ts`). Dispatching a reactivity turn against
+ *  such errors leads the model to debug phantoms.
+ *
+ *  Returns `{ fresh, filteredStale }` so the caller can log the
+ *  filtered count for observability — agents see only `fresh`. */
+export function getFreshPendingValidatorErrors(
+  project: string,
+  projectDir: string,
+): { fresh: BufferedError[]; filteredStale: BufferedError[] } {
+  const all = getPendingValidatorErrors(project);
+  const fresh: BufferedError[] = [];
+  const filteredStale: BufferedError[] = [];
+  for (const e of all) {
+    if (classWasEditedAfter(e.filename, e.ts, projectDir)) {
+      filteredStale.push(e);
+    } else {
+      fresh.push(e);
+    }
+  }
+  return { fresh, filteredStale };
 }

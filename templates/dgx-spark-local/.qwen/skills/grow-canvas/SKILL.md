@@ -5,7 +5,7 @@ description: Propose new cards on the canvas as the conversation reveals dimensi
 
 # Grow the canvas as the conversation grows
 
-The project starts intentionally minimal: a chat card, `spec.md`, and `questions.md`. Everything else is added on demand — when the conversation reveals it would be useful — not pre-littered as empty placeholders. Your job is to notice when a new card would help and **propose** creating it.
+The project starts intentionally minimal: a chat card, a canvas-back doc, and a skills card. No spec, no questions doc, no todo. Everything else is added on demand — when the conversation reveals it would be useful — not pre-littered as empty placeholders. Your job is to notice when a new card would help and **propose** creating it.
 
 This is the opposite of "scaffold everything upfront." Empty placeholder cards are noise; they make the canvas feel cluttered before the project even has shape. Wait for a real signal, then propose.
 

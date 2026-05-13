@@ -216,7 +216,7 @@ If the user's request is "do the same check across N units" — rows in a table,
 
 When the user's request mixes Shape-A and Shape-B (e.g. "build component X AND verify each row in this table"), emit both kinds of items in the same `plan.todo` — `@component-coder` items for the build, batch items for the iteration.
 
-## Library / CDN research — use `tavily_search` first
+## Library / CDN research — use `mcp__tavily__tavily_search` first
 
 When a plan item depends on an external library, framework, or CDN URL the user did not name:
 

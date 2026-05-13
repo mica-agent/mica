@@ -7,7 +7,7 @@
 // per-SDK plumbing differs only in WHO consumes the resulting server.
 
 import { z } from "zod";
-import { AGENT_TOOLS, AGENT_TOOL_AUTH_HEADER, AGENT_TOOL_AUTH_SECRET, AGENT_TOOL_PROJECT_HEADER } from "./registry.js";
+import { AGENT_TOOLS, AGENT_TOOL_AUTH_HEADER, AGENT_TOOL_AUTH_SECRET, AGENT_TOOL_PROJECT_HEADER, AGENT_TOOL_CHAT_FILENAME_HEADER } from "./registry.js";
 
 const MICA_PORT = parseInt(process.env.MICA_PORT || "3002", 10);
 const MICA_TOOLS_BASE = `http://127.0.0.1:${MICA_PORT}`;
@@ -38,6 +38,11 @@ export function buildAgentToolsMcpServer(opts: {
   toolFn: ToolFn;
   createServerFn: CreateServerFn;
   sessionProject: string | null;
+  /** Chat-card filename of the originating session, forwarded as a
+   *  header so server-side predicate gates can scope per-chat state
+   *  (e.g. "has skill('card-class-handbook') been invoked here?").
+   *  Null when the caller can't supply it (e.g. shared opencode bridge). */
+  sessionChatFilename?: string | null;
   serverName?: string;  // defaults to "mica-builtins" (the unified hub)
 }): unknown {
   const tools = AGENT_TOOLS.map((def) =>
@@ -55,6 +60,7 @@ export function buildAgentToolsMcpServer(opts: {
               "Content-Type": "application/json",
               [AGENT_TOOL_AUTH_HEADER]: AGENT_TOOL_AUTH_SECRET,
               [AGENT_TOOL_PROJECT_HEADER]: opts.sessionProject ?? "",
+              [AGENT_TOOL_CHAT_FILENAME_HEADER]: opts.sessionChatFilename ?? "",
             },
             body: JSON.stringify(args),
           });

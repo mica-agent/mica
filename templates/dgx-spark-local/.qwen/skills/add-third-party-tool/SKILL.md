@@ -13,7 +13,7 @@ Mica ships a generic adapter (`server/plugins/cliMcp.ts`) that turns a project's
 
 For each new tool the user wants:
 
-1. **Read the tool's README** via `mcp__tavily__tavily_search` + `web_fetch`. Identify:
+1. **Find and read the tool's README.** Use `mcp__tavily__tavily_search` (with `max_results: 5`) to locate the README URL or repo. Then use `curl -s <raw-readme-url>` to retrieve the bytes — for a typical GitHub README, `curl -s "https://raw.githubusercontent.com/<owner>/<repo>/main/README.md" | head -c 8000` is fast and bounded. Don't use `web_fetch` (slow + bloats chat history — see `discover-dependency/SKILL.md` § Tool choice). Identify:
    - Install command(s) — what does the user normally run to set it up?
    - Entry point — what command runs the tool?
    - Operations — what does the tool do, and what's its input/output shape?

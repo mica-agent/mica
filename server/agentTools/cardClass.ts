@@ -22,6 +22,7 @@ import {
   deleteClassImpl,
   listClassesImpl,
 } from "../plugins/cardClassTools.js";
+import { runPredicates, buildPredicateContext, formatPredicateFailure } from "../toolPrerequisites.js";
 
 // Shared adapter — the existing impls return MCP-shaped results
 // ({ content: [{ type: "text", text }], isError? }); the registry
@@ -45,11 +46,16 @@ function requireProject<T>(ctx: { project: string | null }, run: (project: strin
 export const createClassTool: AgentToolDef<typeof createClassSchema> = {
   name: "mica_create_class",
   description:
-    "Use this to create OR UPDATE a card class at `.mica/card-classes/<name>/` (writes metadata.json + card.html + card.js + card.css). You supply intent (name, badge, dependencies, content); the framework picks the directory, validates the metadata schema, and writes a canonical card.js stub when card_js is omitted. Re-call with the same `name` + same `extension` to UPDATE metadata in place — change `badge`, `defaultTitle`, `scripts`, `styles`, `handler`, `primaryFile` without delete-then-recreate. card.html/card.js/card.css are preserved unless you pass explicit content, so re-calling never clobbers working files. Only changing `extension` is refused (that's a rename, which would orphan existing instance files — delete the class and recreate if you genuinely need a different extension). For card.html/.js/.css edits on their own, use `mica_edit_class_file` instead. Class creation does not go through write_file — that path doesn't enforce the metadata schema or directory shape and produces extension/dirname mismatches that silently render as TXT.",
+    "Use this to create OR UPDATE a card class at `.mica/card-classes/<name>/` (writes metadata.json + card.html + card.js + card.css). You supply intent (name, badge, dependencies, content); the framework picks the directory, validates the metadata schema, and writes a canonical card.js stub when card_js is omitted. Re-call with the same `name` + same `extension` to UPDATE metadata in place — change `badge`, `defaultTitle`, `scripts`, `styles`, `handler`, `primaryFile` without delete-then-recreate. card.html/card.js/card.css are preserved unless you pass explicit content, so re-calling never clobbers working files. Only changing `extension` is refused (that's a rename, which would orphan existing instance files — delete the class and recreate if you genuinely need a different extension). For card.html/.js/.css edits on their own, use `mica_edit_class_file` instead. Class creation does not go through write_file — that path doesn't enforce the metadata schema or directory shape and produces extension/dirname mismatches that silently render as TXT. **Prerequisites**: a `canvas/<name>-spec.md` must exist with content, AND `skill('card-class-handbook')` must have been invoked this chat session. The tool returns a structured error otherwise; read the `Next:` line and follow it.",
   inputSchema: createClassSchema,
   restPath: "/api/tools/mica-create-class",
   handler: async (input, ctx) => {
     if (!ctx.project) return { isError: true, text: "Active project required." };
+    const preCheck = await runPredicates(
+      "mica_create_class",
+      buildPredicateContext(ctx.project, ctx.chatFilename, input as Record<string, unknown>),
+    );
+    if (!preCheck.ok) return { isError: true, text: formatPredicateFailure(preCheck) };
     return unwrap(await createClassImpl(ctx.project, input));
   },
 };
@@ -57,11 +63,16 @@ export const createClassTool: AgentToolDef<typeof createClassSchema> = {
 export const editClassFileTool: AgentToolDef<typeof editClassFileSchema> = {
   name: "mica_edit_class_file",
   description:
-    "Use this for any edit to `.mica/card-classes/<name>/card.{js,html,css}`. Pre-write lint catches CARD_SHIM-global redeclaration (`mica`, `container`), ESM `import`/`export`, IIFE wrappers, etc. so failures surface as a tool-result error in this same turn instead of a card-error broadcast on the next turn. Two edit modes: partial (`old_string` + `new_string`) preserves all surrounding code untouched — safer default for amending working files; full replace (`content=`) overwrites the whole file. Class-file edits don't go through `write_file` or `edit` — those paths bypass the lint and the partial-edit safety, and full-rewrites repeatedly regress working code (e.g. textured Earth → simple sphere because the rewrite drops the texture-loader code). metadata.json edits go through `mica_create_class`.",
+    "Use this for any edit to `.mica/card-classes/<name>/card.{js,html,css}`. Pre-write lint catches CARD_SHIM-global redeclaration (`mica`, `container`), ESM `import`/`export`, IIFE wrappers, etc. so failures surface as a tool-result error in this same turn instead of a card-error broadcast on the next turn. Two edit modes: partial (`old_string` + `new_string`) preserves all surrounding code untouched — safer default for amending working files; full replace (`content=`) overwrites the whole file. Class-file edits don't go through `write_file` or `edit` — those paths bypass the lint and the partial-edit safety, and full-rewrites repeatedly regress working code (e.g. textured Earth → simple sphere because the rewrite drops the texture-loader code). metadata.json edits go through `mica_create_class`. **Prerequisite**: `skill('card-class-handbook')` must have been invoked this chat session. The tool returns a structured error otherwise; read the `Next:` line and follow it.",
   inputSchema: editClassFileSchema,
   restPath: "/api/tools/mica-edit-class-file",
   handler: async (input, ctx) => {
     if (!ctx.project) return { isError: true, text: "Active project required." };
+    const preCheck = await runPredicates(
+      "mica_edit_class_file",
+      buildPredicateContext(ctx.project, ctx.chatFilename, input as Record<string, unknown>),
+    );
+    if (!preCheck.ok) return { isError: true, text: formatPredicateFailure(preCheck) };
     return unwrap(await editClassFileImpl(ctx.project, input));
   },
 };

@@ -9,6 +9,7 @@ import {
   AGENT_TOOL_AUTH_HEADER,
   AGENT_TOOL_AUTH_SECRET,
   AGENT_TOOL_PROJECT_HEADER,
+  AGENT_TOOL_CHAT_FILENAME_HEADER,
   getLastActiveOpencodeProject,
 } from "./registry.js";
 
@@ -30,6 +31,13 @@ export function registerAgentToolRoutes(app: Express): void {
         (typeof headerProject === "string" && headerProject.trim()) ? headerProject.trim() :
         getLastActiveOpencodeProject();
 
+      // Chat-card filename of the originating agent session, used by
+      // session-scoped predicate gates. Empty string from SDK adapters
+      // that don't supply it → null.
+      const headerChat = req.header(AGENT_TOOL_CHAT_FILENAME_HEADER);
+      const chatFilename: string | null =
+        (typeof headerChat === "string" && headerChat.trim()) ? headerChat.trim() : null;
+
       // Validate input against the tool's zod schema.
       const schema = z.object(tool.inputSchema);
       const parsed = schema.safeParse(req.body);
@@ -42,7 +50,7 @@ export function registerAgentToolRoutes(app: Express): void {
       }
 
       try {
-        const result = await tool.handler(parsed.data, { project });
+        const result = await tool.handler(parsed.data, { project, chatFilename });
         res.json(result);
       } catch (err) {
         res.status(500).json({

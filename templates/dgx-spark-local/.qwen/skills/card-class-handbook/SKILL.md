@@ -538,6 +538,46 @@ before declaring done. Full tier table in `_conventions.md`
 § API discipline. Append a `## Smoke test results` row to
 spec.md for each URL.
 
+### When `render_capture` surfaces a runtime error — pivot to `fix-bug`
+
+If the card-error buffer reports `X.method is not a function`,
+`X.method is undefined`, or similar API-shape errors, your next move
+is **`skill('fix-bug')`** — NOT another `mica_edit_class_file` guess.
+Stay in the develop / iterate loop on layout, sizing, or content
+issues; pivot to `fix-bug` for runtime API errors. The fix-bug skill
+has the discovery procedure: `mica_inspect_url` on the library's CDN
+URL → read the `methods` array → use the real public method name.
+Guessing alternate method names is the failure mode that compounds
+(world23: `marker.setOpacity` → guess `bindPopup` → `terminator.update`
+→ delete-and-recreate spiral).
+
+### Don't declare done while errors might still be pending
+
+Before ending the turn with "built X" / "done" / "verified", you need BOTH of these to be true:
+
+1. `render_capture`'s caption describes what the user asked for (the right visual).
+2. The tool result has NO `⚠️ pending errors` block (no buffered card-errors or validator failures).
+
+`card-error` events fire ASYNC from the browser when card.js throws at init — the error can arrive AFTER `render_capture` returned a clean caption. Don't trust a single clean `render_capture` as proof the build is done; the browser may not have finished re-executing card.js yet.
+
+Conservative shape that catches the timing gap: write the code, call `render_capture`, then in your final chat reply use soft framing — *"Built world-clock — render looks clean to me; please verify on your screen"* — rather than declaring "done" unilaterally. The user is the source of truth for "done"; you propose, the user confirms. If an error fires after your render_capture, the user's "wait, I see an error" reply gives you a chance to fix it instead of having declared success prematurely.
+
+If pending errors WERE present in your last render_capture result, the build is NOT complete regardless of how the screenshot looks. Fix every listed error and re-capture before any close-out.
+
+### Card-error buffer can lag the file
+
+The `card-error` event is emitted by the BROWSER when the card.js
+throws at init. After you `mica_edit_class_file`, the browser has to
+re-fetch and re-execute card.js before a fresh error can be reported
+— and `render_capture` may capture before that cycle completes. So
+**if the buffer shows an error you've already fixed in the file,
+that's likely stale, NOT a cache problem in the card class.** Verify
+with `read_file` that your edit landed; if it did, give the browser
+a moment (or trigger an explicit refresh by `mica_edit_class_file` of
+a no-op whitespace change). **Don't reach for `mica_delete_card_instance`
+to "clear cache"** — that destroys layout state and is rarely the
+right move; it should be a last resort, not a debugging step.
+
 ## Pitfalls
 
 ### Card class not appearing? Never restart.

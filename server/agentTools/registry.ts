@@ -37,6 +37,8 @@ import {
   listClassesTool,
 } from "./cardClass.js";
 import { installSkillsTool } from "./installSkills.js";
+import { listSkillPackagesTool } from "./listSkillPackages.js";
+import { inspectUrlTool } from "./inspectUrl.js";
 
 // Per-backend startup secret. Agents include this in the
 // `x-mica-agent-auth` header on every /api/tools/* request. Browser cards
@@ -46,6 +48,13 @@ import { installSkillsTool } from "./installSkills.js";
 export const AGENT_TOOL_AUTH_SECRET = randomBytes(32).toString("hex");
 export const AGENT_TOOL_AUTH_HEADER = "x-mica-agent-auth";
 export const AGENT_TOOL_PROJECT_HEADER = "x-mica-project";
+// Chat-card filename of the agent session that originated the call.
+// Used by predicate gates (toolPrerequisites.ts) that need session
+// scope — e.g. "has skill('card-class-handbook') been invoked in this
+// chat session?". Optional: tools that don't care about session can
+// ignore it, and SDK adapters that can't supply it (e.g. opencode's
+// shared bridge) leave it blank.
+export const AGENT_TOOL_CHAT_FILENAME_HEADER = "x-mica-chat-filename";
 
 // Tool handler return shape. text becomes the textual content of the
 // tool result; isError flips the result to an error result that the
@@ -66,8 +75,14 @@ export interface AgentToolDef<
   inputSchema: TSchema;
   /** REST path the SDK adapters fetch (POST). Must start with `/api/tools/`. */
   restPath: string;
-  /** Server-side implementation. Receives parsed input + session project. */
-  handler: (input: z.infer<z.ZodObject<TSchema>>, ctx: { project: string | null }) => Promise<AgentToolResult>;
+  /** Server-side implementation. Receives parsed input + session project +
+   *  chat-card filename when the call originated from an agent session
+   *  (used by predicate gates that need session scope; null for callers
+   *  outside an agent session). */
+  handler: (
+    input: z.infer<z.ZodObject<TSchema>>,
+    ctx: { project: string | null; chatFilename: string | null },
+  ) => Promise<AgentToolResult>;
 }
 
 // The full tool list. Order doesn't matter; each adapter iterates the array.
@@ -81,6 +96,8 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   deleteClassTool,
   listClassesTool,
   installSkillsTool,
+  listSkillPackagesTool,
+  inspectUrlTool,
 ];
 
 // ── Project resolution for opencode bridge ───────────────────────────

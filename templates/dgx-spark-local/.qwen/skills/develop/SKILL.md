@@ -123,8 +123,16 @@ the canvas in the same turn:
 - `plan.todo` items: `[ ]` → `[~]` → `[x]` (per the orchestrator
   lifecycle in `decompose-task` / `_conventions.md`).
 - `canvas/decisions.md` gains an entry for non-obvious choices.
-- `canvas/spec.md` updates if implementation revealed a needed
-  spec change.
+- `canvas/<class>-spec.md` updates if: (a) implementation revealed
+  a needed spec change, OR (b) **the user requested a change
+  mid-build** ("12 cities not 20", "1Hz update not 1 minute",
+  "remove the UTC display"). Edit the spec to reflect the new
+  state BEFORE making the code change. The spec is the contract —
+  when it gets out of sync with what's built, the next session
+  reads a stale design and makes wrong decisions. The same applies
+  to research artifacts: if the user redirects a candidate
+  ("use Leaflet, not D3"), update the research's chosen-stack
+  before re-running the build.
 
 This applies to **every** working turn, not just here. Standalone
 code can live anywhere (`src/`, `scripts/`) — the canvas log of

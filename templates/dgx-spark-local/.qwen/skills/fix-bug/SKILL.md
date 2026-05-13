@@ -101,8 +101,10 @@ If `bug-fixer` is not registered (`agents/bug-fixer.md` doesn't exist), inline i
 When the chat surfaces `[card-error] Failed to load dependency: Failed to load <url-or-name>`, the diagnostic order matters. The full debug procedure is in `card-class-handbook/SKILL.md` § Pitfalls. Quick form (tenet 16: validate inputs):
 
 1. **Verify the URL.** `curl -sI -L "<exact URL from the error>" | head -1`. If 404, the URL is wrong — fix `metadata.json`, don't guess a replacement, look it up via npm registry or jsdelivr.
-2. **If the URL is reachable but the card still fails:** the file loaded but doesn't match the card's assumption. Check global/namespace (`L.terminator` vs `L.Terminator`), version semantics, MIME type. `web_fetch` the URL and grep for the global the card calls.
+2. **If the URL is reachable but the card still fails:** the file loaded but doesn't match the card's assumption. Check global/namespace (`L.terminator` vs `L.Terminator`), version semantics, MIME type. Use `mica_inspect_url` on the URL — its `format` field tells you UMD/CJS/ESM, and the `methods` array surfaces the actual public API (catches `L.terminator` vs `L.Terminator` cases). For body inspection beyond what the tool returns, `curl -s <url> | head -c 4000`. Don't use `web_fetch` (4+ minutes per call, dumps full page into chat history).
 3. **Only if both above pass** does the bug live in the card-class loading path — see `card-class-handbook/SKILL.md` for `card.html` rules.
+
+**Runtime `X.method is not a function`**: don't guess another method name — use `mica_inspect_url` on the library's CDN URL and read the returned `methods` array for the actual public API.
 
 **Anti-pattern:** re-reading `metadata.json` hoping for clarity. The URL it's failing on is exactly what's there; re-reading produces no new information. The model can loop on this until the SDK kills the process. Break out: do `curl` first.
 

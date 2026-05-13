@@ -48,7 +48,7 @@ import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
 import { loadProjectSubagents } from "./subagents.js";
-import { getPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
 import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
 import { markProjectActivity } from "./projectActivity.js";
@@ -164,7 +164,11 @@ export async function buildContext(agentFilename: string, project: string | null
   }
 
   if (project) {
-    const pendingErrors = getPendingValidatorErrors(project);
+    const { fresh: pendingErrors, filteredStale } = getFreshPendingValidatorErrors(project, getProjectDir(project));
+    if (filteredStale.length > 0) {
+      const staleNames = filteredStale.map((e) => e.filename).join(", ");
+      console.log(`[buildContext:${project}] (opencode) filtered ${filteredStale.length} stale validator/runtime error(s) (class edited after error): ${staleNames}`);
+    }
     if (pendingErrors.length > 0) {
       const filenames = pendingErrors.map((e) => e.filename).join(", ");
       console.log(`[buildContext:${project}] (opencode) injected ${pendingErrors.length} validator error(s): ${filenames}`);
@@ -819,7 +823,9 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         const since = getLastTurnAt(ctx.filename);
 
         if (sessionProject) {
-          const incoming = getPendingValidatorErrors(sessionProject);
+          // Match buildContext: count only fresh errors so the UI matches
+          // what the agent actually sees this turn.
+          const { fresh: incoming } = getFreshPendingValidatorErrors(sessionProject, getProjectDir(sessionProject));
           if (incoming.length > 0) {
             const files = Array.from(new Set(incoming.map((e) => e.filename)));
             const desc = incoming.length === 1

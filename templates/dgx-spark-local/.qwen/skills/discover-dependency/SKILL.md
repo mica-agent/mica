@@ -1,6 +1,6 @@
 ---
 name: discover-dependency
-description: Invoke before designing or writing any component that pulls from external resources — libraries (JS code), assets (images, video, audio, fonts, 3D model files, data files), OR services (live APIs). Most non-trivial cards need MULTIPLE kinds in one build (e.g. Three.js library + planet textures + maybe a weather API). This skill is the single entry point: enumerate subproblems, classify each as library/asset/service, walk through them in order with the matching procedure. Recall-first throughout: for things you know (Three.js, Leaflet, NASA imagery, Google Fonts), write down what you know and verify with `curl`; reach for `web_search` only when recall genuinely fails. Produces a documented decisions table on canvas. Library / asset is the default for any non-trivial subproblem; bespoke implementation is the exception that requires a documented "nothing fits because Z" decision.
+description: Invoke before designing or writing any component that pulls from external resources — libraries (JS code), assets (images, video, audio, fonts, 3D model files, data files), OR services (live APIs). Most non-trivial cards need MULTIPLE kinds in one build (e.g. Three.js library + planet textures + maybe a weather API). This skill is the single entry point: enumerate subproblems, classify each as library/asset/service, walk through them in order with the matching procedure. Recall-first throughout: for things you know (Three.js, Leaflet, NASA imagery, Google Fonts), write down what you know and verify with `curl`; reach for `mcp__tavily__tavily_search` only when recall genuinely fails. Produces a documented decisions table on canvas. Library / asset is the default for any non-trivial subproblem; bespoke implementation is the exception that requires a documented "nothing fits because Z" decision.
 ---
 
 # Discover external dependencies — libraries, assets, services
@@ -30,15 +30,30 @@ Whenever you're about to design or implement a subproblem that pulls from outsid
 - **During bug fixes** (via `fix-bug`): if your fix would need >30 lines of new bespoke code, or pulls in a new external resource, run this skill first.
 - **Recursively, per subproblem.** Picking Leaflet for the map does NOT discharge discovery for sub-features built on top: a day/night terminator overlay is its own library subproblem (`leaflet.terminator`); the tile server is its own asset/service subproblem; the marker icons are their own asset subproblem.
 
-## Tool choice — `web_search` + `curl`, NOT `web_fetch`
+## Tool choice — `mcp__tavily__tavily_search` + `curl`, NOT `web_fetch`
+
+**Tool naming gotcha.** `mcp__tavily__tavily_search` is the actual registered name — the bare `tavily_search` returns "tool not found." Pass `max_results: 5` as a **number** (not the string `"5"` — the MCP schema rejects string values with a "tool not available" error). Both world11 failures came from this.
 
 **`🌐 web_fetch` is not `curl`.** Despite the name, it downloads the page AND routes it through an LLM with your `prompt:` field for interpretation. On local-model projects (this one), that LLM call is the same throughput-limited Qwen serving the chat agent — a single `web_fetch` against a 100KB npm or GitHub page costs **4+ minutes** of wall clock and queues behind your own turn. `curl` returns bytes in ~200ms with no LLM involvement.
 
-**The rule.** `web_fetch` is for *reading* a long document (interpretive question, answer requires skim-level understanding). `web_search` + `curl` is for *finding* a fact, URL, or version string (the answer is a pattern a person could Ctrl-F for).
+**The rule.** `web_fetch` is for *reading* a long document (interpretive question, answer requires skim-level understanding). `mcp__tavily__tavily_search` + `curl` is for *finding* a fact, URL, or version string (the answer is a pattern a person could Ctrl-F for).
 
 Discovery is always the second case. **Never `web_fetch` an npm or GitHub page during this skill** — `curl https://registry.npmjs.org/<pkg>` returns the same info as structured JSON in 200ms.
 
 `web_fetch` IS appropriate (rarely) when reading a long changelog for breaking changes, an RFC for protocol details, or a multi-answer StackOverflow thread for the accepted recommendation. Picking a library version, verifying an image URL, or finding an API endpoint is not.
+
+## The one universal rule
+
+**Any URL you write into a spec, a card's `metadata.json`, or `card.html` / `card.js` MUST have been verified with `mica_inspect_url` first.** No exceptions. This includes:
+
+- URLs you recalled from training and feel confident about.
+- URLs you derived from a jsdelivr file listing (the listing tells you what files *exist* in the package; only `mica_inspect_url` confirms the exact path renders 200, has the right format, and exposes the methods you'll call).
+- URLs you got from a tavily search result.
+- URLs you modified (changed version, swapped `/dist/`, added `.min`, removed `.min`). A modified URL is a NEW URL — inspect_url it again before commit.
+
+The rule exists because URL construction is where hallucination compounds silently. The agent recalls `cdn.jsdelivr.net/npm/<pkg>@<ver>/<path>` correctly in shape but guesses the path component, writes it into the spec, and the build phase commits a 404. The cost of one `mica_inspect_url` call (~500 bytes, ~200ms) is trivial against the cost of a wrong URL surfacing as a runtime failure during render-verify.
+
+If `mica_inspect_url` returns `ok: false`, that URL does not ship. Use the `reason` field's pivot suggestion (usually the jsdelivr listing) to find a real path, then `mica_inspect_url` the real one before writing it anywhere.
 
 ## Procedure — enumerate, classify, walk
 
@@ -64,6 +79,8 @@ For each one, tag it:
 
 ### Step 3 — Walk each tagged subproblem through the matching procedure
 
+**Enumerate candidates first.** For each subproblem (especially library / plugin / service ones), write down 3–5 candidate options — mix kinds where relevant (a library plus a bespoke fallback). Recall-first; `mcp__tavily__tavily_search` (max_results: 5) only when recall genuinely fails for a category. Don't pre-filter to your favorite — list alternatives even if you wouldn't pick them. The candidate space becomes visible to the user when you record it on canvas (Step 4), so they can redirect *before* you commit to one.
+
 #### 3a — LIBRARY subproblems
 
 Recall-first. You're a coding model with a large training corpus. For libraries that appear in public code thousands of times — Three.js, Leaflet, D3, Chart.js, FullCalendar, Sortable.js, CodeMirror, Marked, Mermaid, Plotly, Tone.js, Pixi.js, Day.js, Luxon, Big.js, Fuse.js — **you already know**: canonical package name, known-stable version range, CDN URL shape, whether addons are UMD or ESM-only, the one-line "hello world" call. Don't pretend you don't.
@@ -72,8 +89,16 @@ For each library subproblem:
 
 1. **Recall**: library name, known-stable version, CDN URL `https://cdn.jsdelivr.net/npm/<pkg>@<version>/<dist-path>`, addon ESM/UMD status, one-line API call.
 2. **Install library-specific skill if curated**: `mica_install_skills source="<library>-skills"`. Mica's curated table maps well-known names (e.g. `threejs-skills`, `three`, `threejs`) to vetted repos. Installs instantly with no gate. Library-specific skills carry knowledge the base model misses — disposer patterns, init-order quirks, version-specific gotchas. Do this BEFORE writing any code that uses the library.
-3. **Verify**: `curl -sI -L "<exact URL you'll commit to metadata.json>" | head -1` → expect HTTP/2 200. For libraries with addons, verify each addon URL separately AND check whether the addon ships as UMD (script-loadable) or ESM-only (won't work in card.js classic-script context).
-4. **Search only if recall fails**: `web_search "<problem> javascript library"` — for genuinely niche libraries you don't recognize.
+3. **Verify** with `mica_inspect_url <CDN URL>`. The tool returns `{ ok, status, contentType, format, methods }` in ~500 bytes — saves chat-history context over raw `curl -s | head`. Read the `format` field:
+   - `"UMD"` — browser-loadable as `<script>`. Mark verified.
+   - `"ESM"` or `"CommonJS"` — won't load as a classic script in card.js. Mark unverified for browser use; pick a different version or library.
+   - `"data"` — JSON/CSS/text. Fine for asset rows.
+   - `ok: false` (non-200) — `reason` includes a pivot suggestion. **404 pivot rule**: your next call is `curl -s https://data.jsdelivr.com/v1/package/npm/<pkg>` for the package's file listing — find the real path. Do NOT guess more URL variants.
+
+   For libraries that produce visible UI (maps, charts, image viewers), ALSO fetch the README to find ancillary CSS / font / data dependencies: `curl -s https://cdn.jsdelivr.net/npm/<pkg>@<version>/README.md | head -c 8000` and scan the first quickstart HTML example for `<link rel="stylesheet">` tags. Add each ancillary URL as a separate verified row (run `mica_inspect_url` on it too). Missing the CSS is the silent failure that broke a Leaflet build: the map renders blank because layout styles never load.
+
+   Raw `curl -sI -L | head -1` is fine when you just want a status code; `mica_inspect_url` is the default for any dependency you're about to commit to `metadata.json`.
+4. **Search only if recall fails**: `mcp__tavily__tavily_search "<problem> javascript library"` (max_results: 5) — for genuinely niche libraries you don't recognize.
 
 **Library structured-data sources** (use these BEFORE `web_fetch` — they're 200ms structured JSON):
 
@@ -123,7 +148,7 @@ For each asset subproblem:
    # → empty output = NO CORS = will fail in WebGL
    # → `*` or echoed origin = CORS allowed = works
    ```
-4. **Search only if recall fails**: `web_search "<asset> CORS github mirror"` or `<asset> CDN`.
+4. **Search only if recall fails**: `mcp__tavily__tavily_search "<asset> CORS github mirror"` (max_results: 5), or `"<asset> CDN"`.
 
 #### 3c — SERVICE subproblems
 
@@ -140,7 +165,7 @@ For each service (live API endpoint) subproblem:
    ```
    Confirm: it returns JSON in the shape you expect; auth requirement is what you thought (no auth, API key in query, bearer token); rate limit is documented (Open-Meteo: 10k/day free; OpenWeather: 60/min free).
 3. **CORS** for client-side use: `curl -sIL "<endpoint>" -H "Origin: http://localhost:5173" | grep -i "access-control-allow-origin"`. Many APIs don't support browser CORS and require a server-side proxy. Mica's `mica.fetch` proxies through the server, bypassing CORS — use it for any third-party API call from card.js.
-4. **Search only if recall fails**: `web_search "<domain> free API CORS"`.
+4. **Search only if recall fails**: `mcp__tavily__tavily_search "<domain> free API CORS"` (max_results: 5).
 
 #### 3d — BESPOKE subproblems
 
@@ -158,6 +183,34 @@ The decisions MUST land in a canvas file before any code that depends on them sh
 4. **A new `canvas/dependency-decisions.md`** — only if none of the above exist.
 
 **Pick ONE location and stay consistent within a project.**
+
+**Optional but recommended for non-trivial builds (3+ subproblems): also write `canvas/<class>-research.md`** — a canvas-visible artifact enumerating ALL candidates considered (not just the chosen picks), with verified URLs. This is for the *user* to read on canvas BEFORE approving the build, so they can redirect (*"use Leaflet, not D3"*) before any code is written. The artifact is not validated by Mica — its format is a suggestion, not a contract — but the canvas-visibility makes the candidate space available for user review. Suggested shape:
+
+```markdown
+# Research: <class name>
+
+## Subproblems
+1. <subproblem>
+2. <subproblem>
+
+## Candidates per subproblem
+
+### 1. <subproblem>
+| Option | Type | URL | Verified | Notes |
+|---|---|---|---|---|
+| Leaflet@1.9.4 | library | https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js | 200, UMD | full-featured 2D map |
+| Leaflet CSS | asset | https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css | 200, data | required for layout |
+| D3.js + topojson | library | https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js | 200, UMD | more bespoke, finer control |
+| Bespoke Canvas 2D | — | — | ~200 lines | hand-roll projection + interactivity |
+
+## Suggested stacks
+| Stack | Picks |
+|---|---|
+| Leaflet | (1) Leaflet + CSS, (2) Leaflet.terminator, (3) Leaflet markers |
+| D3 | (1) D3 + topojson + world-atlas, (2) bespoke terminator math, (3) D3 SVG markers |
+```
+
+The spec (location 1 above) THEN copies URLs verbatim from research's URL column — never introduce an unverified URL in the spec. Build phase consumes the spec; research is for user review.
 
 **The format is identical regardless of location** — a markdown table with one row per subproblem, ordered by kind:
 

@@ -298,7 +298,7 @@ Keep under 100 chars. The parent reads the artifacts you wrote — it doesn't ne
 - Do NOT reorganize on every turn. Once split, the next turn just adds to the relevant focused doc.
 - Do NOT edit `.qwen/skills/` or `.claude/skills/` SKILL.md files — those are project-shared infrastructure. Project-specific information (verified URLs, library versions, recurring patterns) goes in `canvas/interfaces.md` or a dedicated `canvas/conventions.md`.
 
-## Library / CDN research — `tavily_search` first
+## Library / CDN research — `mcp__tavily__tavily_search` first
 
 When a plan item depends on an external library, framework, or CDN URL the user did not name:
 

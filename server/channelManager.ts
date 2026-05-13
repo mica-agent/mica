@@ -321,6 +321,16 @@ export class ChannelManager {
     return this.filenameToSessionId.get(this.filenameKey(project, filename));
   }
 
+  /** Reverse lookup: filename for an active sessionId. Returns undefined if
+   *  the sessionId doesn't correspond to a live session. Used by lifecycle
+   *  handlers (e.g. fresh-thread chat clear) that have the sessionId/chatId
+   *  but need the chat-card filename to scope per-card buffers. */
+  findFilenameBySession(sessionId: string): { project: string | null; filename: string } | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    return { project: session.project, filename: session.filename };
+  }
+
   /** Subscribe to every broadcast across all sessions. Used by voiceAgent's
    *  ambient announcements (Phase 2): when a chat card emits an `assistant`
    *  turn-end event, voice gets notified and can queue a TTS announcement.
