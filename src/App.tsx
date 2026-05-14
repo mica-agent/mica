@@ -99,21 +99,34 @@ export default function App() {
       const cs = getComputedStyle(root);
       const minW = parseInt(cs.minWidth) || 200;
       const minH = parseInt(cs.minHeight) || 150;
+      const pointerId = e.pointerId;
       const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
         const w = Math.max(minW, startW + ev.clientX - startX);
         const h = Math.max(minH, startH + ev.clientY - startY);
         root.style.width = `${w}px`;
         root.style.height = `${h}px`;
       };
-      const cleanup = () => {
+      const cleanup = (ev?: PointerEvent) => {
+        if (ev && ev.pointerId !== pointerId) return;
         handle.removeEventListener('pointermove', onMove);
         handle.removeEventListener('pointerup', cleanup);
         handle.removeEventListener('pointercancel', cleanup);
-        try { handle.releasePointerCapture(e.pointerId); } catch { /* released by browser */ }
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', cleanup);
+        window.removeEventListener('pointercancel', cleanup);
+        try { handle.releasePointerCapture(pointerId); } catch { /* released */ }
       };
+      // Listen on BOTH handle (in case setPointerCapture worked) and
+      // window (fallback — pointer events bubble to window). Whichever
+      // path delivers pointerup first triggers cleanup; the pointerId
+      // check guards against unrelated pointers triggering it.
       handle.addEventListener('pointermove', onMove);
       handle.addEventListener('pointerup', cleanup);
       handle.addEventListener('pointercancel', cleanup);
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', cleanup);
+      window.addEventListener('pointercancel', cleanup);
     };
     window.addEventListener('pointerdown', onPointerDown);
     return () => window.removeEventListener('pointerdown', onPointerDown);
