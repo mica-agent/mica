@@ -286,8 +286,18 @@ const overlayStyle: React.CSSProperties = {
 };
 
 const modalStyle: React.CSSProperties = {
-  width: '100%',
-  maxWidth: 560,
+  // Same resize affordance as the canvas-settings overlay — browser-native
+  // chevron in the bottom-right via `resize: both`. Initial size fits the
+  // current content; user can drag larger if they're managing many
+  // connections.
+  width: 'min(720px, calc(100vw - 40px))',
+  height: 'min(80vh, 800px)',
+  minWidth: 400,
+  minHeight: 300,
+  maxWidth: 'calc(100vw - 40px)',
+  maxHeight: 'calc(100vh - 40px)',
+  resize: 'both',
+  overflow: 'auto',
   background: '#16161e',
   border: '1px solid rgba(255,255,255,0.08)',
   borderRadius: 12,
