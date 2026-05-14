@@ -297,7 +297,15 @@ export default function App() {
             {showReloadFailsafe && (
               <button
                 className="ws-overlay-btn"
-                onClick={() => window.location.reload()}
+                onClick={() => {
+                  // Match the auto-reconnect path in micaSocket.ts (force-
+                  // reload-on-server-back). `replace(...?t=...)` is a fresh
+                  // navigation, less likely to inherit the renderer's
+                  // half-state than `reload()`. Specifically helps the
+                  // voice card's audio context — soft reloads can leave
+                  // it "running but silent" until a forced refresh.
+                  window.location.replace(window.location.pathname + "?t=" + Date.now());
+                }}
                 title="Reload the page to re-establish the connection"
               >
                 Reload to reconnect

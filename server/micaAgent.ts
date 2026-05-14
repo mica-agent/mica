@@ -3055,6 +3055,24 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           return;
         }
 
+        if (msg.type === "replace_queued") {
+          // Mutate an existing queued item's text in place. Used by the
+          // voice agent when the user revises a pending request rather
+          // than piling a new one on top. Preserves id, source,
+          // queuedAt, and position — only the text changes. No-op if
+          // the id already drained (race).
+          const id = typeof msg.id === "string" ? msg.id : "";
+          const text = typeof msg.text === "string" ? msg.text : "";
+          if (!id || !text) return;
+          const idx = queue.findIndex((q) => q.id === id);
+          if (idx >= 0) {
+            queue[idx] = { ...queue[idx], text };
+            console.log(`[mica-agent] queue replaced item ${id} (queue depth: ${queue.length})`);
+            void commitQueue();
+          }
+          return;
+        }
+
         if (msg.type === "clear_queue") {
           // Empty the queue without touching the in-flight turn. The
           // distinction from interrupt: clear_queue lets the current

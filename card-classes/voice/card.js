@@ -15,8 +15,49 @@ const transcriptWrap = container.querySelector('#vc-transcript-wrap');
 const transcriptEl = container.querySelector('#vc-transcript');
 const replyWrap = container.querySelector('#vc-reply-wrap');
 const replyEl = container.querySelector('#vc-reply');
-const toolsWrap = container.querySelector('#vc-tools');
-const toolsListEl = container.querySelector('#vc-tools-list');
+const activityListEl = container.querySelector('#vc-activity-list');
+const activityClearEl = container.querySelector('#vc-activity-clear');
+
+// Persistent activity log. Captures STT outputs, tool dispatches +
+// outcomes, Mica's spoken replies, bargers, aborts, and errors so the
+// user can see what's actually happening turn over turn. Cleared only
+// on the explicit "clear" button (or card remount).
+const ACTIVITY_MAX_ROWS = 200;
+function pad2(n) { return n < 10 ? '0' + n : String(n); }
+function activityTimestamp() {
+  const d = new Date();
+  return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+function appendActivity(kind, text) {
+  if (!activityListEl) return;
+  const row = window.document.createElement('div');
+  row.className = 'vc-activity-row';
+  row.dataset.kind = kind;
+  const timeEl = window.document.createElement('span');
+  timeEl.className = 'vc-activity-time';
+  timeEl.textContent = activityTimestamp();
+  const kindEl = window.document.createElement('span');
+  kindEl.className = 'vc-activity-kind';
+  kindEl.textContent = kind;
+  const textEl = window.document.createElement('span');
+  textEl.className = 'vc-activity-text';
+  textEl.textContent = String(text || '');
+  row.appendChild(timeEl);
+  row.appendChild(kindEl);
+  row.appendChild(textEl);
+  activityListEl.appendChild(row);
+  // FIFO trim — keep DOM small even on long sessions.
+  while (activityListEl.children.length > ACTIVITY_MAX_ROWS) {
+    activityListEl.removeChild(activityListEl.firstChild);
+  }
+  // Auto-scroll to bottom so newest is visible.
+  activityListEl.scrollTop = activityListEl.scrollHeight;
+}
+if (activityClearEl) {
+  activityClearEl.addEventListener('click', function () {
+    activityListEl.innerHTML = '';
+  });
+}
 const audioEl = container.querySelector('#vc-audio');
 const metaEl = container.querySelector('#vc-meta');
 const voiceSelectEl = container.querySelector('#vc-voice-select');
@@ -331,6 +372,7 @@ if (_stopSpeakingBtn) {
     e.stopPropagation();
     bargedInUntilMs = Date.now() + 800;
     stopVoicePlayback();
+    appendActivity('barge', 'stop-talking button — TTS canceled');
     try { ch.send({ type: 'barge_in' }); } catch (_) { /* channel may be reconnecting */ }
   });
 }
@@ -369,8 +411,7 @@ function resetReplyDisplay() {
   // tear down audio.
   setReplyRaw('');
   replyWrap.style.display = 'none';
-  toolsListEl.innerHTML = '';
-  toolsWrap.style.display = 'none';
+  // Activity log persists across turns — only the reply bubble resets.
   // Reset the reply label in case it was tagged by a prior ambient
   // announcement ("🔔 Qwen (canvas/qwen.chat)").
   const labelEl = container.querySelector('.vc-reply-label');
@@ -453,9 +494,30 @@ async function turnMicOn() {
   isPlayingQueue = false;
   currentSource = null;
   const playCtx = ensurePlaybackCtx();
-  if (playCtx && playCtx.state === 'suspended') {
-    try { await playCtx.resume(); console.log('[voice] playback AudioContext (re)created and resumed'); }
+  if (playCtx) {
+    // Always resume — Safari/iOS start fresh contexts in "suspended" and
+    // need the explicit resume; Chromium starts in "running" but the
+    // resume call is a no-op there, so it's safe to always invoke.
+    try { await playCtx.resume(); }
     catch (e) { console.warn('[voice] resume() failed: ' + (e && e.message ? e.message : e)); }
+    // Prime the audio graph. Both Chromium and Safari can keep the
+    // context in a "running but silent" state after a soft reload
+    // (window.location.reload()) — the context's `state` reads
+    // "running" and src.start() doesn't throw, but ctx.destination
+    // produces nothing until a real buffer flows through it. Playing
+    // a 1-frame silent buffer synchronously inside this user gesture
+    // physically wires the graph to the output device. Force-refresh
+    // worked around this; primingthe graph in-page removes the need.
+    try {
+      const primeBuf = playCtx.createBuffer(1, 1, playCtx.sampleRate);
+      const primeSrc = playCtx.createBufferSource();
+      primeSrc.buffer = primeBuf;
+      primeSrc.connect(playCtx.destination);
+      primeSrc.start(0);
+      console.log('[voice] playback AudioContext (re)created, resumed, primed; state=' + playCtx.state + ' sampleRate=' + playCtx.sampleRate);
+    } catch (e) {
+      console.warn('[voice] prime buffer failed: ' + (e && e.message ? e.message : e));
+    }
   }
   let stream;
   try {
@@ -620,31 +682,51 @@ function checkVad() {
   const rms = Math.sqrt(sumSq / vadSampleBuf.length);
   const now = Date.now();
 
-  if (rms > SPEECH_RMS) {
-    if (!speechActive) {
-      // Speech just started — recorder is already running, so the audio
-      // BEFORE this point is captured too (no missing-first-word issue).
-      speechActive = true;
-      speechStartedAt = now;
-      applyMicButtonState();
+  // Suppress normal utterance detection while Mica's TTS is playing.
+  // Browser AEC isn't perfect — speaker output bleeds back into the mic
+  // at speech-level RMS, and without this gate Parakeet transcribes
+  // Mica's own voice as if it were the user's, producing a self-echo
+  // feedback loop ("Hey Winston, what's up?" comes back as a user
+  // turn). The barge-in path below is the explicit way to interrupt
+  // TTS — it requires sustained louder activity and is unaffected by
+  // this gate.
+  const ttsActive = isPlayingQueue || wavQueue.length > 0;
+  if (!ttsActive) {
+    if (rms > SPEECH_RMS) {
+      if (!speechActive) {
+        // Speech just started — recorder is already running, so the audio
+        // BEFORE this point is captured too (no missing-first-word issue).
+        speechActive = true;
+        speechStartedAt = now;
+        applyMicButtonState();
+      }
+      silenceStartedAt = 0;
+    } else if (speechActive) {
+      if (silenceStartedAt === 0) silenceStartedAt = now;
+      if (now - silenceStartedAt >= SILENCE_MS) {
+        endUtterance();
+      }
     }
-    silenceStartedAt = 0;
-  } else if (speechActive) {
-    if (silenceStartedAt === 0) silenceStartedAt = now;
-    if (now - silenceStartedAt >= SILENCE_MS) {
+    // Force-cut overly long utterances (catch-all for stuck VAD).
+    if (speechActive && speechStartedAt > 0 && now - speechStartedAt >= MAX_UTTERANCE_MS) {
       endUtterance();
     }
-  }
-  // Force-cut overly long utterances (catch-all for stuck VAD).
-  if (speechActive && speechStartedAt > 0 && now - speechStartedAt >= MAX_UTTERANCE_MS) {
-    endUtterance();
+  } else if (speechActive) {
+    // TTS started while we were mid-utterance (rare but possible if
+    // the assistant is mid-reply and the user paused, then TTS arrived
+    // from an ambient or delegation path). Drop the in-progress
+    // utterance rather than commit it half-formed — odds are it's
+    // already partial bleed-through.
+    speechActive = false;
+    silenceStartedAt = 0;
+    speechStartedAt = 0;
+    applyMicButtonState();
   }
 
   // ── Barge-in detection (separate path) ─────────────────────────────
   // Only consider barging while Mica is actually speaking. Require BOTH
   // a louder threshold AND sustained activity to filter out short/quiet
   // false positives (coughs, clicks, fan noise, keyboard taps).
-  const ttsActive = isPlayingQueue || wavQueue.length > 0;
   if (ttsActive && Date.now() >= bargedInUntilMs) {
     if (rms > BARGE_IN_RMS) {
       if (bargeCandidateStartedAt === 0) {
@@ -654,6 +736,7 @@ function checkVad() {
         bargedInUntilMs = now + 800;
         bargeCandidateStartedAt = 0;
         stopVoicePlayback();
+        appendActivity('barge', 'voice-detected interruption during TTS');
         try { ch.send({ type: 'barge_in' }); } catch (_) { /* channel may be reconnecting */ }
       }
     } else {
@@ -805,6 +888,7 @@ ch.onData(function(data) {
       transcriptEl.style.fontStyle = '';
       transcriptEl.style.opacity = '';
       transcriptWrap.style.display = '';
+      appendActivity('stt', data.text);
     } else {
       setStatus('No speech detected', 'idle');
       setMeta('Hold the button while speaking — release when done.');
@@ -826,36 +910,36 @@ ch.onData(function(data) {
   }
 
   if (t === 'tool_call') {
-    toolsWrap.style.display = '';
-    const row = window.document.createElement('div');
-    row.className = 'vc-tool';
-    row.dataset.ok = 'pending';
-    row.textContent = '→ ' + (data.name || '?') + (data.args ? ' (' + String(data.args).slice(0, 80) + ')' : '');
-    row.dataset.toolName = data.name || '';
-    toolsListEl.appendChild(row);
+    // Build a short args summary from common shapes (query / url / file /
+    // tz / id / message). Falls back to a truncated raw-args slice for
+    // anything else so the log still shows something useful.
+    let argsSummary = '';
+    if (typeof data.args === 'string' && data.args) {
+      const q = (data.args.match(/<query>([\s\S]*?)<\/query>/) || [])[1];
+      const u = (data.args.match(/<url>([\s\S]*?)<\/url>/) || [])[1];
+      const f = (data.args.match(/<file>([\s\S]*?)<\/file>/) || [])[1];
+      const tz = (data.args.match(/<tz>([\s\S]*?)<\/tz>/) || [])[1];
+      const m = (data.args.match(/<message>([\s\S]*?)<\/message>/) || [])[1];
+      const parts = [];
+      if (f) parts.push(f);
+      if (q) parts.push('"' + q + '"');
+      if (u) parts.push(u);
+      if (tz) parts.push(tz);
+      if (m) parts.push('"' + m.slice(0, 60) + (m.length > 60 ? '…' : '') + '"');
+      argsSummary = parts.length ? parts.join(' · ') : String(data.args).slice(0, 80);
+    }
+    appendActivity('tool→', (data.name || '?') + (argsSummary ? ' ' + argsSummary : ''));
     return;
   }
 
   if (t === 'tool_result') {
-    const rows = toolsListEl.querySelectorAll('.vc-tool');
-    let target = null;
-    for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i].dataset.ok === 'pending' && rows[i].dataset.toolName === data.name) {
-        target = rows[i];
-        break;
-      }
-    }
-    if (!target) {
-      target = window.document.createElement('div');
-      target.className = 'vc-tool';
-      toolsListEl.appendChild(target);
-    }
-    target.dataset.ok = data.ok ? 'true' : 'false';
-    const msg = data.ok ? '✓' : '✗';
-    let detail = '';
-    if (data.name === 'send_to_card' && data.file) detail = ' → ' + data.file;
-    if (data.message && !data.ok) detail += ': ' + String(data.message).slice(0, 80);
-    target.textContent = msg + ' ' + (data.name || '?') + detail;
+    const kind = data.ok ? 'tool✓' : 'tool✗';
+    let detail = data.name || '?';
+    if (data.file) detail += ' ' + data.file;
+    if (data.query) detail += ' "' + String(data.query).slice(0, 60) + '"';
+    if (data.url) detail += ' ' + data.url;
+    if (data.message) detail += (data.ok ? ' — ' : ': ') + String(data.message).slice(0, 120);
+    appendActivity(kind, detail);
     return;
   }
 
@@ -880,7 +964,9 @@ ch.onData(function(data) {
 
   if (t === 'assistant_speech_text') {
     replyWrap.style.display = '';
-    appendReplyRaw(data.text || '');
+    const text = data.text || '';
+    appendReplyRaw(text);
+    if (text.trim()) appendActivity('say', text.trim());
     return;
   }
 
@@ -921,10 +1007,12 @@ ch.onData(function(data) {
   if (t === 'error') {
     setStatus('Error', 'error');
     setMeta(String(data.error || 'unknown error'));
+    appendActivity('error', String(data.error || 'unknown error'));
     return;
   }
 
   if (t === 'abort') {
+    appendActivity('abort', 'server-side abort — TTS canceled, delegation interrupted');
     // Server fired the abort tool (Mica recognized "stop" intent and
     // emitted <tool name="abort"/>). Stop local audio playback and
     // clear the visible reply panel — Mica's <say> confirmation

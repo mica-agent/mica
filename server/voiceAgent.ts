@@ -106,7 +106,68 @@ async function loadProjectIntent(project: string | null): Promise<string> {
   return "";
 }
 
+/** Small text-card content the voice agent inlines into every turn's
+ *  system prompt, so the LLM doesn't need a `read_card` round-trip to
+ *  know what's on the canvas. Mirrors the `loadProjectIntent` pattern
+ *  but for the full set of small `.md`/`.txt` cards, sorted by recency.
+ *  Capped per-file and total so a sprawling canvas can't blow the
+ *  prompt; oversize files truncate with a footer that nudges the LLM
+ *  toward `read_card` for the remainder. */
+interface AmbientItem {
+  filename: string;       // canvas-relative path
+  content: string;        // text body, post-cap
+  truncated: boolean;     // true if we hit the per-file cap
+}
+
+const AMBIENT_PER_FILE_CAP = 4096;
+const AMBIENT_TOTAL_CAP = 16384;
+const AMBIENT_MIN_REMAINING = 512;
+const AMBIENT_EXTENSIONS = new Set(["md", "txt"]);
+const AMBIENT_SKIP_MARKER = "<!-- voice-skip -->";
+
+async function loadAmbientContext(
+  project: string | null,
+  excludePaths: Set<string>,
+): Promise<AmbientItem[]> {
+  const cards = await listCanvasFiles(project || undefined);
+  const candidates = cards
+    .filter((c) => {
+      if (excludePaths.has(c.name)) return false;
+      const dot = c.name.lastIndexOf(".");
+      const ext = dot === -1 ? "" : c.name.slice(dot + 1).toLowerCase();
+      return AMBIENT_EXTENSIONS.has(ext);
+    })
+    .sort((a, b) => {
+      const ta = a.modifiedAt ? Date.parse(a.modifiedAt) : 0;
+      const tb = b.modifiedAt ? Date.parse(b.modifiedAt) : 0;
+      return tb - ta;  // newest first wins the budget
+    });
+
+  const items: AmbientItem[] = [];
+  let remaining = AMBIENT_TOTAL_CAP;
+  for (const card of candidates) {
+    if (remaining < AMBIENT_MIN_REMAINING) break;
+    try {
+      const file = await readProjectFile(card.name, project || undefined);
+      const body = String(file?.content || "").trim();
+      if (!body) continue;
+      // First-line opt-out — cheap safety valve so noisy files
+      // (long meeting notes, journals) can be excluded without
+      // any code/config change.
+      const firstLine = body.split(/\r?\n/, 1)[0].trim();
+      if (firstLine === AMBIENT_SKIP_MARKER) continue;
+      const capForThis = Math.min(AMBIENT_PER_FILE_CAP, remaining);
+      const truncated = body.length > capForThis;
+      const content = truncated ? body.slice(0, capForThis) : body;
+      items.push({ filename: card.name, content, truncated });
+      remaining -= content.length;
+    } catch { /* read failure → skip; voice still functions */ }
+  }
+  return items;
+}
+
 interface CardQueueItem {
+  id: string;       // QueuedItem.id — handle for delete_queue_item / replace_queue_item
   text: string;     // first ~100 chars of the queued message
   source: string;   // "user" | "voice" | "file-changes"
   queuedAt: number; // unix ms; 0 if missing
@@ -127,10 +188,11 @@ async function cardStatusFor(
   let cardId = "";
   try { cardId = await getOrCreateCardId(project, filename); } catch { /* leave empty */ }
   const rawQueue = cardId
-    ? await loadChatQueue<{ text?: string; source?: string; queuedAt?: number }>(cardId, project).catch(() => [])
+    ? await loadChatQueue<{ id?: string; text?: string; source?: string; queuedAt?: number }>(cardId, project).catch(() => [])
     : [];
   const queueDepth = rawQueue.length;
   const queueItems: CardQueueItem[] = rawQueue.slice(0, 5).map((q) => ({
+    id: typeof q.id === "string" ? q.id : "",
     text: typeof q.text === "string" ? q.text.slice(0, 100) : "",
     source: typeof q.source === "string" ? q.source : "user",
     queuedAt: typeof q.queuedAt === "number" ? q.queuedAt : 0,
@@ -1196,6 +1258,16 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // Empty string when there's no spec — section is omitted.
           const projectIntent = await loadProjectIntent(sessionProject);
 
+          // Ambient context: every small .md/.txt card on the canvas
+          // root, content-inlined so voice "just knows" what's there
+          // without a read_card round-trip. Spec.md is excluded when
+          // projectIntent already covered it. See loadAmbientContext
+          // for the budget and the <!-- voice-skip --> opt-out.
+          const ambientExclude = new Set<string>(
+            projectIntent ? ["canvas/spec.md", "spec.md"] : [],
+          );
+          const ambient = await loadAmbientContext(sessionProject, ambientExclude);
+
           // Pick a representative chat-style card filename to use in
           // examples — grounds the LLM in the actual canvas vocabulary.
           // Falls back to a generic "chat.chat" when no chat-style card
@@ -1226,13 +1298,40 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
 
             "**Notice what's on the canvas, treat it as context.** When there's a project intent below, ground your suggestions in it. Otherwise lean on your own knowledge — you're Qwen3.6, you know a lot — and engage with whatever the user brings. Speak naturally about the topic; let the canvas inform your reply silently rather than announcing its state.\n\n" +
 
-            "**Look it up yourself first.** Your training data has a cutoff. Anything that moves — current events, today's news, a software's latest version, prices and stock quotes, schedules, scores, who's in office, the current time anywhere, today's weather — call the `time` / `search` / `web_fetch` tools and speak the looked-up answer. Same for specific facts where guessing would mislead: a person's birth year, a city's population, an obscure spec's details. The tools take 1–3 seconds; that's far better than a confident wrong answer. **Don't dispatch lookups to chat cards** — search/web_fetch live on YOUR side of the line. send_to_card is for real project work (files, code, planning), not facts you can pull in one search call. When you're sure of something stable (general concepts, well-known history, your own opinions), answer directly.\n\n" +
+            "**HARD RULE: no fabricated specifics.** A specific number, date, address, name, headline, price, score, or location in `<say>` without a preceding tool call is a hallucination — even when it sounds plausible. Users catch these in seconds and stop trusting everything else you say. Two safe shapes: (a) call a tool first, then speak the tool-derived result; (b) say plainly you don't have the specific and offer to look it up. Never the third shape — confidently stating a fabricated specific. This rule is absolute; the model-training instinct to be immediately helpful with a guess is what trips it. Resist that instinct.\n\n" +
 
-            "**Never promise a lookup without doing it.** If you say \"let me check\", \"I'm pulling that up\", \"hold on\", \"one moment\" — you MUST emit the matching `<tool name=\"search\">` or `<tool name=\"web_fetch\">` in the same response. Don't narrate intent without action. Either call the tool now or skip the preamble and answer directly.\n\n" +
+            "**Search and knowledge are partners, not a fallback chain.** For most non-trivial questions you'll combine both: `search` (or `web_fetch`, or `time`) gives the precise current data; your knowledge gives the context and framing that makes the data make sense. Example shape: search for the stock price → your `<say>` includes the looked-up number AND the broader market context you know. The two together produce a useful answer; either alone is weaker. Tools are cheap (1–3 seconds); use them as your default when the question has any specific moving piece.\n\n" +
+
+            "**When you need a tool:**\n" +
+            "  1. **Data that didn't exist when you were trained.** Today's weather, today's news, today's prices/scores, the current time anywhere. Your weights have a cutoff. Use `search`, `web_fetch`, or `time`.\n" +
+            "  2. **Precision matters on a moving target.** Stock quotes, exchange rates, real-time metrics. Even when you roughly know the shape, the user needs the current value, not your training-era memory. Use `search` or `web_fetch`.\n" +
+            "  3. **You're not firmly confident in the exact specific.** Addresses, phone numbers, attribution, less-famous figures, niche numerics, recently-opened businesses. Use `search`/`web_fetch` for a quick lookup. Confidence asymmetry: if you're 60–70% sure, that's not firm; search.\n\n" +
+
+            "**Ask Qwen (or another chat-card agent) for help.** `send_to_card` is not only for executing project work — it's also for consulting. Qwen has the same knowledge base you do plus deeper reasoning, file access, and code execution. Route to it when:\n" +
+            "  - The question is hard, layered, or analytical and a quick voice reply would short-change it.\n" +
+            "  - You want a second take on something you're unsure about.\n" +
+            "  - The work needs files, code, or multi-step reasoning.\n" +
+            "Offer phrasings: \"Want me to ask Qwen for a deeper take?\" / \"I can send that over to Qwen if you'd like a thorough answer.\" Don't over-route trivial questions; trust your knowledge for the easy ones.\n\n" +
+
+            "**Never promise without doing.** If `<say>` contains \"let me check\", \"pulling that up\", \"hold on\", \"one moment\", \"let me look that up\" — you MUST emit a matching `<tool>` in the same response. Don't narrate intent without action. Either call the tool now or skip the preamble and answer directly.\n\n" +
+
+            "**Status questions about a chat card need a real check, not a guess.** When the user asks what an agent is doing, whether it's busy, what's in its queue, what it just said, or whether it's stuck — call `card_status` (for busy / idle / queue depth / queued items) or `read_recent_replies` (for what it just said). Then REASON over what you got back: if there's a queue, decide whether the user's likely next move is to add, replace, delete, or wait. Speak the real status with that reasoning attached — not a forwarding offer. Fabricating an agent's state (\"Qwen is still working on that…\" without checking) is the same kind of lie as fabricating weather. And jumping to send_to_card when the user asked about state is forwarding without understanding — the user wants to know what's happening, not to add more.\n\n" +
+
+            "**You CANNOT modify canvas cards yourself — only chat agents can.** You don't have file-write access. Cards are edited via chat agents (Qwen, Claude Code, etc.) through `send_to_card`. So when the user reports a problem with a card (wrong data, broken layout, missing field, incorrect coordinates, ugly markers, etc.), the ONLY honest responses are:\n" +
+            "  - Dispatch the fix right now: `<tool name=\"send_to_card\"><file>…</file><message>describe what to fix</message></tool>` paired with a `<say>` confirming what you sent.\n" +
+            "  - Offer to dispatch and wait: `<say>Want me to ask Qwen to fix that?</say>` — let the user opt in.\n" +
+            "Saying \"let me look at the data\" / \"I'll fix it\" / \"I'm correcting it\" without emitting `send_to_card` is the dispatch-lie pattern — you literally cannot do those things. The user can fix the issue themselves OR delegate to an agent that can; voice's role is to be the routing layer, not the editor.\n\n" +
 
             "**Work with the user as context emerges.** The first few exchanges may be loose — exploring an idea, kicking around possibilities. As the conversation surfaces what the user actually wants, start suggesting concrete moves: \"Want me to ask Qwen to draft a spec?\" \"Should I have it explore the X angle?\" Engage the chat agents and other tools more as the work crystallizes.\n\n" +
 
-            "**Dispatch when there's real work.** When the user clearly wants something done that needs files, code, search, or planning — use `send_to_card` to route it. After dispatching, mention an obvious follow-up if there is one, or just confirm briefly and stop. Before dispatching to a chat card that's already busy or has a recent delegation, consider calling `card_status` to see what's queued — if the user's new request overlaps with something already pending, work with them to decide (combine, skip, or wait) rather than piling on.\n\n" +
+            "**Doubt suspicious transcripts before acting.** The user message came through a mic, echo cancellation, VAD, and STT — none perfect. Misheard utterances and audio leakage happen, especially during your own TTS playback. Treat the transcript as evidence, not ground truth. Three doubt signals:\n" +
+            "  - **Off-topic for the conversation.** No thread connection to what you've been discussing, no transition word, no plausible new direction.\n" +
+            "  - **Very short, generic, context-free.** A two- or three-word fragment that could be speech to someone else, the user reading aloud, or media bleeding through.\n" +
+            "  - **Doesn't fit the target's recent thread.** Before a heavy dispatch, check what the target chat card last said. A non-sequitur with no explicit pivot from the user is suspect.\n" +
+            "Two or more signals firing → prefer a clarifier over a dispatch. One missed dispatch is recoverable; a bad dispatch that lands in a busy chat card's queue can cascade for several turns before anyone notices. Reactive cleanup via `delete_queue_item` exists, but proactive doubt is cheaper.\n\n" +
+
+            "**Dispatch when work or deeper analysis is wanted.** Two cases for `send_to_card`: (a) the user clearly wants something done that needs files, code, or planning — route it; (b) the user wants a thorough answer to a hard question and you've offered to ask Qwen — route it. After dispatching, mention an obvious follow-up if there is one, or just confirm briefly. Before dispatching to a chat card that's already busy or has a recent delegation, call `card_status` to see what's queued — if the new request overlaps with something pending, work with the user to decide (combine, skip, wait) rather than piling on.\n\n" +
+            "**Manage the queue, don't pile on.** When the user revises or cancels something you already dispatched and it's still queued behind the in-flight turn, mutate the queue rather than stack another item: call `card_status` to read item IDs, then `replace_queue_item` to amend the text or `delete_queue_item` to drop it. Two heuristics: \"never mind / cancel / drop that\" → delete; \"actually make that X instead\" or \"also add Y\" → replace. Piling on a third or fourth send_to_card while two are already queued is the failure mode this avoids.\n\n" +
 
             "Every word inside <say>…</say> is read aloud. Keep <say> as plain conversational speech — no markdown, no lists, no code, no URLs.\n",
           );
@@ -1242,6 +1341,17 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
               "## Project intent (from canvas/spec.md — already in your context)\n" +
               projectIntent + "\n\n" +
               "Answer questions about the project directly from the section above. The spec.md content is already loaded — read_card on it is redundant.\n",
+            );
+          }
+
+          if (ambient.length > 0) {
+            const blocks = ambient.map((it) => {
+              const trailer = it.truncated ? "\n…(truncated; call read_card for more)" : "";
+              return `### ${it.filename}\n${it.content}${trailer}`;
+            }).join("\n\n");
+            promptParts.push(
+              "## Ambient context (canvas .md/.txt cards — already loaded; don't read_card these unless you need a different angle)\n" +
+              blocks + "\n",
             );
           }
 
@@ -1347,6 +1457,8 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             `<tool name="card_status"><file>EXACT_FILENAME</file></tool>` + " — busy/idle hint for a chat card. Use for \"is Qwen still working?\".\n" +
             `<tool name="read_recent_replies"><file>EXACT_FILENAME</file><n>1</n></tool>` + " — fetch the last N assistant replies from a chat card. Use for \"what did Qwen just say?\".\n" +
             `<tool name="send_to_card"><file>EXACT_FILENAME</file><message>WHAT_TO_DO</message></tool>` + " — forward to a chat card from the \"Chat cards\" section above. Targets outside that section are rejected. Pick by role description when present; pick by filename when names collide.\n" +
+            `<tool name="delete_queue_item"><file>EXACT_FILENAME</file><id>QUEUE_ITEM_ID</id></tool>` + " — remove a pending item from a chat card's queue. Get the id from card_status. Use when the user cancels a request that hasn't been picked up yet (\"never mind\", \"drop that\").\n" +
+            `<tool name="replace_queue_item"><file>EXACT_FILENAME</file><id>QUEUE_ITEM_ID</id><message>NEW_TEXT</message></tool>` + " — rewrite a pending item's text in place. Get the id from card_status. Use when the user amends a request that's still queued.\n" +
             `<tool name="abort"/>` + " — user wants to stop. Cancels the last delegation (if any) and stops in-flight playback. Pair with a brief <say> confirmation (\"OK, stopping\").\n" +
             `<tool name="search"><query>SEARCH_QUERY</query></tool>` + " — web search via Tavily. Use for facts you don't know (current events, latest versions, simple lookups). Returns top results; you summarize.\n" +
             `<tool name="web_fetch"><url>URL</url></tool>` + " — fetch a URL and return its text. Use after search to drill into a specific result, or when the user gives a URL directly.\n" +
@@ -1380,42 +1492,27 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           );
 
           promptParts.push(
-            "## Examples — the gradient from loose to active\n" +
+            "## Output grammar — shape templates\n" +
+            "These show the SHAPE of your output for different intents. Speak the actual answer in your own words; the brackets and pseudo-content are placeholders. Do NOT emit the role labels \"Assistant:\" or \"User:\" — your response is ALWAYS just the <tool> and/or <say> blocks, never wrapped in a role prefix.\n\n" +
 
-            "# Loose / exploratory — leans on own knowledge\n" +
-            "User: I'm thinking about something to track running mileage\n" +
-            "Assistant: <say>Couple of well-worn shapes for that: GPS-based auto-logging, manual entries with notes, or trends-over-time dashboards. What matters most to you — the speed of logging, or the analytics?</say>\n\n" +
+            "General knowledge — direct answer:\n" +
+            "  <say>brief spoken answer in your own words</say>\n\n" +
 
-            "# Mid / clarifying — surfacing intent, offering scaffolding\n" +
-            "User: yeah trends matter most. weekly mileage and pace\n" +
-            "Assistant: <say>Got it — pace and weekly volume. Want me to ask Qwen to draft a quick spec, or talk through the data model first?</say>\n\n" +
+            "Time-bound fact — tool first, then speak the result:\n" +
+            "  <tool name=\"time\"><tz>Asia/Tokyo</tz></tool><say>spoken answer from the tool result</say>\n" +
+            "  <tool name=\"search\"><query>focused query string</query></tool><say>spoken answer woven from the search results plus context you know</say>\n\n" +
 
-            "# Active / dispatching with proactive follow-up\n" +
-            "User: yeah have qwen draft the spec\n" +
-            `Assistant: <tool name="send_to_card"><file>${exampleFilename}</file><message>Draft a spec for a running-tracker card focused on weekly mileage and pace trends.</message></tool><say>OK, asked Qwen for the spec. Once it lands, I can have it sketch the data model.</say>\n\n` +
+            "Unsure of a specific — offer to look it up rather than fabricate:\n" +
+            "  <say>I don't have that on hand — want me to look it up?</say>\n\n" +
 
-            "# General knowledge — direct answer\n" +
-            "User: who's Bruce Springsteen?\n" +
-            "Assistant: <say>New Jersey rock musician — Born to Run, Born in the U.S.A., legendary live shows with the E Street Band.</say>\n\n" +
+            "Hard or analytical work — route to a chat-card agent:\n" +
+            `  <tool name="send_to_card"><file>${exampleFilename}</file><message>concrete description of the work to do</message></tool><say>brief confirmation of what you sent</say>\n\n` +
 
-            "# Time-sensitive — use the time tool\n" +
-            "User: what time is it in Tokyo?\n" +
-            `Assistant: <tool name="time"><tz>Asia/Tokyo</tz></tool><say>Just past three in the morning in Tokyo.</say>\n\n` +
+            "Status / queue check on a chat card — call card_status first, then REASON over the result:\n" +
+            `  <tool name="card_status"><file>${exampleFilename}</file></tool><say>plain status with reasoning, e.g. \"Qwen is busy with X; one item queued behind. Want me to add yours, replace what's queued, or wait?\"</say>\n\n` +
 
-            "# Volatile fact — use search\n" +
-            "User: what's the latest version of three.js?\n" +
-            `Assistant: <tool name="search"><query>latest three.js version</query></tool><say>Latest is r158, released last month.</say>\n\n` +
-
-            "# Price / current event — search, don't dispatch to a chat card\n" +
-            "User: what did Apple stock close at on Friday?\n" +
-            `Assistant: <tool name="search"><query>Apple AAPL stock close price Friday</query></tool><say>AAPL closed at $189.43, up about half a percent on the day.</say>\n\n` +
-
-            "# News update — search\n" +
-            "User: any updates on the redistricting fight?\n" +
-            `Assistant: <tool name="search"><query>redistricting news this week congressional map ruling</query></tool><say>Two big moves this week: a state judge blocked the amendment from the ballot, and Virginia's high court tossed the new congressional map.</say>\n\n` +
-
-            "# Project-specific lookup — read tool, then summarize\n" +
-            `Assistant: <tool name="read_recent_replies"><file>${exampleFilename}</file></tool><say>Qwen wrapped the architecture plan — four services and a five-stage retrieval pipeline. Want me to ask it to detail the riskiest one?</say>`,
+            "Reading what a chat card last said:\n" +
+            `  <tool name="read_recent_replies"><file>${exampleFilename}</file></tool><say>summary or excerpt of the reply</say>`,
           );
 
           const systemPrompt = promptParts.join("\n");
@@ -1457,8 +1554,32 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                   model: "qwen-voice",
                   messages,
                   max_tokens: 280,
-                  temperature: 0.5,
+                  // Sampling for a tool-emitting agent, not for general
+                  // chat. Qwen3.6's published recommendations
+                  // (temp 1.0 / presence_penalty 1.5) are tuned for
+                  // chat variety — when applied here they destabilize
+                  // the <say>/<tool> XML protocol: presence_penalty
+                  // actively suppresses recently-emitted tokens, and
+                  // our format tags MUST repeat ("<tool>" then later
+                  // "<say>" in the same turn, plus <say> repeating
+                  // across turns). The penalty was producing truncated
+                  // tool calls and bare opens like "<say>" with no
+                  // content. Tightening to typical tool-agent values:
+                  //   - temp 0.7 → still varied enough; format-stable
+                  //   - presence_penalty 0 → format tags free to repeat
+                  //   - top_p 0.95 / top_k 20 / min_p 0.0 → as Qwen recs
+                  temperature: 0.7,
+                  top_p: 0.95,
+                  top_k: 20,
+                  presence_penalty: 0.0,
+                  min_p: 0.0,
                   stream: true,
+                  // Thinking off. Tried `enable_thinking: true` once and
+                  // it made the LLM MORE confident at fabricating — it
+                  // reasoned itself into plausible-sounding answers for
+                  // weather/news/etc. without realizing those needed
+                  // tool calls. Prompt-level discipline (below) is the
+                  // right lever, not thinking mode.
                   chat_template_kwargs: { enable_thinking: false },
                 }),
                 signal: activeAbort.signal,
@@ -1636,7 +1757,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                     : "\nQueue:\n" + status.queueItems.map((q, i) => {
                         const age = formatRelativeAge(q.queuedAt);
                         const text = q.text.replace(/"/g, "'");
-                        return `${i + 1}. (${q.source}, ${age}): "${text}"`;
+                        return `${i + 1}. id=${q.id} (${q.source}, ${age}): "${text}"`;
                       }).join("\n");
                   readResultLines.push(`<result tool="card_status" file="${file}">\n${head}${queueLines}\n</result>`);
                 } else if (name === "read_recent_replies") {
@@ -1813,6 +1934,60 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                   clientCount: result.clientCount,
                   queueDepth: result.queueDepth,
                 });
+              } else if (name === "delete_queue_item") {
+                // Drop a pending item from a chat card's queue. Target by
+                // id (from card_status). Uses the same `cancel_queued`
+                // control message the chat card UI already sends on its
+                // own X-out, so the queue UI updates everywhere.
+                const file = parseField(tb.body, "file");
+                const id = parseField(tb.body, "id");
+                if (!file || !id) {
+                  ctx.broadcast({ type: "tool_result", name, ok: false, message: "missing <file> or <id>" });
+                  continue;
+                }
+                const result = channelMgr.dispatchToFilename(
+                  sessionProject,
+                  file,
+                  { type: "cancel_queued", id },
+                );
+                const detail = result.ok
+                  ? "removed from queue (or already drained)"
+                  : `card "${file}" isn't open — open it once first`;
+                ctx.broadcast({
+                  type: "tool_result",
+                  name,
+                  ok: result.ok,
+                  file,
+                  message: detail,
+                });
+              } else if (name === "replace_queue_item") {
+                // Mutate a pending item's text in place. Preserves the
+                // item's position in the queue, source, and queuedAt —
+                // only the text changes. Same posture as delete: target
+                // by id; the chat agent's `replace_queued` handler
+                // commits and broadcasts.
+                const file = parseField(tb.body, "file");
+                const id = parseField(tb.body, "id");
+                const text = parseField(tb.body, "message");
+                if (!file || !id || !text) {
+                  ctx.broadcast({ type: "tool_result", name, ok: false, message: "missing <file>, <id>, or <message>" });
+                  continue;
+                }
+                const result = channelMgr.dispatchToFilename(
+                  sessionProject,
+                  file,
+                  { type: "replace_queued", id, text },
+                );
+                const detail = result.ok
+                  ? "queue item text replaced (or already drained)"
+                  : `card "${file}" isn't open — open it once first`;
+                ctx.broadcast({
+                  type: "tool_result",
+                  name,
+                  ok: result.ok,
+                  file,
+                  message: detail,
+                });
               } else if (name === "abort") {
                 // User-initiated stop. Side effects in order:
                 //  1. Drop queued audio so a "stop" doesn't get followed
@@ -1926,35 +2101,83 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             // this phrasing, so flagging it would override good behavior
             // with the worse canned fallback.
             const offerPhrasing = /\b(?:want me to|do you want me to|would you (?:like|want) me to|should i|shall i|i could (?:ask|have|send|route|forward|run by)|i can (?:ask|have|send|route|forward|run by)|let me know if you want)\b/i.test(speakable);
+            // Self-identification ("I'm Qwen", "I am Qwen") is not a
+            // dispatch claim — it's the model introducing itself. Suppress
+            // the nameDrop trigger when the name appears in self-intro
+            // shape near the start of the response.
+            const selfIntro = /^\s*(?:I(?:'m| am)\s+(?:Qwen|Claude(?:\s+Code)?|OpenCode))\b/i.test(speakable);
             const nameDropIsOffer = nameDrop && !explicitClaim && !implicitPromise && offerPhrasing;
+            const nameDropIsSelfIntro = nameDrop && !explicitClaim && !implicitPromise && selfIntro;
 
-            if ((explicitClaim || implicitPromise || nameDrop) && !nameDropIsOffer) {
+            if ((explicitClaim || implicitPromise || nameDrop) && !nameDropIsOffer && !nameDropIsSelfIntro) {
               console.log(`[voice-agent] overrode LLM <say> due to hallucinated dispatch claim (explicit=${explicitClaim} implicit=${implicitPromise} nameDrop=${nameDrop}): ${JSON.stringify(speakable.slice(0, 200))}`);
-              // Implicit promise alone ("let me check", "I'm pulling that up")
-              // means the LLM intended a lookup, not a dispatch. Offer search
-              // rather than send_to_card so we recover the right primitive.
-              // Explicit claims and name drops are dispatch lies — offer dispatch.
+              // Three failure modes, three different recoveries:
+              //  - implicitPromise only ("let me check") → user wanted info →
+              //    offer a search.
+              //  - nameDrop only (no claim, no promise) → user probably
+              //    asked ABOUT the named agent (status / what it's doing)
+              //    or the LLM fabricated about it → offer both paths:
+              //    check on it OR send it something.
+              //  - anything with explicitClaim or claim+nameDrop → real
+              //    dispatch lie → offer the dispatch.
+              // Find the specific agent the LLM name-dropped, so the
+              // fallback references THAT card (not arbitrary chatCards[0]
+              // — which can alphabetize to "llm-chat" when the LLM was
+              // clearly talking about Qwen). Falls back to chatCards[0]
+              // if no specific name appears.
+              const namedAgent = chatAgentNames.find((n) =>
+                new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(speakable)
+              );
+              const namedCard = namedAgent
+                ? chatCards.find((c) => {
+                    const ext = c.name.slice(c.name.lastIndexOf(".") + 1).toLowerCase();
+                    return (AGENT_NAME_DEFAULTS[ext] || ext).toLowerCase() === namedAgent.toLowerCase();
+                  })
+                : undefined;
+              const targetName = namedCard?.name || (chatCards[0]?.name ?? "a chat card");
+              const targetAgent = namedAgent || (chatCards[0] ? (AGENT_NAME_DEFAULTS[chatCards[0].name.slice(chatCards[0].name.lastIndexOf(".") + 1).toLowerCase()] || "") : "the agent");
+
               if (implicitPromise && !explicitClaim && !nameDrop) {
                 speakable = "I didn't actually look that up. Want me to search the web for it?";
+              } else if (nameDrop && !explicitClaim && !implicitPromise) {
+                speakable = `I didn't actually check on ${targetAgent} — want me to look at the status, or send it something?`;
               } else {
                 speakable = chatCards.length > 0
-                  ? `I didn't actually route that anywhere — want me to send it to ${chatCards[0].name}?`
+                  ? `I didn't actually route that anywhere — want me to send it to ${targetName}?`
                   : `I didn't route that anywhere — open a chat card first if you want me to forward work.`;
               }
               usedFallback = true;
             } else if (nameDropIsOffer) {
               console.log(`[voice-agent] nameDrop suppressed (offer phrasing detected): ${JSON.stringify(speakable.slice(0, 200))}`);
+            } else if (nameDropIsSelfIntro) {
+              console.log(`[voice-agent] nameDrop suppressed (self-introduction detected): ${JSON.stringify(speakable.slice(0, 200))}`);
             }
           }
           if (!speakable) {
             if (pendingActionTools.length === 0) {
-              // (a) Plain answer with no <say>: speak the cleaned raw output.
-              const noTools = lastLlmRaw.replace(/<tool[\s\S]*?<\/tool>/g, " ").replace(/<tool[^>]*\/>/g, " ");
-              const cleaned = cleanForTts(noTools).trim();
-              if (cleaned) {
-                speakable = cleaned.slice(0, 600);
+              // (a) Plain answer with no <say>: speak the cleaned raw output —
+              //     but first detect truncated/malformed tool emits. The LLM
+              //     occasionally produces partial output like `<tool name="send`
+              //     (cut off mid-tag). The cleanForTts regex requires a
+              //     closing `>` to strip a tag, so a truncated open survives
+              //     and gets spoken literally. Speaking angle brackets aloud
+              //     is the worst UX. Detect and substitute a recovery message.
+              const looksTruncated =
+                /<tool\b[^>]*$/.test(lastLlmRaw.trim()) ||      // open <tool ... with no close
+                /<say\b[^>]*$/.test(lastLlmRaw.trim()) ||       // open <say ... with no close
+                /<\/?(?:tool|say|file|message|query|url|tz)\s*$/.test(lastLlmRaw.trim()); // dangling closing-tag fragment
+              if (looksTruncated) {
+                speakable = "My response got cut off mid-send. Try again?";
                 usedFallback = true;
-                console.log(`[voice-agent] LLM skipped <say> grammar; speaking cleaned text instead. raw=${JSON.stringify(lastLlmRaw.slice(0, 200))}`);
+                console.log(`[voice-agent] LLM emitted truncated/malformed output; substituting recovery message. raw=${JSON.stringify(lastLlmRaw.slice(0, 200))}`);
+              } else {
+                const noTools = lastLlmRaw.replace(/<tool[\s\S]*?<\/tool>/g, " ").replace(/<tool[^>]*\/>/g, " ");
+                const cleaned = cleanForTts(noTools).trim();
+                if (cleaned) {
+                  speakable = cleaned.slice(0, 600);
+                  usedFallback = true;
+                  console.log(`[voice-agent] LLM skipped <say> grammar; speaking cleaned text instead. raw=${JSON.stringify(lastLlmRaw.slice(0, 200))}`);
+                }
               }
             } else {
               // (b) Tool dispatched but no spoken confirmation — synthesize
@@ -1998,7 +2221,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             // Sentence text still goes out so the reply panel updates; a tab
             // that becomes visible later sees the answer text.
             const skipTts = !anyVisible();
-            console.log(`[voice-agent] speaking ${speakable.length} chars (fallback=${usedFallback}${skipTts ? ", skipTts=true (no visible client)" : ""})`);
+            console.log(`[voice-agent] speaking ${speakable.length} chars (fallback=${usedFallback}${skipTts ? ", skipTts=true (no visible client)" : ""}): ${JSON.stringify(speakable.slice(0, 200))}`);
             ctx.broadcast({ type: "thinking", phase: "tts" });
             let audioFramesEmitted = 0;
             const fanout = new SentenceFanout({
