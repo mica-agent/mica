@@ -1045,16 +1045,17 @@ pre.mermaid svg {
 
 /* Resize handle — bottom-right corner grip */
 .wb-card-resize-handle {
-  /* Always visible at low opacity so the resize affordance is
-     consistent with modal-windows — every resizable surface in Mica
-     shows the same glyph. Card hover bumps it up; direct hover full. */
+  /* Hidden at rest, fades in on card hover — keeps the canvas visually
+     clean with many cards while still surfacing the affordance when the
+     user reaches for it. Modal-style windows (.mica-resizable) show
+     the same glyph always since there's only one at a time. */
   position: absolute;
   bottom: 0;
   right: 0;
   width: 20px;
   height: 20px;
   cursor: nwse-resize;
-  opacity: 0.4;
+  opacity: 0;
   transition: opacity 0.2s;
   z-index: 5;
 }
@@ -1087,7 +1088,15 @@ pre.mermaid svg {
 }
 
 .wb-card:hover .wb-card-resize-handle {
-  opacity: 0.75;
+  opacity: 0.5;
+}
+
+/* Meta cards (canvas-back, skills, etc.) live INSIDE the canvas
+   settings overlay's #canvas-meta-list — they fill their slot in the
+   list and aren't user-resizable. Hide the handle on them so it
+   doesn't duplicate the outer panel's resize glyph. */
+.wb-card[data-meta="true"] .wb-card-resize-handle {
+  display: none;
 }
 
 .wb-card-resize-handle:hover {
