@@ -103,7 +103,7 @@ export default function Connections({ onClose }: Props) {
       style={overlayStyle}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div style={modalStyle}>
+      <div className="mica-resizable" style={modalStyle}>
         <div style={headerStyle}>
           <div>
             <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: '#e6edf3' }}>Connections</h2>
@@ -286,18 +286,15 @@ const overlayStyle: React.CSSProperties = {
 };
 
 const modalStyle: React.CSSProperties = {
-  // Same resize affordance as the canvas-settings overlay — browser-native
-  // chevron in the bottom-right via `resize: both`. Initial size fits the
-  // current content; user can drag larger if they're managing many
-  // connections.
+  // `resize`, `overflow`, `position`, and the corner-glyph ::after come
+  // from the shared `.mica-resizable` class (App.css), so this modal
+  // matches the canvas-settings overlay's resize affordance exactly.
   width: 'min(720px, calc(100vw - 40px))',
   height: 'min(80vh, 800px)',
   minWidth: 400,
   minHeight: 300,
   maxWidth: 'calc(100vw - 40px)',
   maxHeight: 'calc(100vh - 40px)',
-  resize: 'both',
-  overflow: 'auto',
   background: '#16161e',
   border: '1px solid rgba(255,255,255,0.08)',
   borderRadius: 12,

@@ -1377,6 +1377,36 @@
   cursor: default;
 }
 
+/* ── Resizable Window ─────────────────────────────── */
+
+/* Utility class for resizable modal/overlay windows. Pairs `resize: both`
+   (browser-native drag handle in the bottom-right) with a visible
+   L-shaped corner glyph painted on top, so the affordance is
+   discoverable. Visual matches the canvas-card resize handle
+   (whiteboard.css `.wb-card-resize-handle`) for consistency across
+   all resizable windows in Mica. */
+.mica-resizable {
+  position: relative;
+  resize: both;
+  overflow: auto;
+}
+.mica-resizable::after {
+  content: "";
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-dim);
+  border-bottom: 2px solid var(--text-dim);
+  opacity: 0.6;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.mica-resizable:hover::after {
+  opacity: 1;
+}
+
 /* Safe area for notched devices */
 @supports (padding: env(safe-area-inset-top)) {
   .breadcrumb {

@@ -87,22 +87,19 @@
     cursor: pointer;
 }
 .canvas-meta-overlay-panel {
-    position: relative;
+    /* `position`, `resize: both`, and the corner-glyph ::after come from
+       the shared `mica-resizable` utility class in App.css. Override
+       `overflow: hidden` here so child sections handle their own scroll
+       (the meta-list at the bottom is the scrollable area). */
     z-index: 1;
     display: flex;
     flex-direction: column;
-    /* Fills most of the screen by default; bounded slightly so the
-       backdrop is still visible (visual cue that this is a modal).
-       `resize: both` gives the user a drag handle in the bottom-right;
-       min/max constraints prevent collapsing to nothing or overflowing
-       the viewport. */
     width: min(1400px, calc(100vw - 48px));
     height: min(95vh, 1200px);
     min-width: 400px;
     min-height: 300px;
     max-width: calc(100vw - 48px);
     max-height: calc(100vh - 48px);
-    resize: both;
     background: #0d1117;
     border: 1px solid #30363d;
     border-radius: 10px;
