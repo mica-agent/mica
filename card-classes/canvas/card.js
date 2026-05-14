@@ -1188,7 +1188,7 @@ function buildToolbar() {
         names.forEach(name => {
             const btn = window.document.createElement('button');
             btn.className = 'toolbar-btn';
-            btn.textContent = `+ ${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+            btn.textContent = `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
             // Scope-aware styling so the toolbar tells you where a card comes
             // from at a glance: project-scoped (green-italic), library (blue),
             // or built-in (default). `scope` is the canonical field; older
@@ -1207,8 +1207,34 @@ function buildToolbar() {
                 btn.title = 'Built-in card class';
             }
 
-            btn.addEventListener('click', () => {
-                const baseName = prompt(`Name for the ${name} card:`, `${name}-${Date.now().toString(36)}`);
+            // Pre-fill the prompt with the lowest free name: the bare class
+            // name first ("world-clock.world-clock"), then "-2", "-3", … on
+            // collision. Filenames are durable identifiers (layout.json key,
+            // agent references) and no rename tool exists, so a clean default
+            // is worth one extra fetch. Falls back to the legacy timestamped
+            // suffix if the file list can't be loaded so the action never
+            // blocks on a transient backend hiccup.
+            btn.addEventListener('click', async () => {
+                let friendly = `${name}-${Date.now().toString(36)}.${name}`;  // legacy fallback
+                try {
+                    const r = await fetch('/api/files?canvas=1', { headers: projectHeaders() });
+                    if (r.ok) {
+                        const data = await r.json();
+                        const taken = new Set((data.files || []).map((f) => f.name));
+                        const ext = `.${name}`;
+                        const candidate = (suffix) => suffix
+                            ? `${canvasRoot}${name}-${suffix}${ext}`
+                            : `${canvasRoot}${name}${ext}`;
+                        if (!taken.has(candidate(''))) {
+                            friendly = `${name}${ext}`;
+                        } else {
+                            for (let n = 2; n < 10000; n++) {
+                                if (!taken.has(candidate(n))) { friendly = `${name}-${n}${ext}`; break; }
+                            }
+                        }
+                    }
+                } catch { /* fall through to legacy default */ }
+                const baseName = prompt(`Name for the ${name} card:`, friendly);
                 if (!baseName) return;
                 const trimmed = baseName.trim();
                 if (!trimmed) return;
