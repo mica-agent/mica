@@ -1391,15 +1391,32 @@
   overflow: auto;
 }
 .mica-resizable::after {
+  /* Two parallel diagonal lines at the bottom-right — the classic
+     resize-corner indicator. Built with a single linear-gradient that
+     alternates transparent / opaque stripes at a 135° axis (stripes
+     run from top-left to bottom-right). Larger than the prior L-shape
+     so the affordance is obvious. */
   content: "";
   position: absolute;
-  bottom: 3px;
-  right: 3px;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid var(--text-dim);
-  border-bottom: 2px solid var(--text-dim);
-  opacity: 0.6;
+  bottom: 4px;
+  right: 4px;
+  width: 14px;
+  height: 14px;
+  background:
+    linear-gradient(
+      135deg,
+      transparent 0%,
+      transparent 30%,
+      var(--text-dim) 30%,
+      var(--text-dim) 42%,
+      transparent 42%,
+      transparent 58%,
+      var(--text-dim) 58%,
+      var(--text-dim) 70%,
+      transparent 70%,
+      transparent 100%
+    );
+  opacity: 0.7;
   pointer-events: none;
   transition: opacity 0.2s;
 }

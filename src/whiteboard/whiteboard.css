@@ -1045,31 +1045,49 @@ pre.mermaid svg {
 
 /* Resize handle — bottom-right corner grip */
 .wb-card-resize-handle {
+  /* Always visible at low opacity so the resize affordance is
+     consistent with modal-windows — every resizable surface in Mica
+     shows the same glyph. Card hover bumps it up; direct hover full. */
   position: absolute;
   bottom: 0;
   right: 0;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   cursor: nwse-resize;
-  opacity: 0;
+  opacity: 0.4;
   transition: opacity 0.2s;
   z-index: 5;
 }
 
 .wb-card-resize-handle::after {
+  /* Two parallel diagonal lines — same visual as `.mica-resizable::after`
+     in App.css so every resizable surface in Mica (canvas cards,
+     modal overlays) shows the same affordance. */
   content: "";
   position: absolute;
-  bottom: 3px;
-  right: 3px;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid var(--text-dim);
-  border-bottom: 2px solid var(--text-dim);
-  opacity: 0.6;
+  bottom: 4px;
+  right: 4px;
+  width: 14px;
+  height: 14px;
+  background:
+    linear-gradient(
+      135deg,
+      transparent 0%,
+      transparent 30%,
+      var(--text-dim) 30%,
+      var(--text-dim) 42%,
+      transparent 42%,
+      transparent 58%,
+      var(--text-dim) 58%,
+      var(--text-dim) 70%,
+      transparent 70%,
+      transparent 100%
+    );
+  opacity: 0.7;
 }
 
 .wb-card:hover .wb-card-resize-handle {
-  opacity: 0.5;
+  opacity: 0.75;
 }
 
 .wb-card-resize-handle:hover {
