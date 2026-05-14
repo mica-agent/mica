@@ -2001,19 +2001,25 @@ registerGitEndpoints(app, { getRequestProject });
 // instead of llama-server, so probe that endpoint rather than the (intentionally
 // stopped) llama-server. Without this, the chat card's send button stays
 // disabled because llama-server status is permanently {ready:false}.
+//
+// The `engine` field tells the chat card which backend is actually serving
+// "local" so it can label the settings hint honestly ("Running: vLLM" vs
+// "Running: llama-server"). MICA_DISABLE_LLAMA is the authoritative signal:
+// when set, the backend isn't running llama-server at all, so vLLM is what's
+// answering this endpoint.
 app.get("/api/llm/status", async (_req, res) => {
   if (process.env.MICA_DISABLE_LLAMA === "1") {
     const url = process.env.LLAMA_URL;
-    if (!url) { res.json({ running: false, ready: false, progress: "no chat endpoint" }); return; }
+    if (!url) { res.json({ running: false, ready: false, engine: "vllm", progress: "no chat endpoint" }); return; }
     try {
       const r = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
-      res.json(r.ok ? { running: true, ready: true } : { running: false, ready: false, progress: "starting" });
+      res.json(r.ok ? { running: true, ready: true, engine: "vllm" } : { running: false, ready: false, engine: "vllm", progress: "starting" });
     } catch {
-      res.json({ running: false, ready: false, progress: "unreachable" });
+      res.json({ running: false, ready: false, engine: "vllm", progress: "unreachable" });
     }
     return;
   }
-  res.json(getLlamaServerStatus());
+  res.json({ ...getLlamaServerStatus(), engine: "llama-server" });
 });
 
 // ── Skills (project-scoped) ──────────────────────────────────

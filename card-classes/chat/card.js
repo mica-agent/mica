@@ -164,11 +164,13 @@ function showStartupSummaryQwen(text) {
 }
 // Top-bar model/provider label (truncated via CSS). Updated whenever settings load,
 // status polls return, or save fires. For local provider we prefer the model the
-// llama-server is actually serving (from /api/llm/status) over any override in
-// this card's settings — the override takes effect inside llama-server's routing
-// but the served model is the source of truth the user cares about.
+// local engine (vLLM or llama-server) is actually serving (from /api/llm/status)
+// over any override in this card's settings — the override takes effect inside
+// the engine's routing but the served model is the source of truth the user
+// cares about.
 var modelLabelEl = container.querySelector('#chat-model-label');
-var serverModel = '';  // populated from /api/llm/status
+var serverModel = '';   // populated from /api/llm/status
+var serverEngine = '';  // 'vllm' or 'llama-server', also from /api/llm/status
 function renderModelLabel() {
   var provider = currentSettings.provider || 'local';
   var providerShort;
@@ -193,6 +195,7 @@ function checkLlmStatus() {
   }
   fetch('/api/llm/status').then(function(r) { return r.json(); }).then(function(s) {
     if (s.model && s.model !== serverModel) { serverModel = s.model; renderModelLabel(); }
+    if (typeof s.engine === 'string') serverEngine = s.engine;
     if (s.ready) {
       sendBtn.disabled = false;
       inputEl.placeholder = 'Ask Qwen Agent...';
@@ -1815,7 +1818,10 @@ function updateProviderUI(provider) {
     settingsKeyRow.style.display = 'none';
     settingsBaseurlRow.style.display = 'none';
     settingsModel.placeholder = MODEL_DEFAULTS.local + ' (default)';
-    settingsModelHint.textContent = 'For local llama-server the model name is informational; the loaded model is whatever the server started with.';
+    var engineLabel = serverEngine === 'vllm' ? 'vLLM'
+      : serverEngine === 'llama-server' ? 'llama-server'
+      : 'local engine';
+    settingsModelHint.textContent = 'Running: ' + engineLabel + '. Model name here is informational; the engine serves whatever model it started with.';
     hideModelDropdown();
   }
 }
@@ -1826,15 +1832,21 @@ providerRadios.forEach(function(r) {
 
 function openSettings() {
   // Pull fresh state every time so opening the panel after another tab saved
-  // shows the current values, not a stale snapshot.
+  // shows the current values, not a stale snapshot. Also re-probe
+  // /api/llm/status so the Local hint shows the live engine name on first
+  // open — without this it would fall through to "local engine" until the
+  // background poller's first response lands.
   Promise.allSettled([
     fetch(settingsUrl(''), { headers: projectHeaders() }).then(function(r) { return r.json(); }),
     fetch('/api/openrouter-key', { headers: projectHeaders() }).then(function(r) { return r.json(); }),
-    fetch('/api/openai-config', { headers: projectHeaders() }).then(function(r) { return r.json(); })
+    fetch('/api/openai-config', { headers: projectHeaders() }).then(function(r) { return r.json(); }),
+    fetch('/api/llm/status').then(function(r) { return r.json(); })
   ]).then(function(results) {
     const s = results[0].status === 'fulfilled' ? results[0].value : {};
     const k = results[1].status === 'fulfilled' ? results[1].value : { hasKey: false };
     const oc = results[2].status === 'fulfilled' ? results[2].value : { baseUrl: null, hasKey: false };
+    const llm = results[3].status === 'fulfilled' ? results[3].value : {};
+    if (typeof llm.engine === 'string') serverEngine = llm.engine;
     const provider = s.provider || 'local';
     providerRadios.forEach(function(r) { r.checked = (r.value === provider); });
     settingsModel.value = s.model || '';
