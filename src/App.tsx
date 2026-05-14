@@ -13,6 +13,13 @@ export default function App() {
   const [activeProject, setActiveProject] = useState<ProjectInfo | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [wasConnected, setWasConnected] = useState(false);
+  // Show a manual "Reload" failsafe on the reconnecting overlay after a
+  // few seconds of being stuck. The auto-reconnect polling loop in
+  // micaSocket.ts retries every 2s but can wedge (sleeping device,
+  // dropped Tailscale, frozen connect()) and leave the user staring at
+  // the spinner with no escape. The button does a hard reload — drops
+  // any unsaved card-input state but reliably re-establishes everything.
+  const [showReloadFailsafe, setShowReloadFailsafe] = useState(false);
   // Library-project state for the header icons. libraryPaths is the set
   // of absolute paths currently in ~/.mica/include-projects.json;
   // exportedClasses is the active project's project-scoped card class
@@ -69,6 +76,19 @@ export default function App() {
     setWsConnected(val);
     if (val) setWasConnected(true);
   }), []);
+
+  // Arm the reload failsafe button after 5s of continuous disconnect.
+  // 5s is past the natural reconnect window (auto-poll fires every 2s),
+  // so a successful recovery hides this before it ever shows. Clears
+  // immediately if the connection comes back.
+  useEffect(() => {
+    if (!(wasConnected && !wsConnected)) {
+      setShowReloadFailsafe(false);
+      return;
+    }
+    const t = setTimeout(() => setShowReloadFailsafe(true), 5000);
+    return () => clearTimeout(t);
+  }, [wasConnected, wsConnected]);
 
   // Global drag-resize handler for `.mica-resize-handle` inside any
   // `.mica-resizable` element. One handler covers every resizable
@@ -274,6 +294,15 @@ export default function App() {
           <div className="ws-overlay-content">
             <div className="ws-overlay-spinner" />
             <div className="ws-overlay-text">Reconnecting...</div>
+            {showReloadFailsafe && (
+              <button
+                className="ws-overlay-btn"
+                onClick={() => window.location.reload()}
+                title="Reload the page to re-establish the connection"
+              >
+                Reload to reconnect
+              </button>
+            )}
           </div>
         </div>
       )}
