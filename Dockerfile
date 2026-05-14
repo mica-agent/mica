@@ -46,6 +46,19 @@ RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI (gh) from the official upstream apt repo. Lets users
+# `gh auth login` from a .terminal card and unlocks gh-based tooling
+# (PR creation, issue browsing) from inside Mica.
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+ && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
 USER vscode
 WORKDIR /opt/mica
 

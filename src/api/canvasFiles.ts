@@ -171,7 +171,7 @@ export interface ConnectionStatus {
   displayName: string;
   description: string;
   connected: boolean;
-  source?: "credentials" | "legacy" | "env";
+  source?: "credentials" | "legacy" | "env" | "gh-cli" | "env-token" | "git-credential";
   savedAt?: number;
   inputHint?: string;
   signupUrl?: string;

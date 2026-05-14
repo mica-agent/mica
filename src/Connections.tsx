@@ -226,8 +226,11 @@ function ServiceRow({
         </form>
       )}
 
-      {/* Static instruction for delegated-cli services in Phase 1. */}
-      {!isPasteKey && svc.phase1Instruction && (
+      {/* Static instruction for delegated-cli services in Phase 1. Hidden
+          once connected — surfacing "To connect:" on a row already showing
+          a green Connected pill is the exact confusion that caused us to
+          look "not connected" for a working setup. */}
+      {!isPasteKey && !svc.connected && svc.phase1Instruction && (
         <div style={instructionBoxStyle}>
           <span style={{ color: '#888', marginRight: 6 }}>To connect:</span>
           <code style={inlineCodeStyle}>{svc.phase1Instruction.replace(/^Open a \.terminal card and run: /, '')}</code>
@@ -254,10 +257,15 @@ function StatusPill({ status }: { status: ConnectionStatus }) {
   return <span style={{ ...pillStyle, background: 'rgba(255,255,255,0.04)', color: '#888', borderColor: 'rgba(255,255,255,0.1)' }}>Not connected</span>;
 }
 
-function sourceLabel(s: 'credentials' | 'legacy' | 'env'): string {
-  if (s === 'credentials') return 'credentials.json (managed here)';
-  if (s === 'legacy') return 'legacy config.json';
-  return 'environment variable (.env)';
+function sourceLabel(s: NonNullable<ConnectionStatus['source']>): string {
+  switch (s) {
+    case 'credentials': return 'credentials.json (managed here)';
+    case 'legacy': return 'legacy config.json';
+    case 'env': return 'environment variable (.env)';
+    case 'gh-cli': return 'gh CLI (~/.config/gh/hosts.yml)';
+    case 'env-token': return 'GH_TOKEN environment variable';
+    case 'git-credential': return 'git credential helper (inherited)';
+  }
 }
 
 function formatRelative(ms: number): string {

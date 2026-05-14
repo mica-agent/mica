@@ -27,6 +27,7 @@
 
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
 import { existsSync } from "fs";
+import { execSync } from "child_process";
 import { join } from "path";
 import { homedir } from "os";
 import { WORKSPACE_DIR, micaDir } from "./files.js";
@@ -137,10 +138,37 @@ function claudeConnected(): boolean {
   return existsSync(join(homedir(), ".claude", ".credentials.json"));
 }
 
+/** Detect how GitHub auth is configured. Returns the source label, or
+ *  null if nothing is set up. Multiple paths are valid because a Mica
+ *  user may run inside a devcontainer that inherits credentials from
+ *  the host in any of several ways:
+ *
+ *    - `gh auth login` writes ~/.config/gh/hosts.yml. Most explicit.
+ *    - GH_TOKEN / GITHUB_TOKEN env var. Honored by gh and direct API
+ *      callers; common in CI and devcontainer setups.
+ *    - Git credential helper. Inherited from the host by VS Code's
+ *      remote-container forwarding; gives `git push` to github.com
+ *      without any gh-side config. We can't verify the helper actually
+ *      holds a github.com credential without a network probe, so we
+ *      trust its presence — that's the same posture gh's own
+ *      detection takes.
+ */
+function githubAuthSource(): "gh-cli" | "env-token" | "git-credential" | null {
+  if (existsSync(join(homedir(), ".config", "gh", "hosts.yml"))) return "gh-cli";
+  if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) return "env-token";
+  try {
+    const helper = execSync("git config --global credential.helper", {
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1000,
+      encoding: "utf-8",
+    }).trim();
+    if (helper) return "git-credential";
+  } catch { /* git missing, or no helper configured */ }
+  return null;
+}
+
 function githubConnected(): boolean {
-  // gh CLI stores its hosts config at ~/.config/gh/hosts.yml after
-  // `gh auth login`. Presence-check matches gh's own auth detection.
-  return existsSync(join(homedir(), ".config", "gh", "hosts.yml"));
+  return githubAuthSource() !== null;
 }
 
 // ── Registry ────────────────────────────────────────────────────────
@@ -185,8 +213,8 @@ export const SERVICES: ServiceDef[] = [
     id: "github",
     pattern: "delegated-cli",
     displayName: "GitHub",
-    description: "GitHub CLI for git push, PR creation, and gh-based tooling. Auth is OAuth via the gh CLI.",
-    phase1Instruction: "Open a .terminal card and run: gh auth login --web",
+    description: "GitHub access for git push, PR creation, and gh-based tooling. Authenticates via gh CLI, GH_TOKEN env var, or an inherited git credential helper (devcontainer).",
+    phase1Instruction: "Open a .terminal card and run: gh auth login (pick \"Login with a web browser\" — gives a device code). Or set GH_TOKEN in your environment.",
     isConnected: githubConnected,
   },
 ];
@@ -286,10 +314,12 @@ export interface ConnectionStatus {
   description: string;
   /** True if the service is set up and ready to use. */
   connected: boolean;
-  /** For paste-key: where the key was found (credentials | legacy | env).
-   *  Helps the UI explain "this key came from .env" so users know to
-   *  manage it via Connections going forward. Undefined for delegated-cli. */
-  source?: "credentials" | "legacy" | "env";
+  /** Where the credential came from. Lets the UI explain "this key came
+   *  from .env so manage it via Connections going forward" or "GitHub
+   *  auth is via the inherited git credential helper". Paste-key uses
+   *  credentials | legacy | env; delegated-cli (github only today) uses
+   *  gh-cli | env-token | git-credential. */
+  source?: "credentials" | "legacy" | "env" | "gh-cli" | "env-token" | "git-credential";
   /** When the user saved the key via Connections. Undefined for env/legacy
    *  sources and for delegated-cli. */
   savedAt?: number;
@@ -318,12 +348,18 @@ export async function getAllStatuses(): Promise<ConnectionStatus[]> {
         signupUrl: svc.signupUrl,
       });
     } else {
+      // Surface the auth source for delegated-cli when we can identify
+      // one. Today this is github-only — claude's CLI uses a single
+      // credentials path so the source line would just restate "claude
+      // CLI" without informing.
+      const source = svc.id === "github" ? (githubAuthSource() ?? undefined) : undefined;
       out.push({
         id: svc.id,
         pattern: "delegated-cli",
         displayName: svc.displayName,
         description: svc.description,
         connected: svc.isConnected(),
+        source,
         phase1Instruction: svc.phase1Instruction,
       });
     }

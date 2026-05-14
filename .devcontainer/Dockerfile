@@ -4,7 +4,7 @@
 FROM nvcr.io/nvidia/vllm:26.04-py3
 
 # Install sudo and create vscode user with sudo access
-RUN apt-get update && apt-get install -y sudo lsof net-tools procps && rm -rf /var/lib/apt/lists/* && \
+RUN apt-get update && apt-get install -y sudo lsof net-tools procps curl ca-certificates && rm -rf /var/lib/apt/lists/* && \
     if id -u 1000 >/dev/null 2>&1; then \
         existing_user=$(getent passwd 1000 | cut -d: -f1) && \
         usermod -l vscode -d /home/vscode -m "$existing_user" && \
@@ -14,6 +14,19 @@ RUN apt-get update && apt-get install -y sudo lsof net-tools procps && rm -rf /v
     fi && \
     usermod -aG sudo vscode && \
     echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# GitHub CLI (gh) from the official upstream apt repo. Lets users
+# `gh auth login` from a .terminal card and unlocks gh-based tooling
+# (PR creation, issue browsing) from inside Mica.
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+ && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
 
 # Pre-create cache directory with correct ownership (bind mounts may create it as root)
 RUN mkdir -p /home/vscode/.cache && chown vscode:vscode /home/vscode/.cache
