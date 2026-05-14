@@ -73,10 +73,15 @@ export default function App() {
   // Global drag-resize handler for `.mica-resize-handle` inside any
   // `.mica-resizable` element. Avoids CSS `resize: both` (which makes
   // Chrome draw its own handle on top of our painted glyph, looking
-  // double-printed). Same pattern as canvas/card.js's wb-card-resize-handle
-  // listener; one handler here covers every resizable modal/overlay on
-  // the page, including elements inside card classes since pointer
-  // events bubble to window.
+  // double-printed). One handler covers every resizable modal/overlay
+  // on the page, including elements inside card classes (pointerdown
+  // bubbles to window).
+  //
+  // Uses setPointerCapture so subsequent pointer events route to the
+  // handle directly. Without explicit capture, a fast drag past the
+  // handle could deliver pointer events to descendant elements that
+  // stop propagation, leaving the drag "stuck" — that was the symptom
+  // before this rewrite.
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as HTMLElement | null;
@@ -86,7 +91,7 @@ export default function App() {
       const root = handle.closest('.mica-resizable') as HTMLElement | null;
       if (!root) return;
       e.preventDefault();
-      e.stopPropagation();
+      try { handle.setPointerCapture(e.pointerId); } catch { /* unsupported */ }
       const startX = e.clientX;
       const startY = e.clientY;
       const startW = root.offsetWidth;
@@ -100,12 +105,15 @@ export default function App() {
         root.style.width = `${w}px`;
         root.style.height = `${h}px`;
       };
-      const onUp = () => {
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
+      const cleanup = () => {
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', cleanup);
+        handle.removeEventListener('pointercancel', cleanup);
+        try { handle.releasePointerCapture(e.pointerId); } catch { /* released by browser */ }
       };
-      window.addEventListener('pointermove', onMove);
-      window.addEventListener('pointerup', onUp);
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', cleanup);
+      handle.addEventListener('pointercancel', cleanup);
     };
     window.addEventListener('pointerdown', onPointerDown);
     return () => window.removeEventListener('pointerdown', onPointerDown);
