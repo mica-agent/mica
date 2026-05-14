@@ -70,6 +70,47 @@ export default function App() {
     if (val) setWasConnected(true);
   }), []);
 
+  // Global drag-resize handler for `.mica-resize-handle` inside any
+  // `.mica-resizable` element. Avoids CSS `resize: both` (which makes
+  // Chrome draw its own handle on top of our painted glyph, looking
+  // double-printed). Same pattern as canvas/card.js's wb-card-resize-handle
+  // listener; one handler here covers every resizable modal/overlay on
+  // the page, including elements inside card classes since pointer
+  // events bubble to window.
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const handle = target.closest('.mica-resize-handle') as HTMLElement | null;
+      if (!handle) return;
+      const root = handle.closest('.mica-resizable') as HTMLElement | null;
+      if (!root) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startW = root.offsetWidth;
+      const startH = root.offsetHeight;
+      const cs = getComputedStyle(root);
+      const minW = parseInt(cs.minWidth) || 200;
+      const minH = parseInt(cs.minHeight) || 150;
+      const onMove = (ev: PointerEvent) => {
+        const w = Math.max(minW, startW + ev.clientX - startX);
+        const h = Math.max(minH, startH + ev.clientY - startY);
+        root.style.width = `${w}px`;
+        root.style.height = `${h}px`;
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, []);
+
   // Tell the server which project this tab is subscribed to. Server uses this
   // to route file-watcher events to the right tabs (and to ref-count the
   // multi-project file watcher).

@@ -1385,42 +1385,52 @@
    discoverable. Visual matches the canvas-card resize handle
    (whiteboard.css `.wb-card-resize-handle`) for consistency across
    all resizable windows in Mica. */
+/* Resizable surfaces use a custom JS drag handler instead of CSS
+   `resize: both`. The browser-native resizer Chrome draws for
+   `resize: both` was stacking on top of our painted glyph and looked
+   double-printed. App.tsx attaches a window-level pointerdown listener
+   delegated to `.mica-resize-handle` inside `.mica-resizable`. */
 .mica-resizable {
   position: relative;
-  resize: both;
-  overflow: auto;
 }
-.mica-resizable::after {
-  /* Two parallel diagonal lines at the bottom-right — the classic
-     resize-corner indicator. Built with a single linear-gradient that
-     alternates transparent / opaque stripes at a 135° axis (stripes
-     run from top-left to bottom-right). Larger than the prior L-shape
-     so the affordance is obvious. */
+.mica-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 5;
+}
+.mica-resize-handle::after {
+  /* Same two-parallel-diagonal-lines glyph as the canvas-card resize
+     handle (whiteboard.css `.wb-card-resize-handle::after`). Single
+     linear-gradient at 135° with alternating transparent/opaque
+     stripes. */
   content: "";
   position: absolute;
-  bottom: 4px;
-  right: 4px;
-  width: 14px;
-  height: 14px;
+  bottom: 2px;
+  right: 2px;
+  width: 10px;
+  height: 10px;
   background:
     linear-gradient(
       135deg,
       transparent 0%,
       transparent 30%,
       var(--text-dim) 30%,
-      var(--text-dim) 42%,
-      transparent 42%,
-      transparent 58%,
-      var(--text-dim) 58%,
-      var(--text-dim) 70%,
-      transparent 70%,
+      var(--text-dim) 45%,
+      transparent 45%,
+      transparent 60%,
+      var(--text-dim) 60%,
+      var(--text-dim) 75%,
+      transparent 75%,
       transparent 100%
     );
-  opacity: 0.7;
-  pointer-events: none;
+  opacity: 0.6;
   transition: opacity 0.2s;
 }
-.mica-resizable:hover::after {
+.mica-resize-handle:hover::after {
   opacity: 1;
 }
 

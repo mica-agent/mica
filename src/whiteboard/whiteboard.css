@@ -1045,15 +1045,14 @@ pre.mermaid svg {
 
 /* Resize handle — bottom-right corner grip */
 .wb-card-resize-handle {
-  /* Hidden at rest, fades in on card hover — keeps the canvas visually
-     clean with many cards while still surfacing the affordance when the
-     user reaches for it. Modal-style windows (.mica-resizable) show
-     the same glyph always since there's only one at a time. */
+  /* Hidden at rest, fades in on card hover. Drag handled by
+     canvas/card.js (pointerdown on `.wb-card-resize-handle` updates
+     parent .wb-card width/height + persists to layout.json). */
   position: absolute;
   bottom: 0;
   right: 0;
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   cursor: nwse-resize;
   opacity: 0;
   transition: opacity 0.2s;
@@ -1061,27 +1060,27 @@ pre.mermaid svg {
 }
 
 .wb-card-resize-handle::after {
-  /* Two parallel diagonal lines — same visual as `.mica-resizable::after`
+  /* Two parallel diagonal lines — same visual as `.mica-resize-handle`
      in App.css so every resizable surface in Mica (canvas cards,
-     modal overlays) shows the same affordance. */
+     modal overlays) shows the same affordance, same size. */
   content: "";
   position: absolute;
-  bottom: 4px;
-  right: 4px;
-  width: 14px;
-  height: 14px;
+  bottom: 2px;
+  right: 2px;
+  width: 10px;
+  height: 10px;
   background:
     linear-gradient(
       135deg,
       transparent 0%,
       transparent 30%,
       var(--text-dim) 30%,
-      var(--text-dim) 42%,
-      transparent 42%,
-      transparent 58%,
-      var(--text-dim) 58%,
-      var(--text-dim) 70%,
-      transparent 70%,
+      var(--text-dim) 45%,
+      transparent 45%,
+      transparent 60%,
+      var(--text-dim) 60%,
+      var(--text-dim) 75%,
+      transparent 75%,
       transparent 100%
     );
   opacity: 0.7;
