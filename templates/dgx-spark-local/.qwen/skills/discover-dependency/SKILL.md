@@ -90,7 +90,24 @@ For each one, tag it:
 | **library** | Need executable JS code | 3D rendering → Three.js. Day/night terminator → leaflet.terminator. Markdown → Marked. |
 | **asset** | Need a file (image/audio/video/font/model/data) | Planet textures → JPG/PNG. Hero image → JPG. Avatar → PNG. Background music → MP3. Custom font → WOFF2. |
 | **service** | Need a live endpoint | Weather data → OpenWeather API. Stock price → Finnhub API. Map tiles → CartoDB/OSM tile server. |
-| **bespoke** | None of the above; write custom code | Solar elevation math (8 lines reusing existing values), small static data array. |
+| **bespoke** | None of the above; write custom code (small math, static data, or a one-line wrapper around a browser built-in) | Solar elevation math (8 lines reusing existing values), small static data array, `Intl.DateTimeFormat`-based time formatting. |
+
+**Before classifying as `library`: check for a browser built-in.** A class of common needs has native browser APIs that are typically a one-liner. Preferring them avoids the entire library hunt and the bundle/version/loading complexity that follows:
+
+| Need | Browser native | Common over-reach |
+|---|---|---|
+| Time zones / locale-aware formatting | `Intl.DateTimeFormat({ timeZone, ... })`, `toLocaleString(locale, opts)` | moment + moment-timezone, date-fns-tz, luxon |
+| Number / currency formatting | `Intl.NumberFormat` | numeral.js |
+| Date math (basic) | `Date`, `Date.now()`, `+` arithmetic, `Intl.RelativeTimeFormat` | moment, dayjs (for simple needs) |
+| Locale-aware string sort | `Intl.Collator` | lodash sortBy with custom comparator |
+| Crypto / hashing | `crypto.subtle.digest`, `crypto.randomUUID()` | js-sha256, crypto-js, uuid |
+| Animation frame loop | `requestAnimationFrame` | gsap (for non-tween uses) |
+| Local persistence | `localStorage`, `IndexedDB` | external KV stores |
+| URL parsing / construction | `new URL(...)` | url libs |
+| Element observation | `IntersectionObserver`, `ResizeObserver`, `MutationObserver` | scroll/resize event listeners + libraries |
+| Clipboard | `navigator.clipboard.writeText/readText` | clipboard.js |
+
+**The rule**: if a need has a 5-line native solution, tag it `bespoke` ("uses built-in browser API"), not `library`. A 100-300KB external library wrapping a one-liner is a tax in download size, version pinning, bundle-variant selection, and script-loading order — for no functional gain. Card.js runs in a real browser; modern APIs are available.
 
 ### Step 3 — Walk each tagged subproblem through the matching procedure
 
