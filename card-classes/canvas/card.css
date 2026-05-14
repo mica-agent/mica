@@ -57,12 +57,10 @@
         box-shadow 0.2s;
 }
 
-/* Toolbar settings (gear) button. One-click: opens the meta overlay. */
-.canvas-gear-btn { font-size: 14px !important; line-height: 1 !important; }
-
 /* Meta overlay — full-viewport modal that shows canvas-back, skills, and
-   any other meta cards. Triggered from the toolbar gear menu; closed via
-   backdrop click or the × button. The #canvas-meta-list inside stays as
+   any other meta cards. Opened via the banner gear button in App.tsx
+   (window event `mica-open-canvas-settings`); closed via backdrop click
+   or the × button. The #canvas-meta-list inside stays as
    the React portal target, so meta cards still render + initialize
    identically — just inside a hidden container until the user opens it. */
 .canvas-meta-overlay {
@@ -95,7 +93,7 @@
     display: flex;
     flex-direction: column;
     width: min(1400px, calc(100vw - 48px));
-    height: min(95vh, 1200px);
+    height: min(75vh, 900px);
     min-width: 400px;
     min-height: 300px;
     max-width: calc(100vw - 48px);

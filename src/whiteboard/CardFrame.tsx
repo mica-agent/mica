@@ -219,13 +219,6 @@ export default function CardFrame({ project, file, canvasRoot, onEdit, onDelete,
                   }));
                 }}
               />
-              <button
-                onClick={(e) => { e.stopPropagation(); setFlipped(!flipped); setBackLoaded(false); }}
-                title={flipped ? "Show content" : "Card info"}
-                className={`wb-card-btn ${flipped ? "wb-card-btn--active" : ""}`}
-              >
-                &#8645;
-              </button>
             </>
           )}
           {(() => { const e = file.name.split(".").pop()?.toLowerCase(); return e === "html" || e === "htm"; })() && (

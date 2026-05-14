@@ -16,11 +16,11 @@ const toolbar = container.querySelector('#project-toolbar');
 const freeform = container.querySelector('#canvas-freeform');
 const emptyEl = container.querySelector('.project-empty');
 
-// -- Meta overlay (full-viewport modal, opens via toolbar gear) --
+// -- Meta overlay (full-viewport modal, opens via banner gear) --
 // The overlay contains #canvas-meta-list, the React portal target meta
-// cards render into. It starts hidden; the gear menu's "Meta panel"
-// item is the only way to open it. Closed via × button, backdrop click,
-// or Escape.
+// cards render into. It starts hidden; opened by the banner gear in
+// App.tsx dispatching `mica-open-canvas-settings`. Closed via × button,
+// backdrop click, or Escape.
 const metaOverlay = container.querySelector('#canvas-meta-overlay');
 const metaOverlayBackdrop = container.querySelector('.canvas-meta-overlay-backdrop');
 const metaOverlayClose = container.querySelector('#canvas-meta-overlay-close');
@@ -84,9 +84,10 @@ function openMetaOverlay() {
     metaOverlay.style.display = 'flex';
     void refreshLibraryToggleState();
 }
-// Host-side surfaces (e.g. the orphan-card placeholder in CardFrame.tsx)
-// can request the gear-menu overlay via a window event. Matches the
-// pattern used by mica-toggle-collapse for cross-boundary signaling.
+// Host-side surfaces (the banner gear in App.tsx, the orphan-card
+// placeholder in CardFrame.tsx) request the settings overlay via a
+// window event. Matches the pattern used by mica-toggle-collapse for
+// cross-boundary signaling.
 window.addEventListener('mica-open-canvas-settings', openMetaOverlay);
 function closeMetaOverlay() {
     metaOverlay.style.display = 'none';
@@ -971,7 +972,7 @@ function buildToolbar() {
     // is [Tidy][spacer(flex:1)][+ creation buttons].
     const tidyBtn = window.document.createElement('button');
     tidyBtn.className = 'toolbar-btn';
-    tidyBtn.textContent = 'Tidy';
+    tidyBtn.textContent = 'Tidy Up';
     tidyBtn.title = 'Tidy layout — resolves overlaps with minimal displacement (cards stay where you put them). Hold Option/Alt for fit-all-on-screen grid.';
     tidyBtn.addEventListener('click', (e) => {
         const cards = Array.from(freeform.querySelectorAll('.wb-card'));
@@ -1224,39 +1225,12 @@ function buildToolbar() {
             fragment.appendChild(btn);
         });
 
-        // Gear button — rightmost. Appending AFTER the + creation buttons
-        // so the DOM order is [Tidy][spacer][+ buttons][gear]; the spacer
-        // pushes creation buttons + gear to the right together, and within
-        // that group the gear lands at the far right edge.
-        appendGearButton(fragment);
-
         // Atomic swap — replace the old toolbar contents with the freshly
         // built fragment in a single DOM operation. No empty intermediate
         // state, no layout shift, no canvas reflow.
         if (myGen !== toolbarBuildGen) return;
         toolbar.replaceChildren(fragment);
     }).catch(err => { console.error('[canvas] Failed to load card classes:', err); });
-}
-
-// -- Toolbar meta button (direct, no menu) --------------
-// Single click opens the meta overlay. When there's only one thing to
-// do, a menu is ceremony. If future settings accrue, they'll live IN the
-// meta overlay itself (a settings panel) rather than fragmenting the
-// toolbar into tiny icons.
-//
-// Takes the destination as an argument (toolbar or a detached fragment)
-// so buildToolbar can stage the gear into the same fragment as the other
-// buttons and swap atomically.
-function appendGearButton(target) {
-    const btn = window.document.createElement('button');
-    btn.className = 'toolbar-btn canvas-gear-btn';
-    btn.textContent = '⚙';
-    btn.title = 'Open canvas settings (canvas-back, skills)';
-    btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openMetaOverlay();
-    });
-    target.appendChild(btn);
 }
 
 buildToolbar();
