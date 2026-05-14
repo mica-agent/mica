@@ -71,17 +71,18 @@ export default function App() {
   }), []);
 
   // Global drag-resize handler for `.mica-resize-handle` inside any
-  // `.mica-resizable` element. Avoids CSS `resize: both` (which makes
-  // Chrome draw its own handle on top of our painted glyph, looking
-  // double-printed). One handler covers every resizable modal/overlay
-  // on the page, including elements inside card classes (pointerdown
-  // bubbles to window).
+  // `.mica-resizable` element. One handler covers every resizable
+  // modal/overlay on the page, including elements inside card classes
+  // (pointerdown bubbles to window).
   //
-  // Uses setPointerCapture so subsequent pointer events route to the
-  // handle directly. Without explicit capture, a fast drag past the
-  // handle could deliver pointer events to descendant elements that
-  // stop propagation, leaving the drag "stuck" — that was the symptom
-  // before this rewrite.
+  // All listeners use the CAPTURE phase so a deeper handler calling
+  // stopPropagation (the canvas card class attaches document-level
+  // pointer listeners for pan/drag) can't block our cleanup. The
+  // `buttons === 0` check inside onMove is the safety net: if pointerup
+  // never reaches us (released outside viewport, window lost focus,
+  // browser quirk), the next pointermove without a held button tears
+  // the drag down. Together with the window 'blur' listener, the drag
+  // always ends within one extra event tick.
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as HTMLElement | null;
@@ -91,7 +92,6 @@ export default function App() {
       const root = handle.closest('.mica-resizable') as HTMLElement | null;
       if (!root) return;
       e.preventDefault();
-      try { handle.setPointerCapture(e.pointerId); } catch { /* unsupported */ }
       const startX = e.clientX;
       const startY = e.clientY;
       const startW = root.offsetWidth;
@@ -100,36 +100,35 @@ export default function App() {
       const minW = parseInt(cs.minWidth) || 200;
       const minH = parseInt(cs.minHeight) || 150;
       const pointerId = e.pointerId;
+      let active = true;
       const onMove = (ev: PointerEvent) => {
+        if (!active) return;
         if (ev.pointerId !== pointerId) return;
+        if (ev.buttons === 0) { stop(); return; }
         const w = Math.max(minW, startW + ev.clientX - startX);
         const h = Math.max(minH, startH + ev.clientY - startY);
         root.style.width = `${w}px`;
         root.style.height = `${h}px`;
       };
-      const cleanup = (ev?: PointerEvent) => {
-        if (ev && ev.pointerId !== pointerId) return;
-        handle.removeEventListener('pointermove', onMove);
-        handle.removeEventListener('pointerup', cleanup);
-        handle.removeEventListener('pointercancel', cleanup);
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', cleanup);
-        window.removeEventListener('pointercancel', cleanup);
+      const stop = () => {
+        if (!active) return;
+        active = false;
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', stop, true);
+        window.removeEventListener('pointercancel', stop, true);
+        window.removeEventListener('blur', stop);
+        document.body.style.userSelect = '';
         try { handle.releasePointerCapture(pointerId); } catch { /* released */ }
       };
-      // Listen on BOTH handle (in case setPointerCapture worked) and
-      // window (fallback — pointer events bubble to window). Whichever
-      // path delivers pointerup first triggers cleanup; the pointerId
-      // check guards against unrelated pointers triggering it.
-      handle.addEventListener('pointermove', onMove);
-      handle.addEventListener('pointerup', cleanup);
-      handle.addEventListener('pointercancel', cleanup);
-      window.addEventListener('pointermove', onMove);
-      window.addEventListener('pointerup', cleanup);
-      window.addEventListener('pointercancel', cleanup);
+      try { handle.setPointerCapture(pointerId); } catch { /* unsupported */ }
+      document.body.style.userSelect = 'none';
+      window.addEventListener('pointermove', onMove, true);
+      window.addEventListener('pointerup', stop, true);
+      window.addEventListener('pointercancel', stop, true);
+      window.addEventListener('blur', stop);
     };
-    window.addEventListener('pointerdown', onPointerDown);
-    return () => window.removeEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
   }, []);
 
   // Tell the server which project this tab is subscribed to. Server uses this
