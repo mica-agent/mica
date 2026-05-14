@@ -95,8 +95,6 @@ import { SentenceFanout } from "./voiceStreaming.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
 import { createVoiceAgentHandler } from "./voiceAgent.js";
-import { createVoiceOmniAgentHandler } from "./voiceOmniAgent.js";
-import { createVoiceQwenOmniAgentHandler } from "./voiceQwenOmniAgent.js";
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
 import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
 import { stopOpencodeServer } from "./opencodeServer.js";
@@ -947,8 +945,8 @@ app.get("/api/openrouter/models", async (_req, res) => {
 // ── Voice (STT + TTS sidecars) ──────────────────────────────
 //
 // Three endpoints:
-//   GET  /api/voice/status      — sidecar readiness for the voice-hello card
-//   POST /api/voice/echo        — audio in → STT → TTS same text → audio out (hello-world round-trip)
+//   GET  /api/voice/status      — sidecar readiness for the .voice card
+//   POST /api/voice/echo        — audio in → STT → TTS same text → audio out (round-trip probe)
 //   POST /api/voice/synthesize  — JSON {text} → audio out (used by future TTS-only flows)
 //
 // /api/voice/transcribe (audio → text only) is reserved but not wired in
@@ -2940,8 +2938,6 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
   channelManager.registerHandler("voice", createVoiceAgentHandler(channelManager));  // .voice files -> canvas-aware voice assistant
-  channelManager.registerHandler("voice-omni", createVoiceOmniAgentHandler(channelManager));  // .voice-omni files -> Nemotron Omni audio-in voice (experiment)
-  channelManager.registerHandler("voice-qwen-omni", createVoiceQwenOmniAgentHandler(channelManager));  // .voice-qwen-omni files -> Qwen3-Omni audio-in voice (A/B/C experiment)
   channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
   channelManager.registerHandler("opencode", createOpencodeAgentHandler(fileWatcher));  // .opencode files -> OpenCode agent (lazy-spawned opencode serve)
   channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
@@ -2975,7 +2971,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
 
   // Voice sidecars (Parakeet STT + Kokoro TTS) — lazy on startup, same
   // posture as llama-server. Failure here is non-fatal: chat/agents work
-  // without voice; only the .voice-hello card surfaces the error.
+  // without voice; only the .voice card surfaces the error.
   if (process.env.MICA_DISABLE_VOICE !== "1") {
     ensureVoiceServers().catch((err) => {
       console.warn("[startup] voice servers failed to start:", (err as Error).message);

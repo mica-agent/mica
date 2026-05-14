@@ -256,7 +256,6 @@ function parseField(inner: string, field: string): string {
 const CHAT_CLASS_EXTENSIONS = new Set<string>([
   "chat", "claude", "opencode",
   "llm-chat", "llm-direct", "llm-agent",
-  "persona-chat",
 ]);
 
 // Default agent name shown in the voice prompt when a chat card
@@ -270,7 +269,6 @@ const AGENT_NAME_DEFAULTS: Record<string, string> = {
   "llm-chat": "LLM",
   "llm-direct": "LLM",
   "llm-agent": "LLM agent",
-  "persona-chat": "Persona",
 };
 
 // Read a chat card's file body as its role description. Empty body
@@ -1203,7 +1201,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // Falls back to a generic "chat.chat" when no chat-style card
           // exists, in which case the LLM should still recognize that
           // dispatch isn't possible without a target.
-          const chatLikeKinds = new Set(["chat", "claude", "opencode", "llm-chat", "persona-chat"]);
+          const chatLikeKinds = new Set(["chat", "claude", "opencode", "llm-chat"]);
           const exampleCard = cards.find((c) => {
             const dot = c.name.lastIndexOf(".");
             return dot !== -1 && chatLikeKinds.has(c.name.slice(dot + 1));

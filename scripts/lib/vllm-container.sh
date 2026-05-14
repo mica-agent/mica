@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # scripts/lib/vllm-container.sh — shared docker-container helpers.
 #
-# Sourced by scripts/start.sh (chat vLLM) and scripts/voices.sh (omni
-# experiments). Provides the common docker-run lifecycle:
+# Sourced by scripts/start.sh (chat vLLM). Provides the common
+# docker-run lifecycle:
 #
 #   vllm_container_check_docker          — fail fast if docker missing
 #   vllm_container_image_present <image> — true if image exists locally

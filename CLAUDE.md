@@ -349,23 +349,14 @@ When spawning subagents for implementation work:
   and any leftover llama-server. **Leaves the chat vLLM container
   warm by default** so restarts are seconds, not minutes (vLLM
   cold-boot is 30-90s). Use `scripts/stop.sh --full` to also stop
-  the chat container (e.g. before `voices.sh start qwen-omni` to
-  free GPU for an A/B).
+  the chat container (e.g. for a clean host reboot).
 - `scripts/restart.sh` — Stop, then start. Same `--full` flag
   passes through; default keeps vLLM warm across restarts.
 - `scripts/status.sh` — Show running state and port status.
-- `scripts/voices.sh` — Subcommand controller for the optional
-  voice/omni experiment containers (`.voice-omni`,
-  `.voice-qwen-omni` card classes). Mutually exclusive on memory.
-  Usage: `voices.sh start nemotron|qwen-omni`,
-  `voices.sh stop nemotron|qwen-omni|all`, `voices.sh status`.
 - `scripts/lib/vllm-container.sh` — Internal helper sourced by
-  `start.sh` and `voices.sh`. Common docker-run lifecycle
-  (idempotency, pull-vs-local, log streaming, health-poll). Don't
-  invoke directly.
-- `scripts/start-{omni,qwen-omni}.sh` and matching stop scripts —
-  thin backwards-compat wrappers around `voices.sh`. Will be
-  removed once muscle memory updates.
+  `start.sh` for the chat vLLM container. Common docker-run
+  lifecycle (idempotency, pull-vs-local, log streaming,
+  health-poll). Don't invoke directly.
 
 ### Architecture decision (2026-05): vLLM consolidation
 
@@ -391,7 +382,7 @@ terminal via the mounted `/var/run/docker.sock`. So:
   the PID namespace, so `stop.sh` can kill them. Container ops
   (`docker stop mica-chat`) work too because the socket is shared.
 - Running from the host shell works for container-only ops
-  (`voices.sh start nemotron`, etc.) but won't see/kill sidecar
+  (`docker stop mica-chat`, etc.) but won't see/kill sidecar
   processes inside the devcontainer.
 
 ---

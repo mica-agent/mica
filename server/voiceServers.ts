@@ -9,7 +9,7 @@
 // the venv at scripts/benchmarks/voice/.venv (created by the benchmark
 // install.sh — same deps, no need to duplicate).
 //
-// MICA_DISABLE_VOICE=1 skips spawning entirely; voice-hello cards then show
+// MICA_DISABLE_VOICE=1 skips spawning entirely; .voice cards then show
 // a "voice servers disabled" placeholder.
 
 import { spawn, type ChildProcess } from "child_process";

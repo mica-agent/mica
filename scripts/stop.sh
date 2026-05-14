@@ -3,9 +3,8 @@
 # so a subsequent start.sh / restart.sh comes back fast (vLLM cold-boot
 # is 30-90s warm, several minutes cold; backend + frontend are seconds).
 #
-# Use --full / -f to also stop the chat container (e.g. when freeing
-# GPU memory for an A/B with one of the omni containers, or for a clean
-# host reboot).
+# Use --full / -f to also stop the chat container (e.g. for a clean
+# host reboot, or to free GPU memory for an out-of-band workload).
 #
 # Always stops:
 #   - backend, frontend (Node processes by PID file + port sweep)
@@ -125,7 +124,7 @@ fi
 # ── Chat vLLM container (only with --full) ─────────────────────
 # Default: leave it warm. start.sh's idempotency check reuses it on
 # next start, skipping the 30-90s vLLM boot. With --full we tear it
-# down too, e.g. to free GPU for `voices.sh start qwen-omni`.
+# down too, e.g. for a clean host reboot.
 if [ "$FULL_TEARDOWN" -eq 1 ]; then
   if command -v docker >/dev/null 2>&1; then
     if vllm_container_running "$CHAT_NAME"; then

@@ -366,7 +366,7 @@ common cases.
 
 | Handler | What it gives you | When to pick |
 |---|---|---|
-| `llm-direct` | Streaming chat against an LLM with a fixed system prompt + per-turn user message. Handler manages the streaming round-trip. | LLM-driven cards: persona-chat, summarizer, single-purpose assistant. |
+| `llm-direct` | Streaming chat against an LLM with a fixed system prompt + per-turn user message. Handler manages the streaming round-trip. | LLM-driven cards: single-purpose assistant, summarizer, persona-style chat. |
 | `process` | Spawn a long-lived subprocess; bidirectional stdin/stdout/stderr; lifecycle-driven start/stop. | Wrapping CLI tools (nvidia-smi, ffmpeg, autoresearch), language servers, daemons, polling tasks. |
 
 **The pattern (same for both):**
@@ -395,10 +395,13 @@ it explicitly when the card needs a reusable handler.
 
 #### LLM-driven cards — `metadata.handler: "llm-direct"`
 
-`card-classes/persona-chat/` is a complete working reference —
-three small files, no server code, system prompt comes from the
-instance file content. Read once for the shape; consult
-`/api/handlers` for everything else.
+`llm-direct` is the simplest path for a card that streams a
+single-prompt LLM exchange — `metadata.json` declares
+`"handler": "llm-direct"`, `card.js` opens a channel and reads
+streaming tokens. No server-side code on the card class side.
+Read `/api/handlers` for the exact `sendShapes` / `recvShapes`
+and the optional args (e.g., model override, system prompt
+source). Treat that schema as the contract.
 
 #### Long-running subprocess cards — `metadata.handler: "process"`
 
