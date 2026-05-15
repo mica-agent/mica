@@ -27,6 +27,25 @@
 # both routes.
 
 services:
+  # One-shot init container: chowns the shared volumes to UID 1000 BEFORE
+  # mica + mica-vllm start. Docker creates fresh named-volume mount points
+  # as root:root by default; we need UID 1000 ownership so the two main
+  # services (both running as UID 1000) can write to /cache/huggingface
+  # and /project. Idempotent — fast no-op on subsequent boots when the
+  # volumes are already owned correctly. The `:Z` flag and `--security-opt`
+  # patterns aren't needed here (no SELinux contexts to relabel).
+  mica-init:
+    image: busybox:latest
+    user: "0:0"  # explicitly root, to perform the chown
+    command: >
+      sh -c "chown -R ${USER_UID:-1000}:${USER_GID:-1000}
+             /cache/huggingface /project /claude && echo 'mica-init: volume perms aligned'"
+    volumes:
+      - ${HF_CACHE_DIR:-mica-models}:/cache/huggingface
+      - ${MICA_WORKSPACE:-${HOME}/mica-workspace}:/project
+      - mica-claude:/claude
+    restart: "no"
+
   mica:
     build:
       context: .
@@ -47,6 +66,8 @@ services:
     # USER_UID/USER_GID via `.env` or shell env before `docker compose up`.
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
     depends_on:
+      mica-init:
+        condition: service_completed_successfully
       mica-vllm:
         condition: service_healthy
     ports:
@@ -114,6 +135,9 @@ services:
     # what the Mica container writes, so the shared /cache/huggingface
     # mount has consistent ownership.
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    depends_on:
+      mica-init:
+        condition: service_completed_successfully
     environment:
       HF_HOME: /cache/huggingface
       # The vllm/vllm-openai image's /etc/passwd has no entry for UID 1000
