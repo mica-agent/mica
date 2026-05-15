@@ -2243,6 +2243,19 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // with no assistant events (early error, abort) doesn't get flagged.
         let lastAssistantHadAction = true;
 
+        // Skill follow-through guard. The qwen-code SDK has a `skill` tool
+        // that loads instruction text into the model's context — the model
+        // is then expected to follow the instructions with its NEXT tool
+        // call (e.g., `decompose-task` skill demands a `task` call to the
+        // task-decomposer subagent). Observed failure: model loads the
+        // skill, narrates "I'm dispatching..." in text, then ends the
+        // turn without ever firing the demanded tool. We mirror that
+        // failure shape into `pendingSkillFollowup`: set when a skill
+        // tool_use fires in parent context, cleared on any other parent-
+        // context tool_use. If the turn ends with this still set, the
+        // model loaded the skill but never acted on it — re-prompt once.
+        let pendingSkillFollowup: string | null = null;
+
         // Track in-flight subagent task invocations (tool_use_id → nothing,
         // Set is sufficient). beginSubagentTask was called in canUseTool; we
         // call endSubagentTask when the matching tool_result arrives so the
@@ -2387,6 +2400,19 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                       input.skill_name ?? input.skill ?? input.name ?? ""
                     );
                     if (skillName) skillsInvoked.push(skillName);
+                  }
+                  // Skill follow-through: set on skill load, clear on any
+                  // other parent-context tool. See declaration above.
+                  if (!ptid) {
+                    if (block.name === "skill") {
+                      const input = (block.input as Record<string, unknown>) || {};
+                      const skillName = String(
+                        input.skill_name ?? input.skill ?? input.name ?? ""
+                      );
+                      pendingSkillFollowup = skillName || "(unknown)";
+                    } else {
+                      pendingSkillFollowup = null;
+                    }
                   }
                   if (WRITE_TOOL_NAMES.has(block.name.toLowerCase())) {
                     filesChanged = true;
@@ -2571,6 +2597,33 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             description: "⚠ Recovery turn ended without visible output — giving up.",
           });
           resultText = "_(The agent ended without a visible reply. Try rephrasing your question.)_";
+        } else if (pendingSkillFollowup && source !== "recovery") {
+          // Skill-follow-through recovery. Model loaded a skill but the
+          // turn ended without the action tool the skill demands (e.g.,
+          // loaded `decompose-task` but never fired `task` for the
+          // task-decomposer subagent; loaded `card-class-handbook` but
+          // never called `mica_create_class` / `mica_edit_class_file`).
+          // The model narrated the action in text; saying it is not
+          // doing it. Inject one re-prompt that names the loaded skill
+          // and demands the tool call this turn. Cap at one retry per
+          // user turn — `source === "recovery"` already inside it.
+          console.log(
+            `[mica-agent] skill-follow-through gap: loaded "${pendingSkillFollowup}" with no action tool — enqueueing recovery for: ${message.slice(0, 60)}`,
+          );
+          ctx.broadcast({
+            type: "progress",
+            tool: "skill-followthrough-recovery",
+            description: `⚠ Loaded ${pendingSkillFollowup} but didn't act — auto-continuing.`,
+          });
+          enqueueMessage(
+            `Your previous turn loaded the \`${pendingSkillFollowup}\` skill but didn't take ` +
+              `the action it specified. Re-read what that skill told you to do, then emit the ` +
+              `concrete tool call now (most skills demand a \`task\` dispatch, a \`write_file\`, ` +
+              `or one of the \`mica_*\` tools — not more prose). Narrating "I'm dispatching ` +
+              `to X" is not the same as dispatching; only the tool_use block counts. ` +
+              `Do not load another skill on this turn — execute the pending action.`,
+            "recovery",
+          );
         } else if (!resultText.trim()) {
           resultText = filesChanged ? "Done -- I made changes." : "Done.";
         }

@@ -62,14 +62,15 @@ const audioEl = container.querySelector('#vc-audio');
 const metaEl = container.querySelector('#vc-meta');
 const voiceSelectEl = container.querySelector('#vc-voice-select');
 
-// Currently-selected Kokoro voice. Default matches the sidecar's
-// VOICE_TTS_VOICE fallback (af_bella). Loaded from this card's
-// instance file (a JSON blob {voice: "..."}) on init; written back
-// on every change. Sent to the server two ways: as a per-message
-// `voice:` field on every audioB64 payload, AND as a session-level
-// `set_voice` control message that updates voicePref so ambient
-// announcements pick up the change too.
-const DEFAULT_VOICE = 'af_bella';
+// Currently-selected Kokoro voice. Default `af_sky` (calmer, lower-pitched
+// reading voice) — matches the sidecar env `VOICE_TTS_VOICE=af_sky` so
+// fresh instances and the ambient TTS path agree on first run. Loaded
+// from this card's instance file (a JSON blob {voice: "..."}) on init;
+// written back on every change. Sent to the server two ways: as a
+// per-message `voice:` field on every audioB64 payload, AND as a
+// session-level `set_voice` control message that updates voicePref
+// so ambient announcements pick up the change too.
+const DEFAULT_VOICE = 'af_sky';
 let currentVoice = DEFAULT_VOICE;
 
 // VAD-based always-listening pipeline.
@@ -88,6 +89,7 @@ let currentVoice = DEFAULT_VOICE;
 let micOn = false;
 let micStream = null;
 let audioCtx = null;
+let micSource = null; // MediaStreamAudioSourceNode — MUST be held in a long-lived ref; MDN: "It is important to keep a hard reference to the MediaStreamAudioSourceNode object so it isn't garbage-collected." Without this, the node gets GC'd under memory pressure (e.g., when the user creates/edits another card) and the analyser silently stops receiving samples — UI keeps showing "Listening" while VAD never trips.
 let analyserNode = null;
 let vadSampleBuf = null;
 let vadInterval = null;
@@ -539,11 +541,11 @@ async function turnMicOn() {
   // Web Audio analyser for VAD energy sampling.
   const Ctx = window.AudioContext || window.webkitAudioContext;
   audioCtx = new Ctx();
-  const source = audioCtx.createMediaStreamSource(stream);
+  micSource = audioCtx.createMediaStreamSource(stream);
   analyserNode = audioCtx.createAnalyser();
   analyserNode.fftSize = 1024;
   analyserNode.smoothingTimeConstant = 0.4;
-  source.connect(analyserNode);
+  micSource.connect(analyserNode);
   vadSampleBuf = new Uint8Array(analyserNode.frequencyBinCount);
 
   micOn = true;
@@ -584,6 +586,10 @@ function turnMicOff() {
   if (micStream) {
     micStream.getTracks().forEach(function(t) { try { t.stop(); } catch (_) {} });
     micStream = null;
+  }
+  if (micSource) {
+    try { micSource.disconnect(); } catch (_) {}
+    micSource = null;
   }
   if (audioCtx) {
     try { audioCtx.close(); } catch (_) {}

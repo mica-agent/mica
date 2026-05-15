@@ -1193,18 +1193,19 @@ function buildToolbar() {
             // from at a glance: project-scoped (green-italic), library (blue),
             // or built-in (default). `scope` is the canonical field; older
             // builds without it fall back to the legacy builtIn boolean.
+            const shortcut = '\n\nOption/Alt-click to create immediately with an auto-generated filename (skips the name prompt).';
             const scope = classes[name].scope || (classes[name].builtIn ? 'builtin' : 'project');
             if (scope === 'library') {
                 const libPath = classes[name].libraryProject || '';
                 const libName = libPath.split('/').filter(Boolean).pop() || libPath;
-                btn.title = `From library project: ${libName}`;
+                btn.title = `From library project: ${libName}${shortcut}`;
                 btn.style.borderColor = 'rgba(96,165,250,0.4)';
             } else if (scope === 'project') {
-                btn.title = 'Project card class';
+                btn.title = `Project card class${shortcut}`;
                 btn.style.borderColor = 'rgba(74,222,128,0.3)';
                 btn.style.fontStyle = 'italic';
             } else {
-                btn.title = 'Built-in card class';
+                btn.title = `Built-in card class${shortcut}`;
             }
 
             // Pre-fill the prompt with the lowest free name: the bare class
@@ -1214,13 +1215,18 @@ function buildToolbar() {
             // is worth one extra fetch. Falls back to the legacy timestamped
             // suffix if the file list can't be loaded so the action never
             // blocks on a transient backend hiccup.
-            btn.addEventListener('click', async () => {
+            btn.addEventListener('click', async (e) => {
                 let friendly = `${name}-${Date.now().toString(36)}.${name}`;  // legacy fallback
                 try {
                     const r = await fetch('/api/files?canvas=1', { headers: projectHeaders() });
                     if (r.ok) {
                         const data = await r.json();
-                        const taken = new Set((data.files || []).map((f) => f.name));
+                        // /api/files returns a raw array, not {files: [...]}. Earlier
+                        // code wrote `data.files || []` which always evaluated to
+                        // [] — leaving `taken` empty so collisions were missed and
+                        // alt-click kept overwriting the same `<name>.<name>` file.
+                        const files = Array.isArray(data) ? data : (data && Array.isArray(data.files) ? data.files : []);
+                        const taken = new Set(files.map((f) => f.name));
                         const ext = `.${name}`;
                         const candidate = (suffix) => suffix
                             ? `${canvasRoot}${name}-${suffix}${ext}`
@@ -1234,7 +1240,13 @@ function buildToolbar() {
                         }
                     }
                 } catch { /* fall through to legacy default */ }
-                const baseName = prompt(`Name for the ${name} card:`, friendly);
+                // Option/Alt-click skips the name prompt and creates
+                // immediately with the auto-generated friendly name. Used
+                // when the user trusts the default and just wants the card.
+                const skipPrompt = e.altKey;
+                const baseName = skipPrompt
+                    ? friendly
+                    : prompt(`Name for the ${name} card:`, friendly);
                 if (!baseName) return;
                 const trimmed = baseName.trim();
                 if (!trimmed) return;

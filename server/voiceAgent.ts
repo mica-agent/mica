@@ -47,6 +47,7 @@ import {
 } from "./voiceServers.js";
 import { SentenceFanout, cleanForTts } from "./voiceStreaming.js";
 import { tavilySearch, webFetch, timeAt } from "./voiceTools.js";
+import { runVoiceTurn, classifyUserIntent, toolChoiceForIntent } from "./voiceAgentSdk.js";
 
 // Cap on read_card output. The voice prompt budget is small; if a card is
 // huge the LLM should summarize it, not regurgitate. Truncated content
@@ -181,7 +182,7 @@ interface CardQueueItem {
 async function cardStatusFor(
   project: string | null,
   filename: string,
-): Promise<{ busy: boolean; summary: string; queueDepth: number; queueItems: CardQueueItem[] }> {
+): Promise<{ busy: boolean; summary: string; queueDepth: number; queueItems: CardQueueItem[]; currentTask: string | null }> {
   const history = await readChatHistoryFor(project, filename);
   // Resolve cardId so we can read the persisted queue. Same path the
   // chat agent uses to write it.
@@ -201,17 +202,27 @@ async function cardStatusFor(
   // mid-reply) OR there are queued items (pending work behind it).
   const last = history[history.length - 1];
   const busy = (last && last.role === "user") || queueDepth > 0;
+  // If the agent is mid-reply (last entry is a user-role message with
+  // no assistant follow-up yet), surface a preview of that message so
+  // voice can answer "what's Qwen working on?" in one tool call. Capped
+  // at 200 chars — voice doesn't need the whole message body, just
+  // enough to reason about the topic.
+  const currentTask = (last && last.role === "user" && typeof last.content === "string")
+    ? last.content.slice(0, 200).trim()
+    : null;
   let summary: string;
   if (history.length === 0 && queueDepth === 0) {
     summary = "idle (no conversation yet)";
+  } else if (currentTask && queueDepth > 0) {
+    summary = `busy on a turn + ${queueDepth} item${queueDepth === 1 ? "" : "s"} queued`;
   } else if (queueDepth > 0) {
     summary = `busy — ${queueDepth} item${queueDepth === 1 ? "" : "s"} queued`;
-  } else if (busy) {
-    summary = "busy — last user turn awaiting reply";
+  } else if (currentTask) {
+    summary = "busy — currently processing a user turn";
   } else {
     summary = `idle (last reply ${history.length} messages in)`;
   }
-  return { busy, summary, queueDepth, queueItems };
+  return { busy, summary, queueDepth, queueItems, currentTask };
 }
 
 /** Format a unix-ms timestamp as a relative age ("just now", "3m ago",
@@ -447,6 +458,12 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     ctx: SessionContext,
   ): Promise<ChannelHandler> {
     const sessionProject = ctx.project;
+    // Short tag for diagnostic logs — prefixed to every voice-agent log
+    // line that goes through runVoiceTurn / classifier / fetch middleware
+    // via AsyncLocalStorage. Lets us disambiguate concurrent voice
+    // sessions when a stuck turn on one project's voice card needs to be
+    // distinguished from a healthy one on another.
+    const sessionTag = ctx.sessionId.slice(0, 8);
     // Mutable: starts from openChannel args, can be updated mid-session
     // via the `set_voice` channel message when the user picks a voice
     // from the card's dropdown. Drives both per-turn TTS (voice agent's
@@ -561,7 +578,15 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     // before the visibilitychange listener fires) still hears audio.
     const clientVisibility = new Map<string, boolean>();
     function anyVisible(): boolean {
-      if (clientVisibility.size === 0) return false;
+      // Empty map → default true (better to spend Kokoro GPU on a turn
+      // a not-yet-presence-reporting client may still hear than to
+      // silently skip TTS while the client is actually visible). The
+      // race window: just after page reload, onAttach may not have
+      // fired yet for the new clientId when the user's first utterance
+      // arrives via a still-active prior session. Comment at the top
+      // of clientVisibility says the default should be "true on attach"
+      // — that's what this branch enforces.
+      if (clientVisibility.size === 0) return true;
       for (const v of clientVisibility.values()) if (v) return true;
       return false;
     }
@@ -1074,6 +1099,8 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
         }
 
         busy = true;
+        const tBusyStart = Date.now();
+        console.log(`[voice-agent] s=${sessionTag} busy=true (onData turn begin)`);
         try {
           // 1. STT (or text-mode passthrough).
           let userText = "";
@@ -1291,49 +1318,32 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           const promptParts: string[] = [];
 
           promptParts.push(
-            `You are Mica's voice — the user's first contact on this canvas. ` +
-            `Project: "${projectLabel}".\n\n` +
+            `You are Mica's voice on canvas "${projectLabel}". Reply in 1–2 spoken sentences. Speed matters.\n\n` +
 
-            "**Be responsive above all.** Short replies, fast back-and-forth — reply in one or two spoken sentences. Speed beats thoroughness here.\n\n" +
+            "CORE RULES\n\n" +
 
-            "**Notice what's on the canvas, treat it as context.** When there's a project intent below, ground your suggestions in it. Otherwise lean on your own knowledge — you're Qwen3.6, you know a lot — and engage with whatever the user brings. Speak naturally about the topic; let the canvas inform your reply silently rather than announcing its state.\n\n" +
+            "1. Call a tool to get specifics. When you need a specific value — a number, date, name, address, price, current event, or the status of an agent on this canvas — call the matching tool first, then speak the result:\n" +
+            "  • search / web_fetch — current facts, news, prices, what's recently opened\n" +
+            "  • time              — current time in any timezone\n" +
+            "  • card_status       — an agent's busy/idle state and queue\n" +
+            "  • read_card / read_recent_replies — canvas contents and a chat card's last reply\n\n" +
 
-            "**HARD RULE: no fabricated specifics.** A specific number, date, address, name, headline, price, score, or location in `<say>` without a preceding tool call is a hallucination — even when it sounds plausible. Users catch these in seconds and stop trusting everything else you say. Two safe shapes: (a) call a tool first, then speak the tool-derived result; (b) say plainly you don't have the specific and offer to look it up. Never the third shape — confidently stating a fabricated specific. This rule is absolute; the model-training instinct to be immediately helpful with a guess is what trips it. Resist that instinct.\n\n" +
+            "2. Pair every action with its tool call. Your prose describes what's happening; the tool call makes it happen. Emit them together in the same turn:\n" +
+            "  • search → spoken answer woven from the results\n" +
+            "  • send_to_card → spoken confirmation of what you sent\n" +
+            "  • card_status → spoken status with reasoning over the queue\n\n" +
 
-            "**Search and knowledge are partners, not a fallback chain.** For most non-trivial questions you'll combine both: `search` (or `web_fetch`, or `time`) gives the precise current data; your knowledge gives the context and framing that makes the data make sense. Example shape: search for the stock price → your `<say>` includes the looked-up number AND the broader market context you know. The two together produce a useful answer; either alone is weaker. Tools are cheap (1–3 seconds); use them as your default when the question has any specific moving piece.\n\n" +
+            "3. Treat every turn as a fresh decision. When the user asks for something done, emit a new tool call — past dispatches don't carry over. If \"still too subtle\" follows a prior fix, send a NEW send_to_card with the refined request.\n\n" +
 
-            "**When you need a tool:**\n" +
-            "  1. **Data that didn't exist when you were trained.** Today's weather, today's news, today's prices/scores, the current time anywhere. Your weights have a cutoff. Use `search`, `web_fetch`, or `time`.\n" +
-            "  2. **Precision matters on a moving target.** Stock quotes, exchange rates, real-time metrics. Even when you roughly know the shape, the user needs the current value, not your training-era memory. Use `search` or `web_fetch`.\n" +
-            "  3. **You're not firmly confident in the exact specific.** Addresses, phone numbers, attribution, less-famous figures, niche numerics, recently-opened businesses. Use `search`/`web_fetch` for a quick lookup. Confidence asymmetry: if you're 60–70% sure, that's not firm; search.\n\n" +
+            "4. Voice is the routing layer between the user and the chat agents. To change anything on a canvas card, dispatch through send_to_card to a chat agent (Qwen, Claude Code, etc.). To inspect a card, use read_card or read_recent_replies. To check on an agent, card_status.\n\n" +
 
-            "**Ask Qwen (or another chat-card agent) for help.** `send_to_card` is not only for executing project work — it's also for consulting. Qwen has the same knowledge base you do plus deeper reasoning, file access, and code execution. Route to it when:\n" +
-            "  - The question is hard, layered, or analytical and a quick voice reply would short-change it.\n" +
-            "  - You want a second take on something you're unsure about.\n" +
-            "  - The work needs files, code, or multi-step reasoning.\n" +
-            "Offer phrasings: \"Want me to ask Qwen for a deeper take?\" / \"I can send that over to Qwen if you'd like a thorough answer.\" Don't over-route trivial questions; trust your knowledge for the easy ones.\n\n" +
+            "5. When uncertain, offer rather than guess. \"Want me to look that up?\" / \"Want me to ask Qwen?\" / \"Should I check what Qwen's working on?\" — let the user opt in. Better than fabricating.\n\n" +
 
-            "**Never promise without doing.** If `<say>` contains \"let me check\", \"pulling that up\", \"hold on\", \"one moment\", \"let me look that up\" — you MUST emit a matching `<tool>` in the same response. Don't narrate intent without action. Either call the tool now or skip the preamble and answer directly.\n\n" +
-
-            "**Status questions about a chat card need a real check, not a guess.** When the user asks what an agent is doing, whether it's busy, what's in its queue, what it just said, or whether it's stuck — call `card_status` (for busy / idle / queue depth / queued items) or `read_recent_replies` (for what it just said). Then REASON over what you got back: if there's a queue, decide whether the user's likely next move is to add, replace, delete, or wait. Speak the real status with that reasoning attached — not a forwarding offer. Fabricating an agent's state (\"Qwen is still working on that…\" without checking) is the same kind of lie as fabricating weather. And jumping to send_to_card when the user asked about state is forwarding without understanding — the user wants to know what's happening, not to add more.\n\n" +
-
-            "**You CANNOT modify canvas cards yourself — only chat agents can.** You don't have file-write access. Cards are edited via chat agents (Qwen, Claude Code, etc.) through `send_to_card`. So when the user reports a problem with a card (wrong data, broken layout, missing field, incorrect coordinates, ugly markers, etc.), the ONLY honest responses are:\n" +
-            "  - Dispatch the fix right now: `<tool name=\"send_to_card\"><file>…</file><message>describe what to fix</message></tool>` paired with a `<say>` confirming what you sent.\n" +
-            "  - Offer to dispatch and wait: `<say>Want me to ask Qwen to fix that?</say>` — let the user opt in.\n" +
-            "Saying \"let me look at the data\" / \"I'll fix it\" / \"I'm correcting it\" without emitting `send_to_card` is the dispatch-lie pattern — you literally cannot do those things. The user can fix the issue themselves OR delegate to an agent that can; voice's role is to be the routing layer, not the editor.\n\n" +
-
-            "**Work with the user as context emerges.** The first few exchanges may be loose — exploring an idea, kicking around possibilities. As the conversation surfaces what the user actually wants, start suggesting concrete moves: \"Want me to ask Qwen to draft a spec?\" \"Should I have it explore the X angle?\" Engage the chat agents and other tools more as the work crystallizes.\n\n" +
-
-            "**Doubt suspicious transcripts before acting.** The user message came through a mic, echo cancellation, VAD, and STT — none perfect. Misheard utterances and audio leakage happen, especially during your own TTS playback. Treat the transcript as evidence, not ground truth. Three doubt signals:\n" +
-            "  - **Off-topic for the conversation.** No thread connection to what you've been discussing, no transition word, no plausible new direction.\n" +
-            "  - **Very short, generic, context-free.** A two- or three-word fragment that could be speech to someone else, the user reading aloud, or media bleeding through.\n" +
-            "  - **Doesn't fit the target's recent thread.** Before a heavy dispatch, check what the target chat card last said. A non-sequitur with no explicit pivot from the user is suspect.\n" +
-            "Two or more signals firing → prefer a clarifier over a dispatch. One missed dispatch is recoverable; a bad dispatch that lands in a busy chat card's queue can cascade for several turns before anyone notices. Reactive cleanup via `delete_queue_item` exists, but proactive doubt is cheaper.\n\n" +
-
-            "**Dispatch when work or deeper analysis is wanted.** Two cases for `send_to_card`: (a) the user clearly wants something done that needs files, code, or planning — route it; (b) the user wants a thorough answer to a hard question and you've offered to ask Qwen — route it. After dispatching, mention an obvious follow-up if there is one, or just confirm briefly. Before dispatching to a chat card that's already busy or has a recent delegation, call `card_status` to see what's queued — if the new request overlaps with something pending, work with the user to decide (combine, skip, wait) rather than piling on.\n\n" +
-            "**Manage the queue, don't pile on.** When the user revises or cancels something you already dispatched and it's still queued behind the in-flight turn, mutate the queue rather than stack another item: call `card_status` to read item IDs, then `replace_queue_item` to amend the text or `delete_queue_item` to drop it. Two heuristics: \"never mind / cancel / drop that\" → delete; \"actually make that X instead\" or \"also add Y\" → replace. Piling on a third or fourth send_to_card while two are already queued is the failure mode this avoids.\n\n" +
-
-            "Every word inside <say>…</say> is read aloud. Keep <say> as plain conversational speech — no markdown, no lists, no code, no URLs.\n",
+            "6. Edit the queue, don't pile onto it. When the user is amending or cancelling something they JUST sent to a chat agent (within the last few turns — \"actually make it three paragraphs\", \"never mind, drop that\", \"change the city to Boston\"), don't dispatch a new message. Call card_status on that agent to read the queue items and their ids, then:\n" +
+            "  • replace_queue_item — amendment to a still-pending item (preserves its position, just rewrites the text)\n" +
+            "  • delete_queue_item  — cancellation of a still-pending item\n" +
+            "  • send_to_card       — genuinely new work, or work the in-flight turn already started so it's too late to edit\n" +
+            "If the user references the in-flight item (currentTask) rather than a queued one, you can't edit it — speak that and offer to send the amendment as a follow-up instead.\n",
           );
 
           if (projectIntent) {
@@ -1450,30 +1460,40 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             promptParts.push(lines.join(""));
           }
 
-          promptParts.push(
-            "## Tools\n" +
-            `<tool name="list_cards"/>` + " — fresh canvas listing. Rare; the list above is usually enough.\n" +
-            `<tool name="read_card"><file>EXACT_FILENAME</file></tool>` + " — read a card's contents (markdown, spec, json, etc). Use when answering needs project-specific data you don't already have.\n" +
-            `<tool name="card_status"><file>EXACT_FILENAME</file></tool>` + " — busy/idle hint for a chat card. Use for \"is Qwen still working?\".\n" +
-            `<tool name="read_recent_replies"><file>EXACT_FILENAME</file><n>1</n></tool>` + " — fetch the last N assistant replies from a chat card. Use for \"what did Qwen just say?\".\n" +
-            `<tool name="send_to_card"><file>EXACT_FILENAME</file><message>WHAT_TO_DO</message></tool>` + " — forward to a chat card from the \"Chat cards\" section above. Targets outside that section are rejected. Pick by role description when present; pick by filename when names collide.\n" +
-            `<tool name="delete_queue_item"><file>EXACT_FILENAME</file><id>QUEUE_ITEM_ID</id></tool>` + " — remove a pending item from a chat card's queue. Get the id from card_status. Use when the user cancels a request that hasn't been picked up yet (\"never mind\", \"drop that\").\n" +
-            `<tool name="replace_queue_item"><file>EXACT_FILENAME</file><id>QUEUE_ITEM_ID</id><message>NEW_TEXT</message></tool>` + " — rewrite a pending item's text in place. Get the id from card_status. Use when the user amends a request that's still queued.\n" +
-            `<tool name="abort"/>` + " — user wants to stop. Cancels the last delegation (if any) and stops in-flight playback. Pair with a brief <say> confirmation (\"OK, stopping\").\n" +
-            `<tool name="search"><query>SEARCH_QUERY</query></tool>` + " — web search via Tavily. Use for facts you don't know (current events, latest versions, simple lookups). Returns top results; you summarize.\n" +
-            `<tool name="web_fetch"><url>URL</url></tool>` + " — fetch a URL and return its text. Use after search to drill into a specific result, or when the user gives a URL directly.\n" +
-            `<tool name="time"><tz>IANA_TIMEZONE</tz></tool>` + " — current time in the given IANA timezone (e.g. \"America/Los_Angeles\", \"Asia/Tokyo\"). Zero latency. Use whenever the user asks \"what time is it in X\".\n",
-          );
+          // Tool table + XML-grammar hard rules — only useful for the
+          // legacy XML path. The SDK injects tool descriptions
+          // automatically from `description` fields; teaching the model
+          // XML format here makes it imitate the format in its TEXT
+          // output instead of using vLLM's native function-calling API.
+          if (process.env.MICA_VOICE_SDK !== "1") {
+            promptParts.push(
+              "## Tools\n" +
+              `<tool name="list_cards"/>` + " — fresh canvas listing. Rare; the list above is usually enough.\n" +
+              `<tool name="read_card"><file>EXACT_FILENAME</file></tool>` + " — read a card's contents (markdown, spec, json, etc). Use when answering needs project-specific data you don't already have.\n" +
+              `<tool name="card_status"><file>EXACT_FILENAME</file></tool>` + " — busy/idle hint for a chat card. Use for \"is Qwen still working?\".\n" +
+              `<tool name="read_recent_replies"><file>EXACT_FILENAME</file><n>1</n></tool>` + " — fetch the last N assistant replies from a chat card. Use for \"what did Qwen just say?\".\n" +
+              `<tool name="send_to_card"><file>EXACT_FILENAME</file><message>WHAT_TO_DO</message></tool>` + " — forward to a chat card from the \"Chat cards\" section above. Targets outside that section are rejected. Pick by role description when present; pick by filename when names collide.\n" +
+              `<tool name="delete_queue_item"><file>EXACT_FILENAME</file><id>QUEUE_ITEM_ID</id></tool>` + " — remove a pending item from a chat card's queue. Get the id from card_status. Use when the user cancels a request that hasn't been picked up yet (\"never mind\", \"drop that\").\n" +
+              `<tool name="replace_queue_item"><file>EXACT_FILENAME</file><id>QUEUE_ITEM_ID</id><message>NEW_TEXT</message></tool>` + " — rewrite a pending item's text in place. Get the id from card_status. Use when the user amends a request that's still queued.\n" +
+              `<tool name="abort"/>` + " — user wants to stop. Cancels the last delegation (if any) and stops in-flight playback. Pair with a brief <say> confirmation (\"OK, stopping\").\n" +
+              `<tool name="search"><query>SEARCH_QUERY</query></tool>` + " — web search via Tavily. Use for facts you don't know (current events, latest versions, simple lookups). Returns top results; you summarize.\n" +
+              `<tool name="web_fetch"><url>URL</url></tool>` + " — fetch a URL and return its text. Use after search to drill into a specific result, or when the user gives a URL directly.\n" +
+              `<tool name="time"><tz>IANA_TIMEZONE</tz></tool>` + " — current time in the given IANA timezone (e.g. \"America/Los_Angeles\", \"Asia/Tokyo\"). Zero latency. Use whenever the user asks \"what time is it in X\".\n",
+            );
 
-          promptParts.push(
-            "## Hard rules\n" +
-            "1. Place every <tool> as a sibling of <say>, outside it. Tools and say blocks live side-by-side at the top level.\n" +
-            "2. For send_to_card, copy the <file> verbatim from the \"Chat cards\" section. Cards from \"Cards on the canvas\" are read-only — use them with read_card / read_recent_replies / card_status.\n" +
-            "3. Write <message> as plain English describing the work you want done.\n" +
-            "4. Speak only what's true. Claim a dispatch in <say> (\"I asked Qwen\", \"I sent that to X\") only when you also emit a matching <tool name=\"send_to_card\"> in the same response. When you're not dispatching, offer instead: \"want me to ask Qwen?\" or \"I can route that to Qwen if you'd like.\"\n" +
-            "5. Speak agent status only when you've verified it. Don't say \"Qwen finished\" / \"Qwen is still working\" / \"Qwen is busy\" from a guess — call <tool name=\"card_status\"> to check, then speak the verified state. When the user asks for status and you haven't checked, either call card_status now or say \"I'm not sure — want me to check?\". The ambient hint above (if present) IS verified ground truth — you can paraphrase it. Anything else about an agent's state is hallucination.\n" +
-            "6. After dispatching, give a brief spoken confirmation in <say>. If a follow-up step is obvious, mention it.\n",
-          );
+            promptParts.push(
+              "## Hard rules\n" +
+              "1. Place every <tool> as a sibling of <say>, outside it. Tools and say blocks live side-by-side at the top level.\n" +
+              "2. For send_to_card, copy the <file> verbatim from the \"Chat cards\" section. Cards from \"Cards on the canvas\" are read-only — use them with read_card / read_recent_replies / card_status.\n" +
+              "3. Write <message> as plain English describing the work you want done.\n" +
+              "4. Speak only what's true. Claim a dispatch in <say> (\"I asked Qwen\", \"I sent that to X\") only when you also emit a matching <tool name=\"send_to_card\"> in the same response. When you're not dispatching, offer instead: \"want me to ask Qwen?\" or \"I can route that to Qwen if you'd like.\"\n" +
+              "5. Speak agent status only when you've verified it. Don't say \"Qwen finished\" / \"Qwen is still working\" / \"Qwen is busy\" from a guess — call <tool name=\"card_status\"> to check, then speak the verified state. When the user asks for status and you haven't checked, either call card_status now or say \"I'm not sure — want me to check?\". The ambient hint above (if present) IS verified ground truth — you can paraphrase it. Anything else about an agent's state is hallucination.\n" +
+              "6. After dispatching, give a brief spoken confirmation in <say>. If a follow-up step is obvious, mention it.\n",
+            );
+          }
+          // SDK path: no extra rules block — the 5 CORE RULES above
+          // already cover behavior, and tool descriptions are injected
+          // into the model's context by the SDK automatically.
 
           promptParts.push(
             "## Interrupt vs queue (your judgment)\n" +
@@ -1491,7 +1511,9 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             "The user doesn't need to choose — you handle it. Only ask when you're genuinely uncertain.\n",
           );
 
-          promptParts.push(
+          // Output-grammar examples — XML-format only; skipped for SDK
+          // path where the model emits structured tool calls natively.
+          if (process.env.MICA_VOICE_SDK !== "1") promptParts.push(
             "## Output grammar — shape templates\n" +
             "These show the SHAPE of your output for different intents. Speak the actual answer in your own words; the brackets and pseudo-content are placeholders. Do NOT emit the role labels \"Assistant:\" or \"User:\" — your response is ALWAYS just the <tool> and/or <say> blocks, never wrapped in a role prefix.\n\n" +
 
@@ -1524,6 +1546,388 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             // grammar. User turns have no raw — content IS the raw.
             ...history.map((h) => ({ role: h.role, content: h.raw || h.content })),
           ];
+
+          // ── SDK path (env-gated) ─────────────────────────────────
+          // When MICA_VOICE_SDK=1, use the Vercel AI SDK + vLLM native
+          // function calling instead of the legacy XML protocol below.
+          // Tool calls come back structured (no text-regex parsing).
+          //
+          // Two-phase: (1) run the LLM, buffer text + count tool calls;
+          // (2) override-check the buffered text (catches "I asked Qwen"
+          // claims when toolCallsFired === 0); (3) TTS the final text
+          // via the SentenceFanout. We can't stream TTS DURING the LLM
+          // run because we don't know whether to scrub the text until
+          // the stream finishes and we can count tool calls — once audio
+          // has played, scrubbing is impossible.
+          if (process.env.MICA_VOICE_SDK === "1") {
+            const skipTts = !anyVisible();
+            console.log(
+              `[voice-agent:sdk] s=${sessionTag} turn start skipTts=${skipTts} systemPrompt=${systemPrompt.length}ch history=${history.length}msgs`,
+            );
+            ctx.broadcast({ type: "thinking", phase: "llm" });
+            activeAbort = new AbortController();
+            const sdkMessages = history.map((h) => ({ role: h.role, content: h.content }));
+            const runArgs = {
+              systemPrompt,
+              messages: sdkMessages,
+              channelMgr,
+              sessionProject,
+              abortSignal: activeAbort.signal,
+              ctx: { broadcast: ctx.broadcast, sendTo: ctx.sendTo },
+              cardStatusFor,
+              sessionTag,
+              readRecentReplies: async (project: string | null, file: string, n: number) => {
+                const hist = await readChatHistoryFor(project, file);
+                const replies = hist.filter((m) => m.role === "assistant").slice(-n);
+                return replies.map((m, i) => `Reply ${i + 1}: ${m.content}`).join("\n\n") || "(no assistant replies yet)";
+              },
+              onDelegationTracked: (file: string, message: string) => {
+                const dot = file.lastIndexOf(".");
+                const ext = dot === -1 ? "" : file.slice(dot + 1).toLowerCase();
+                delegation = {
+                  filename: file,
+                  agentName: AGENT_NAME_DEFAULTS[ext] || ext,
+                  summary: message.slice(0, 150),
+                  turnsAgo: 0,
+                };
+                console.log(`[voice-agent:sdk] delegation tracked: ${file} (${delegation.agentName})`);
+              },
+              abortHandler: async () => {
+                const droppedQueue = queuedAudio.length;
+                queuedAudio.length = 0;
+                let cascadeTarget: string | null = null;
+                if (delegation) {
+                  cascadeTarget = delegation.filename;
+                  try { channelMgr.dispatchToFilename(sessionProject, delegation.filename, { type: "interrupt" }); } catch { /* best effort */ }
+                }
+                ctx.broadcast({ type: "abort" });
+                delegation = null;
+                return { droppedQueue, cascadeTarget };
+              },
+            };
+
+            // Pre-turn intent classification. Tiny LLM call labels
+            // the utterance (ACTION_DISPATCH / ACTION_STATUS /
+            // ACTION_LOOKUP / ANSWER / CLARIFY) and we set
+            // toolChoice='required' for action intents — that way
+            // the model literally cannot claim to dispatch without
+            // firing a tool, because the SDK refuses to finish the
+            // turn without at least one tool call. The regex-based
+            // post-hoc override below stays as a backstop for cases
+            // the classifier mis-labels.
+            const lastUserMsg = sdkMessages.filter((m) => m.role === "user").slice(-1)[0]?.content ?? "";
+            let intent: Awaited<ReturnType<typeof classifyUserIntent>> | null = null;
+            let intentToolChoice: "auto" | "required" | "none" = "auto";
+            if (lastUserMsg) {
+              intent = await classifyUserIntent(lastUserMsg, sessionTag);
+              intentToolChoice = toolChoiceForIntent(intent);
+              console.log(`[voice-agent:sdk] s=${sessionTag} intent=${intent} → toolChoice=${intentToolChoice}`);
+              ctx.broadcast({ type: "intent", intent, toolChoice: intentToolChoice });
+            }
+
+            // First pass: classifier-gated toolChoice. Action intents
+            // force a tool call; ANSWER / CLARIFY leave the model free
+            // to answer directly.
+            //
+            // The first pass is wrapped in a 30s timeout. Observed
+            // failure: vLLM's guided decoder occasionally hangs after
+            // streaming the SSE framing markers (`start` + `start-step`)
+            // when `toolChoice: 'required'` is combined with a large
+            // tool schema (11 tools) and a sizeable prompt (>15KB body).
+            // Heartbeat keeps ticking with `parts=2`; nothing else
+            // arrives. Without a timeout, `busy` stays true forever
+            // and the user sees STT silently dropping audio. The
+            // timeout aborts the stuck call, then we recover (below).
+            const tFirstPass = Date.now();
+            let firstPassTimedOut = false;
+            const firstPassTimeout = setTimeout(() => {
+              console.warn(
+                `[voice-agent:sdk] s=${sessionTag} first pass exceeded 30s — aborting`,
+              );
+              firstPassTimedOut = true;
+              try { activeAbort?.abort(); } catch { /* ignore */ }
+            }, 30000);
+            console.log(`[voice-agent:sdk] s=${sessionTag} runVoiceTurn(first pass) awaiting…`);
+            let result: Awaited<ReturnType<typeof runVoiceTurn>>;
+            try {
+              result = await runVoiceTurn({ ...runArgs, toolChoice: intentToolChoice });
+            } finally {
+              clearTimeout(firstPassTimeout);
+              console.log(
+                `[voice-agent:sdk] s=${sessionTag} runVoiceTurn(first pass) returned after ${Date.now() - tFirstPass}ms cancelled=${result?.cancelled ?? "?"} timedOut=${firstPassTimedOut}`,
+              );
+            }
+
+            // Recovery pass. When the first pass timed out (not
+            // user-aborted), retry once with `toolChoice: 'auto'` so
+            // vLLM is free to pick a tool or stream text normally —
+            // the stall is specifically triggered by forced tool
+            // generation under guided decoding. Loses the *guarantee*
+            // that a tool fires, but in exchange recovers from the
+            // wedge and usually still serves the user's intent (the
+            // model picks the right tool unforced in the same way it
+            // did on the immediately preceding turn). We don't loop;
+            // one recovery is enough. If the recovery also times out,
+            // vLLM is genuinely unhealthy — speak a static error.
+            if (firstPassTimedOut && result.cancelled) {
+              console.warn(
+                `[voice-agent:sdk] s=${sessionTag} first-pass timed out; starting recovery with toolChoice='auto'`,
+              );
+              ctx.broadcast({
+                type: "error",
+                error: "Model stalled on forced tool call; retrying without constraint.",
+              });
+              // Fresh abort controller — the previous one fired on
+              // timeout and would short-circuit the recovery.
+              activeAbort = new AbortController();
+              const tRecovery = Date.now();
+              let recoveryTimedOut = false;
+              const recoveryTimeout = setTimeout(() => {
+                console.warn(
+                  `[voice-agent:sdk] s=${sessionTag} recovery pass exceeded 30s — aborting`,
+                );
+                recoveryTimedOut = true;
+                try { activeAbort?.abort(); } catch { /* ignore */ }
+              }, 30000);
+              try {
+                result = await runVoiceTurn({
+                  ...runArgs,
+                  abortSignal: activeAbort.signal,
+                  toolChoice: "auto",
+                });
+              } finally {
+                clearTimeout(recoveryTimeout);
+                console.log(
+                  `[voice-agent:sdk] s=${sessionTag} runVoiceTurn(recovery) returned after ${Date.now() - tRecovery}ms cancelled=${result?.cancelled ?? "?"} timedOut=${recoveryTimedOut}`,
+                );
+              }
+              // If recovery also stalled, vLLM is sick. Speak a
+              // concrete error so the user knows to try again.
+              if (recoveryTimedOut && result.cancelled) {
+                console.warn(
+                  `[voice-agent:sdk] s=${sessionTag} recovery also timed out — substituting error speakable`,
+                );
+                result = {
+                  ...result,
+                  speakable: "I'm having trouble reaching the model right now. Try again in a moment.",
+                  cancelled: false,
+                };
+              }
+            }
+
+            // Hallucinated-dispatch detector. Fires when the model SAID
+            // it did something (claim/promise/nameDrop) but emitted ZERO
+            // tool calls. The detection uses the regex heuristics from
+            // the legacy override — same patterns, but now serves a
+            // different purpose: trigger a retry, not just substitute.
+            const detectHallucinatedDispatch = (text: string): {
+              fired: boolean; explicitClaim: boolean; implicitPromise: boolean; nameDrop: boolean;
+            } => {
+              // Verbs that indicate the assistant CLAIMS a completed
+              // dispatch/edit action. Each was observed in production
+              // as a false claim where no tool actually fired.
+              const explicitClaim = /\b(?:asked|sent (?:that |it )?to|told|dispatched|routed (?:that|it)|forwarded (?:that|it)|kicked off|kicked it off|handed (?:that|it) (?:off|over)|added|updated|included|passed (?:that |it )?along|shared|submitted|ran by|run by|put in|noted)\b/i.test(text);
+              // Verbs that indicate the assistant PROMISES to do
+              // something — same fail mode if no tool fires.
+              const implicitPromise = /\b(?:let me (?:check|find out|look into|see (?:what|if|whether)|ask|pull (?:that|it) up|get|get back|consult|verify|grab|add|update|include|share|submit)|i(?:'ll| will) (?:check|find out|look into|see|ask|pull|get|consult|verify|grab|bring (?:that|it) up|run (?:that|it) by|pass (?:that|it) along|add|update|include|share|submit)|i(?:'m| am) (?:checking|asking|looking|consulting|adding|updating|including|sharing|submitting)|hold on while|just a (?:moment|second|sec)|one (?:moment|second|sec)|give me a (?:moment|second|sec)|on it|let's see what|getting that for you)\b/i.test(text);
+              const chatAgentNames = chatCards
+                .map((c) => {
+                  const dot = c.name.lastIndexOf(".");
+                  const ext = dot === -1 ? "" : c.name.slice(dot + 1).toLowerCase();
+                  return AGENT_NAME_DEFAULTS[ext] || ext;
+                })
+                .filter(Boolean);
+              const nameDrop = chatAgentNames.length > 0
+                && new RegExp(`\\b(?:${chatAgentNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i").test(text);
+              const offerPhrasing = /\b(?:want me to|do you want me to|would you (?:like|want) me to|should i|shall i|i could (?:ask|have|send|route|forward|run by)|i can (?:ask|have|send|route|forward|run by)|let me know if you want)\b/i.test(text);
+              const selfIntro = /^\s*(?:I(?:'m| am)\s+(?:Qwen|Claude(?:\s+Code)?|OpenCode))\b/i.test(text);
+              const nameDropIsOffer = nameDrop && !explicitClaim && !implicitPromise && offerPhrasing;
+              const nameDropIsSelfIntro = nameDrop && !explicitClaim && !implicitPromise && selfIntro;
+              const fired = (explicitClaim || implicitPromise || nameDrop) && !nameDropIsOffer && !nameDropIsSelfIntro;
+              return { fired, explicitClaim, implicitPromise, nameDrop };
+            };
+
+            // Retry once with toolChoice='required' + an injection if the
+            // first pass produced a dispatch-claim with no tool. The
+            // injected user message tells the model exactly what to do:
+            // call the appropriate tool now. tool_choice='required'
+            // forces the model to emit a tool call this round — it
+            // can't repeat the same hallucinated prose.
+            let retried = false;
+            // Trigger retry only when the user's intent was a dispatch
+            // AND no send_to_card actually fired AND the model said
+            // something (so there's prose to scrub). For ACTION_STATUS /
+            // ACTION_LOOKUP / ANSWER / CLARIFY, `!sendDispatchedOk` is
+            // the EXPECTED outcome — those intents shouldn't dispatch
+            // anything. Without this gate, the regex below fires on
+            // legitimate status answers that name a chat agent
+            // ("Qwen's idle — no code exists yet") because `nameDrop`
+            // sees "Qwen" and assumes hallucinated dispatch.
+            const shouldConsiderRetry = intent === "ACTION_DISPATCH"
+              && !result.sendDispatchedOk
+              && !!result.speakable;
+            if (shouldConsiderRetry) {
+              const detection = detectHallucinatedDispatch(result.speakable);
+              if (detection.fired) {
+                console.log(`[voice-agent:sdk] retry with toolChoice='required' (tools=${result.toolCallsFired}, sendOk=false, explicit=${detection.explicitClaim} implicit=${detection.implicitPromise} nameDrop=${detection.nameDrop}): ${JSON.stringify(result.speakable.slice(0, 200))}`);
+                const retryMessages = [
+                  ...sdkMessages,
+                  { role: "assistant" as const, content: result.speakable },
+                  { role: "user" as const, content:
+                    "(System note: your previous reply claimed an action but you did not call any tool. Emit EXACTLY ONE tool call now — the single tool that matches what you said you would do: send_to_card for a dispatch claim, card_status for a status claim, search or web_fetch for a lookup claim. Do NOT repeat the call. Do NOT call multiple tools. One call, then stop.)"
+                  },
+                ];
+                // Wrap the retry in a 15s timeout. Without this, a stuck
+                // retry (model loops through tool-input deltas without
+                // committing, or vLLM hangs) blocks the whole onData
+                // handler — busy stays true, queued audio piles up, all
+                // subsequent user utterances stall. Race with a timeout
+                // so we always recover within 15s.
+                const retryAbort = new AbortController();
+                const retryTimeout = setTimeout(() => {
+                  console.warn(`[voice-agent:sdk] s=${sessionTag} retry exceeded 15s — aborting`);
+                  retryAbort.abort();
+                }, 15000);
+                const tRetry = Date.now();
+                console.log(`[voice-agent:sdk] s=${sessionTag} runVoiceTurn(retry) awaiting…`);
+                try {
+                  const retry = await runVoiceTurn({
+                    ...runArgs,
+                    messages: retryMessages,
+                    abortSignal: retryAbort.signal,
+                    toolChoice: "required",
+                    // Hard cap retry to one step so the model can't
+                    // pile on by repeatedly calling send_to_card across
+                    // sequential steps (seen in production: 3× same
+                    // send_to_card with identical message).
+                    maxSteps: 1,
+                  });
+                  console.log(
+                    `[voice-agent:sdk] s=${sessionTag} runVoiceTurn(retry) returned after ${Date.now() - tRetry}ms`,
+                  );
+                  retried = true;
+                  if (retry.toolCallsFired > 0) {
+                    console.log(`[voice-agent:sdk] retry succeeded (tools=${retry.toolCallsFired}, sendOk=${retry.sendDispatchedOk})`);
+                    // If retry succeeded with tools but produced no
+                    // spoken text (common when toolChoice='required'
+                    // makes the model emit tools and stop), synthesize
+                    // a brief stock confirmation so the user hears
+                    // SOMETHING after their request landed.
+                    if (!retry.speakable.trim()) {
+                      if (retry.sendDispatchedOk) {
+                        retry.speakable = "Done — I just sent that over.";
+                      } else {
+                        retry.speakable = "Done.";
+                      }
+                      console.log(`[voice-agent:sdk] retry had empty speakable; substituted stock confirmation`);
+                    }
+                    result = retry;
+                  } else {
+                    console.log(`[voice-agent:sdk] retry produced no tool call — falling through to fallback`);
+                  }
+                } catch (err) {
+                  // AbortError from timeout, or any other retry-side
+                  // failure. Fall through to fallback substitution.
+                  console.warn(
+                    `[voice-agent:sdk] s=${sessionTag} runVoiceTurn(retry) threw after ${Date.now() - tRetry}ms: ${(err as Error).message} — falling through to fallback`,
+                  );
+                  retried = true;
+                } finally {
+                  clearTimeout(retryTimeout);
+                }
+              }
+            }
+
+            // Fallback substitution if BOTH passes failed to dispatch
+            // while making a dispatch claim. Gated on intent ===
+            // ACTION_DISPATCH for the same reason as the retry gate:
+            // `!sendDispatchedOk` is the expected outcome for status /
+            // lookup / answer / clarify intents and must not trigger
+            // a substitution that would clobber a legitimate answer.
+            let speakable = result.speakable;
+            let usedFallback = false;
+            if (intent === "ACTION_DISPATCH" && !result.sendDispatchedOk && speakable) {
+              const detection = detectHallucinatedDispatch(speakable);
+              if (detection.fired) {
+                console.log(`[voice-agent:sdk] fallback substitution after ${retried ? "failed retry" : "no-retry"}: ${JSON.stringify(speakable.slice(0, 200))}`);
+                const chatAgentNames = chatCards
+                  .map((c) => {
+                    const dot = c.name.lastIndexOf(".");
+                    const ext = dot === -1 ? "" : c.name.slice(dot + 1).toLowerCase();
+                    return AGENT_NAME_DEFAULTS[ext] || ext;
+                  })
+                  .filter(Boolean);
+                const namedAgent = chatAgentNames.find((n) =>
+                  new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(speakable)
+                );
+                const namedCard = namedAgent
+                  ? chatCards.find((c) => {
+                      const ext = c.name.slice(c.name.lastIndexOf(".") + 1).toLowerCase();
+                      return (AGENT_NAME_DEFAULTS[ext] || ext).toLowerCase() === namedAgent.toLowerCase();
+                    })
+                  : undefined;
+                const targetName = namedCard?.name || (chatCards[0]?.name ?? "a chat card");
+                const targetAgent = namedAgent || (chatCards[0] ? (AGENT_NAME_DEFAULTS[chatCards[0].name.slice(chatCards[0].name.lastIndexOf(".") + 1).toLowerCase()] || "the agent") : "the agent");
+
+                if (detection.implicitPromise && !detection.explicitClaim && !detection.nameDrop) {
+                  speakable = "I didn't actually look that up. Want me to search the web for it?";
+                } else if (detection.nameDrop && !detection.explicitClaim && !detection.implicitPromise) {
+                  speakable = `I didn't actually check on ${targetAgent} — want me to look at the status, or send it something?`;
+                } else {
+                  speakable = chatCards.length > 0
+                    ? `I didn't actually route that anywhere — want me to send it to ${targetName}?`
+                    : `I didn't route that anywhere — open a chat card first if you want me to forward work.`;
+                }
+                usedFallback = true;
+              }
+            }
+
+            console.log(`[voice-agent:sdk] speaking ${speakable.length} chars (tools=${result.toolCallsFired}, sendOk=${result.sendDispatchedOk}, fallback=${usedFallback}): ${JSON.stringify(speakable.slice(0, 500))}`);
+
+            // Phase 3: TTS the final text via SentenceFanout. The fanout
+            // splits by sentence and broadcasts assistant_speech_text +
+            // assistant_speech (audio) per sentence — same shape the
+            // voice card UI consumed from the legacy path.
+            let audioFramesEmitted = 0;
+            const fanout = new SentenceFanout({
+              ttsUrl: getTtsUrl(),
+              voice: msg.voice || voicePref,
+              skipTts,
+              onFrame: (f) => {
+                if (f.type === "sentence") {
+                  ctx.broadcast({ type: "assistant_speech_text", sentence_idx: f.idx, text: f.text });
+                } else if (f.type === "audio") {
+                  audioFramesEmitted++;
+                  ctx.broadcast({ type: "assistant_speech", sentence_idx: f.idx, wav_b64: f.wavB64 });
+                } else {
+                  console.warn(`[voice-agent:sdk] ${f.message}`);
+                }
+              },
+            });
+            ttsActive = true;
+            currentFanout = fanout;
+            ctx.broadcast({ type: "thinking", phase: "tts" });
+            try {
+              if (speakable) {
+                fanout.feed(speakable);
+                fanout.end();
+                await fanout.drain();
+              }
+            } finally {
+              ttsActive = false;
+              if (currentFanout === fanout) currentFanout = null;
+              setImmediate(() => { void drainAnnouncementQueue(); });
+            }
+            console.log(`[voice-agent:sdk] turn done — audio frames emitted=${audioFramesEmitted}`);
+
+            history.push({ role: "assistant", content: speakable });
+            if (history.length > MAX_HISTORY) {
+              history.splice(0, history.length - MAX_HISTORY);
+            }
+            ctx.broadcast({ type: "assistant", content: speakable, fallback: usedFallback });
+            ctx.broadcast({ type: "done" });
+            return;
+          }
 
           // 3. LLM loop.
           //
@@ -1744,14 +2148,17 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                     file,
                     busy: status.busy,
                     summary: status.summary,
+                    currentTask: status.currentTask,
                     queueDepth: status.queueDepth,
                     queueItems: status.queueItems,
                   });
-                  // Format a richer body for the LLM. Empty queue → just
-                  // the busy/summary line; non-empty → numbered preview
-                  // of the first 5 queued items so Mica can recognize
-                  // overlap with what the user just asked.
+                  // Format a richer body for the LLM. Lines we want
+                  // visible: busy/idle + summary, the in-flight task
+                  // preview (if any), then the queued items list.
                   const head = `${status.busy ? "BUSY" : "IDLE"} — ${status.summary}`;
+                  const taskLine = status.currentTask
+                    ? `\nCurrently processing: "${status.currentTask.replace(/"/g, "'")}"`
+                    : "";
                   const queueLines = status.queueItems.length === 0
                     ? ""
                     : "\nQueue:\n" + status.queueItems.map((q, i) => {
@@ -1759,7 +2166,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
                         const text = q.text.replace(/"/g, "'");
                         return `${i + 1}. id=${q.id} (${q.source}, ${age}): "${text}"`;
                       }).join("\n");
-                  readResultLines.push(`<result tool="card_status" file="${file}">\n${head}${queueLines}\n</result>`);
+                  readResultLines.push(`<result tool="card_status" file="${file}">\n${head}${taskLine}${queueLines}\n</result>`);
                 } else if (name === "read_recent_replies") {
                   if (!file) throw new Error("missing <file>");
                   const nStr = parseField(tb.body, "n");
@@ -2211,6 +2618,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // queue gated through TTS so a chat-card-finished ping doesn't
           // barge in mid-sentence over the user's own answer.
           busy = false;
+          console.log(`[voice-agent] s=${sessionTag} busy=false (normal release, ${Date.now() - tBusyStart}ms)`);
           // Drain any ambient announcements queued during STT/LLM. Their
           // own gate (announcementInFlight + busy + ttsActive) keeps them
           // serialized; if ttsActive is about to be true below, this no-ops.
@@ -2276,6 +2684,9 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // Belt-and-suspenders: an early throw before the explicit release
           // above would otherwise leave `busy` stuck true. Setting it again
           // is idempotent.
+          if (busy) {
+            console.log(`[voice-agent] s=${sessionTag} busy=false (finally release, ${Date.now() - tBusyStart}ms) — early-throw path`);
+          }
           busy = false;
           ttsActive = false;
           setImmediate(() => { void drainAnnouncementQueue(); });

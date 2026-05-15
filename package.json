@@ -13,12 +13,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^2.0.47",
     "@anthropic-ai/claude-agent-sdk": "^0.2.74",
     "@anthropic-ai/sdk": "^0.78.0",
     "@mariozechner/pi-coding-agent": "^0.65.2",
     "@mermaid-js/layout-elk": "^0.2.1",
     "@opencode-ai/sdk": "^1.14.33",
     "@qwen-code/sdk": "^0.1.7",
+    "ai": "^6.0.182",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",

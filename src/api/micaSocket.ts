@@ -26,6 +26,23 @@ interface PendingCall {
 interface ChannelHandle {
   onData: ((data: unknown) => void) | null;
   onClose: (() => void) | null;
+  // Params needed to re-send `channel_open` after a WebSocket reconnect
+  // (e.g., backend restart). Without this, sessions silently die on the
+  // server but the card still holds a stale handle, so its `ch.send()`
+  // goes into the void — visible bug: chat card UI shows "connected"
+  // (green light) but voice / cross-card dispatch fails with
+  // `ok=false` because `filenameToSessionId` has no entry. Voice avoids
+  // this naturally via its presence-ping loop; chat / claude / opencode
+  // don't, so we replay the open server-side using the SAME client-side
+  // channel id — card classes' captured `ch` references stay valid.
+  reopenSpec: {
+    project: string;
+    canvas: CanvasId;
+    filename: string;
+    fn: string;
+    args: Record<string, unknown>;
+    sessionId?: string;
+  };
 }
 
 let ws: WebSocket | null = null;
@@ -136,12 +153,31 @@ export function connect(url?: string): void {
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    console.log("[mica-socket] Connected");
+    const isReconnect = wasEverConnected;
+    console.log(`[mica-socket] Connected${isReconnect ? " (reconnect)" : ""}`);
     wasEverConnected = true;
     setConnected(true);
     // Re-subscribe after reconnect so the file watcher rejoins this tab's project.
     if (subscribedProject) {
       try { sendMsg({ type: "subscribe-project", project: subscribedProject }); } catch { /* ignored */ }
+    }
+    // Replay channel_open for every active channel so server-side
+    // sessions get re-created after a backend restart. The id stays
+    // the same so the card class's captured `ch.send(...)` references
+    // continue to address the same server-side session. Without this,
+    // sessions live on the client but not on the server, and
+    // cross-card routing (e.g., voice → qwen.chat) fails with
+    // `dispatchToFilename` ok=false until the user refreshes the tab.
+    if (isReconnect && activeChannels.size > 0) {
+      console.log(`[mica-socket] Replaying ${activeChannels.size} channel(s) after reconnect`);
+      for (const [id, handle] of activeChannels) {
+        const { project, canvas, filename, fn, args, sessionId } = handle.reopenSpec;
+        try {
+          sendMsg({ type: "channel_open", id, sessionId, project, canvas, filename, fn, args, tabId });
+        } catch (err) {
+          console.warn(`[mica-socket] Replay failed for channel ${id} (${filename}/${fn}): ${(err as Error).message}`);
+        }
+      }
     }
   };
 
@@ -155,11 +191,14 @@ export function connect(url?: string): void {
       pending.reject(new Error("WebSocket disconnected"));
       pendingCalls.delete(id);
     }
-    // Notify all active channels of disconnect
-    for (const [id, ch] of activeChannels) {
-      ch.onClose?.();
-      activeChannels.delete(id);
-    }
+    // Active channels are intentionally NOT cleared here — we keep them
+    // so ws.onopen can replay `channel_open` for each, re-creating their
+    // server-side sessions after a backend restart. `ch.send()` calls
+    // made during the disconnect window queue inside `waitForConnection`
+    // and fire after the onopen replays land. Channels are only removed
+    // by an explicit `ch.destroy()` or by `destroyBridgeFor()` when the
+    // file is deleted. See ChannelHandle.reopenSpec for the params used
+    // to replay.
     // Two parallel recovery paths; whichever succeeds first wins.
     //   (1) Retry the WebSocket directly at its own port. The backend lives on
     //       :3002; WS connects there, NOT through Vite. So even if the Vite
@@ -412,7 +451,11 @@ export function openChannel(
   sessionId?: string,
 ): Channel {
   const id = nextId();
-  const handle: ChannelHandle = { onData: null, onClose: null };
+  const handle: ChannelHandle = {
+    onData: null,
+    onClose: null,
+    reopenSpec: { project, canvas, filename, fn, args, sessionId },
+  };
 
   activeChannels.set(id, handle);
 
