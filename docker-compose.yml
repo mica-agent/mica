@@ -37,9 +37,14 @@ services:
   mica-init:
     image: busybox:latest
     user: "0:0"  # explicitly root, to perform the chown
-    command: >
-      sh -c "chown -R ${USER_UID:-1000}:${USER_GID:-1000}
-             /cache/huggingface /project /claude && echo 'mica-init: volume perms aligned'"
+    # Explicit array form. Avoids YAML folded-scalar ambiguity that would
+    # otherwise pass /cache/huggingface as a SEPARATE arg to sh (where it
+    # becomes $0 of the script, NOT an arg to chown). Three list items =
+    # exactly three argv to docker: sh, -c, <script-as-one-string>.
+    command:
+      - sh
+      - -c
+      - "chown -R ${USER_UID:-1000}:${USER_GID:-1000} /cache/huggingface /project /claude && echo 'mica-init: volume perms aligned'"
     volumes:
       - ${HF_CACHE_DIR:-mica-models}:/cache/huggingface
       - ${MICA_WORKSPACE:-${HOME}/mica-workspace}:/project
