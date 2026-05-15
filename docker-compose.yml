@@ -116,6 +116,17 @@ services:
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
     environment:
       HF_HOME: /cache/huggingface
+      # The vllm/vllm-openai image's /etc/passwd has no entry for UID 1000
+      # (only root + system users), so when we force user: 1000 above,
+      # PyTorch's cache-dir init calls getpass.getuser() →
+      # pwd.getpwuid(1000) and KeyErrors. getpass.getuser() reads USER /
+      # LOGNAME / LNAME / USERNAME env vars BEFORE the pwd lookup, so
+      # setting USER to any non-empty string short-circuits cleanly.
+      # HOME similarly fixes downstream calls that write to ~/.cache or
+      # ~/.local — UID 1000 has no /home/* in this image.
+      USER: vllm
+      LOGNAME: vllm
+      HOME: /tmp
     command: >
       --model RedHatAI/Qwen3.6-35B-A3B-NVFP4
       --served-model-name qwen-vl qwen-voice qwen3-vl-local
