@@ -2571,8 +2571,21 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // reply or fire the next tool. Cap at one retry per real user turn —
         // source === "recovery" means we're already inside the retry; if it
         // recurs there, give up rather than loop.
+        // Fires when the LAST assistant event was thinking-only — no text,
+        // no tool_use. The trustworthy signal is lastAssistantHadAction —
+        // it tracks whether the LATEST assistant event produced visible
+        // output. We deliberately do NOT also require !resultText.trim():
+        // earlier events in the turn may have produced text + tool calls,
+        // landing partial work and partial prose; if the final event was
+        // 100% thinking, the model believed it was about to do more work
+        // but didn't ship it. Observed failure: 21k-char THINKING block
+        // after a render_capture tool_result, with no follow-up edit —
+        // model "saw what was wrong, planned the fix in its head, ran out
+        // of output tokens or hit the SDK's step cap before emitting the
+        // fix as a tool call." Recovery re-prompts so the actual fix
+        // ships in the next turn.
         const thinkingOnlyTermination =
-          !lastAssistantHadAction && !resultText.trim() && !sdkResultError;
+          !lastAssistantHadAction && !sdkResultError;
         if (thinkingOnlyTermination && source !== "recovery") {
           console.log(
             `[mica-agent] thinking-only turn detected; enqueueing recovery re-prompt for: ${message.slice(0, 60)}`,
@@ -2580,13 +2593,24 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           ctx.broadcast({
             type: "progress",
             tool: "thinking-only-recovery",
-            description: "⚠ Reasoning-only turn — auto-continuing.",
+            description: "⚠ Reasoning-only after tool calls — auto-continuing.",
           });
-          resultText = "_(Reasoning-only turn — continuing.)_";
+          // Preserve earlier visible text if any (the user already saw it);
+          // append a note. If nothing visible at all, fall back to the
+          // generic placeholder so the chat bubble isn't empty.
+          if (resultText.trim()) {
+            resultText = `${resultText}\n\n_(Reasoning-only after that — continuing.)_`;
+          } else {
+            resultText = "_(Reasoning-only turn — continuing.)_";
+          }
           enqueueMessage(
-            "Your previous turn ended with internal reasoning but produced no visible " +
-              "reply or tool call. Continue now: either write the user-visible reply, or " +
-              "call the next tool. Reasoning-only output is not shown to the user.",
+            "Your previous turn ended with a long internal-reasoning block but " +
+              "produced no follow-up action — no further visible text, no tool " +
+              "call. If you said 'let me fix X' or 'let me check Y' or were " +
+              "planning an edit, execute the concrete tool call now (write_file, " +
+              "edit, mica_edit_class_file, render_capture, etc.). Internal " +
+              "reasoning is invisible to the user — only the tool_use blocks and " +
+              "the user-visible text count as 'doing the work.'",
             "recovery",
           );
         } else if (thinkingOnlyTermination && source === "recovery") {
