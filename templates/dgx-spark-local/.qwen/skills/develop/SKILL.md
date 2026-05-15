@@ -53,6 +53,19 @@ right.
 
 ### 2. Spec on canvas
 
+**If the artifact is a canvas card class**: invoke
+`skill('card-class-handbook')` BEFORE writing the spec. The handbook's
+`mica.*` API table is the source of truth — without it loaded, the
+spec tends to name plausible-sounding methods that don't exist
+(`mica.files.get` instead of `mica.files.read`) or apply the wrong
+scope (`mica.fetch` is the external HTTP proxy — SSRF-blocked,
+loopback-blocked; for Mica's own `/api/*` use raw `fetch('/api/...')`
+or `mica.files.read('/.mica/...')`). The handbook loaded here serves
+both this spec step and the code step (4a); no double-load.
+
+**For standalone / doc-only artifacts**: skip the handbook — no
+`mica.*` surface to ground against.
+
 Write `canvas/<name>-spec.md`: what, why, files involved, **dependencies
 (with the library decisions from step 1 already baked in — versions,
 CDN URLs, global names)**, subproblems → solutions (each subproblem's
@@ -62,8 +75,11 @@ exists, update it instead of starting fresh. Use `grow-canvas` if a
 new doc dimension is needed.
 
 **Approval gate (tenet 14)**: After writing the spec, **your turn
-ENDS**. Do NOT invoke any further tools this turn — not
-`card-class-handbook`, not `decompose-task`, nothing. Your chat
+ENDS**. Do NOT advance to step 3 or 4 in this turn — no
+`decompose-task`, no `mica_create_class`, no code writes. (The
+handbook may already be in context from earlier in this same turn
+for canvas builds — that's fine; the gate is about advancing the
+flow, not about which skills have been loaded.) Your chat
 reply is: *"Drafted spec.md — review and OK to build?"* If the
 request had vague areas the spec couldn't pin down (color choices,
 exact edge behavior, library tradeoffs you couldn't pick between,
@@ -89,15 +105,17 @@ Decomposition gates. Default to inline.
 
 #### 4a. Canvas artifact
 
-Invoke `skill('card-class-handbook')` BEFORE calling
-`mica_create_class`. The handbook is the contract those tools
-enforce — CANONICAL CARD.JS shape, CARD_SHIM globals
-(`container`, `mica` are injected — do NOT redeclare), metadata
-schema, channel handlers, `render_capture` verification. Without
-it in working memory, common violations (top-level CARD_SHIM
-redeclaration, IIFE wrapping, `document.getElementById` instead
-of `container.querySelector`) surface only as post-write lint
-errors and burn iteration cycles.
+The handbook is already loaded from step 2 — re-invoke
+`skill('card-class-handbook')` only if it was somehow skipped
+(e.g. a partial flow that jumped here). The handbook is the
+contract `mica_create_class` and `mica_edit_class_file` enforce
+— CANONICAL CARD.JS shape, CARD_SHIM globals (`container`,
+`mica` are injected — do NOT redeclare), metadata schema, channel
+handlers, `render_capture` verification. Without it in working
+memory, common violations (top-level CARD_SHIM redeclaration,
+IIFE wrapping, `document.getElementById` instead of
+`container.querySelector`) surface only as post-write lint errors
+and burn iteration cycles.
 
 If you took the decompose path at step 3, `component-coder`
 dispatches per file follow `card-class-handbook`'s contract per

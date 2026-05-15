@@ -618,7 +618,27 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           const obj = (await r.json()) as Record<string, { builtIn: boolean; format: string }>;
           return Object.entries(obj).map(([name, meta]) => ({ name, builtIn: meta.builtIn, format: meta.format }));
         },
+        /** Get the parsed metadata.json for a single card class. Returns the
+         *  metadata object (extension, badge, defaultTitle, dependencies, etc.).
+         *  Throws if the class doesn't exist or has no metadata.json. */
+        async get(name: string): Promise<Record<string, unknown>> {
+          const r = await fetch(`/api/card-classes/${encodeURIComponent(name)}/metadata.json`, { headers: projectHeaders() });
+          if (!r.ok) throw new Error(`mica.cardClasses.get(${name}): HTTP ${r.status}`);
+          return (await r.json()) as Record<string, unknown>;
+        },
       };
+
+      /** Canvas-state introspection. Pairs with `mica.on('layout-changed')`:
+       *  the event tells you the layout moved; this function tells you what
+       *  it moved TO. Returns the layout JSON for the current device class,
+       *  shape: { cards: { [canvasRelPath]: { x, y, w, h } }, bounds?: { w, h } }.
+       *  Cards reflecting on the canvas (overview, minimap, navigation,
+       *  layout linters) use this. */
+      async function readLayout(): Promise<{ cards: Record<string, { x: number; y: number; w: number; h: number }>; bounds?: { w: number; h: number } }> {
+        const r = await fetch("/api/layout", { headers: projectHeaders() });
+        if (!r.ok) throw new Error(`mica.layout: HTTP ${r.status}`);
+        return (await r.json()) as { cards: Record<string, { x: number; y: number; w: number; h: number }>; bounds?: { w: number; h: number } };
+      }
 
       // Card-facing filename is canvas-relative — no canvasRoot prefix.
       // Pinned files outside canvas surface with `../` escape (so the value
@@ -683,6 +703,10 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
         getContent: () => _cachedContent !== null ? _cachedContent : _contentPromise,
         files: guardNamespace(files, "files"),
         cardClasses: guardNamespace(cardClasses, "cardClasses"),
+        /** Read the canvas's current layout for the current device class.
+         *  Pairs with `mica.on('layout-changed')` — event signals change,
+         *  this returns current state. See readLayout above for shape. */
+        layout: readLayout,
         /** Speak `text` through the local Kokoro TTS sidecar. Resolves
          *  when playback ends; rejects with AbortError if `opts.signal`
          *  fires. Voice servers must be running (`/api/voice/status`).

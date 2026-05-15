@@ -210,6 +210,8 @@ Available without import:
 | `mica.files.delete(path)` | `async (path) => void` — canvas-relative path |
 | `mica.files.url(path)` | `(path) => string` — for `<img src>`, `<embed>`, downloads — canvas-relative path |
 | `mica.cardClasses.list()` | `async () => [{ name, builtIn, format }]` |
+| `mica.cardClasses.get(name)` | `async (name) => metadataObject` — parsed `metadata.json` (extension, badge, defaultTitle, dependencies) |
+| `mica.layout()` | `async () => { cards: { [canvasRelPath]: {x,y,w,h} }, bounds?: {w,h} }` — current canvas layout for this device class (see § Canvas introspection) |
 | `mica.fetch(url, opts?)` | server-proxied HTTP — see § External HTTP |
 | `mica.on(event, cb)` | subscribe; events: `file-changed`, `file-created`, `file-deleted`, `layout-changed`, `card-error` |
 | `mica.onDestroy(cb)` | cleanup on unmount |
@@ -289,6 +291,42 @@ different time than card unmount, use `mica.onDestroy(unsubFn)`
 to register the cleanup, OR keep the unsubscribe handle and call
 it explicitly when needed (e.g., the cleanup pattern at
 [card.js:411](#L411) below).
+
+## Canvas introspection — `mica.layout()` and `mica.cardClasses.get(name)`
+
+For cards that reflect on the canvas itself — overview/minimap, navigation, layout linters — there are two introspection helpers:
+
+```js
+const layout = await mica.layout();
+// {
+//   cards: {
+//     "canvas/foo.chat": { x: 40, y: 40, w: 551, h: 766 },
+//     "canvas/bar.todo": { x: 619, y: 40, w: 300, h: 200 },
+//     ...
+//   },
+//   bounds: { w: 1920, h: 1080 }   // optional
+// }
+```
+
+`mica.layout()` returns the current canvas layout for the device class the user is viewing. Pairs with the change event:
+
+```js
+const unsub = mica.on('layout-changed', async () => {
+  const fresh = await mica.layout();
+  render(fresh);
+});
+```
+
+For card-class metadata (badge, defaultTitle, dependencies):
+
+```js
+const meta = await mica.cardClasses.get('chat');
+// { extension: '.chat', badge: 'CHA', defaultTitle: 'Chat', dependencies: { ... } }
+```
+
+Use `mica.cardClasses.list()` first if you don't know the class name. Combine with `mica.files.list()` to build a full picture: file paths + extensions from `list()`, positions from `layout()`, badges/titles from `cardClasses.get(ext)`.
+
+**Don't** reach into `../.mica/layout.json` or `../.mica/card-classes/*/metadata.json` directly via `mica.files.read('/.mica/...')`. Those paths exist (the `/foo` project-root-absolute escape works), but the schemas are internal and may change between Mica versions; the introspection helpers above are the stable interface. The `/foo` escape stays available for genuine internal reads (debug cards), not for routine canvas reflection.
 
 ## External HTTP via `mica.fetch(url, opts)`
 
