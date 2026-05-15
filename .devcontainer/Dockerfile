@@ -31,24 +31,37 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # Pre-create cache directory with correct ownership (bind mounts may create it as root)
 RUN mkdir -p /home/vscode/.cache && chown vscode:vscode /home/vscode/.cache
 
-# Set environment variables
-ENV PYTHONPATH=/workspace
-ENV PATH=/workspace/.venv/bin:$PATH
-
-# Create virtual environment
-RUN python3 -m venv /workspace/.venv
-ENV VIRTUAL_ENV=/workspace/.venv
-ENV PATH=/workspace/.venv/bin:$PATH
-
-# Upgrade pip
-RUN pip install --upgrade pip
-
-# Build llama.cpp with CUDA support (lets us run llama-server alongside vLLM)
-RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp && \
-    cd /opt/llama.cpp && \
-    cmake -B build -DGGML_CUDA=ON && \
-    cmake --build build --config Release -j$(nproc) && \
-    ln -sf /opt/llama.cpp/build/bin/llama-cli /usr/local/bin/llama-cli && \
+# Build llama.cpp with CUDA support (lets us run llama-server alongside vLLM
+# in dev). Aligned with the production Dockerfile so dev and prod hit the
+# same compile/link surface:
+#   - CMAKE_CUDA_ARCHITECTURES=121 pins Blackwell DGX Spark (GB10, sm_121).
+#     Without the pin, llama.cpp's CMake autodetects via `native`, which
+#     fails inside docker build ("No CUDA devices found" — host driver
+#     isn't passed through at build time) and silently falls back to
+#     CMake defaults that may not include sm_121. Build artifacts then
+#     can't target the GPU at runtime.
+#   - Parallelism cap at min(nproc, 8). Grace has 72 cores; 72 parallel
+#     `ld` processes each using 4-8 GB during link can exhaust host RAM
+#     and trigger OOM-kill mid-build. 8 stays under ~64 GB linker
+#     footprint while still benefitting from parallel compilation.
+#     Override with --build-arg LLAMA_JOBS=N.
+#   - Only build the llama-server target, with LLAMA_BUILD_TESTS=OFF and
+#     LLAMA_BUILD_EXAMPLES=OFF — Mica never invokes llama-cli or the
+#     example binaries (llama-simple, llama-llava-cli, etc.). Saves
+#     ~5-10 min of compile time + reduces image bloat.
+ARG LLAMA_JOBS=
+RUN set -eux; \
+    git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp; \
+    cd /opt/llama.cpp; \
+    jobs="${LLAMA_JOBS:-$(nproc)}"; \
+    [ "$jobs" -le 8 ] || jobs=8; \
+    echo "Building llama.cpp llama-server target with -j$jobs"; \
+    cmake -B build \
+      -DGGML_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=121 \
+      -DLLAMA_BUILD_TESTS=OFF \
+      -DLLAMA_BUILD_EXAMPLES=OFF; \
+    cmake --build build --config Release --target llama-server -j"$jobs"; \
     ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
 
 # NOTE: keep transformers at vLLM 0.15's pinned 4.57.5. Newer transformers

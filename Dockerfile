@@ -92,8 +92,14 @@ RUN if [ "$INSTALL_LLAMA" = "1" ]; then \
       echo "INSTALL_LLAMA=$INSTALL_LLAMA — skipping llama.cpp build (compose path uses vLLM sibling)"; \
     fi
 
-# Node 20 via NodeSource.
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# Node 22 (current LTS) via NodeSource. We were on 20 historically;
+# the devcontainer's node:1 feature resolves "lts" to 22, so dev and
+# prod had drifted. isolated-vm@6.1.2 (transitive dep) requires Node
+# >=22 — its native module uses v8::SourceLocation, added in V8 12.x
+# (Node 22+). Building against Node 20 fails with:
+#   error: 'SourceLocation' in namespace 'v8' does not name a type
+# Bumping to 22 aligns with devcontainer and unblocks the build.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI (gh) from the official upstream apt repo. Lets users
