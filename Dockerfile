@@ -118,8 +118,12 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 USER vscode
 WORKDIR /opt/mica
 
-# Claude Code CLI (for .claude cards). Tolerate offline builds so the
-# image still succeeds if claude.ai is unreachable during build.
+# Claude Code CLI (for .claude cards). Installs to ~/.local/bin/claude.
+# We prepend that to PATH so spawn-by-name from the .claude card class
+# (which does `claude` not `~/.local/bin/claude`) resolves. Tolerate
+# offline builds so the image still succeeds if claude.ai is
+# unreachable during build.
+ENV PATH=/home/vscode/.local/bin:$PATH
 RUN curl -fsSL https://claude.ai/install.sh | bash || true
 
 # Mica deps first (layer cache): just package*.json → npm ci.
