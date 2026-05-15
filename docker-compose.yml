@@ -156,6 +156,15 @@ services:
       USER: vllm
       LOGNAME: vllm
       HOME: /tmp
+    env_file:
+      # Same .env as the mica service. Picks up HF_TOKEN if set
+      # (authenticated HF requests = higher rate limits + access to
+      # gated models like some Llama/Mistral variants). Optional;
+      # the default model RedHatAI/Qwen3.6-35B-A3B-NVFP4 is public,
+      # so anonymous downloads work — you'll just see HF Hub warnings
+      # about unauthenticated requests in vLLM's startup logs.
+      - path: .env
+        required: false
     command: >
       --model RedHatAI/Qwen3.6-35B-A3B-NVFP4
       --served-model-name qwen-vl qwen-voice qwen3-vl-local

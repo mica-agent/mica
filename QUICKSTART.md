@@ -26,6 +26,21 @@ Both paths use the same image. Differs only in topology + env.
   ```
 - ~50 GB free disk for the Qwen3.6 model on first run.
 
+## Recommended: HuggingFace token
+
+The default model (`RedHatAI/Qwen3.6-35B-A3B-NVFP4`) is public, so
+anonymous downloads work — but the HF Hub will scold you in the logs
+("you are sending unauthenticated requests to HF hub. Please set
+HF_TOKEN") and you may hit rate limits during large fetches. Add a
+free **read-only** token from https://huggingface.co/settings/tokens
+to the repo's `.env`:
+
+    echo "HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxx" >> .env
+
+Both `mica` and `mica-vllm` will pick it up via the compose `env_file`.
+Skip this if you're fine with the warnings — they're informational,
+not blocking.
+
 Optional but recommended: clone this repo, so you can edit
 `docker-compose.yml`, capture digests, and adjust env knobs:
 
