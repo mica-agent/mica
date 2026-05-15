@@ -1208,15 +1208,24 @@ function buildToolbar() {
                 btn.title = `Built-in card class${shortcut}`;
             }
 
-            // Pre-fill the prompt with the lowest free name: the bare class
-            // name first ("world-clock.world-clock"), then "-2", "-3", … on
-            // collision. Filenames are durable identifiers (layout.json key,
-            // agent references) and no rename tool exists, so a clean default
-            // is worth one extra fetch. Falls back to the legacy timestamped
-            // suffix if the file list can't be loaded so the action never
-            // blocks on a transient backend hiccup.
+            // Pre-fill the prompt with the lowest free name. The base is
+            // the sanitized PROJECT name (cards read as "quickstart.chat",
+            // "trip.md" — the project is the noun, the class is the type
+            // via extension), not the class name doubled ("chat.chat",
+            // "filebrowser.filebrowser" — the old default, repetitive).
+            // Collisions append "-2", "-3", … as before. Filenames are
+            // durable identifiers (layout.json key, agent references) and
+            // no rename tool exists, so a clean default is worth one
+            // extra fetch. Falls back to the legacy timestamped suffix
+            // if the file list can't be loaded so the action never blocks
+            // on a transient backend hiccup.
+            const projectSlug = ((typeof mica !== 'undefined' && mica.project) || '')
+                .toLowerCase()
+                .replace(/\s+/g, '-')
+                .replace(/[^a-z0-9_-]/g, '')
+                || name;  // fallback to class name in workspace mode or if slug wipes empty
             btn.addEventListener('click', async (e) => {
-                let friendly = `${name}-${Date.now().toString(36)}.${name}`;  // legacy fallback
+                let friendly = `${projectSlug}-${Date.now().toString(36)}.${name}`;  // legacy fallback
                 try {
                     const r = await fetch('/api/files?canvas=1', { headers: projectHeaders() });
                     if (r.ok) {
@@ -1224,18 +1233,18 @@ function buildToolbar() {
                         // /api/files returns a raw array, not {files: [...]}. Earlier
                         // code wrote `data.files || []` which always evaluated to
                         // [] — leaving `taken` empty so collisions were missed and
-                        // alt-click kept overwriting the same `<name>.<name>` file.
+                        // alt-click kept overwriting the same `<projectSlug>.<class>` file.
                         const files = Array.isArray(data) ? data : (data && Array.isArray(data.files) ? data.files : []);
                         const taken = new Set(files.map((f) => f.name));
                         const ext = `.${name}`;
                         const candidate = (suffix) => suffix
-                            ? `${canvasRoot}${name}-${suffix}${ext}`
-                            : `${canvasRoot}${name}${ext}`;
+                            ? `${canvasRoot}${projectSlug}-${suffix}${ext}`
+                            : `${canvasRoot}${projectSlug}${ext}`;
                         if (!taken.has(candidate(''))) {
-                            friendly = `${name}${ext}`;
+                            friendly = `${projectSlug}${ext}`;
                         } else {
                             for (let n = 2; n < 10000; n++) {
-                                if (!taken.has(candidate(n))) { friendly = `${name}-${n}${ext}`; break; }
+                                if (!taken.has(candidate(n))) { friendly = `${projectSlug}-${n}${ext}`; break; }
                             }
                         }
                     }
