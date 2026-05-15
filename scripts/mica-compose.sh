@@ -20,6 +20,9 @@
 #
 # Env overrides:
 #   MICA_SKIP_PREFLIGHT=1   Skip all checks. Use in CI or when you know.
+#   MICA_WORKSPACE=/path    Where projects live on the host. Default
+#                           \$HOME/mica-workspace. Deliberately NOT inside
+#                           the cloned repo.
 #   HF_CACHE_DIR=/path      Bind-mount the host HF cache into both services
 #                           instead of using the named volume.
 #   MICA_VLLM_IMAGE=...     Override the vLLM image (e.g. a digest pin).
@@ -37,6 +40,14 @@ cd "$REPO_ROOT"
 FRONTEND_PORT="${MICA_FRONTEND_PORT:-5173}"
 BACKEND_PORT="${MICA_BACKEND_PORT:-3002}"
 MIN_DISK_GB=40
+
+# Default workspace lives at $HOME/mica-workspace (matches install.sh's
+# convention) — NOT inside the cloned repo. Override via MICA_WORKSPACE
+# env. Resolve once here so doctor + up both see the same value, and so
+# we can pre-create the directory with the right ownership before
+# docker compose mounts it (Docker would otherwise auto-create it as
+# root, blocking the UID 1000 container user from writing).
+export MICA_WORKSPACE="${MICA_WORKSPACE:-$HOME/mica-workspace}"
 
 # ── tty-aware color helpers ──────────────────────────────────────
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -148,11 +159,34 @@ check_hf_cache_dir_if_set() {
 }
 
 check_workspace_dir() {
-  if [ ! -d "./workspace" ]; then
-    info "./workspace does not exist; docker compose will create it on first 'up'"
-    return
+  # MICA_WORKSPACE is resolved at script top with $HOME/mica-workspace
+  # as the fallback. Pre-create it ourselves so Docker doesn't auto-
+  # create it as root:root and lock the UID 1000 container out. Idempotent.
+  local uid="${USER_UID:-1000}"
+  local gid="${USER_GID:-1000}"
+  if [ ! -d "$MICA_WORKSPACE" ]; then
+    if mkdir -p "$MICA_WORKSPACE" 2>/dev/null; then
+      info "created workspace at $MICA_WORKSPACE"
+    else
+      fail "could not create $MICA_WORKSPACE"
+      hint "either pick a path you can write to via MICA_WORKSPACE=/path, or 'sudo mkdir -p $MICA_WORKSPACE && sudo chown $uid:$gid $MICA_WORKSPACE'"
+      return
+    fi
   fi
-  pass "./workspace present"
+  # Permission alignment: the container runs as uid:gid (default 1000:1000).
+  # If the workspace dir is owned by someone else, the container will fail
+  # to write new projects.
+  local owner
+  owner="$(stat -c '%u:%g' "$MICA_WORKSPACE" 2>/dev/null || echo unknown)"
+  if [ "$owner" = "unknown" ]; then
+    warn "could not stat $MICA_WORKSPACE — skipping ownership check"
+  elif [ "$owner" = "$uid:$gid" ]; then
+    pass "workspace ok ($MICA_WORKSPACE, owner $owner)"
+  else
+    warn "workspace at $MICA_WORKSPACE is owned by $owner, but container runs as $uid:$gid"
+    hint "either: sudo chown -R $uid:$gid $MICA_WORKSPACE  (recursive)"
+    hint "or:     USER_UID=\$(id -u) USER_GID=\$(id -g) ./scripts/mica-compose.sh up"
+  fi
 }
 
 check_image_built() {
@@ -237,6 +271,9 @@ Subcommands:
 
 Environment overrides:
   MICA_SKIP_PREFLIGHT=1     Bypass all checks (CI).
+  MICA_WORKSPACE=/path      Where projects live on the host.
+                            Default: \$HOME/mica-workspace (matches install.sh).
+                            NOT inside the cloned repo.
   HF_CACHE_DIR=/path        Bind-mount a host HF cache instead of the named volume.
   MICA_VLLM_IMAGE=...       Override the vLLM image (e.g. a digest pin).
   MICA_FRONTEND_PORT        Default 5173.

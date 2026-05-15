@@ -51,6 +51,17 @@ First run takes 5–15 minutes — vLLM downloads ~30 GB of weights
 into a named volume (`mica-models`). Subsequent boots are seconds.
 Open http://localhost:5173.
 
+### Custom workspace location
+
+The default workspace is `$HOME/mica-workspace/` (outside the repo).
+Override:
+
+    MICA_WORKSPACE=/data/mica ./scripts/mica-compose.sh up
+
+The wrapper pre-creates the directory and aligns ownership to the
+container's UID/GID (default 1000:1000), so you don't hit a
+permission-denied error on first project create.
+
 ### Reusing an existing HuggingFace cache
 
 If you already have Qwen3.6 (or other models) downloaded under
@@ -139,11 +150,15 @@ CPU inference.
 
 ## Workspace + history
 
-- Projects live under your workspace directory:
-  - Compose path: `./workspace/<project>/` (bind, host-visible)
-  - Lean path: `$MICA_WORKSPACE/<project>/` (default `$HOME/mica-workspace`)
-- Chat history persists at `<workspace>/<project>/.mica/chats/`.
-- Layout, settings, and project config live at `<workspace>/<project>/.mica/`.
+- Both paths default the workspace to **`$HOME/mica-workspace/`** —
+  deliberately outside the cloned repo so user data doesn't mix with
+  code and `git pull` can't touch your projects.
+- Override via `MICA_WORKSPACE=/path/of/your/choice`. Both compose and
+  install.sh honor it.
+- Projects live at `$MICA_WORKSPACE/<project>/`.
+- Chat history persists at `$MICA_WORKSPACE/<project>/.mica/chats/`.
+- Layout, settings, and project config live at
+  `$MICA_WORKSPACE/<project>/.mica/`.
 - To reset a project's chat, delete the matching `.json` file or use
   the chat card's "fresh thread" affordance.
 

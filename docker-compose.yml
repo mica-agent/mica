@@ -13,8 +13,13 @@
 #
 # Usage:
 #   docker compose up                                          # default
+#   MICA_WORKSPACE=/data/mica docker compose up                # custom workspace dir
 #   HF_CACHE_DIR=$HOME/.cache/huggingface docker compose up    # reuse host HF cache
 #   ./scripts/mica-compose.sh up                               # with preflight checks
+#
+# Default workspace lives at $HOME/mica-workspace (matches install.sh) —
+# deliberately OUTSIDE the cloned repo so user data doesn't mix with code
+# and `git pull` can't accidentally touch your projects.
 #
 # For a single-container alternative (no vLLM sibling, llama-cpp inside
 # the mica container), see ./install.sh and ./scripts/mica.sh start —
@@ -39,9 +44,14 @@ services:
       - "${MICA_FRONTEND_PORT:-5173}:5173"   # Vite frontend
       - "${MICA_BACKEND_PORT:-3002}:3002"    # Node backend API
     volumes:
-      # Workspace projects — host-visible at ./workspace. Each subdir is
-      # a Mica project. Auto-created by scripts/mica.sh if missing.
-      - ./workspace:/project
+      # Workspace projects — host-visible. Each subdir is a Mica project
+      # (one chat, one canvas, optional cards). Default lives at
+      # $HOME/mica-workspace to match install.sh's convention; deliberately
+      # NOT inside the cloned repo (user data shouldn't mix with code, and
+      # `git pull` shouldn't risk touching it). Override via MICA_WORKSPACE.
+      # The wrapper (scripts/mica-compose.sh) pre-creates this with the
+      # right ownership before compose runs.
+      - ${MICA_WORKSPACE:-${HOME}/mica-workspace}:/project
       # HF model cache. Default = docker-managed named volume; override
       # via HF_CACHE_DIR=/path/on/host docker compose up to reuse an
       # existing host cache (skips re-download of any cached models).
