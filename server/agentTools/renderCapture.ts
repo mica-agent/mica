@@ -33,23 +33,14 @@ function classNameFromInstance(filename: string): string | null {
   return ext || null;
 }
 
-// When the captioner describes the canvas as blank/black, this is almost
-// always the WebGL preserve-drawing-buffer case the handbook documents:
-// html2canvas reads canvas.toDataURL() which returns blank for WebGL
-// contexts unless explicitly preserved. The card may be rendering correctly
-// on the user's screen; only the screenshot pipeline can't see it. The
-// agent's natural response is to "fix" the (non-existent) bug — iterating
-// CSS, dependencies, scene composition — without recognizing the symptom.
-// Detect this here and append a hint at the tool-result boundary so the
-// signal lands exactly when the agent reads the verification.
+// Captioner describes the canvas as blank/black → almost always the WebGL
+// preserve-drawing-buffer case: html2canvas reads canvas.toDataURL() which
+// returns blank for WebGL contexts unless explicitly preserved. The card
+// may be rendering correctly on the user's screen; only the capture
+// pipeline can't see it. Detected here so the verdict tag becomes
+// WEBGL-OPAQUE instead of CLEAN, which steers the agent away from
+// phantom-chasing CSS / dependencies / scene composition.
 const BLACK_CANVAS_RX = /\b(completely\s+(?:black|blank|empty|dark)|appears?\s+(?:completely\s+)?(?:black|blank|empty|dark)|all[-\s]?black|entirely\s+black|solid\s+black|nothing\s+(?:is\s+)?visible|no\s+(?:visible\s+)?(?:content|scene|3d|imagery)|empty\s+(?:canvas|scene|area|viewport|black\s+box)|black\s+(?:rectangle|background)\s+with\s+no\s+(?:visible\s+)?(?:content|elements))\b/i;
-
-const WEBGL_HINT =
-  "\n\n[Mica hint — read this BEFORE iterating]\n" +
-  "The captioner describes the canvas as blank/black. If this card uses Three.js, WebGL, regl, Babylon, or any GPU rendering library, that's almost certainly a SCREENSHOT-PIPELINE limitation, NOT a bug in your card. html2canvas reads canvas.toDataURL() which returns blank for WebGL contexts unless explicitly preserved — the card may be rendering correctly on the user's screen. Two fixes (handbook § \"render_capture screenshot is black for WebGL / Three.js cards\"):\n" +
-  "  1. PREFERRED — register `mica.onCapture(() => canvasEl.toDataURL('image/png'))` in card.js. The shim calls this before falling back to html2canvas. Wrap your render call inside so the back buffer is current at capture time.\n" +
-  "  2. FALLBACK — construct the WebGL renderer with `preserveDrawingBuffer: true`.\n" +
-  "DO NOT iterate on CSS heights, dependency URLs, scene composition, or library versions based on this screenshot — that's the recurring phantom-chase failure mode. Apply one of the two fixes above OR verify with the user that they see content on screen, then re-capture. If you're already past that and the user confirms the card looks good, END THIS TURN with a concise summary — don't keep calling render_capture.";
 
 const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
 
@@ -62,31 +53,12 @@ const inputSchema = {
 export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
   name: "render_capture",
   description:
-    "Capture a PNG screenshot of a card as it is currently rendered on the " +
-    "canvas, then return a TEXT verification report describing what's in the " +
-    "image. The server runs the screenshot through llama-server's vision " +
-    "encoder (mmproj) directly and returns a 5-15 line description as the " +
-    "tool result — layout, colors, visible text, anything that looks broken " +
-    "or missing. You receive TEXT, not an image (tool_result channels in " +
-    "every agent SDK / MCP transport are text-only — that's why the server " +
-    "captions on your behalf). Use this after building or editing a card " +
-    "class to verify it rendered correctly. The browser tab must be open " +
-    "to the project's canvas. The filename is the canvas-root-relative " +
-    "path of the card instance file (e.g. 'canvas/my-widget.burndown'), " +
-    "not the card class directory. " +
-    "The tool result combines THREE signals you must read before declaring " +
-    "done: (1) the captioner's visual description, (2) a WebGL hint if the " +
-    "screenshot looks blank/black (which is often a capture-pipeline limit, " +
-    "not a real bug), and (3) a ⚠️ pending-errors block listing any runtime " +
-    "errors or validator failures (Tier-1 dependency 404s, card.js throw at " +
-    "init, schema mismatches) buffered for this card. If the error block is " +
-    "present, the build is NOT complete regardless of how the screenshot " +
-    "looks — fix every listed error and re-capture. " +
-    "PER-TURN CAP: 5 calls per user message. Past the cap the tool refuses " +
-    "with a message asking you to end the turn — re-capturing the same card " +
-    "many times in one turn is almost always a phantom-chase loop " +
-    "(typically WebGL/Three.js where the captioner can't read GPU output). " +
-    "The cap resets on the user's next message.",
+    "Verify a rendered card. Captures a PNG of the card on the canvas and " +
+    "returns a text caption + verdict tag (CLEAN / ERRORS / WEBGL-OPAQUE / " +
+    "CAP-REACHED). Call once after building or editing a card class. The " +
+    "first line of the result tells you the next move; follow it. " +
+    "Input: { filename: 'canvas/<name>.<ext>' } — the instance file, not " +
+    "the class directory. The browser tab must be open to the project's canvas.",
   inputSchema,
   restPath: "/api/tools/render-capture",
   handler: async (input, ctx): Promise<AgentToolResult> => {
@@ -96,24 +68,18 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
         text: "render_capture requires an active project session. Ensure a project is open in the browser before calling.",
       };
     }
-    // Per-turn cap. The agent reflexively re-captures every time a card
-    // changes; combined with a false-negative (WebGL blank canvas) it can
-    // loop indefinitely. Refuse past the cap with the same WebGL hint —
-    // if the agent kept iterating despite the hint, this forces the turn
-    // to wind down.
+    // Per-turn cap. The agent can loop on re-captures when a false-negative
+    // (WebGL blank canvas) trains it to "fix" what isn't actually broken.
+    // Past the cap, refuse with a CAP-REACHED verdict so the agent ends
+    // the turn cleanly instead of relitigating the screenshot.
     const count = bumpRenderCaptureCount(ctx.project);
     if (count > RENDER_CAPTURE_CAP) {
       return {
         isError: true,
         text:
-          `render_capture refused: this turn has already captured ${count - 1} time${count - 1 === 1 ? "" : "s"} ` +
-          `(cap ${RENDER_CAPTURE_CAP}). The cap exists because re-capturing the same card multiple times in one turn is ` +
-          `almost always a sign of a phantom-chase loop — typically the WebGL false-negative case where the captioner ` +
-          `can't read GPU output and the card may already be rendering correctly on screen. END THIS TURN with a plain-text ` +
-          `summary of what you built, what you verified, and any open questions. The user will reply 'looks good' or 'fix X'. ` +
-          `If you genuinely believe the card is broken in a way the user must see, ask them to confirm in your reply rather ` +
-          `than capturing again. The cap resets on their next message.` +
-          WEBGL_HINT,
+          `[render_capture: CAP-REACHED] This turn already captured ${count - 1} time${count - 1 === 1 ? "" : "s"} (cap ${RENDER_CAPTURE_CAP}). ` +
+          `End the turn now with a plain-text summary of what you built, what you verified, and any open questions. ` +
+          `The cap resets on the user's next message.`,
       };
     }
     try {
@@ -191,37 +157,44 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
         return false;
       });
 
-      // WebGL black-canvas detection. If the captioner described the
-      // image as blank/black, append the canonical fix-or-trust-the-user
-      // guidance. The hint lands at the tool-result boundary so the
-      // agent reads it in the same iteration it processes the caption.
-      const blackish = caption && BLACK_CANVAS_RX.test(caption);
+      // Compute the verdict tag the agent dispatches on. Priority: errors
+      // win (build is not complete regardless of visual), then WebGL-opaque
+      // (visual is unreliable), then CLEAN. The tag is the FIRST thing the
+      // agent reads in the result; the body that follows tells it the next
+      // move. This replaces the older "agent reads caption + warnings and
+      // decides what to do" shape, which had no terminal-state signal and
+      // tended to land the model in long thinking blocks without action.
+      const blackish = !!caption && BLACK_CANVAS_RX.test(caption);
+      const captionBody = caption || "(no description returned)";
+      const meta = `${result.width}×${result.height}, ${Math.round(result.bytes / 1024)} KiB, saved to ${result.relativePath}`;
 
-      // Error report block. If we found pending errors, surface them as a
-      // distinct, hard-to-miss section appended to the caption. This is
-      // the signal the agent uses to decide "done vs not done" — a clean
-      // caption + zero errors = safe to declare done; ANY error block
-      // here means the build is NOT complete regardless of how the
-      // screenshot looks.
-      let errorBlock = "";
+      let verdictHeader: string;
       if (relevantErrors.length > 0) {
         const lines = relevantErrors
           .map((e, i) => `  ${i + 1}. [${e.filename}] ${e.error.slice(0, 400)}`)
           .join("\n");
-        errorBlock =
-          "\n\n⚠️ [Pending errors on this card — DO NOT declare done until resolved]\n" +
-          `${relevantErrors.length} error${relevantErrors.length === 1 ? "" : "s"} are currently buffered for this card. The captioned image above shows what the canvas LOOKS like at capture time, but these errors mean the card has runtime or validator failures the screenshot may not visualize (e.g. a script tag returns 404, a card.js throws during init, metadata.json fails Tier-1 dependency reachability). The build is NOT complete:\n\n` +
-          lines +
-          "\n\nFix each error before declaring the card done. Re-call render_capture after the fix to verify the buffer clears.";
+        verdictHeader =
+          `[render_capture: ERRORS — ${relevantErrors.length} buffered] Build is NOT complete. ` +
+          `Fix each listed error (use mica_edit_class_file), then re-call render_capture to verify the buffer clears.\n\n` +
+          `Errors:\n${lines}`;
+      } else if (blackish) {
+        verdictHeader =
+          `[render_capture: WEBGL-OPAQUE] Captioner sees a blank/black canvas. This is almost always a CAPTURE-PIPELINE ` +
+          `limitation, NOT a real bug — html2canvas can't read WebGL back buffers unless preserved. Two fixes:\n` +
+          `  1. PREFERRED — register \`mica.onCapture(() => canvasEl.toDataURL('image/png'))\` in card.js. Wrap your render ` +
+          `call inside so the back buffer is current at capture time.\n` +
+          `  2. FALLBACK — construct the WebGL renderer with \`preserveDrawingBuffer: true\`.\n` +
+          `DO NOT iterate on CSS heights, dependency URLs, scene composition, or library versions based on this screenshot. ` +
+          `If the user has already confirmed the card looks good on their screen, end the turn with a concise summary — don't ` +
+          `keep calling render_capture.`;
+      } else {
+        verdictHeader =
+          `[render_capture: CLEAN] No pending errors. Build verified. Write your final summary to the user and end the turn — ` +
+          `do not call render_capture again unless the user reports a problem.`;
       }
 
-      const finalCaption = (caption || "(no description returned)") + (blackish ? WEBGL_HINT : "") + errorBlock;
-
       return {
-        text:
-          `Render verification of ${input.filename} ` +
-          `(${result.width}×${result.height}, ${Math.round(result.bytes / 1024)} KiB, ` +
-          `saved to ${result.relativePath}):\n\n${finalCaption}`,
+        text: `${verdictHeader}\n\nCaption of ${input.filename} (${meta}):\n${captionBody}`,
       };
     } catch (err) {
       return {

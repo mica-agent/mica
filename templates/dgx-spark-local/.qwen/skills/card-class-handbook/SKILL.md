@@ -554,18 +554,16 @@ Guessing alternate method names is the failure mode that compounds
 (world23: `marker.setOpacity` → guess `bindPopup` → `terminator.update`
 → delete-and-recreate spiral).
 
-### Don't declare done while errors might still be pending
+### After render_capture: follow the verdict tag
 
-Before ending the turn with "built X" / "done" / "verified", you need BOTH of these to be true:
+The tool's result starts with one of four verdict tags. Each maps to a single next move:
 
-1. `render_capture`'s caption describes what the user asked for (the right visual).
-2. The tool result has NO `⚠️ pending errors` block (no buffered card-errors or validator failures).
+- `[render_capture: CLEAN]` — write your one-paragraph summary to the user (what you built, key choices) and END THE TURN. Do not call render_capture again.
+- `[render_capture: ERRORS — N buffered]` — fix each listed error (`mica_edit_class_file`), then re-call render_capture once. ERRORS means the build is NOT complete regardless of how the screenshot looks.
+- `[render_capture: WEBGL-OPAQUE]` — captioner sees black; apply the `mica.onCapture` hook or `preserveDrawingBuffer: true` (handbook § "render_capture screenshot is black for WebGL / Three.js cards"). Then re-capture once. Don't iterate on CSS/dependencies/scene composition — that's the phantom-chase failure mode.
+- `[render_capture: CAP-REACHED]` — end the turn with a plain-text summary; the cap resets on the user's next message.
 
-`card-error` events fire ASYNC from the browser when card.js throws at init — the error can arrive AFTER `render_capture` returned a clean caption. Don't trust a single clean `render_capture` as proof the build is done; the browser may not have finished re-executing card.js yet.
-
-Conservative shape that catches the timing gap: write the code, call `render_capture`, then in your final chat reply use soft framing — *"Built world-clock — render looks clean to me; please verify on your screen"* — rather than declaring "done" unilaterally. The user is the source of truth for "done"; you propose, the user confirms. If an error fires after your render_capture, the user's "wait, I see an error" reply gives you a chance to fix it instead of having declared success prematurely.
-
-If pending errors WERE present in your last render_capture result, the build is NOT complete regardless of how the screenshot looks. Fix every listed error and re-capture before any close-out.
+CLEAN is a terminal state: the next thing the agent emits should be the user-visible summary, not another tool call. Don't relitigate "is this really done?" — the tag is the signal.
 
 ### Card-error buffer can lag the file
 

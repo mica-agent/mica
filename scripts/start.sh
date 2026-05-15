@@ -195,7 +195,7 @@ vllm serve $CHAT_MODEL \
   --enable-auto-tool-choice \
   --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}' \
   --limit-mm-per-prompt '{"image":4,"video":1}' \
-  --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20}'
+  --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"max_new_tokens":8192}'
 EOF
 )
 

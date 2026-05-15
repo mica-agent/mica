@@ -2097,6 +2097,19 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // openai-compatible provider is selected via authType, not via prefix.
             model: provider === "local" ? `openai:${modelName}` : modelName,
             authType: "openai" as const,
+            // Hard step cap. The SDK loops user→tool_use→tool_result→…→
+            // assistant; each round counts as one "turn" in qwen-code's
+            // sense (see node_modules/@qwen-code/sdk/dist/index.d.ts:663-667
+            // "A turn consists of a user message and an assistant response").
+            // Default is unset → SDK uses its built-in 50 ceiling, which we
+            // hit in pathological cases (the task_stop fabrication loop that
+            // ate 50 turns to exit-53). 30 leaves headroom for legitimate
+            // multi-tool builds (typical card-class build: 4-8 tool calls;
+            // task decomposition with verification: 12-20) while catching
+            // runaway loops earlier. Mica's per-card render_capture cap (5),
+            // direct-write cap (2), and skill-followthrough recovery all
+            // also bound the same surface — this is the outermost rail.
+            maxSessionTurns: 30,
             // "yolo" auto-approves ALL tools. canUseTool is never invoked.
             //
             // Why not "default" (where canUseTool would actually fire):
@@ -2508,8 +2521,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // on the result event. See server/cli.js: buildResultMessage.
             if ((evt as { is_error?: boolean }).is_error) {
               const errInfo = (evt as { error?: { message?: string } }).error;
-              sdkResultError = errInfo?.message?.trim() || "Provider returned an error";
-              console.log(`[mica-agent] SDK result is_error subtype=${String(evt.subtype || "")} message=${sdkResultError.slice(0, 200)}`);
+              const raw = errInfo?.message?.trim() || "Provider returned an error";
+              const subtype = String(evt.subtype || "");
+              // Friendly message when the maxSessionTurns hard cap fired.
+              // SDK signals this via subtype="error_max_turns" (and historically
+              // FatalTurnLimitedError exit-53). User-facing message points at
+              // the likely cause and the recovery action — they need to know
+              // their next message restarts the budget.
+              if (/turn.*limit|max.*turn|FatalTurnLimited/i.test(raw) || subtype === "error_max_turns") {
+                sdkResultError =
+                  "Agent hit the per-message step cap (30 tool rounds). This usually means a tool loop — render_capture re-captures, repeated retries, or a subagent that didn't settle. Send another message to continue; partial work is preserved.";
+              } else {
+                sdkResultError = raw;
+              }
+              console.log(`[mica-agent] SDK result is_error subtype=${subtype} message=${raw.slice(0, 200)}`);
             }
             // Capture `usage` from whichever shape the SDK surfaces it on: some
             // versions put it on `evt.usage`, others nest it under `evt.result.usage`.

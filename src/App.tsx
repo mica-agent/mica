@@ -77,8 +77,8 @@ export default function App() {
     if (val) setWasConnected(true);
   }), []);
 
-  // Arm the reload failsafe button after 5s of continuous disconnect.
-  // 5s is past the natural reconnect window (auto-poll fires every 2s),
+  // Arm the reload failsafe button after 10s of continuous disconnect.
+  // 10s is past the natural reconnect window (auto-poll fires every 2s),
   // so a successful recovery hides this before it ever shows. Clears
   // immediately if the connection comes back.
   useEffect(() => {
@@ -86,7 +86,7 @@ export default function App() {
       setShowReloadFailsafe(false);
       return;
     }
-    const t = setTimeout(() => setShowReloadFailsafe(true), 5000);
+    const t = setTimeout(() => setShowReloadFailsafe(true), 10000);
     return () => clearTimeout(t);
   }, [wasConnected, wsConnected]);
 
@@ -293,7 +293,7 @@ export default function App() {
         <div className="ws-overlay">
           <div className="ws-overlay-content">
             <div className="ws-overlay-spinner" />
-            <div className="ws-overlay-text">Reconnecting...</div>
+            <div className="ws-overlay-text">{showReloadFailsafe ? 'Connection Lost' : 'Reconnecting...'}</div>
             {showReloadFailsafe && (
               <button
                 className="ws-overlay-btn"
