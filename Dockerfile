@@ -1,4 +1,19 @@
-# Mica runtime image for DGX Spark.
+# Mica production runtime image (for VS Code development, use
+# .devcontainer/Dockerfile instead).
+#
+# This image runs Mica's frontend (Vite), backend (Node), and voice
+# sidecars (Parakeet STT, Kokoro TTS) in a single container. It does
+# NOT bundle vLLM — when serving via vLLM, run `docker compose up`
+# (see docker-compose.yml) which adds the upstream
+# vllm/vllm-openai container as a sibling. Co-locating vLLM and the
+# voice sidecars in one image collides over cuDNN ABI versions
+# (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH at Kokoro/Parakeet GPU
+# init); separate containers, separate cuDNN, no conflict.
+#
+# In single-container mode (no vLLM sibling), this image's bundled
+# llama-server is used for local LLM serving — the "lean path" in
+# QUICKSTART.md. Install via `./install.sh`, lifecycle via
+# `bash scripts/mica.sh {start|stop|restart}`.
 #
 # Base: NVIDIA CUDA 13.1 devel on Ubuntu 24.04. Matches the DGX Spark
 # host driver (580.x exposing CUDA 13.1) and includes nvcc so we can
@@ -84,6 +99,16 @@ COPY --chown=vscode:vscode . .
 # A tsc failure during image build shouldn't block a working runtime.
 RUN npm run build 2>/dev/null || true
 
+# Voice sidecar Python venv (Parakeet STT via nemo_toolkit, Kokoro TTS).
+# We run install.sh at BUILD time rather than first-run so the
+# cuDNN MAJOR.MINOR alignment dance (see install.sh:68-97) happens once
+# and the result is baked in. Adds ~3-4 GB to the image but removes the
+# 5-10 min first-run latency every fresh deploy would otherwise pay. The
+# script tolerates audio-sample-download failures during build (each
+# clip is fetched in a try/except) so an unreliable network at build
+# time doesn't fail the image build.
+RUN bash scripts/benchmarks/voice/install.sh
+
 # Default workspace mount point. Override via `-v /host/path:/project`.
 ENV PROJECT_DIR=/project
 ENV MICA_PORT=3002
@@ -91,6 +116,10 @@ ENV MICA_PORT=3002
 # Documented ports: backend API, Vite dev server, llama-server.
 EXPOSE 3002 5173 8012
 
-# Foreground process — concurrently manages vite + tsx, forwards signals,
-# pipes stdout/stderr. Plays nicely with `docker logs` and `docker stop`.
-CMD ["npm", "run", "dev:all"]
+# Universal entrypoint. start.sh handles both topologies via env flags:
+#   - docker-compose path: MICA_DISABLE_LLAMA=1 + MICA_DISABLE_CHAT_VLLM=1
+#     → no local LLM here; talk to the sibling mica-vllm container.
+#   - single-container (install.sh / mica.sh) path: unset DISABLE flags →
+#     start.sh auto-spawns llama-server on :8012 for local inference.
+# Both paths go through the same script and same image; only env differs.
+CMD ["bash", "scripts/start.sh"]

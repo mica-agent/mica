@@ -94,6 +94,11 @@ cmd_start() {
         -p "$PORT_LLAMA:8012"
         -v "$WORKSPACE:/project"
         -v "$VOLUME_MODELS:/home/vscode/.cache/huggingface"
+        # Single-container lean path — match install.sh. Without this,
+        # start.sh tries to nest a vLLM container via docker socket
+        # (which we don't bind-mount here). Backend auto-spawns
+        # llama-server in this container instead.
+        -e MICA_DISABLE_CHAT_VLLM=1
       )
       if [ "${MICA_DISABLE_LLAMA:-0}" = "1" ]; then
         run_args+=( -e MICA_DISABLE_LLAMA=1 )

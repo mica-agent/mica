@@ -126,6 +126,12 @@ RUN_ARGS=(
   -p "$PORT_LLAMA:8012"
   -v "$WORKSPACE:/project"
   -v "$VOLUME_MODELS:/home/vscode/.cache/huggingface"
+  # Single-container lean path. start.sh's default chat backend is the
+  # vllm-container.sh helper, which `docker run`s a sibling vLLM image
+  # — that requires a Docker socket bind-mount we deliberately don't
+  # do here. Tell start.sh to skip that helper; the backend will
+  # auto-spawn llama-server (inside this container) on first chat.
+  -e MICA_DISABLE_CHAT_VLLM=1
 )
 
 if [ "${MICA_DISABLE_LLAMA:-0}" = "1" ]; then

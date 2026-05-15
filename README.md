@@ -74,14 +74,18 @@ Three convictions shape every design decision.
 
 ## Run on DGX Spark
 
-One command installs and launches Mica on a DGX Spark with its
-default local model (Qwen3.6-35B on llama-server, GPU-accelerated).
-Same pattern Open WebUI, Gitea, and dozens of other self-hosted
-tools use: the docker image is the install.
+Two ways to run Mica on a GPU host. See [QUICKSTART.md](./QUICKSTART.md)
+for the full guide; the shortest summary follows.
+
+### Lean path — single container, llama.cpp inside
+
+The "Open WebUI"-shaped install: one image, one container,
+GPU-accelerated llama-server auto-spawned on first chat.
 
 ```bash
 mkdir -p ~/mica-workspace
 docker run --rm -d --name mica --gpus all \
+  -e MICA_DISABLE_CHAT_VLLM=1 \
   -v ~/mica-workspace:/project \
   -v mica-models:/home/vscode/.cache/huggingface \
   -p 3002:3002 -p 5173:5173 -p 8012:8012 \
@@ -90,11 +94,27 @@ docker run --rm -d --name mica --gpus all \
 
 Takes 10–15 minutes on a fresh DGX Spark — a few minutes to pull
 the image, ~10 minutes for the first chat to download the default
-model. Subsequent launches start in seconds. Open
-`http://<dgx-ip>:5173/` in a browser once the container is up.
-Your projects live under `~/mica-workspace/`.
+model (Qwen3.6-35B Q4 GGUF, ~22 GB). Subsequent launches start in
+seconds. Open `http://<dgx-ip>:5173/` once the container is up.
 
-`docker logs -f mica` tails the logs. `docker stop mica` stops it.
+`docker logs -f mica` tails. `docker stop mica` stops.
+
+### Production path — vLLM sibling container
+
+Recommended for production. Mica runs in one container; vLLM serves
+Qwen3.6-35B-A3B-NVFP4 in a sibling. Continuous batching shared
+between voice and chat, FP4 quantization, MTP-1 speculative decode.
+
+```bash
+git clone https://github.com/<org>/mica.git
+cd mica
+./scripts/mica-compose.sh up
+```
+
+The wrapper runs pre-flight (GPU passthrough, ports free, disk space)
+then `exec`s `docker compose up`. First boot downloads ~30 GB of
+NVFP4 weights. Full guide and lifecycle commands in
+[QUICKSTART.md](./QUICKSTART.md).
 
 Prereqs: Docker + [NVIDIA Container
 Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).

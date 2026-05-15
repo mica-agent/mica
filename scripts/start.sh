@@ -5,6 +5,16 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Save the inherited PROJECT_DIR from the caller's env (if any) BEFORE
+# anything in this script reassigns the local variable below. The
+# inherited value is the WORKSPACE root the backend will scope to —
+# different concern from the local PROJECT_DIR on line ~32, which is
+# repurposed as the repo-root location for cd / PID files. Without
+# preserving this, containers that set ENV PROJECT_DIR=/project (the
+# production Dockerfile + docker-compose) would have it stomped by the
+# /workspaces/testproj dev fallback at line ~94.
+_INHERITED_PROJECT_DIR="${PROJECT_DIR:-}"
+
 # Source .env so MICA_PORT / MICA_FRONTEND_PORT / etc. set there reach this
 # shell. Mirrors server/index.ts + vite.config.ts resolution: workspace .env
 # first, repo-root .env as fallback. Ambient env that was already set in the
@@ -90,8 +100,12 @@ done
 
 cd "$PROJECT_DIR"
 
-# Set workspace directory for the server (default: /workspaces/testproj for dev)
-export PROJECT_DIR="${PROJECT_DIR_OVERRIDE:-/workspaces/testproj}"
+# Set workspace directory for the server. Priority:
+#   1. PROJECT_DIR_OVERRIDE (explicit caller override)
+#   2. Inherited PROJECT_DIR from env (production Dockerfile / compose
+#      set ENV PROJECT_DIR=/project; this honors that)
+#   3. Dev default /workspaces/testproj (only fires outside containers)
+export PROJECT_DIR="${PROJECT_DIR_OVERRIDE:-${_INHERITED_PROJECT_DIR:-/workspaces/testproj}}"
 
 # ── Chat vLLM container ─────────────────────────────────────────
 # Replaces the previous llama-server lifecycle. Qwen3.6-35B-A3B-NVFP4
@@ -168,7 +182,7 @@ vllm serve $CHAT_MODEL \
   --moe-backend flashinfer_cutlass \
   --kv-cache-dtype fp8_e4m3 \
   --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
-  --gpu-memory-utilization 0.40 \
+  --gpu-memory-utilization 0.55 \
   --max-model-len 131072 \
   --max-num-batched-tokens 8192 \
   --enable-prefix-caching \

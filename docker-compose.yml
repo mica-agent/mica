@@ -1,0 +1,142 @@
+# Production-recommended Mica stack: two sibling containers.
+#
+#   mica       — frontend (Vite, :5173) + backend (Node, :3002) +
+#                voice sidecars (Parakeet STT, Kokoro TTS, localhost only).
+#                Builds from ./Dockerfile.
+#
+#   mica-vllm  — Qwen3.6-35B-A3B-NVFP4 served by upstream vLLM. Lives in
+#                a sibling container (not co-located in `mica`) because
+#                vLLM's bundled cuDNN and the voice sidecars' torch-bundled
+#                cuDNN can't share an image without runtime ABI mismatches
+#                (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH). Separate
+#                containers, separate cuDNN, no conflict.
+#
+# Usage:
+#   docker compose up                                          # default
+#   HF_CACHE_DIR=$HOME/.cache/huggingface docker compose up    # reuse host HF cache
+#   ./scripts/mica-compose.sh up                               # with preflight checks
+#
+# For a single-container alternative (no vLLM sibling, llama-cpp inside
+# the mica container), see ./install.sh and ./scripts/mica.sh start —
+# the existing "Open WebUI-shaped" install path. QUICKSTART.md documents
+# both routes.
+
+services:
+  mica:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mica:latest
+    # Align with the common Linux host UID so files written into the
+    # bind-mounted ./workspace and the shared HF cache end up owned by
+    # the host user, not root. If your host UID differs, override
+    # USER_UID/USER_GID via `.env` or shell env before `docker compose up`.
+    user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    depends_on:
+      mica-vllm:
+        condition: service_healthy
+    ports:
+      - "${MICA_FRONTEND_PORT:-5173}:5173"   # Vite frontend
+      - "${MICA_BACKEND_PORT:-3002}:3002"    # Node backend API
+    volumes:
+      # Workspace projects — host-visible at ./workspace. Each subdir is
+      # a Mica project. Auto-created by scripts/mica.sh if missing.
+      - ./workspace:/project
+      # HF model cache. Default = docker-managed named volume; override
+      # via HF_CACHE_DIR=/path/on/host docker compose up to reuse an
+      # existing host cache (skips re-download of any cached models).
+      - ${HF_CACHE_DIR:-mica-models}:/cache/huggingface
+      # Claude Code credentials, if you use the .claude card class.
+      # Named volume so `claude login` state persists across restarts.
+      - mica-claude:/home/vscode/.claude
+    environment:
+      # Image-agnostic HF cache path. Both `mica` and `mica-vllm` mount
+      # the same volume here. Overrides each image's default user-home
+      # cache so root-vs-non-root container users don't matter.
+      HF_HOME: /cache/huggingface
+      # vLLM is the sibling service, not in this container.
+      LLAMA_URL: http://mica-vllm:8000
+      MICA_DISABLE_LLAMA: "1"
+      # Don't try to spawn a NESTED vLLM container from inside this one
+      # (scripts/lib/vllm-container.sh is the devcontainer path; under
+      # compose, the sibling service IS the vLLM, so skip the helper).
+      MICA_DISABLE_CHAT_VLLM: "1"
+      PROJECT_DIR: /project
+    env_file:
+      # Optional. Loads TAVILY_API_KEY, OPENROUTER_API_KEY, etc. from
+      # the host .env if present; safe to ship without one.
+      - path: .env
+        required: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  mica-vllm:
+    # PRODUCTION: pin a captured digest, not the floating :cu130-nightly tag.
+    # Capture via:
+    #   docker pull vllm/vllm-openai:cu130-nightly
+    #   docker inspect --format '{{index .RepoDigests 0}}' \
+    #     vllm/vllm-openai:cu130-nightly
+    # Paste the result below as `image: vllm/vllm-openai@sha256:...`. Update
+    # intentionally (e.g. quarterly, or when a Mica change wants a newer
+    # upstream fix) — after a smoke test. We use the nightly track for the
+    # perf characteristics (NVFP4 + MTP-1 spec decode + cu130 Blackwell
+    # readiness); the floating tag drifts, so digest-pin in production.
+    #
+    # Until a digest is captured for your deployment, the floating tag is
+    # used as a fallback. Override via MICA_VLLM_IMAGE in your shell or .env.
+    image: ${MICA_VLLM_IMAGE:-vllm/vllm-openai:cu130-nightly}
+    # vllm/vllm-openai's default ENTRYPOINT runs as root. Forcing UID 1000
+    # (or whatever USER_UID is) keeps cache files it writes line-up with
+    # what the Mica container writes, so the shared /cache/huggingface
+    # mount has consistent ownership.
+    user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    environment:
+      HF_HOME: /cache/huggingface
+    command: >
+      --model RedHatAI/Qwen3.6-35B-A3B-NVFP4
+      --served-model-name qwen-vl qwen-voice qwen3-vl-local
+      --host 0.0.0.0 --port 8000
+      --quantization compressed-tensors
+      --moe-backend flashinfer_cutlass
+      --kv-cache-dtype fp8_e4m3
+      --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
+      --gpu-memory-utilization 0.55
+      --max-model-len 131072
+      --max-num-batched-tokens 16384
+      --enable-prefix-caching
+      --enable-chunked-prefill
+      --trust-remote-code
+      --reasoning-parser qwen3
+      --tool-call-parser qwen3_coder
+      --enable-auto-tool-choice
+      --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}'
+      --limit-mm-per-prompt '{"image":4,"video":1}'
+      --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20}'
+    volumes:
+      - ${HF_CACHE_DIR:-mica-models}:/cache/huggingface
+    healthcheck:
+      # Sibling `mica` service uses depends_on.condition: service_healthy
+      # to wait for this before starting. 120s start period leaves room
+      # for first-run model download on slow links; on cached runs the
+      # service typically reaches ready in 30-60s.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  mica-models:
+  mica-claude:
