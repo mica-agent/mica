@@ -50,8 +50,10 @@ kill_port() {
     local args
     args=$(ps -p "$pid" -o args= 2>/dev/null || true)
     # Only kill mica-related processes — never VSCode's port forwarder
-    # (killing that tears down the SSH session)
-    if [[ "$args" == *"/workspaces/mica/"* ]] || [[ "$args" == *"vite"* ]] || [[ "$args" == *"tsx"* && "$args" == *"server/index.ts"* ]]; then
+    # (killing that tears down the SSH session). REPO_ROOT matches the
+    # repo path regardless of where it's checked out (/workspaces/mica
+    # in the devcontainer; /opt/mica in the production image; etc.).
+    if [[ "$args" == *"$REPO_ROOT/"* ]] || [[ "$args" == *"vite"* ]] || [[ "$args" == *"tsx"* && "$args" == *"server/index.ts"* ]]; then
       echo "Port $port held by PID $pid ($(echo "$args" | head -c 80))"
       echo "  Killing..."
       kill "$pid" 2>/dev/null || true
@@ -90,7 +92,7 @@ kill_port "$FRONTEND_PORT"
 for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
   for pid in $(lsof -ti :"$port" 2>/dev/null || true); do
     args=$(ps -p "$pid" -o args= 2>/dev/null || true)
-    if [[ "$args" == *"/workspaces/mica/"* ]] || [[ "$args" == *"vite"* ]] || [[ "$args" == *"tsx"* && "$args" == *"server/index.ts"* ]]; then
+    if [[ "$args" == *"$REPO_ROOT/"* ]] || [[ "$args" == *"vite"* ]] || [[ "$args" == *"tsx"* && "$args" == *"server/index.ts"* ]]; then
       echo "ERROR: Port $port still held by mica PID $pid after cleanup. Aborting."
       lsof -i :"$port" 2>/dev/null
       exit 1
@@ -252,11 +254,11 @@ echo "Starting backend on port $BACKEND_PORT..."
 # an automation tool) exits. Without this, plain `&` backgrounded processes
 # receive SIGHUP on parent exit and shut down cleanly, which looks like a
 # random "server crash" after restart.
-setsid nohup node /workspaces/mica/node_modules/.bin/tsx server/index.ts > "$PID_DIR/backend.log" 2>&1 < /dev/null &
+setsid nohup node "$REPO_ROOT/node_modules/.bin/tsx" server/index.ts > "$PID_DIR/backend.log" 2>&1 < /dev/null &
 record_child_pid $! "$PID_DIR/backend.pid"
 
 echo "Starting frontend on port $FRONTEND_PORT..."
-setsid nohup node /workspaces/mica/node_modules/.bin/vite > "$PID_DIR/frontend.log" 2>&1 < /dev/null &
+setsid nohup node "$REPO_ROOT/node_modules/.bin/vite" > "$PID_DIR/frontend.log" 2>&1 < /dev/null &
 record_child_pid $! "$PID_DIR/frontend.pid"
 
 # Wait for backend to be ready (up to 15 seconds)
