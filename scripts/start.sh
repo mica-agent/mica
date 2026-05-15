@@ -300,6 +300,37 @@ if $backend_ok && $frontend_ok; then
   echo "  Logs:     $PID_DIR/backend.log"
   echo "            $PID_DIR/frontend.log"
   echo "  Stop:     scripts/stop.sh"
+
+  # Containerized init mode: when start.sh is PID 1 of a Docker
+  # container (CMD invocation), exiting here would tear down the
+  # container immediately, taking the backend + frontend with it.
+  # Hold the foreground by tailing both log files, so:
+  #   1. PID 1 stays alive → container stays alive
+  #   2. backend + frontend logs stream to stdout → `docker compose logs`
+  #      sees them
+  #   3. if either child dies, the tail process notices its log
+  #      stops growing — we use `wait -n` on the children's PIDs to
+  #      actually exit when something fails, so compose can mark
+  #      the container as failed and the user can debug.
+  # In dev (shell/devcontainer), $$ != 1 — control returns to the
+  # caller as before.
+  if [ "$$" = "1" ]; then
+    echo ""
+    echo "  (PID 1: holding foreground for container lifecycle)"
+    backend_pid="$(cat "$PID_DIR/backend.pid" 2>/dev/null)"
+    frontend_pid="$(cat "$PID_DIR/frontend.pid" 2>/dev/null)"
+    # Stream logs to stdout (docker compose captures from PID 1).
+    tail -F --pid="$backend_pid" "$PID_DIR/backend.log" "$PID_DIR/frontend.log" &
+    tail_pid=$!
+    # Wait for whichever exits first: backend, frontend, or tail.
+    # `wait -n` requires bash 4.3+; the vllm image has bash 5.x so OK.
+    wait -n "$backend_pid" "$frontend_pid" "$tail_pid" 2>/dev/null
+    echo ""
+    echo "=== A Mica process exited; shutting down container ==="
+    # Clean up remaining children
+    kill "$backend_pid" "$frontend_pid" "$tail_pid" 2>/dev/null || true
+    exit 1
+  fi
 else
   echo "=== Startup problem ==="
   $backend_ok  || echo "  Backend FAILED — check $PID_DIR/backend.log"
