@@ -107,7 +107,10 @@ mkdir -p "$AUDIO"
 
 # A small Python helper to fetch — avoids depending on curl/wget for
 # binary downloads and gives clean error messages.
-python3 - <<'PY'
+# The heredoc runs as a python3 subprocess, so it doesn't inherit
+# non-exported shell vars. Pass AUDIO + HERE explicitly into its env;
+# the script body reads them via os.environ.
+AUDIO="$AUDIO" HERE="$HERE" python3 - <<'PY'
 import os
 import sys
 import urllib.request
