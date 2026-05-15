@@ -1,39 +1,44 @@
 # Mica production runtime image (for VS Code development, use
-# .devcontainer/Dockerfile instead).
+# .devcontainer/Dockerfile — which shares this base, so the cuDNN /
+# Python posture is identical across both).
 #
 # This image runs Mica's frontend (Vite), backend (Node), and voice
-# sidecars (Parakeet STT, Kokoro TTS) in a single container. It does
-# NOT bundle vLLM — when serving via vLLM, run `docker compose up`
-# (see docker-compose.yml) which adds the upstream
-# vllm/vllm-openai container as a sibling. Co-locating vLLM and the
-# voice sidecars in one image collides over cuDNN ABI versions
-# (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH at Kokoro/Parakeet GPU
-# init); separate containers, separate cuDNN, no conflict.
+# sidecars (Parakeet STT, Kokoro TTS) in a single container.
+#
+# vLLM serving is NOT inside this image — `docker compose up` (see
+# docker-compose.yml) adds the upstream vllm/vllm-openai container as
+# a SIBLING. Keeping vLLM serving separate is an operational choice
+# (independent upgrade cycle, distinct GPU-memory profile, cleaner
+# logs) — not a technical necessity. The cuDNN ABI conflict between
+# the vLLM base's bundled cuDNN and the voice sidecars' torch-bundled
+# cuDNN is handled at build time by scripts/benchmarks/voice/install.sh,
+# which detects the system cuDNN MAJOR.MINOR and force-reinstalls
+# nvidia-cudnn-cu13 in the venv to match. Same dance the devcontainer
+# uses — proven.
 #
 # In single-container mode (no vLLM sibling), this image's bundled
 # llama-server is used for local LLM serving — the "lean path" in
 # QUICKSTART.md. Install via `./install.sh`, lifecycle via
 # `bash scripts/mica.sh {start|stop|restart}`.
 #
-# Base: NVIDIA CUDA 13.1 devel on Ubuntu 24.04. Matches the DGX Spark
-# host driver (580.x exposing CUDA 13.1) and includes nvcc so we can
-# build llama.cpp with CUDA during image build. Multi-arch; we only
-# publish linux/arm64 for now (DGX Spark is arm64 Grace+Blackwell).
-FROM nvcr.io/nvidia/cuda:13.1.0-devel-ubuntu24.04
+# Base: NVIDIA's vLLM 26.04 image (same as .devcontainer/Dockerfile).
+# Provides CUDA toolkit + cuDNN + libcuda runtime libs + Python +
+# torch + vLLM Python deps. The runtime libs being present (vs. the
+# stub-only CUDA devel image) means llama.cpp can LINK cleanly without
+# the libcuda.so.1 symlink workaround that the devel base required.
+# Multi-arch; we publish linux/arm64 for now (DGX Spark is arm64
+# Grace+Blackwell).
+FROM nvcr.io/nvidia/vllm:26.04-py3
 
 # System deps.
 #   curl/git/ca-certs/sudo/lsof/procps — basics + dev parity + script compat
-#   cmake/build-essential              — to build llama.cpp with CUDA
-#   python3/pip/venv                   — mica cards and the agent routinely
-#                                        invoke python3; pip+venv lets users
-#                                        `pip install` inside project scope
-# nvidia-smi isn't listed: it ships inside the CUDA devel image AND is
-# passed through from the host driver by the NVIDIA Container Toolkit
-# whenever --gpus all is set. Available either way.
+#   cmake/build-essential              — to build llama.cpp with CUDA (lean path)
+# The vLLM base already ships python3 + pip + venv + nvcc + cuDNN +
+# libcuda runtime libs; we only top up the few CLI utilities Mica's
+# start/stop/status scripts assume on PATH.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git ca-certificates sudo lsof procps \
     cmake build-essential \
-    python3 python3-pip python3-venv \
  && rm -rf /var/lib/apt/lists/*
 
 # UID 1000 user — matches most Linux hosts so bind-mounted workspaces
@@ -49,13 +54,43 @@ RUN if id -u 1000 >/dev/null 2>&1; then \
  && chown -R vscode:vscode /home/vscode
 
 # llama.cpp with CUDA, pinned to DGX Spark's Blackwell target (sm_121).
-# Explicit CMAKE_CUDA_ARCHITECTURES avoids any auto-detect surprise where
-# a build silently falls back to CPU at runtime.
-RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp \
- && cd /opt/llama.cpp \
- && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121 \
- && cmake --build build --config Release -j$(nproc) \
- && ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+#
+# CONDITIONAL: only built when INSTALL_LLAMA=1 (the default for the
+# lean install.sh/mica.sh single-container topology). docker-compose.yml
+# passes INSTALL_LLAMA=0 because the compose path uses vLLM in a
+# sibling container — llama-server isn't reachable or wanted there.
+# Skipping saves ~5-10 min of build time on the compose path.
+#
+# Build details when we DO build:
+#   - Only the llama-server target. llama.cpp's example binaries
+#     (llama-simple, llama-llava-cli, etc.) are out of scope; building
+#     them adds time and surface area we don't use.
+#   - LLAMA_BUILD_TESTS=OFF, LLAMA_BUILD_EXAMPLES=OFF for the same reason.
+#   - Parallelism cap at min(nproc, 8). Grace has 72 cores; 72 parallel
+#     ld processes each using 4-8 GB during link exhaust host RAM and
+#     get OOM-killed mid-link. 8 stays under ~64 GB linker footprint.
+#     Override via --build-arg LLAMA_JOBS=N.
+#   - The vLLM base ships libcuda.so.1, so no stub-symlink workaround is
+#     needed (the prior CUDA-devel base didn't ship it, which broke link).
+ARG INSTALL_LLAMA=1
+ARG LLAMA_JOBS=
+RUN if [ "$INSTALL_LLAMA" = "1" ]; then \
+      set -eux; \
+      git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp; \
+      cd /opt/llama.cpp; \
+      jobs="${LLAMA_JOBS:-$(nproc)}"; \
+      [ "$jobs" -le 8 ] || jobs=8; \
+      echo "Building llama.cpp llama-server target with -j$jobs"; \
+      cmake -B build \
+        -DGGML_CUDA=ON \
+        -DCMAKE_CUDA_ARCHITECTURES=121 \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=OFF; \
+      cmake --build build --config Release --target llama-server -j"$jobs"; \
+      ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server; \
+    else \
+      echo "INSTALL_LLAMA=$INSTALL_LLAMA — skipping llama.cpp build (compose path uses vLLM sibling)"; \
+    fi
 
 # Node 20 via NodeSource.
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -119,7 +154,9 @@ EXPOSE 3002 5173 8012
 # Universal entrypoint. start.sh handles both topologies via env flags:
 #   - docker-compose path: MICA_DISABLE_LLAMA=1 + MICA_DISABLE_CHAT_VLLM=1
 #     → no local LLM here; talk to the sibling mica-vllm container.
-#   - single-container (install.sh / mica.sh) path: unset DISABLE flags →
-#     start.sh auto-spawns llama-server on :8012 for local inference.
+#   - single-container (install.sh / mica.sh) path: MICA_DISABLE_CHAT_VLLM=1
+#     (set by install.sh/mica.sh; skips nested vLLM container spawn),
+#     MICA_DISABLE_LLAMA unset → backend auto-spawns the bundled
+#     llama-server on :8012 for local inference.
 # Both paths go through the same script and same image; only env differs.
 CMD ["bash", "scripts/start.sh"]

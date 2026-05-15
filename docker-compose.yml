@@ -31,6 +31,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Skip llama.cpp build in production. The compose stack uses
+        # vLLM in the sibling `mica-vllm` service; llama-server inside
+        # the mica image would never be reached (MICA_DISABLE_LLAMA=1
+        # is set below). Skipping saves ~5-10 min of CUDA compile time
+        # and avoids the libcuda.so.1 stub-linkage dance entirely.
+        # The lean path (install.sh) leaves the default INSTALL_LLAMA=1
+        # so its single-container topology still ships llama-server.
+        INSTALL_LLAMA: "0"
     image: mica:latest
     # Align with the common Linux host UID so files written into the
     # bind-mounted ./workspace and the shared HF cache end up owned by
