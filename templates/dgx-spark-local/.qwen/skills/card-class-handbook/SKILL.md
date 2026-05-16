@@ -515,6 +515,174 @@ extensions stay routed by file extension as in the table above.
 The `metadata.handler` mechanism is additive and only kicks in
 when present.
 
+## Card-class-private sidecars — `metadata.sidecar` + `server.py` / `server.ts`
+
+The reusable handlers above are Mica-provided primitives (LLM stream, subprocess wrapper). When your card needs **its own server-side logic** — ML inference, vector search, RAG, file analysis, anything that needs persistent memory or runtime that doesn't fit a generic handler — declare a **sidecar**. Mica spawns a card-class-owned HTTP service on a port from its pool, manages lifecycle, and exposes it to your `card.js` via a stable URL scheme. The card class becomes self-contained: UI + server logic in one directory.
+
+### When to declare a sidecar vs reach for an existing handler
+
+Decision rules in priority order:
+
+| Signal | Action |
+|---|---|
+| You'd use `llm-direct` to wrap a single LLM prompt | Use `llm-direct` (no sidecar needed) |
+| You'd use `process` to wrap a CLI tool with line-delimited output | Use `process` |
+| You need to load a model / embeddings / chunks ONCE and serve queries against the warm state | **Sidecar** |
+| You need to compose multiple steps (vector search → LLM → return) per user action | **Sidecar** |
+| You're tempted to make the chat agent run `mica_shell` with a Python one-liner per query | **Sidecar** (this is the canonical signal that compute should live in the card class, not the LLM's tool-call loop) |
+| The compute is one-shot and trivial (string format, simple math, single API call) | Stay in `card.js` |
+
+### Declaring the sidecar in `metadata.json`
+
+```json
+{
+  "extension": ".my-card",
+  "badge": "MYC",
+  "defaultTitle": "My Card",
+  "sidecar": {
+    "entry": "server.py",
+    "ready_path": "/health",
+    "ready_timeout_ms": 30000
+  }
+}
+```
+
+Fields:
+- `entry` — relative path inside the card-class directory. Extension picks the runtime: `.py` → Python, `.ts` / `.tsx` → tsx (Mica's TypeScript runner), `.mjs` / `.cjs` / `.js` → node, otherwise treated as directly executable (must have shebang).
+- `ready_path` — endpoint Mica probes for readiness. Default `/health`. MUST return HTTP 200 once the sidecar is willing to serve real traffic (after model loading completes, etc.).
+- `ready_timeout_ms` — how long Mica waits for `/health` to first respond. Default 30000 (30s). Bump higher if your sidecar loads a large model at startup.
+- `python` — optional, only for `.py` entries: `"system"` (default, `/usr/bin/python3`) | `"voice-venv"` (uses the Parakeet/Kokoro venv with sentence-transformers, librosa, FastAPI) | absolute path.
+- `interpreter` — optional, absolute-path explicit override. Wins over extension auto-detect.
+
+### Env vars Mica injects when spawning your sidecar
+
+| Variable | Value | Use |
+|---|---|---|
+| `MICA_PORT` | port (8200-8299 from pool) | **READ THIS** — bind your server here; never hardcode a port |
+| `MICA_PROJECT` | active project name | logging / context |
+| `MICA_PROJECT_DIR` | absolute path to the project | read project files (`canvas/...`) |
+| `MICA_WORKSPACE_DIR` | absolute path to the projects root | rare; project resolution |
+| `MICA_CARD_CLASS` | your card class name | logging only |
+| `MICA_CARD_CLASS_DIR` | absolute path to your card class directory | read sibling files (chunk corpora, templates, etc.) |
+| `NODE_PATH` | Mica's node_modules | TypeScript/JS sidecars can `import` Mica's deps |
+| `LLAMA_URL` | local vLLM base URL | call the local model (`{LLAMA_URL}/v1/chat/completions`) |
+
+Plus the parent backend's full env is forwarded — `process.env.LLAMA_URL`, `TAVILY_API_KEY`, `OPENROUTER_API_KEY` etc. are all available if set.
+
+### The `server.py` shape (FastAPI, recommended)
+
+```python
+import os, uvicorn
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+PORT = int(os.environ["MICA_PORT"])              # never hardcode
+PROJECT_DIR = os.environ["MICA_PROJECT_DIR"]
+print(f"[my-card] starting on :{PORT}", flush=True)  # logs go to backend.log
+
+# Load expensive state ONCE at module scope. Mica keeps the process warm.
+# (e.g. SentenceTransformer, json corpora, ML model weights)
+
+app = FastAPI()
+
+class AskRequest(BaseModel):
+    query: str
+
+@app.get("/health")                  # required — Mica probes this for ready
+async def health():
+    return {"ok": True}
+
+@app.post("/search")
+async def search(req: AskRequest):
+    # ... your compute, returning JSON ...
+    return {"results": [...]}
+
+uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+```
+
+### The `server.ts` shape (Node stdlib http, no extra deps)
+
+```typescript
+import { createServer } from "node:http";
+import { URL } from "node:url";
+
+const PORT = Number(process.env.MICA_PORT!);
+const PROJECT_DIR = process.env.MICA_PROJECT_DIR!;
+console.log(`[my-card] starting on :${PORT}`);
+
+const server = createServer((req, res) => {
+  const url = new URL(req.url!, `http://127.0.0.1:${PORT}`);
+  if (url.pathname === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (url.pathname === "/whatever" && req.method === "POST") {
+    let body = ""; req.on("data", (c) => body += c);
+    req.on("end", () => {
+      const reqData = JSON.parse(body);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ /* response */ }));
+    });
+    return;
+  }
+  res.writeHead(404); res.end();
+});
+server.listen(PORT, "127.0.0.1");
+```
+
+### Calling the sidecar from `card.js`
+
+Use `mica.fetch` with the `mica-internal://card-server/` scheme:
+
+```js
+const r = await mica.fetch('mica-internal://card-server/search', {
+  method: 'POST',
+  body: JSON.stringify({ query: queryEl.value }),
+  timeout: 30000,
+});
+if (r.errorCode) { /* mica-side failure: r.error */ }
+else if (r.status >= 400) { /* sidecar returned HTTP error */ }
+else { const data = JSON.parse(r.body); /* use data */ }
+```
+
+The runtime injects your card's class name into the request so Mica routes to the correct sidecar — no class name needed in the URL.
+
+### Lifecycle facts you must know
+
+1. **Lazy spawn.** Sidecar starts on the first `mica.fetch` from your card. First-call latency = process start + model load + ready probe. Plan for 5-30s cold start; set the card UI to show "Loading…" appropriately.
+2. **Warm thereafter.** Subsequent calls hit the running process — typically 10-200ms (the actual compute, no startup tax).
+3. **Idle shutdown** after 10 minutes with no calls. Next call respawns (back to cold start).
+4. **No file-change auto-restart.** Edit `server.py` → the running sidecar still runs the OLD code. To force respawn, kill the process manually (e.g. `mica_shell pkill -f "card-classes/<my-card>/server.py"`) and the next call respawns with the new code.
+5. **One process per (project, card-class)** — multiple card instances in the same project share the sidecar. Different projects get separate sidecars.
+6. **Orphan reaper** runs at backend startup, cleaning up sidecars from previous crashes that didn't get a clean SIGTERM.
+
+### Common pitfalls
+
+- **Forgot `/health`.** Mica probes it and times out. Your sidecar process is running but Mica never considers it ready. Always implement `/health` returning HTTP 200.
+- **Hardcoded port.** `uvicorn.run(app, host="127.0.0.1", port=8000)` — Mica gives you `MICA_PORT`; ignoring it means the port pool gets confused. Always `port=int(os.environ["MICA_PORT"])`.
+- **vLLM with thinking enabled consuming the answer budget.** When calling local vLLM (`{LLAMA_URL}/v1/chat/completions`), thinking is ON by default (server-level config). For RAG/summarization tasks, set `"chat_template_kwargs": {"enable_thinking": false}` in the request body — otherwise a 1024-token budget gets entirely consumed by `<think>` content and `message.content` is empty. Symptom: empty answer field in the response. Fix: disable thinking AND budget 2048+ tokens.
+- **Streaming responses.** `mica.fetch` is non-streaming today — your sidecar can emit SSE/chunked, but `mica.fetch` waits for the full body and returns it once. Card-side UI should show a "Working…" placeholder during the await, not try to render mid-stream tokens.
+- **Heavy first import.** Loading a 100MB embedding model takes 3-5s. Put it at module scope (loaded once on spawn), NOT inside the request handler (would load per-request).
+- **Print to stdout for logs.** Anything your sidecar `print`s goes to the backend log prefixed `[card-sidecar:<name>]`. Use `flush=True` (Python) for real-time visibility.
+- **Don't `import` external libs without verifying they're available.** System Python has sentence-transformers, numpy, FastAPI, httpx. TS/Node has whatever Mica's node_modules ships. Beyond that, you'd need to vendor or install (not supported in the prototype).
+
+### Worked example — `vector-search`
+
+A pure-retrieval card: load 293 chunk embeddings once, answer queries with top-K cosine-similarity matches. ~50ms warm latency, 5s cold start.
+
+- `metadata.json` declares `sidecar: { entry: "server.py", ready_path: "/health", ready_timeout_ms: 60000 }`
+- `server.py` loads sentence-transformers + embeddings at module scope, exposes `POST /search → { results }`
+- `card.js` calls `mica.fetch('mica-internal://card-server/search')` with the user's query and renders the result list
+
+### Worked example — `pdf-qa`
+
+A RAG card: vector search + LLM generation in one round-trip.
+
+- `metadata.json` declares the same sidecar shape
+- `server.py` loads the embedding model + chunks; `POST /ask` runs vector search internally then calls `{LLAMA_URL}/v1/chat/completions` with the top chunks + question (with `enable_thinking: false` — see pitfalls above)
+- `card.js` calls `/ask`, shows a "Searching…" placeholder, displays the answer + source chunk filenames when the response arrives
+
 ## Worked example — counter card
 
 `.mica/card-classes/counter/metadata.json`:

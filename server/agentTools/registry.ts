@@ -38,6 +38,7 @@ import {
 } from "./cardClass.js";
 import { installSkillsTool } from "./installSkills.js";
 import { listSkillPackagesTool } from "./listSkillPackages.js";
+import { micaShellTool } from "./micaShell.js";
 import { inspectUrlTool } from "./inspectUrl.js";
 
 // Per-backend startup secret. Agents include this in the
@@ -98,6 +99,7 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   installSkillsTool,
   listSkillPackagesTool,
   inspectUrlTool,
+  micaShellTool,
 ];
 
 // ── Project resolution for opencode bridge ───────────────────────────

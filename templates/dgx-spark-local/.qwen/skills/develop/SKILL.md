@@ -27,7 +27,40 @@ universal.
 
 ## The flow
 
+### 0. Mandate: track the flow with `todo_write`
+
+**The first tool you call in this flow is `todo_write`** — before research, before reading any project files, before any other build action. Pre-populate the develop steps as items. The discrete checklist:
+
+- Makes each step concrete rather than implicit prose.
+- Lets you (and the user, via the chat card's status panel) see where you are.
+- Forces you to confront the APPROVAL GATE as an explicit row rather than a paragraph you've already absorbed.
+
+Example seed call (adjust the items for the artifact type — drop step 2 for non-canvas artifacts, replace step 6/7 for standalone or doc-only):
+
+```
+todo_write({
+  todos: [
+    { id: "1", content: "Research dependencies (discover-dependency)", status: "in_progress" },
+    { id: "2", content: "Load card-class-handbook (canvas builds only)", status: "pending" },
+    { id: "3", content: "Write canvas/<name>-spec.md", status: "pending" },
+    { id: "4", content: "🛑 APPROVAL GATE — wait for user's NEXT message", status: "pending" },
+    { id: "5", content: "Plan-or-inline decision", status: "pending" },
+    { id: "6", content: "Execute: create class + edit files", status: "pending" },
+    { id: "7", content: "Verify with render_capture", status: "pending" },
+    { id: "8", content: "Doc-consistency reconcile", status: "pending" }
+  ]
+})
+```
+
+Mark items `in_progress` when you start them, `completed` when the corresponding tool call returns success.
+
+**Item 4 (🛑 APPROVAL GATE) is special: it stays `pending` until the START of your NEXT turn, after a NEW user message arrives. DO NOT mark it `completed` in the same turn that wrote the spec.** If you find yourself about to call `todo_write` to mark item 4 complete inside the same turn as the spec write, that is the exact rationalization pattern the gate exists to catch — STOP, write your chat reply, end the turn. The user's next message is what marks item 4 complete; you do that update at the top of the next turn.
+
+If you already advanced past the spec in your current turn (you noticed mid-stream), call `todo_write` now to record current state honestly — don't backfill `completed` for steps you skipped through. The state of the todo list is also a self-check: an `in_progress` item with no corresponding tool call recently means you forgot what you were doing.
+
 ### 1. Brief + research (BEFORE writing the spec)
+
+*(Step 1 begins after the seed `todo_write` call from the mandate above — research is item 1, already `in_progress`.)*
 
 First, identify the subproblems. For each subproblem that involves
 non-trivial domain work — rendering, time zones, sun/moon position,
@@ -88,6 +121,19 @@ same chat reply — don't guess defaults silently. Wait for the
 user's next message before proceeding to step 3. Doc-only edits
 don't need approval; anything that produces code does. See
 `_conventions.md` § Approval flow.
+
+**The gate fires on tool-return, not on user reply.** "Approval" is
+the user's NEXT MESSAGE — nothing else. Do not interpret continued
+tool calls in the same turn as "implicit approval"; the user has
+not seen the spec yet at that point. Do not write a thinking block
+that reasons "the user is still here so I should keep going" —
+they're "still here" because the SDK hasn't ended your turn yet,
+not because they've approved anything. The gate exists specifically
+to catch specs that the user wants to correct BEFORE code is
+written; bypassing it because the spec "feels right" is the failure
+mode it's designed to prevent.
+
+**Your `todo_write` list's item 4 ("🛑 APPROVAL GATE — wait for user's NEXT message") stays in `pending` status.** Do NOT mark it `completed` this turn. Marking it complete is how the gate gets bypassed; the discipline of leaving an unchecked checkbox on the screen is the cue that stops you. If you're about to issue a `todo_write` call that flips item 4 to `completed`, you are about to bypass the gate — STOP, end the turn, write your chat reply instead.
 
 ### 3. Plan-or-inline (tenet 12)
 

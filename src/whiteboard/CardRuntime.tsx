@@ -226,6 +226,64 @@ function waitForStyleApplication(): Promise<void> {
   });
 }
 
+// ── Card-scoped unhandled-promise-rejection handling ──────────────
+//
+// The card-shim's `_runCb` catches sync throws + async rejections inside the
+// callbacks Mica wraps (setTimeout, setInterval, RAF, window/document
+// addEventListener). It does NOT cover:
+//   - DOM event handlers on elements inside the card (`btn.addEventListener`)
+//   - Top-level promises (`let p = render()` at module scope)
+//   - any other path where a rejected Promise escapes without a .catch
+//
+// Each card's script tag gets a unique sourceURL containing the card's
+// filename. The module-level handler below listens once for unhandled
+// rejections at the window level, parses the stack to find a card-class
+// filename, and routes the error to that card's reportError.
+//
+// The Map's values are weak references (well, just regular references; cards
+// remove themselves on unmount). If a rejection's stack matches no registered
+// card (e.g. the card was destroyed before its promise settled, or the error
+// originated in framework code), the rejection is logged to console with a
+// Mica prefix and otherwise allowed to bubble — exact prior behavior.
+type Reporter = (msg: string) => void;
+const cardErrorReporters = new Map<string, Reporter>();
+
+function sourceUrlForCard(filename: string): string {
+  // URL-safe slug that includes the filename for stack-trace attribution.
+  // Browsers display `//# sourceURL=` text verbatim in stack frames.
+  return `mica-card://${encodeURIComponent(filename)}/card.js`;
+}
+
+// Install the global handler exactly once.
+let unhandledRejectionInstalled = false;
+function ensureUnhandledRejectionHandler(): void {
+  if (unhandledRejectionInstalled) return;
+  unhandledRejectionInstalled = true;
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason as { message?: string; stack?: string } | string | undefined;
+    const message = typeof reason === "string"
+      ? reason
+      : (reason && reason.message) || String(reason);
+    const stack = typeof reason === "object" && reason && reason.stack ? reason.stack : "";
+    const full = stack && stack.indexOf(message) >= 0 ? stack : (stack ? `${message}\n${stack}` : message);
+
+    // Attribute by matching the sourceURL prefix in the stack.
+    let matched = false;
+    for (const [filename, reporter] of cardErrorReporters) {
+      if (stack.includes(`mica-card://${encodeURIComponent(filename)}/`)) {
+        try { reporter(`Uncaught (in promise): ${full}`); } catch { /* swallow */ }
+        matched = true;
+        break;  // attribute to one card; an error genuinely in shared code
+                // would match the FIRST registered card, which is acceptable
+                // (rare) noise vs missing the error entirely.
+      }
+    }
+    if (!matched) {
+      console.warn("[mica-card] uncaught promise rejection with no card attribution:", full);
+    }
+  });
+}
+
 export default function CardRuntime({ html, exports: exportFns, dependencies, sessionId, project, canvas, filename }: Props) {
   const outerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<HTMLDivElement>(null);
@@ -399,7 +457,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
               `}catch(_){}` +
               `});` +
               `})()` +
-              `\n//# sourceURL=card.js`;
+              `\n//# sourceURL=${sourceUrlForCard(filename)}`;
             oldScript.remove();
             (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
             // Wrap appendChild in try/catch: if card.js has a syntax error,
@@ -460,6 +518,13 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           /* best-effort */
         }
       };
+
+      // Register this card with the module-level error-reporter registry +
+      // ensure the window-level unhandledrejection handler is installed.
+      // The handler at the top of this file matches uncaught rejections to
+      // a card via stack-trace sourceURL inspection.
+      ensureUnhandledRejectionHandler();
+      cardErrorReporters.set(filename, reportError);
 
       // Wrap a namespace object so unknown method access returns a helpful
       // shadow function that (when called) reports the hallucination to the
@@ -656,8 +721,30 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       // arrives project-relative from the server, mica.filename is now
       // canvas-relative. Translate at the bridge boundary so every card sees
       // a consistent canvas-relative world.
+      //
+      // ALSO routes sync throws AND async rejections from the card's callback
+      // to reportError. mica.on callbacks were previously a gap in Mica's
+      // error coverage: the script-shim's `_runCb` wraps setTimeout / setInterval
+      // / addEventListener but not bridge subscriptions. Cards that do
+      // `mica.on('file-changed', async (e) => render())` would silently drop
+      // any render error to "Uncaught (in promise)" in DevTools — the chat
+      // saw nothing. Now every mica.on cb gets the same treatment.
+      const wrapCbForErrors = (cb: (data: unknown) => void) => (data: unknown) => {
+        try {
+          const r = cb(data) as unknown;
+          if (r && typeof (r as { catch?: (h: (e: unknown) => void) => unknown }).catch === "function") {
+            (r as { catch: (h: (e: unknown) => void) => unknown }).catch((e: unknown) => {
+              const msg = e instanceof Error ? (e.stack || e.message) : String(e);
+              reportError(`Uncaught in mica.on('${cb.name || "<anonymous>"}'): ${msg}`);
+            });
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? (e.stack || e.message) : String(e);
+          reportError(`Threw in mica.on callback: ${msg}`);
+        }
+      };
       const wrappedOn = (eventName: string, cb: (data: unknown) => void): (() => void) => {
-        return baseBridge.on(eventName, (data: unknown) => {
+        return baseBridge.on(eventName, wrapCbForErrors((data: unknown) => {
           if (data && typeof data === "object" && "filename" in data) {
             const obj = data as Record<string, unknown>;
             const fn = obj.filename;
@@ -667,7 +754,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             }
           }
           cb(data);
-        });
+        }));
       };
 
       const micaBridge = {
@@ -759,6 +846,14 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           if (opts.headers) payload.headers = opts.headers;
           if (opts.body !== undefined) payload.body = opts.body;
           if (typeof opts.timeout === "number") payload.timeout = opts.timeout;
+          // For card-class-private sidecar calls (`mica-internal://card-server/...`)
+          // inject the calling card's class so the server can spawn / route to
+          // the right sidecar. Class is the extension on the canvas-relative
+          // filename (e.g. "canvas/foo.vector-search" → "vector-search").
+          if (typeof url === "string" && url.startsWith("mica-internal://card-server/")) {
+            const dot = filename.lastIndexOf(".");
+            if (dot >= 0) payload._cardClass = filename.slice(dot + 1);
+          }
           try {
             const r = await fetch("/api/mica/fetch/request", {
               method: "POST",
@@ -864,7 +959,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             `body:JSON.stringify({error:_err})}).catch(()=>{});` +
             `});` +
             `})()` +
-            `\n//# sourceURL=card.js`;
+            `\n//# sourceURL=${sourceUrlForCard(filename)}`;
           oldScript.remove();
           (newScript as unknown as Record<string, unknown>).__mica = micaBridge;
           // Wrap in try/catch: appending a <script> with invalid syntax
@@ -931,6 +1026,14 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
     } else {
       canvasRootPromise.then((canvasRoot) => continueRender(canvasRoot));
     }
+
+    // Unregister the card-error reporter on unmount. The Map entry was set
+    // inside continueRender (closure-scoped to this effect run). If the
+    // effect re-fires (deps change), the cleanup runs first, removing the
+    // OLD reporter; the new run installs a fresh one for the new closure.
+    return () => {
+      cardErrorReporters.delete(filename);
+    };
 
   }, [html, project, canvas, filename]);
 

@@ -52,6 +52,14 @@ Once you know the root cause, change only what's needed:
 - **No surrounding refactor.** A bug fix that introduces a new abstraction has higher review cost AND mixes "fix" with "design change."
 - **No new tests beyond the reproduction.** Add the reproduction case as a regression test if the project has a test suite. Don't write a comprehensive suite for the function — that's a separate task.
 
+**Pick the right write tool for the path** (CLAUDE.md file-write decision rule applies on bug-fix turns too — it's not a new-build-only rule):
+
+- `.mica/card-classes/<name>/card.{js,html,css}` → **`mica_edit_class_file`** (NOT raw `edit`). The structured tool runs pre-write lint and partial-edit safety checks that catch the failure modes raw `edit` doesn't. A bug fix that lands a syntax error via raw `edit` is still a bug.
+- `.mica/card-classes/<name>/metadata.json` → **`mica_create_class`** (re-call with the same name + extension to update in place; do NOT delete-and-recreate to change a dependency).
+- Everything else (free-form markdown, generated data, source files outside `.mica/card-classes/`) → `edit` or `write_file` as appropriate.
+
+The handbook protected-path rule fires equally during fix-bug and during develop — the difference between "bug fix" and "new build" is in the *kind* of change, not in which tools own the file's schema. If you've been using raw `edit` on a card-class file successfully so far, that's been working around the lint, not avoiding it; switch back.
+
 If the fix would naturally exceed ~50 lines, stop and reconsider. Either the bug is bigger than reported, or you're fixing too much.
 
 If the fix would require >20 lines of new bespoke logic in an area where libraries exist (rendering, math, parsing, networking, dates, charts), invoke `discover-dependency` instead. See `_conventions.md` § Reuse before reinventing. A library-shaped fix replaces both the bug and the surrounding fragile code with a maintained dependency. Library decision goes in `spec.md § Subproblems and their solutions`.

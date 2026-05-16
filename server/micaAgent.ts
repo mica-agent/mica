@@ -162,55 +162,11 @@ function buildRuntimeBanner(opts: {
 }
 const MAX_HISTORY = 50;
 
-// Patterns that would disrupt Mica itself. Block these before the shell runs them.
-const DANGEROUS_BASH_PATTERNS: Array<{ re: RegExp; reason: string }> = [
-  { re: /\bpkill\b.*\bvite\b/i, reason: "pkill vite would kill Mica's own frontend dev server" },
-  { re: /\bpkill\b.*\btsx\b/i, reason: "pkill tsx would kill Mica's own backend server" },
-  { re: /\bpkill\b.*\bvllm\b/i, reason: "pkill vllm would kill Mica's LLM inference server" },
-  { re: /\bpkill\b.*\bnode\b/i, reason: "pkill node would kill Mica's own processes" },
-  { re: /\bkillall\b.*\b(vite|tsx|vllm|node)\b/i, reason: "killall would kill Mica's processes" },
-  { re: /\bkill\s+(-\w+\s+)?-?(5173|3002|8012|8013)\b/, reason: "Never kill Mica's ports (5173/3002/8012/8013)" },
-  { re: /\bfuser\s.*\b(5173|3002|8012|8013)/, reason: "fuser would kill Mica's ports" },
-  { re: /\brm\s+-rf\s+\/workspaces\/mica\b/, reason: "Refusing to delete the Mica install" },
-  { re: /\brm\s+-rf\s+\/\s*(?:$|[^\w])/, reason: "Refusing rm -rf / (destructive)" },
-  // The agent runs INSIDE the Mica backend's process tree. stop.sh/restart.sh
-  // SIGTERM the backend, which kills the agent before the script's start
-  // phase can run — backend dies, agent dies, no recovery. Card classes are
-  // hot-reloaded by the file watcher; the agent never needs to restart Mica.
-  { re: /\bscripts\/(stop|restart)\.sh\b/, reason: "Never run scripts/stop.sh or scripts/restart.sh from inside the agent — you run inside the backend, the script will SIGTERM you mid-tool-call and the restart will not complete. Card classes hot-reload via the file watcher; if a class seems missing, query mica.cardClasses.list() from a card or check that the directory is at .mica/card-classes/<name>/ with metadata.json." },
-  { re: /\bscripts\/start\.sh\b/, reason: "scripts/start.sh would spawn a duplicate backend on a port already held by the running one. If you genuinely need a restart, ask the user — they're outside your process tree." },
-  // Card-class file placement: cp/mv/rsync targeting `card-classes/<name>` at
-  // the project root (without the `.mica/` prefix) is the canonical mistake.
-  // Card classes MUST live at `.mica/card-classes/<name>/`. The Mica resolver
-  // only finds them there; files at `<project>/card-classes/<name>/` are
-  // invisible to the canvas and instances render as plain TXT. This pre-block
-  // catches the cp/mv shape before it executes (zero burned turns); the
-  // file-watcher's wrong-location sub catches the same mistake one tool-call
-  // later if the agent gets there via direct write_file. The negative
-  // lookahead exempts commands that already include `.mica/card-classes/`
-  // somewhere — the self-fix `mv <project>/card-classes/X .mica/card-classes/X`
-  // and any cp/mv WITHIN `.mica/card-classes/` pass through unblocked.
-  { re: /\b(?:cp|mv|rsync)\b(?!.*\.mica\/card-classes\/).*\bcard-classes\/[^\/\s]+/, reason: "Card classes must live at `.mica/card-classes/<name>/` (with the leading dot — `.mica` is project-scoped). The Mica resolver only finds card classes there; `<project>/card-classes/<name>/` is invisible to the canvas. Use `cp -r <source> .mica/card-classes/<name>` instead. (Mica's built-in card classes live at `card-classes/` inside the Mica repo itself — not inside your project.)" },
-];
-
-/**
- * Detects `cmd &` (background) without stdout/stderr redirect. Such a process
- * inherits the tool-call shell's stdio; when the shell exits, the process
- * loses its streams and dies (broken pipe / SIGHUP). Agents hit this when
- * launching long-lived services like `python -m http.server &`. Force them
- * to redirect or use is_background.
- */
-function isBackgroundWithoutRedirect(cmd: string): boolean {
-  const trimmed = cmd.trim();
-  // End of command ends with a lone `&` (the last char) — not `&&` (logical AND).
-  // (?<!&) lookbehind prevents matching the second `&` of `&&`.
-  if (!/(?<!&)&\s*$/.test(trimmed)) return false;
-  // Any stdout/stderr redirect anywhere in the command is good enough — conservative.
-  if (/>\s*\S|>&|&>/.test(trimmed)) return false;
-  // Wrappers that detach stdio cleanly.
-  if (/\b(nohup|setsid|disown)\b/.test(trimmed)) return false;
-  return true;
-}
+// DANGEROUS_BASH_PATTERNS and isBackgroundWithoutRedirect live in
+// micaAgentGuards.ts so both this file (legacy canUseTool path, currently
+// dead under yolo) AND agentTools/micaShell.ts (the LIVE enforcement path
+// via MCP) share one source of truth.
+import { DANGEROUS_BASH_PATTERNS, isBackgroundWithoutRedirect } from "./micaAgentGuards.js";
 
 /**
  * Check whether a tool call attempts to write a path that's owned by a
@@ -1173,7 +1129,7 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
     return fn ? `📸 screenshot: ${fn}` : "📸 screenshot";
   }
   // URL inspection (mica_inspect_url) — server-side dependency-URL probe.
-  if (n === "micainspectururl" || n === "inspecturl") {
+  if (n === "micainspecturl" || n === "inspecturl") {
     const url = String(input.url || "");
     return url ? `🔬 inspect URL: ${truncDots(url, 100)}` : "🔬 inspect URL";
   }
@@ -1708,10 +1664,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             const desc = incomingErrors.length === 1
               ? `Received error from ${files[0]}`
               : `Received ${incomingErrors.length} errors from ${files.length === 1 ? files[0] : `${files.length} files`}`;
+            // Full per-error breakdown for hover-tooltip in the chat card.
+            const errDetails = incomingErrors
+              .map((e, i) => `${i + 1}. [${e.filename}] ${e.error}`)
+              .join("\n\n");
             ctx.broadcast({
               type: "progress",
               tool: "validator-errors",
               description: desc,
+              details: errDetails,
             });
           }
         }
@@ -2155,7 +2116,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             // URL verification, npm registry lookups, and the entire
             // discover-dependency smoke-test path. The web_fetch deterrent
             // stays in the prelude prose only.
-            excludeTools: ["task_stop", "send_message"],
+            //
+            // `run_shell_command` and `ShellTool` are excluded so the SDK's
+            // built-in shell (which bypasses our DANGEROUS_BASH_PATTERNS guard
+            // in yolo mode) cannot fire. The agent's only shell path is
+            // `mcp__mica-builtins__mica_shell` (registered via the registry,
+            // see server/agentTools/micaShell.ts), which checks the patterns
+            // at the handler boundary — works under any permission mode,
+            // including yolo and including subagent contexts. Catches the
+            // "agent pkills its own backend" failure mode that crashed Mica
+            // mid-session twice in May 2026.
+            excludeTools: ["task_stop", "send_message", "run_shell_command", "ShellTool"],
             canUseTool: canUseToolWithQuestionIntercept,
             abortController: activeAbort,
             systemPrompt: { type: "preset", preset: "qwen_code", append: context },
@@ -2319,6 +2290,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                       type: "progress",
                       tool: "thinking",
                       description: "💭 " + truncDots(t.replace(/\n/g, " "), 100),
+                      // Full thinking text for hover-tooltip in the chat card's
+                      // detail panel. Held in memory; not persisted to chat history.
+                      details: t,
                     });
                   }
                   // Subagent-context thinking → strip the live activity line
@@ -2356,10 +2330,19 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                   // status row AND the subagent strip; "7 steps" reflecting
                   // subagent calls that didn't belong to the parent's count).
                   if (!ptid) {
+                    // describeToolUse(...) produces the one-line summary for the
+                    // status row. The full pretty-printed input goes into `details`
+                    // so the chat card's hover-tooltip can reveal file paths, full
+                    // edit strings, complete URLs, etc. that the summary trims.
+                    let toolDetails = "";
+                    try {
+                      toolDetails = `${block.name}\n${JSON.stringify(block.input || {}, null, 2)}`;
+                    } catch { /* circular ref or similar — leave details empty */ }
                     ctx.broadcast({
                       type: "progress",
                       tool: block.name,
                       description: describeToolUse(block.name, block.input || {}),
+                      details: toolDetails,
                     });
                   }
                   // Subagent-context tool_use → broadcast subagent_event so

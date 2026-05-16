@@ -13,6 +13,28 @@ These tools come from Mica itself — same names, same input/output shape, same 
 
 \`render_capture\` — verify a rendered card. Captures a PNG of the card on the canvas and returns a text result whose first line is a verdict tag — \`[render_capture: CLEAN]\`, \`[render_capture: ERRORS — N buffered]\`, \`[render_capture: WEBGL-OPAQUE]\`, or \`[render_capture: CAP-REACHED]\`. The tag tells you the next move; follow it. CLEAN means write your final summary and end the turn. ERRORS means fix each listed error and re-capture. WEBGL-OPAQUE means apply the onCapture hook or trust the user's on-screen view. Input: \`{ filename: 'canvas/<name>.<ext>' }\` (instance file, not class dir). The browser tab must be open to the project's canvas.
 
+### Card-class-private server compute — sidecars
+
+When a card class needs server-side compute (ML inference, vector search, RAG, file scanning, anything that needs persistent state across calls, anything you'd otherwise reach for \`mica_shell\` to run a Python script per query) — declare a **sidecar** in the card class's \`metadata.json\` and ship a \`server.py\` or \`server.ts\` alongside \`card.js\`:
+
+\`\`\`json
+{
+  "sidecar": {
+    "entry": "server.py",
+    "ready_path": "/health",
+    "ready_timeout_ms": 30000
+  }
+}
+\`\`\`
+
+Mica spawns the sidecar on the first call from \`card.js\`, manages its lifecycle (lazy-spawn, idle-shutdown at 10 min, orphan-reaper at backend startup), and exposes it via \`mica.fetch('mica-internal://card-server/<path>')\`. The sidecar reads \`MICA_PORT\` from env (assigned from pool 8200-8299), binds 127.0.0.1, and must implement the \`ready_path\` endpoint. Runtime auto-detected from the entry file extension: \`.py\` → Python, \`.ts\`/\`.tsx\` → tsx, \`.js\`/\`.mjs\` → node.
+
+The classic signal you need a sidecar: you'd otherwise tell the LLM to run a Python script via \`mica_shell\` per query (vector search, embedding generation, RAG). Move that compute into the card class. Latency drops from multi-second LLM-orchestrated round-trips to ~50ms warm calls. The full schema, server templates, lifecycle facts, and pitfalls (especially: vLLM's \`enable_thinking: true\` consuming the answer budget) are in \`card-class-handbook\` § Card-class-private sidecars — read it before authoring.
+
+### Shell — use \`mica_shell\`, NOT \`run_shell_command\`
+
+\`mica_shell\` — runs shell commands with Mica's safety guards. The SDK's built-in \`run_shell_command\` is excluded from your tool surface in this session because it bypasses our guards in yolo mode. Use \`mica_shell\` for ALL shell needs (curl, ls, grep, git, npm, etc.). Same parameters as \`run_shell_command\` (\`command\`, \`description\`, \`is_background\`, \`cwd\`, \`timeout\`) plus refusal-with-reason for commands that would: kill Mica's backend (pkill tsx, kill <backend-pid>), kill Mica's ports (3002/5173/8012/8013), run scripts/stop.sh/restart.sh/start.sh from inside the agent (you run INSIDE the backend's process tree — these kill you mid-call), or place card-class files outside \`.mica/card-classes/\`. Returns structured \`{ exit_code, stdout, stderr, duration_ms }\` as JSON text. If you genuinely need a backend restart, ASK THE USER — they're outside your process tree.
+
 ### Library-skills discovery
 
 \`mica_list_skill_packages\` — list Mica's curated library-skills packs (the ones \`mica_install_skills\` accepts as shorthands). When discover-dependency surfaces a library, check this list to see if there's a curated skill pack for it. If yes, install via \`mica_install_skills source="<pack>"\` before writing code that uses the library — the pack carries patterns the base model misses (container sizing, init order, disposer rules). One call per build is enough; the list is short and stable.

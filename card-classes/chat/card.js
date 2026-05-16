@@ -126,10 +126,19 @@ statusMain.addEventListener("click", function(e) {
   if (detailExpanded) statusDetail.scrollTop = statusDetail.scrollHeight;
 });
 
-function addDetailLine(text) {
+function addDetailLine(text, fullText) {
   const line = window.document.createElement("div");
   line.style.cssText = "padding:1px 0;border-bottom:1px solid rgba(48,54,61,0.3);";
   line.textContent = text;
+  // Hover-tooltip with the longer-form text when the server attached a
+  // `details` field to the broadcast. Native title="" — no popover state,
+  // text is copy-pasteable. Cursor shifts to `help` over hoverable lines.
+  // Held in DOM only; cleared when the line ages out of the 200-line cap
+  // or when the detail panel is cleared at next turn.
+  if (fullText && fullText !== text) {
+    line.title = fullText;
+    line.style.cursor = "help";
+  }
   statusDetail.appendChild(line);
   while (statusDetail.children.length > 200) statusDetail.removeChild(statusDetail.firstChild);
   if (detailExpanded) statusDetail.scrollTop = statusDetail.scrollHeight;
@@ -1057,7 +1066,10 @@ ch.onData(function(data) {
         stepCount++;
         setStatus(data.description, ACCENT, true);
         updateMeta();
-        addDetailLine(`[${stepCount}] ${data.description}`);
+        // `data.details` is the optional full-text payload — full thinking
+        // string, pretty-printed tool input, full error list. Drives the
+        // hover-tooltip in addDetailLine when present.
+        addDetailLine(`[${stepCount}] ${data.description}`, data.details);
       }
       break;
     case "subagent_started":

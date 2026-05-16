@@ -138,6 +138,17 @@ export function createLlmAgentHandler() {
           // first removing the SDK regex constraint.
           const modelName = cfg.model || "qwen3-vl-local";
 
+          // The qwen-code SDK wraps OpenAI's Node SDK as its HTTP transport.
+          // When authType: "openai", the OpenAI SDK is constructed from
+          // OPENAI_API_KEY + OPENAI_BASE_URL — both required at construction
+          // time even when the endpoint (local vLLM) ignores the auth header.
+          // Pass a literal "dummy" key + the local vLLM URL via options.env;
+          // matches the canonical pattern in micaAgent.ts line 2179-2182.
+          // Remote-provider support (OpenRouter, etc.) for the llm-agent
+          // channel handler isn't wired today; add it when a card needs it.
+          const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
+          const baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
+
           const q = queryFn({
             prompt,
             options: {
@@ -150,6 +161,10 @@ export function createLlmAgentHandler() {
                 ? { excludeTools: cfg.excludeTools }
                 : {}),
               abortController: activeAbort,
+              env: {
+                OPENAI_API_KEY: "dummy",
+                OPENAI_BASE_URL: baseUrl,
+              },
             },
           });
 

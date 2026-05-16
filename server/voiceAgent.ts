@@ -364,30 +364,6 @@ async function readChatCardRole(project: string | null, filename: string): Promi
   }
 }
 
-// Heuristic: does an `assistant` broadcast's content read as a
-// purely mechanical file-ops report (e.g. "Done. Created foo.md and
-// bar.ts.")? Used by the ambient gate to suppress TTS announcements
-// for these — reading lists of filenames aloud is noise; the chat
-// card's UI already shows the same info silently.
-//
-// Pairs with the agent's `filesChanged: true` flag. The flag tells us
-// "this turn touched files"; this heuristic confirms "and the spoken
-// content is dominated by file enumeration, not analysis."
-function isFileOnlyReply(content: string): boolean {
-  const cleaned = cleanForTts(content);
-  // Very short turns are almost certainly status-only ("Done. Updated x.").
-  if (cleaned.length < 80) return true;
-  // Strip filename-shaped tokens AND common file-action verbs; what's
-  // left is the analytical/conceptual content. If that's tiny, the
-  // turn was just enumeration.
-  const stripped = cleaned
-    .replace(/\b[\w/-]+\.\w{1,6}\b/g, "")
-    .replace(/\b(?:created|updated|edited|added|removed|deleted|wrote|modified|saved|fixed|done|file|files)\b/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return stripped.split(/\s+/).filter((w) => w.length > 2).length < 6;
-}
-
 // Words that, when they're the last word of a transcript, strongly suggest
 // the user paused mid-thought rather than finishing. Voice should buffer
 // the partial and wait for the next utterance instead of dispatching.
@@ -891,13 +867,14 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
         // turn was kicked off via the synthetic "voice-dispatch"
         // clientId from channelMgr.dispatchToFilename.
         if (d.viaVoice !== true) return;
-        // Gate 2: skip ambient when content is dominated by file-ops
-        // enumeration. The chat card already shows file changes
-        // visually; reading filenames aloud is noise.
-        if (d.filesChanged === true && isFileOnlyReply(d.content)) {
-          console.log(`[voice-agent:ambient] suppressing file-only reply from ${filename}`);
-          return;
-        }
+        // No upstream regex suppression — presentForVoice (the LLM-with-
+        // short-reply-bypass at the bottom of the ambient queue) handles
+        // signal-vs-noise judgment. Short replies pass through verbatim
+        // (so the chat agent's approval-gate question lands intact); long
+        // replies are LLM-summarized; if the LLM returns empty the
+        // announcement is dropped. Adding a regex gate here was misclassifying
+        // short approval asks ("Drafted X — OK to build?") as "file-only
+        // enumeration" and silently dropping them.
         const turnId = typeof d.turn_id === "string" ? d.turn_id : "";
         // Dedupe: same turn_id seen twice on the same file = ignore.
         if (turnId && seenTurnIds.get(filename) === turnId) return;
@@ -1335,7 +1312,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
 
             "3. Treat every turn as a fresh decision. When the user asks for something done, emit a new tool call — past dispatches don't carry over. If \"still too subtle\" follows a prior fix, send a NEW send_to_card with the refined request.\n\n" +
 
-            "4. Voice is the routing layer between the user and the chat agents. To change anything on a canvas card, dispatch through send_to_card to a chat agent (Qwen, Claude Code, etc.). To inspect a card, use read_card or read_recent_replies. To check on an agent, card_status.\n\n" +
+            "4. Voice is the routing layer between the user and the chat agents. For send_to_card, the `message` argument is the exact words Parakeet transcribed from the user — send them as-is, no rewriting. The chat-card agent handles all interpretation, implementation choices, and follow-up questions. To inspect a card, use read_card or read_recent_replies. To check on an agent, card_status.\n\n" +
 
             "5. When uncertain, offer rather than guess. \"Want me to look that up?\" / \"Want me to ask Qwen?\" / \"Should I check what Qwen's working on?\" — let the user opt in. Better than fabricating.\n\n" +
 
@@ -1485,7 +1462,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
               "## Hard rules\n" +
               "1. Place every <tool> as a sibling of <say>, outside it. Tools and say blocks live side-by-side at the top level.\n" +
               "2. For send_to_card, copy the <file> verbatim from the \"Chat cards\" section. Cards from \"Cards on the canvas\" are read-only — use them with read_card / read_recent_replies / card_status.\n" +
-              "3. Write <message> as plain English describing the work you want done.\n" +
+              "3. For send_to_card, <message> is the user's request forwarded — fix obvious ASR errors only. The chat-card agent handles everything else.\n" +
               "4. Speak only what's true. Claim a dispatch in <say> (\"I asked Qwen\", \"I sent that to X\") only when you also emit a matching <tool name=\"send_to_card\"> in the same response. When you're not dispatching, offer instead: \"want me to ask Qwen?\" or \"I can route that to Qwen if you'd like.\"\n" +
               "5. Speak agent status only when you've verified it. Don't say \"Qwen finished\" / \"Qwen is still working\" / \"Qwen is busy\" from a guess — call <tool name=\"card_status\"> to check, then speak the verified state. When the user asks for status and you haven't checked, either call card_status now or say \"I'm not sure — want me to check?\". The ambient hint above (if present) IS verified ground truth — you can paraphrase it. Anything else about an agent's state is hallucination.\n" +
               "6. After dispatching, give a brief spoken confirmation in <say>. If a follow-up step is obvious, mention it.\n",

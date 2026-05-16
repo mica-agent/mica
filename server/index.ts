@@ -91,6 +91,7 @@ import { FileWatcher } from "./fileWatcher.js";
 import { ChannelManager } from "./channelManager.js";
 import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llamaServer.js";
 import { ensureVoiceServers, stopVoiceServers, getVoiceServerStatus, getSttUrl, getTtsUrl } from "./voiceServers.js";
+import { stopAllCardSidecars, reapOrphanCardSidecars } from "./cardSidecar.js";
 import { SentenceFanout } from "./voiceStreaming.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
@@ -2992,6 +2993,13 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   Canvas:     http://localhost:${PORT}
 ======================================================
 `);
+    // Reap any card-class sidecars left over from a previous backend that
+    // died abruptly (orphan python servers still holding ports in the
+    // 8200-8299 pool). Fire-and-forget — best-effort cleanup; failure
+    // logged but doesn't block startup.
+    void reapOrphanCardSidecars().catch((err) => {
+      console.warn(`[card-sidecar:orphan-reap] failed: ${(err as Error).message}`);
+    });
   });
 
   // Replace the early log-only signal trap with the full graceful shutdown.
@@ -3014,6 +3022,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
     await reapChildProcesses(3000);
     await stopLlamaServer();
     await stopVoiceServers();
+    await stopAllCardSidecars();
     process.exit(0);
   };
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as NodeJS.Signals[]) {

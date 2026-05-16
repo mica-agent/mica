@@ -181,7 +181,7 @@ export function buildVoiceTools(deps: VoiceToolDeps) {
       description: "Route a message to a chat-card agent (Qwen, Claude Code, OpenCode) — the only way to ask them to do work. You MUST call this tool whenever you decide to dispatch. Saying 'let me ask Qwen' or 'I'll send this to X' in your spoken response WITHOUT calling this tool is a lie; the user expects the dispatch to actually happen. Use for: (a) project work — edit files, write code, draft a spec, create cards, build a visualization, run analysis on canvas data; (b) help with hard analytical questions where a quick voice reply short-changes the user; (c) anything that needs file access, code execution, or multi-step reasoning that voice can't do. Look at the 'Chat cards' section in the system prompt for the target filename (e.g. canvas/qwen.chat).",
       inputSchema: z.object({
         file: z.string().describe("Exact filename from the 'Chat cards' section, e.g. canvas/qwen.chat"),
-        message: z.string().describe("What the agent should do, in your own words"),
+        message: z.string().describe("The exact words Parakeet transcribed from the user — pass through unchanged, no rewriting"),
       }),
       execute: async ({ file, message }) => {
         const dot = file.lastIndexOf(".");

@@ -15,11 +15,40 @@
 
 import { lookup } from "dns/promises";
 import * as net from "net";
+import { existsSync } from "fs";
+import { join } from "path";
+import { micaDir, findCardClassInLibraries, WORKSPACE_DIR } from "../files.js";
+import { ensureCardSidecar, touchCardSidecar } from "../cardSidecar.js";
+
+// Built-in card classes ship under <repo>/card-classes/<name>/. Same constant
+// as index.ts's CARD_CLASSES_DIR (kept local so this file stays self-contained).
+const CARD_CLASSES_DIR = join(process.cwd(), "card-classes");
+
+// Mirror of resolveCardClassDir in index.ts. Project-scoped → library → built-in.
+function resolveClassDir(className: string, project: string | null): string | null {
+  if (project) {
+    const projectScoped = join(micaDir(project), "card-classes", className);
+    if (existsSync(join(projectScoped, "card.html"))) return projectScoped;
+  }
+  const lib = findCardClassInLibraries(className);
+  if (lib) return lib.dir;
+  const builtIn = join(CARD_CLASSES_DIR, className);
+  if (existsSync(join(builtIn, "card.html"))) return builtIn;
+  return null;
+}
+
+// Reference WORKSPACE_DIR so the import isn't pruned if we don't use it elsewhere.
+void WORKSPACE_DIR;
 
 // ── Configuration ────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 60_000;
+// Card-class sidecars (mica-internal:// scheme) get a much higher cap because
+// (a) we own both ends — no malicious-external-endpoint defense needed and
+// (b) first-call costs include large model downloads (~7GB SDXL-Turbo) plus
+// GPU load that legitimately exceed a minute. External fetches stay at 60s.
+const MAX_INTERNAL_TIMEOUT_MS = 10 * 60_000;  // 10 minutes
 const RESPONSE_MAX_BYTES = 10 * 1024 * 1024;  // 10 MB
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 120;
@@ -199,6 +228,144 @@ async function resolveHost(hostname: string): Promise<{ ok: true; ips: string[] 
   }
 }
 
+// ── Card-class-sidecar proxy ─────────────────────────────────
+
+// Handles mica-internal://card-server/<path> URLs. Spawns the card class's
+// declared sidecar (if not running), waits for /health, proxies the HTTP
+// request to its localhost port, returns the response in the same shape
+// the normal fetchHandler returns. Errors come back as `status: 0` with
+// a `card_sidecar_*` errorCode.
+async function proxyToCardSidecar(
+  p: {
+    url?: unknown;
+    method?: unknown;
+    headers?: unknown;
+    body?: unknown;
+    timeout?: unknown;
+    _cardClass?: unknown;
+  },
+  project: string | null,
+  projLabel: string,
+  startedAt: number,
+): Promise<unknown> {
+  const errorResult2 = (code: string, msg: string) => ({
+    status: 0,
+    headers: {} as Record<string, string>,
+    body: "",
+    durationMs: Date.now() - startedAt,
+    error: msg,
+    errorCode: code,
+  });
+
+  if (!project) {
+    return errorResult2("card_sidecar_no_project", "card-server requires an active project");
+  }
+  const className = typeof p._cardClass === "string" ? p._cardClass : "";
+  if (!className) {
+    return errorResult2("card_sidecar_no_class", "mica-internal://card-server/ requires a card class — bridge must inject _cardClass (derived from filename extension)");
+  }
+
+  // Path is everything after the "mica-internal://card-server" prefix.
+  // URL example: mica-internal://card-server/search → path "/search"
+  const rawUrl = p.url as string;
+  const pathPart = rawUrl.slice("mica-internal://card-server".length) || "/";
+
+  const classDir = resolveClassDir(className, project);
+  if (!classDir) {
+    return errorResult2("card_sidecar_class_not_found", `Card class '${className}' not found`);
+  }
+
+  let port: number;
+  try {
+    const r = await ensureCardSidecar(project, className, classDir);
+    port = r.port;
+  } catch (e) {
+    console.log(`[mica-fetch:${projLabel}] mica-internal card-server (${className}) -> ERROR card_sidecar_spawn ${Date.now() - startedAt}ms: ${(e as Error).message}`);
+    return errorResult2("card_sidecar_spawn_failed", (e as Error).message);
+  }
+
+  const requestMethod = typeof p.method === "string" ? p.method.toUpperCase() : "GET";
+  const requestHeaders: Record<string, string> = {};
+  if (p.headers && typeof p.headers === "object") {
+    for (const [k, v] of Object.entries(p.headers as Record<string, unknown>)) {
+      if (typeof v === "string") requestHeaders[k] = v;
+    }
+  }
+  // Default to application/json for POST/PUT/PATCH if caller didn't set it —
+  // matches the common pattern of cards sending JSON to their sidecar.
+  if ((requestMethod === "POST" || requestMethod === "PUT" || requestMethod === "PATCH")
+      && !Object.keys(requestHeaders).some((k) => k.toLowerCase() === "content-type")) {
+    requestHeaders["content-type"] = "application/json";
+  }
+  const requestBody = typeof p.body === "string" ? p.body : undefined;
+  // Internal sidecars get a 10-minute cap (vs 60s for external) — first-call
+  // model downloads + GPU loads legitimately exceed a minute. Card authors
+  // who need more should still set explicit `timeout:` in the mica.fetch call;
+  // unset defaults to DEFAULT_TIMEOUT_MS (30s) which is fine for warm calls.
+  const timeoutMs = Math.max(1, Math.min(typeof p.timeout === "number" ? p.timeout : DEFAULT_TIMEOUT_MS, MAX_INTERNAL_TIMEOUT_MS));
+
+  const targetUrl = `http://127.0.0.1:${port}${pathPart}`;
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(targetUrl, {
+      method: requestMethod,
+      headers: requestHeaders,
+      body: requestBody,
+      signal: controller.signal,
+    });
+    // Read body. Same 10MB cap as public fetch for symmetry.
+    const reader = resp.body?.getReader();
+    let total = 0;
+    let truncated = false;
+    const chunks: Uint8Array[] = [];
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          total += value.length;
+          if (total > RESPONSE_MAX_BYTES) {
+            truncated = true;
+            const keep = value.subarray(0, RESPONSE_MAX_BYTES - (total - value.length));
+            chunks.push(keep);
+            await reader.cancel().catch(() => {});
+            break;
+          }
+          chunks.push(value);
+        }
+      }
+    }
+    const buffer = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+    const bodyText = buffer.toString("utf-8");
+
+    const headersOut: Record<string, string> = {};
+    resp.headers.forEach((v, k) => { headersOut[k] = v; });
+
+    touchCardSidecar(project, className);
+    const durationMs = Date.now() - startedAt;
+    console.log(`[mica-fetch:${projLabel}] mica-internal card-server (${className}) ${requestMethod} ${pathPart} -> ${resp.status} ${durationMs}ms`);
+    return {
+      status: resp.status,
+      headers: headersOut,
+      body: bodyText,
+      durationMs,
+      truncated: truncated || undefined,
+    };
+  } catch (e) {
+    const aborted = (e as { name?: string })?.name === "AbortError";
+    const code = aborted ? "timeout" : "card_sidecar_connect_failed";
+    const msg = aborted
+      ? `card-sidecar '${className}' timed out after ${timeoutMs}ms`
+      : `card-sidecar '${className}' connection failed: ${(e as Error).message}`;
+    console.log(`[mica-fetch:${projLabel}] mica-internal card-server (${className}) -> ERROR ${code} ${Date.now() - startedAt}ms`);
+    return errorResult2(code, msg);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
 // ── Main handler ─────────────────────────────────────────────
 
 export async function fetchHandler(
@@ -216,10 +383,23 @@ export async function fetchHandler(
     headers?: unknown;
     body?: unknown;
     timeout?: unknown;
+    _cardClass?: unknown;
   };
 
   const startedAt = Date.now();
   const projLabel = project ?? "-";
+
+  // Card-class-private sidecar proxy. URLs of the form
+  //   mica-internal://card-server/<path>
+  // are routed to THIS card's class sidecar (spawned lazily). The card's
+  // class name is injected by the client bridge (CardRuntime.tsx) via the
+  // _cardClass payload field — derived from mica.filename's extension.
+  // Skips SSRF / DNS / rate-limit checks: the destination is a process we
+  // ourselves spawned on 127.0.0.1, and the per-card concurrency is bounded
+  // by the underlying TCP semantics.
+  if (typeof p.url === "string" && p.url.startsWith("mica-internal://card-server/")) {
+    return proxyToCardSidecar(p, project, projLabel, startedAt);
+  }
 
   // 1. URL validation.
   const parsed = parseUrl(p.url);
