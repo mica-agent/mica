@@ -29,7 +29,34 @@ When a card class needs server-side compute (ML inference, vector search, RAG, f
 
 Mica spawns the sidecar on the first call from \`card.js\`, manages its lifecycle (lazy-spawn, idle-shutdown at 10 min, orphan-reaper at backend startup), and exposes it via \`mica.fetch('mica-internal://card-server/<path>')\`. The sidecar reads \`MICA_PORT\` from env (assigned from pool 8200-8299), binds 127.0.0.1, and must implement the \`ready_path\` endpoint. Runtime auto-detected from the entry file extension: \`.py\` → Python, \`.ts\`/\`.tsx\` → tsx, \`.js\`/\`.mjs\` → node.
 
-The classic signal you need a sidecar: you'd otherwise tell the LLM to run a Python script via \`mica_shell\` per query (vector search, embedding generation, RAG). Move that compute into the card class. Latency drops from multi-second LLM-orchestrated round-trips to ~50ms warm calls. The full schema, server templates, lifecycle facts, and pitfalls (especially: vLLM's \`enable_thinking: true\` consuming the answer budget) are in \`card-class-handbook\` § Card-class-private sidecars — read it before authoring.
+The classic signal you need a sidecar: you'd otherwise tell the LLM to run a Python script via \`mica_shell\` per query (vector search, embedding generation, RAG). Move that compute into the card class. Latency drops from multi-second LLM-orchestrated round-trips to ~50ms warm calls. The full schema, server templates, lifecycle facts, and pitfalls are in \`card-class-handbook\` § Card-class-private sidecars — read it before authoring.
+
+**The sidecar pattern is HTTP-adapter-for-a-library.** The 80% case: you pick the canonical Python/Node package for your capability (sentence-transformers for embeddings, FAISS for vector search, pymupdf for PDFs, etc.), wrap it in a small FastAPI / \`node:http\` service, and expose JSON endpoints. The handbook ships four worked examples (\`hello-llm\`, \`hello-embed\`, \`hello-faiss\`, \`hello-pdf\`) that ARE the pattern — copy the matching one, swap 2-3 lines, done.
+
+**For Mica-owned capabilities, use \`mica_sidecar\` (not the library).** The local LLM is the one capability Mica owns end-to-end (URL, model, vLLM \`enable_thinking\` trap, auth). The sidecar code never sees any of it:
+
+\`\`\`python
+import mica_sidecar as mica   # template-provided alias
+
+resp = mica.llm.chat(messages=[
+    {"role": "system", "content": "Summarize in one sentence."},
+    {"role": "user",   "content": text},
+])
+# resp.text → reply string
+mica.log("got reply, model =", resp.model)
+\`\`\`
+
+TypeScript: \`import mica from "mica-sidecar"; await mica.llm.chat({ messages: [...] });\`.
+
+**Surface boundary:** \`mica_sidecar\` (server) and \`mica\` (client global in card.js) are DIFFERENT packages with non-overlapping surfaces. \`mica.fetch\` / \`mica.openChannel\` exist client-only; \`mica.llm.chat\` / \`mica.log\` / \`mica.project_dir\` exist sidecar-only. Do NOT pattern-match across them. If you see \`AttributeError\` involving mica on the sidecar, you're calling a client-only method — check the handbook's Pitfalls.
+
+**For everything else (embeddings, vector store, PDF, OCR, audio, image gen, ...), import the canonical package directly.** Mica doesn't provide wrappers — the library API IS the API. AI generation is more reliable against well-known packages than against Mica-invented shims.
+
+**When a sidecar fetch returns HTTP 5xx, call \`mica_sidecar_log({ card_class: "<name>" })\` FIRST — before editing code.** The sidecar's exception handler emits the full Python/TS traceback to stdout, which Mica captures into a per-class ring buffer (survives the sidecar crashing). The traceback names the exact file, line, and exception type. Pattern-matching the short error message you got from \`mica.fetch\` (e.g. "Upload failed (HTTP 500)") consistently lands the agent on the wrong line; the traceback tells you the right one. Use this INSTEAD of composing \`mica_shell tail backend.log | grep card-sidecar:<name>\` — same data, one tool call, no path or pattern to remember.
+
+**After editing \`server.py\` / \`server.ts\`, call \`mica_restart_sidecar\` to force a respawn.** The running sidecar holds the OLD bytecode in memory and won't pick up file changes. Do NOT reach for \`mica_shell pkill ...\` — pkill matches the bash subprocess's own argv against the pattern (\`pkill -f "rag-chat"\` from inside \`bash -c 'pkill -f "rag-chat"'\` matches itself, and possibly the agent CLI whose argv contains the user's prompt) and suicide-kills the agent. Use \`mica_restart_sidecar({ card_class: "<name>" })\` instead: server-side SIGTERM via the tracked PID, no bash in the loop, returns when the old process is gone. Next \`mica.fetch\` from card.js triggers the lazy respawn.
+
+**The full sidecar debug loop is two calls:** (1) \`mica_sidecar_log\` to read the traceback, (2) edit the file the traceback points at, (3) \`mica_restart_sidecar\` to make the fix take effect, (4) ask the user to retry. If the same error returns after a clean restart, your diagnosis was wrong — call \`mica_sidecar_log\` again and look at the traceback more carefully (especially the line number); do NOT iterate edits without re-reading the new traceback.
 
 ### Shell — use \`mica_shell\`, NOT \`run_shell_command\`
 

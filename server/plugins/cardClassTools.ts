@@ -73,6 +73,13 @@ export const createClassSchema = {
   styles: z.array(z.string()).optional().describe("CSS CDN URLs to load."),
   handler: z.string().optional().describe("Optional metadata.handler value to route this card class to a built-in channel handler (e.g. 'llm-direct', 'llm-agent'). Discover available handlers via GET /api/handlers."),
   primaryFile: z.string().optional().describe("Optional. Used by container-style card classes whose instance is a directory containing a specific filename — e.g. '.todo' classes whose instance dirs contain plan.todo."),
+  sidecar: z.object({
+    entry: z.string().describe("Path inside the card-class directory to the sidecar entry script. Extension picks the runtime: '.py' → Python, '.ts'/'.tsx' → tsx (Mica's TypeScript runner), '.js'/'.mjs' → node."),
+    ready_path: z.string().optional().describe("HTTP path Mica probes for ready (must return 200 once the sidecar is serving real traffic). Default '/health'."),
+    ready_timeout_ms: z.number().optional().describe("Max ms Mica waits for the ready_path to first respond. Default 30000. Bump for heavy first-load (model downloads / GPU init)."),
+    python: z.string().optional().describe("Python sidecars only: 'system' (default, /usr/bin/python3) | 'voice-venv' (Parakeet/Kokoro shared venv) | absolute path to a python interpreter."),
+    interpreter: z.string().optional().describe("Optional absolute-path explicit override of the interpreter. Wins over extension auto-detect. Use for per-card venvs (e.g. '.mica/card-classes/<name>/.venv/bin/python')."),
+  }).optional().describe("Declare a card-class-private HTTP sidecar. When set, Mica spawns the entry script on first call from card.js (via mica.fetch('mica-internal://card-server/<path>')) and manages its lifecycle. Pass this AS AN OBJECT, not a JSON string. See card-class-handbook § Card-class-private sidecars for the full schema and authoring pattern."),
 };
 
 export async function createClassImpl(
@@ -126,6 +133,7 @@ export async function createClassImpl(
         dependencies?: { scripts?: string[]; styles?: string[] };
         handler?: string;
         primaryFile?: string;
+        sidecar?: Record<string, unknown>;
       };
       if (existing.extension !== extension) {
         return {
@@ -148,6 +156,9 @@ export async function createClassImpl(
       if (exStyles !== nwStyles) changes.push(`styles (${(existing.dependencies?.styles ?? []).length} → ${(args.styles ?? []).length})`);
       if ((existing.handler ?? "") !== (args.handler ?? "")) changes.push(`handler "${existing.handler ?? ""}" → "${args.handler ?? ""}"`);
       if ((existing.primaryFile ?? "") !== (args.primaryFile ?? "")) changes.push(`primaryFile "${existing.primaryFile ?? ""}" → "${args.primaryFile ?? ""}"`);
+      const exSidecar = existing.sidecar ? JSON.stringify(existing.sidecar) : "";
+      const nwSidecar = args.sidecar ? JSON.stringify(args.sidecar) : "";
+      if (exSidecar !== nwSidecar) changes.push(`sidecar (${exSidecar ? "set" : "unset"} → ${nwSidecar ? "set" : "unset"})`);
       updateChanges = changes;
     } catch { /* metadata corrupt — fall through to recovery write below */ }
   }
@@ -165,6 +176,7 @@ export async function createClassImpl(
   };
   if (args.handler) metadata.handler = args.handler;
   if (args.primaryFile) metadata.primaryFile = args.primaryFile;
+  if (args.sidecar) metadata.sidecar = args.sidecar;
 
   await mkdir(dir, { recursive: true });
   // Always write metadata (this is the recovery target — partial states or

@@ -292,7 +292,9 @@ export default function App() {
       {wasConnected && !wsConnected && (
         <div className="ws-overlay">
           <div className="ws-overlay-content">
-            <div className="ws-overlay-spinner" />
+            {showReloadFailsafe
+              ? <div className="ws-overlay-sadface" aria-hidden="true">☹</div>
+              : <div className="ws-overlay-spinner" />}
             <div className="ws-overlay-text">{showReloadFailsafe ? 'Connection Lost' : 'Reconnecting...'}</div>
             {showReloadFailsafe && (
               <button

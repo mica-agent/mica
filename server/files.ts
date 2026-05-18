@@ -11,6 +11,7 @@ import { existsSync } from "fs";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import { archiveSnapshots } from "./turnSnapshots.js";
+import { archiveTurnEvents } from "./turnEvents.js";
 
 const execAsync = promisify(execCb);
 
@@ -1332,8 +1333,12 @@ export async function archiveChat(
     if (archivedTurnIds.length > 0 && project) {
       await archiveMetricsForTurns(project, archivedTurnIds, archiveStampBase);
     }
+    // Move turn-*.events.jsonl files into <archiveDir>-events/. Mirrors the
+    // snapshots archive shape so a chat's full record (transcript +
+    // snapshots + events) stays together post-clear.
+    await archiveTurnEvents(project ?? null, chatId, archiveStampBase);
   } catch (err) {
-    console.warn(`[archive-chat] aux archive (snapshots/metrics) failed for ${chatId}:`, (err as Error).message);
+    console.warn(`[archive-chat] aux archive (snapshots/metrics/events) failed for ${chatId}:`, (err as Error).message);
   }
 
   return archiveName;

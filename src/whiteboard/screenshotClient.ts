@@ -117,7 +117,26 @@ async function handleRequest(project: string, req: ScreenshotRequest): Promise<v
       logging: false,
     });
   } catch (err) {
-    await reportFailure(`html2canvas threw: ${(err as Error).message}`);
+    const msg = (err as Error).message || String(err);
+    // Filter html2canvas internal parser limitations that are NOT card bugs.
+    // Reporting these to /api/cards/<file>/error pollutes the validator buffer
+    // and causes the chat agent to chase phantom card bugs (observed: 15-turn
+    // debug loop chasing a `color()` CSS4 warning from Mica's GLOBAL stylesheet
+    // that the card itself doesn't even use). Log to console for inspection
+    // but don't surface to the agent as a card-content error.
+    const HTML2CANVAS_TOOL_LIMITATIONS = [
+      /Attempting to parse an unsupported color function/i,  // CSS4 color()
+      /Unable to parse color/i,                              // generic CSS color parser failure
+      /CSSStyleSheet.*cssRules/i,                            // cross-origin stylesheet read
+    ];
+    if (HTML2CANVAS_TOOL_LIMITATIONS.some(re => re.test(msg))) {
+      console.warn(
+        `[screenshotClient] html2canvas tool limitation (NOT a card bug): ${msg}. ` +
+        `Card may render correctly; screenshot capture is unreliable. Skipping error report.`,
+      );
+      return;
+    }
+    await reportFailure(`html2canvas threw: ${msg}`);
     return;
   }
 

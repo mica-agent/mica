@@ -100,6 +100,8 @@ import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, bu
 import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
 import { stopOpencodeServer } from "./opencodeServer.js";
 import { registerAgentToolRoutes } from "./agentTools/restRoutes.js";
+import { registerLlmRestApi } from "./plugins/llmRestApi.js";
+import { MICA_SIDECAR_TOKEN } from "./cardSidecar.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
 import { fetchHandler } from "./plugins/micaFetch.js";
 import { createPtyHandler, setActiveProject as setPtyProject } from "./plugins/pty.js";
@@ -2935,6 +2937,11 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // the unified surface for tools available to ALL agents (qwen, Claude,
   // opencode). See server/agentTools/registry.ts.
   registerAgentToolRoutes(app);
+
+  // Register the sidecar-callable LLM REST endpoint (POST /api/llm/chat).
+  // Backs `mica_sidecar.llm.chat(...)` (Python) and `mica-sidecar` `llm.chat(...)`
+  // (TS). See server/plugins/llmRestApi.ts.
+  registerLlmRestApi(app, MICA_SIDECAR_TOKEN);
 
   // Register channel-based plugins
   channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent

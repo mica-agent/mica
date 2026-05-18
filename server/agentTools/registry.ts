@@ -40,6 +40,8 @@ import { installSkillsTool } from "./installSkills.js";
 import { listSkillPackagesTool } from "./listSkillPackages.js";
 import { micaShellTool } from "./micaShell.js";
 import { inspectUrlTool } from "./inspectUrl.js";
+import { restartSidecarTool } from "./restartSidecar.js";
+import { sidecarLogTool } from "./sidecarLog.js";
 
 // Per-backend startup secret. Agents include this in the
 // `x-mica-agent-auth` header on every /api/tools/* request. Browser cards
@@ -100,6 +102,8 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   listSkillPackagesTool,
   inspectUrlTool,
   micaShellTool,
+  restartSidecarTool,
+  sidecarLogTool,
 ];
 
 // ── Project resolution for opencode bridge ───────────────────────────

@@ -29,6 +29,7 @@ import {
 import { markProjectActivity } from "./projectActivity.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
+import { appendTurnEvent } from "./turnEvents.js";
 import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { recordSkillInvocation } from "./skillInvocationTracker.js";
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
@@ -2279,6 +2280,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "thinking") {
                   const t = block.thinking || "";
                   console.log(`[mica-agent] THINKING block (${t.length} chars): ${t.slice(0, 120).replace(/\n/g, " ")}...`);
+                  // Persist FULL thinking text to the per-turn .events.jsonl.
+                  // backend.log keeps the truncated preview for in-the-moment
+                  // tailing; the full record lives in the sidecar file. See
+                  // server/turnEvents.ts for the rationale and format.
+                  void appendTurnEvent(sessionProject, chatId, turnId, {
+                    type: "thinking",
+                    parent_tool_use_id: ptid || null,
+                    text: t,
+                  });
                   // Parent-context thinking → progress event so the chat card's
                   // detail panel shows the agent's reasoning between tool calls.
                   // Without this, the panel sits at "Starting..." for the 5-30s
@@ -2308,6 +2318,16 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                 }
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[mica-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
+                  // Persist FULL tool_use input to the per-turn .events.jsonl.
+                  // backend.log keeps the truncated 200-char preview; the
+                  // full record (which carries the actual edit strings,
+                  // multi-thousand-char prompts, etc.) lives in the sidecar.
+                  void appendTurnEvent(sessionProject, chatId, turnId, {
+                    type: "tool_use",
+                    parent_tool_use_id: ptid || null,
+                    name: block.name,
+                    input: block.input || {},
+                  });
                   toolCallCounts[block.name] = (toolCallCounts[block.name] || 0) + 1;
                   // Skill-invocation observer — records which skills the agent
                   // has invoked in this chat session so predicate gates in
@@ -2500,6 +2520,18 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           if (evtType === "result") {
             const result = evt.result as { text?: string } | undefined;
             if (result?.text) resultText = result.text;
+            // Persist the result event (success or error) to .events.jsonl
+            // so the turn's record has a closing marker. The text + usage +
+            // error fields make end-of-turn analysis straightforward without
+            // having to re-parse the whole event stream.
+            void appendTurnEvent(sessionProject, chatId, turnId, {
+              type: "result",
+              text: result?.text || "",
+              is_error: Boolean((evt as { is_error?: boolean }).is_error),
+              subtype: (evt as { subtype?: string }).subtype || null,
+              error_message: ((evt as { error?: { message?: string } }).error?.message) || null,
+              usage: (evt as { usage?: unknown }).usage ?? (evt.result as { usage?: unknown } | undefined)?.usage ?? null,
+            });
             // SDK signals provider-side errors via is_error + error.message
             // on the result event. See server/cli.js: buildResultMessage.
             if ((evt as { is_error?: boolean }).is_error) {
@@ -2639,23 +2671,55 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           // doing it. Inject one re-prompt that names the loaded skill
           // and demands the tool call this turn. Cap at one retry per
           // user turn — `source === "recovery"` already inside it.
-          console.log(
-            `[mica-agent] skill-follow-through gap: loaded "${pendingSkillFollowup}" with no action tool — enqueueing recovery for: ${message.slice(0, 60)}`,
-          );
-          ctx.broadcast({
-            type: "progress",
-            tool: "skill-followthrough-recovery",
-            description: `⚠ Loaded ${pendingSkillFollowup} but didn't act — auto-continuing.`,
-          });
-          enqueueMessage(
-            `Your previous turn loaded the \`${pendingSkillFollowup}\` skill but didn't take ` +
-              `the action it specified. Re-read what that skill told you to do, then emit the ` +
-              `concrete tool call now (most skills demand a \`task\` dispatch, a \`write_file\`, ` +
-              `or one of the \`mica_*\` tools — not more prose). Narrating "I'm dispatching ` +
-              `to X" is not the same as dispatching; only the tool_use block counts. ` +
-              `Do not load another skill on this turn — execute the pending action.`,
-            "recovery",
-          );
+          //
+          // GATE on resultText length. Many skills are loaded for
+          // REFERENCE — `card-class-handbook` is consulted to answer
+          // questions ("explain the mica-internal: URL protocol") as
+          // often as to drive builds. If the user asked a question and
+          // the model loaded the handbook to answer it, the turn
+          // legitimately ends with prose and no tool call. The recovery
+          // pushing the model into mica_create_class in THAT case is a
+          // bug — it derails the agent into unauthorized build action
+          // (observed: rag4 build, where "explain mica-internal:" was
+          // followed by an auto-injected build recovery that triggered
+          // a half-formed mica_create_class call).
+          //
+          // Heuristic: if the agent produced a substantive visible
+          // reply (>=300 chars of stripped text), it answered something
+          // — skip the recovery. The original failure mode (load skill,
+          // narrate "I'll dispatch X" in 50 chars, end) is still
+          // caught because the narration is short. False negatives (a
+          // long narration that never acted) are recoverable by the
+          // user re-prompting, and won't derail the agent into an
+          // unauthorized action.
+          const strippedReply = resultText
+            .replace(/<[^>]+>/g, "")           // strip any markup
+            .replace(/\s+/g, " ")              // collapse whitespace
+            .trim();
+          const SUBSTANTIVE_REPLY_CHARS = 300;
+          if (strippedReply.length >= SUBSTANTIVE_REPLY_CHARS) {
+            console.log(
+              `[mica-agent] skill-follow-through gap suppressed (reply is ${strippedReply.length} chars — agent answered substantively): loaded "${pendingSkillFollowup}"`,
+            );
+          } else {
+            console.log(
+              `[mica-agent] skill-follow-through gap: loaded "${pendingSkillFollowup}" with no action tool, reply only ${strippedReply.length} chars — enqueueing recovery for: ${message.slice(0, 60)}`,
+            );
+            ctx.broadcast({
+              type: "progress",
+              tool: "skill-followthrough-recovery",
+              description: `⚠ Loaded ${pendingSkillFollowup} but didn't act — auto-continuing.`,
+            });
+            enqueueMessage(
+              `Your previous turn loaded the \`${pendingSkillFollowup}\` skill but didn't take ` +
+                `the action it specified. Re-read what that skill told you to do, then emit the ` +
+                `concrete tool call now (most skills demand a \`task\` dispatch, a \`write_file\`, ` +
+                `or one of the \`mica_*\` tools — not more prose). Narrating "I'm dispatching ` +
+                `to X" is not the same as dispatching; only the tool_use block counts. ` +
+                `Do not load another skill on this turn — execute the pending action.`,
+              "recovery",
+            );
+          }
         } else if (!resultText.trim()) {
           resultText = filesChanged ? "Done -- I made changes." : "Done.";
         }

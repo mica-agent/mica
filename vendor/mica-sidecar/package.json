@@ -1,0 +1,8 @@
+{
+  "name": "mica-sidecar",
+  "version": "0.1.0",
+  "description": "Mica-owned primitives for card-class sidecars (LLM, logging, context). Distinct from the client-side `mica` global injected into card.js.",
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts"
+}

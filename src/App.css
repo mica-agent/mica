@@ -229,6 +229,16 @@
   to { transform: rotate(360deg); }
 }
 
+/* Shown in place of the spinner once the reload-failsafe has armed
+ * (the spinner implies "still working on it"; once we've given up
+ * auto-reconnecting, a static sad face honestly conveys "stopped"). */
+.ws-overlay-sadface {
+  font-size: 40px;
+  line-height: 1;
+  color: #f87171;
+  user-select: none;
+}
+
 .ws-overlay-text {
   color: #e6edf3;
   font-size: 14px;

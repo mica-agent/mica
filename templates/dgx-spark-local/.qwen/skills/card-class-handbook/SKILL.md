@@ -556,24 +556,68 @@ Fields:
 
 ### Env vars Mica injects when spawning your sidecar
 
+You usually don't read these directly — the `mica_sidecar` package surfaces the ones that matter as properties. Listed here so the contract is documented.
+
 | Variable | Value | Use |
 |---|---|---|
 | `MICA_PORT` | port (8200-8299 from pool) | **READ THIS** — bind your server here; never hardcode a port |
 | `MICA_PROJECT` | active project name | logging / context |
-| `MICA_PROJECT_DIR` | absolute path to the project | read project files (`canvas/...`) |
+| `MICA_PROJECT_DIR` | absolute path to the project | available as `mica.project_dir` |
 | `MICA_WORKSPACE_DIR` | absolute path to the projects root | rare; project resolution |
-| `MICA_CARD_CLASS` | your card class name | logging only |
-| `MICA_CARD_CLASS_DIR` | absolute path to your card class directory | read sibling files (chunk corpora, templates, etc.) |
-| `NODE_PATH` | Mica's node_modules | TypeScript/JS sidecars can `import` Mica's deps |
-| `LLAMA_URL` | local vLLM base URL | call the local model (`{LLAMA_URL}/v1/chat/completions`) |
+| `MICA_CARD_CLASS` | your card class name | mica.log uses this as the prefix |
+| `MICA_CARD_CLASS_DIR` | absolute path to your card class directory | available as `mica.cardclass_dir` |
+| `MICA_BACKEND_URL` | `http://127.0.0.1:<backend-port>` | used internally by `mica_sidecar` to call Mica's REST APIs |
+| `MICA_SIDECAR_TOKEN` | per-startup random token | auth header for Mica's REST APIs; used internally by `mica_sidecar` |
+| `PYTHONPATH` | includes Mica's `vendor/` | `import mica_sidecar` resolves Mica's bundled client |
+| `NODE_PATH` | Mica's node_modules + vendor/ | TS sidecars `import` Mica deps + `mica-sidecar` |
 
-Plus the parent backend's full env is forwarded — `process.env.LLAMA_URL`, `TAVILY_API_KEY`, `OPENROUTER_API_KEY` etc. are all available if set.
+Plus the parent backend's full env is forwarded — `TAVILY_API_KEY`, `OPENROUTER_API_KEY`, etc. available if set.
+
+### `mica_sidecar` — Mica primitives for the things you can't reach directly
+
+The `mica_sidecar` package is auto-importable inside every sidecar Mica spawns (Python via PYTHONPATH; TS via NODE_PATH). It's the *server-side* analog of the `mica` global in `card.js` — a tiny namespace for capabilities Mica owns. **Distinct package** from the client-side global; methods don't overlap.
+
+```python
+import mica_sidecar as mica   # template-provided alias
+
+# LLM call — URL, model, auth, and vLLM's enable_thinking trap all owned by Mica.
+resp = mica.llm.chat(messages=[
+    {"role": "system", "content": "You are concise."},
+    {"role": "user",   "content": query},
+])
+# resp.text → reply string
+# resp.usage → {"prompt_tokens": ..., "completion_tokens": ..., "total_tokens": ...}
+
+mica.log("processed chunk", chunk_id)   # → backend log, auto-prefixed
+mica.project_dir                         # absolute path to active project (str)
+mica.cardclass_dir                       # absolute path to this card class (str)
+```
+
+```typescript
+import mica from "mica-sidecar";
+
+const resp = await mica.llm.chat({
+  messages: [
+    { role: "user", content: query },
+  ],
+});
+mica.log("got reply");
+mica.projectDir;     // string
+mica.cardclassDir;   // string
+```
+
+**What you call this for:** the local LLM, logging, the Mica-injected context (project / card-class paths). That's it.
+
+**What you DON'T call this for:** embeddings, vector stores, PDF parsing, OCR, audio, image generation, or anything else you'd reach for a standard PyPI/npm package. Those use the library directly — `from sentence_transformers import SentenceTransformer`, `import faiss`, `import fitz`, etc. Mica doesn't wrap them because the library API IS the API; AI already knows it.
+
+**Cross-surface confusion** — see Pitfalls below. `mica.fetch` and `mica.openChannel` are CLIENT-only (card.js). They don't exist server-side. If you reach for them in a sidecar, you'll get `AttributeError`.
 
 ### The `server.py` shape (FastAPI, recommended)
 
 ```python
-import os, uvicorn
-from fastapi import FastAPI
+import os, traceback, uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 PORT = int(os.environ["MICA_PORT"])              # never hardcode
@@ -584,6 +628,11 @@ print(f"[my-card] starting on :{PORT}", flush=True)  # logs go to backend.log
 # (e.g. SentenceTransformer, json corpora, ML model weights)
 
 app = FastAPI()
+
+@app.exception_handler(Exception)               # REQUIRED — see "Debugging a 500" below
+async def all_exceptions(request: Request, exc: Exception):
+    print(traceback.format_exc(), flush=True)   # full stack → backend log
+    return JSONResponse(status_code=500, content={"error": f"{type(exc).__name__}: {exc}"})
 
 class AskRequest(BaseModel):
     query: str
@@ -610,23 +659,38 @@ const PORT = Number(process.env.MICA_PORT!);
 const PROJECT_DIR = process.env.MICA_PROJECT_DIR!;
 console.log(`[my-card] starting on :${PORT}`);
 
+process.on("uncaughtException", (e) => console.error("[uncaught]", e.stack || e));
+process.on("unhandledRejection", (e) => console.error("[unhandled]", e));
+
 const server = createServer((req, res) => {
   const url = new URL(req.url!, `http://127.0.0.1:${PORT}`);
-  if (url.pathname === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
-    return;
-  }
-  if (url.pathname === "/whatever" && req.method === "POST") {
-    let body = ""; req.on("data", (c) => body += c);
-    req.on("end", () => {
-      const reqData = JSON.parse(body);
+  try {
+    if (url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ /* response */ }));
-    });
-    return;
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (url.pathname === "/whatever" && req.method === "POST") {
+      let body = ""; req.on("data", (c) => body += c);
+      req.on("end", () => {
+        try {
+          const reqData = JSON.parse(body);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ /* response */ }));
+        } catch (e: any) {
+          console.error(e.stack || e);                            // → backend log
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(e?.message ?? e) }));
+        }
+      });
+      return;
+    }
+    res.writeHead(404); res.end();
+  } catch (e: any) {
+    console.error(e.stack || e);
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: String(e?.message ?? e) }));
   }
-  res.writeHead(404); res.end();
 });
 server.listen(PORT, "127.0.0.1");
 ```
@@ -653,7 +717,7 @@ The runtime injects your card's class name into the request so Mica routes to th
 1. **Lazy spawn.** Sidecar starts on the first `mica.fetch` from your card. First-call latency = process start + model load + ready probe. Plan for 5-30s cold start; set the card UI to show "Loading…" appropriately.
 2. **Warm thereafter.** Subsequent calls hit the running process — typically 10-200ms (the actual compute, no startup tax).
 3. **Idle shutdown** after 10 minutes with no calls. Next call respawns (back to cold start).
-4. **No file-change auto-restart.** Edit `server.py` → the running sidecar still runs the OLD code. To force respawn, kill the process manually (e.g. `mica_shell pkill -f "card-classes/<my-card>/server.py"`) and the next call respawns with the new code.
+4. **No file-change auto-restart.** Edit `server.py` → the running sidecar still runs the OLD code. To force respawn, call **`mica_restart_sidecar({ card_class: "<my-card>" })`** — it SIGTERMs the tracked PID server-side and clears state so the next `mica.fetch` from card.js spawns fresh. Do NOT use `mica_shell pkill ...` — the bash subprocess running pkill has the pattern in its OWN argv (pkill -f matches argv), so pkill kills itself and can cascade to killing the agent CLI process (whose argv contains the user's prompt mentioning the card class). The dedicated tool avoids both failure modes.
 5. **One process per (project, card-class)** — multiple card instances in the same project share the sidecar. Different projects get separate sidecars.
 6. **Orphan reaper** runs at backend startup, cleaning up sidecars from previous crashes that didn't get a clean SIGTERM.
 
@@ -661,27 +725,326 @@ The runtime injects your card's class name into the request so Mica routes to th
 
 - **Forgot `/health`.** Mica probes it and times out. Your sidecar process is running but Mica never considers it ready. Always implement `/health` returning HTTP 200.
 - **Hardcoded port.** `uvicorn.run(app, host="127.0.0.1", port=8000)` — Mica gives you `MICA_PORT`; ignoring it means the port pool gets confused. Always `port=int(os.environ["MICA_PORT"])`.
-- **vLLM with thinking enabled consuming the answer budget.** When calling local vLLM (`{LLAMA_URL}/v1/chat/completions`), thinking is ON by default (server-level config). For RAG/summarization tasks, set `"chat_template_kwargs": {"enable_thinking": false}` in the request body — otherwise a 1024-token budget gets entirely consumed by `<think>` content and `message.content` is empty. Symptom: empty answer field in the response. Fix: disable thinking AND budget 2048+ tokens.
+- **vLLM with thinking enabled consuming the answer budget — already handled by `mica.llm.chat`.** Thinking is OFF by default in `mica.llm.chat` (the trap is on the Mica side of the boundary). If you DO want thinking, pass `thinking=True` AND bump `max_tokens` to ≥2x what you'd budget without it. Only relevant if you bypass `mica.llm.chat` and call `{LLAMA_URL}/v1/chat/completions` directly — that path requires explicit `"chat_template_kwargs": {"enable_thinking": false}` to avoid losing the answer budget to the reasoning trace.
+- **Cross-surface API confusion — `mica` is two distinct surfaces.** In `card.js`, `mica` is a global injected by Mica's CARD_SHIM; methods include `fetch`, `openChannel`, `on`, `getContent`. In `server.py`/`server.ts`, `mica` (aliased from `mica_sidecar` / `mica-sidecar`) is an imported package; methods include `llm.chat`, `log`, `project_dir`. The two surfaces do NOT overlap. `mica.fetch` does NOT exist server-side — sidecars use `httpx.post` / `fetch` directly (no SSRF surface to guard, no internal scheme to route). `mica.llm.chat` does NOT exist client-side — cards needing LLM streaming UX use `mica.openChannel('turn', { systemPrompt, model })` against the `llm-direct` handler. If you see `AttributeError: 'mica' has no attribute 'X'` on the sidecar, you're pattern-matching the wrong surface — check the table above.
 - **Streaming responses.** `mica.fetch` is non-streaming today — your sidecar can emit SSE/chunked, but `mica.fetch` waits for the full body and returns it once. Card-side UI should show a "Working…" placeholder during the await, not try to render mid-stream tokens.
 - **Heavy first import.** Loading a 100MB embedding model takes 3-5s. Put it at module scope (loaded once on spawn), NOT inside the request handler (would load per-request).
 - **Print to stdout for logs.** Anything your sidecar `print`s goes to the backend log prefixed `[card-sidecar:<name>]`. Use `flush=True` (Python) for real-time visibility.
+- **Tracebacks must reach stdout, not just the response body.** A 500 returned by `mica.fetch` surfaces only the short error message to the caller (and to the agent debugging the card). The full traceback — file path, line number, call stack — is what tells you what's actually wrong. Without an exception handler that calls `print(traceback.format_exc(), flush=True)`, that information is gone forever. The FastAPI template above includes one; copy it verbatim into every new sidecar.
 - **Don't `import` external libs without verifying they're available.** System Python has sentence-transformers, numpy, FastAPI, httpx. TS/Node has whatever Mica's node_modules ships. Beyond that, you'd need to vendor or install (not supported in the prototype).
 
-### Worked example — `vector-search`
+### Debugging a 500 from your sidecar — workflow
 
-A pure-retrieval card: load 293 chunk embeddings once, answer queries with top-K cosine-similarity matches. ~50ms warm latency, 5s cold start.
+When `mica.fetch` returns `status: 500` (or the card UI shows a sidecar error), follow this order — do NOT start guessing at code:
 
-- `metadata.json` declares `sidecar: { entry: "server.py", ready_path: "/health", ready_timeout_ms: 60000 }`
-- `server.py` loads sentence-transformers + embeddings at module scope, exposes `POST /search → { results }`
-- `card.js` calls `mica.fetch('mica-internal://card-server/search')` with the user's query and renders the result list
+1. **Read the sidecar's recent log first — call `mica_sidecar_log`.**
+   ```
+   mica_sidecar_log({ card_class: "<your-card>" })
+   ```
+   Returns the last 50 lines of the sidecar's stdout/stderr (raise `lines` to ~150 for longer tracebacks). Look for `Traceback (most recent call last):` — the line number and exception type tell you exactly which line raised. **Do NOT edit code before reading this.** Pattern-matching the short error message you got from `mica.fetch` ("Upload failed (HTTP 500)", "slice indices must be integers...") will land you on the wrong line. The buffer survives the sidecar crashing — even if the process died, the log lines that crashed it are still here.
+2. **If no traceback appears in the log, your sidecar is suppressing it.** Add the `@app.exception_handler(Exception)` block from the template (Python) or wrap handlers with try/catch + `console.error(e.stack)` (Node). Kill and respawn (see step 4) so the change takes effect, then re-trigger the error to capture the traceback this time.
+3. **Read the actual line the traceback points at.** The bug is on *that* line, not a similar-looking line elsewhere. Sidecars have an upload path and a query path that share no code — an error during upload won't be in retrieval functions.
+4. **After editing server.py / server.ts, force a respawn.** Running sidecar holds the OLD bytecode in memory (see Lifecycle fact #4). Call:
+   ```
+   mica_restart_sidecar({ card_class: "<your-card>" })
+   ```
+   Server-side SIGTERM via the tracked PID. Returns when the old process is gone; next `mica.fetch` from card.js triggers a clean spawn with the new code. **Do NOT use `mica_shell pkill ...`** — pkill matches the bash subprocess's own argv (which contains the pattern you pass) and can suicide-kill the agent CLI.
+5. **Same error twice = stop iterating.** If your second fix attempt produces the same error message, your diagnosis is wrong, not your fix. Go back to step 1 — re-read the traceback, and check that you're editing the file the running sidecar is actually executing (right project, right card class). Three identical errors means stop, re-read the traceback line-by-line, and consider whether the running code is actually what you've been editing.
 
-### Worked example — `pdf-qa`
+### Worked example — `hello-py` (complete, end-to-end)
 
-A RAG card: vector search + LLM generation in one round-trip.
+The minimal working sidecar — copy this, change names, you have a new card class. Four files in `.mica/card-classes/hello-py/`:
 
-- `metadata.json` declares the same sidecar shape
-- `server.py` loads the embedding model + chunks; `POST /ask` runs vector search internally then calls `{LLAMA_URL}/v1/chat/completions` with the top chunks + question (with `enable_thinking: false` — see pitfalls above)
-- `card.js` calls `/ask`, shows a "Searching…" placeholder, displays the answer + source chunk filenames when the response arrives
+**`metadata.json`** — declares the sidecar:
+
+```json
+{
+  "extension": ".hello-py",
+  "badge": "HPY",
+  "defaultTitle": "Hello (Python)",
+  "sidecar": {
+    "entry": "server.py",
+    "ready_path": "/health",
+    "ready_timeout_ms": 10000
+  },
+  "dependencies": { "scripts": [], "styles": [] }
+}
+```
+
+**`server.py`** — FastAPI server, module-scope state, reads `MICA_PORT`:
+
+```python
+import os, time, uvicorn
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+PORT = int(os.environ["MICA_PORT"])          # never hardcode
+START_TIME = time.time()
+call_count = 0                                # module-scope: persists across calls
+
+print(f"[hello-py] starting on :{PORT}", flush=True)
+app = FastAPI()
+
+class GreetRequest(BaseModel):
+    name: str = "World"
+
+@app.get("/health")                           # required — Mica's ready probe
+async def health():
+    return {"ok": True}
+
+@app.post("/greet")
+async def greet(req: GreetRequest):
+    global call_count
+    call_count += 1
+    return {
+        "message": f"Hello, {req.name}!",
+        "pid": os.getpid(),
+        "uptime_s": round(time.time() - START_TIME, 2),
+        "call_count": call_count,             # proves the process stays warm
+    }
+
+uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+```
+
+**`card.html`** — input + button + output pane:
+
+```html
+<div class="hello-card">
+  <div class="hello-input-row">
+    <input type="text" class="hello-name" placeholder="Your name…" value="World" />
+    <button class="hello-greet">Greet</button>
+  </div>
+  <pre class="hello-output">click Greet to call the sidecar</pre>
+</div>
+```
+
+**`card.js`** — calls the sidecar via `mica.fetch`:
+
+```js
+const nameEl = container.querySelector('.hello-name');
+const btnEl  = container.querySelector('.hello-greet');
+const outEl  = container.querySelector('.hello-output');
+
+async function greet() {
+  btnEl.disabled = true;
+  outEl.textContent = 'calling sidecar…';
+  const r = await mica.fetch('mica-internal://card-server/greet', {
+    method: 'POST',
+    body: JSON.stringify({ name: nameEl.value.trim() || 'World' }),
+    timeout: 15000,
+  });
+  if (r.errorCode)        outEl.textContent = `transport error: ${r.error}`;
+  else if (r.status >= 400) outEl.textContent = `HTTP ${r.status}: ${r.body.slice(0, 200)}`;
+  else                    outEl.textContent = JSON.stringify(JSON.parse(r.body), null, 2);
+  btnEl.disabled = false;
+}
+btnEl.addEventListener('click', greet);
+```
+
+**What to observe on first run:**
+1. First click: 1–3s wall clock (sidecar spawn + ready probe). Subsequent clicks: ~20–80ms warm.
+2. `call_count` increments across clicks — proof the process is staying alive, not respawning per call.
+3. Backend log shows `[card-sidecar:hello-py] starting on :8200` once, then nothing more on subsequent calls.
+4. After 10 min idle, next click goes back to the cold-start latency (idle shutdown).
+
+**Adapting this to real workloads — the library-wrapping catalog:**
+
+The four examples below show the four common shapes a sidecar takes. **Same FastAPI skeleton, differing only in which library is wrapped.** Pick the matching example, copy it, replace 2–3 lines with the actual logic.
+
+- **`hello-llm`** — use Mica's LLM (`mica.llm.chat`). For summarization, classification, extraction, chat-with-context.
+- **`hello-embed`** — wrap `sentence-transformers`. For semantic search prep, similarity scoring.
+- **`hello-faiss`** — wrap FAISS as a warm vector index. For retrieval at scale.
+- **`hello-pdf`** — wrap `pymupdf`. For PDF text extraction.
+
+Combine: a RAG card = `hello-pdf` (parse) + `hello-embed` (chunk → vectors) + `hello-faiss` (search) + `hello-llm` (answer). One sidecar, four imports, no new mechanism.
+
+**Heavy state at module scope.** Anything expensive — `SentenceTransformer(...)`, `faiss.IndexFlatL2(...)`, loading a corpus from disk — goes next to `app = FastAPI()`, NOT inside the request handler. Cold start grows by the load time; warm calls stay cheap.
+
+**Bigger ready timeout.** If you load a 100MB+ model at spawn, set `"ready_timeout_ms": 60000` in metadata so Mica waits long enough for `/health` to first respond.
+
+**TypeScript flavor.** Change `entry` to `server.ts` and Mica uses tsx instead. Same env vars, same `mica-sidecar` package (`import mica from "mica-sidecar"`), same `mica.fetch` URL scheme.
+
+### Worked example — `hello-llm` (uses Mica's LLM)
+
+The same `metadata.json` shape as `hello-py` with `"sidecar": { "entry": "server.py" }`. The differences are all in `server.py`:
+
+```python
+import os, traceback, uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+import mica_sidecar as mica   # the one Mica primitive — LLM access
+
+PORT = int(os.environ["MICA_PORT"])
+mica.log("starting on :", PORT)
+
+app = FastAPI()
+
+@app.exception_handler(Exception)
+async def all_exceptions(request: Request, exc: Exception):
+    print(traceback.format_exc(), flush=True)
+    return JSONResponse(status_code=500, content={"error": f"{type(exc).__name__}: {exc}"})
+
+class AskRequest(BaseModel):
+    text: str
+
+@app.get("/health")
+async def health(): return {"ok": True}
+
+@app.post("/summarize")
+async def summarize(req: AskRequest):
+    resp = mica.llm.chat(messages=[
+        {"role": "system", "content": "Summarize the user's text in one sentence."},
+        {"role": "user",   "content": req.text},
+    ], max_tokens=200)
+    return {"summary": resp.text, "model": resp.model}
+
+uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+```
+
+No URL. No model name. No `enable_thinking`. No auth token. All owned by Mica.
+
+### Worked example — `hello-embed` (wraps sentence-transformers)
+
+```python
+import os, traceback, uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List
+
+from sentence_transformers import SentenceTransformer   # standard library — used directly
+
+import mica_sidecar as mica
+
+PORT = int(os.environ["MICA_PORT"])
+mica.log("loading embedding model…")
+model = SentenceTransformer("all-MiniLM-L6-v2")          # ~80MB; module scope = load once
+mica.log("ready, embedding dim:", model.get_sentence_embedding_dimension())
+
+app = FastAPI()
+
+@app.exception_handler(Exception)
+async def all_exceptions(request: Request, exc: Exception):
+    print(traceback.format_exc(), flush=True)
+    return JSONResponse(status_code=500, content={"error": f"{type(exc).__name__}: {exc}"})
+
+class EncodeRequest(BaseModel):
+    texts: List[str]
+
+@app.get("/health")
+async def health(): return {"ok": True}
+
+@app.post("/encode")
+async def encode(req: EncodeRequest):
+    vectors = model.encode(req.texts, normalize_embeddings=True)
+    return {"vectors": [v.tolist() for v in vectors]}
+
+uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+```
+
+No Mica wrapper around the embedding library. The `SentenceTransformer` API is the API.
+
+### Worked example — `hello-faiss` (wraps FAISS as a warm vector index)
+
+```python
+import os, traceback, uvicorn
+import numpy as np
+import faiss                                              # standard library
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List
+
+import mica_sidecar as mica
+
+PORT = int(os.environ["MICA_PORT"])
+DIM = 384                                                 # MiniLM-L6 embedding dim
+index = faiss.IndexFlatIP(DIM)                            # inner product = cosine on normalized vectors
+labels: list[str] = []                                    # parallel array — id per vector
+mica.log("FAISS index ready, dim =", DIM)
+
+app = FastAPI()
+
+@app.exception_handler(Exception)
+async def all_exceptions(request: Request, exc: Exception):
+    print(traceback.format_exc(), flush=True)
+    return JSONResponse(status_code=500, content={"error": f"{type(exc).__name__}: {exc}"})
+
+class AddRequest(BaseModel):
+    vectors: List[List[float]]
+    ids: List[str]
+
+class SearchRequest(BaseModel):
+    vector: List[float]
+    top_k: int = 5
+
+@app.get("/health")
+async def health(): return {"ok": True}
+
+@app.post("/add")
+async def add(req: AddRequest):
+    arr = np.array(req.vectors, dtype="float32")
+    index.add(arr)
+    labels.extend(req.ids)
+    return {"ntotal": index.ntotal}
+
+@app.post("/search")
+async def search(req: SearchRequest):
+    q = np.array([req.vector], dtype="float32")
+    sims, idxs = index.search(q, min(req.top_k, index.ntotal))
+    return {"results": [
+        {"id": labels[int(i)], "similarity": float(s)}
+        for s, i in zip(sims[0], idxs[0]) if int(i) >= 0
+    ]}
+
+uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+```
+
+FAISS' API used directly. No Mica abstraction around it.
+
+### Worked example — `hello-pdf` (wraps pymupdf)
+
+```python
+import os, base64, traceback, uvicorn
+import fitz                                               # pymupdf — standard library
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+import mica_sidecar as mica
+
+PORT = int(os.environ["MICA_PORT"])
+mica.log("starting pdf parser on :", PORT)
+
+app = FastAPI()
+
+@app.exception_handler(Exception)
+async def all_exceptions(request: Request, exc: Exception):
+    print(traceback.format_exc(), flush=True)
+    return JSONResponse(status_code=500, content={"error": f"{type(exc).__name__}: {exc}"})
+
+class ExtractRequest(BaseModel):
+    pdf_base64: str
+
+@app.get("/health")
+async def health(): return {"ok": True}
+
+@app.post("/extract")
+async def extract(req: ExtractRequest):
+    pdf_bytes = base64.b64decode(req.pdf_base64)
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pages = [{"page": i + 1, "text": p.get_text()} for i, p in enumerate(doc)]
+    doc.close()
+    return {"pages": pages, "n_pages": len(pages)}
+
+uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+```
+
+`fitz` API used directly. The card.js side sends `pdf_base64`; the sidecar returns structured text per page.
+
+**A real RAG card composes all four** — `hello-pdf` to parse the upload, `hello-embed` to vectorize chunks, `hello-faiss` to index and search, `hello-llm` to generate the answer. One `server.py`, all four libraries imported alongside `mica_sidecar`. No new mechanism beyond what's shown here.
 
 ## Worked example — counter card
 

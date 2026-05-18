@@ -25,10 +25,30 @@
 //   - sidecars can come and go with idle shutdown
 
 import { spawn, type ChildProcess } from "child_process";
+import { randomBytes } from "crypto";
 import { existsSync } from "fs";
 import { join } from "path";
 import { readFile } from "fs/promises";
 import { WORKSPACE_DIR } from "./files.js";
+
+// Per-backend-startup secret. Sidecars include this in the `x-mica-sidecar-auth`
+// header on every call to Mica's internal REST APIs (POST /api/llm/chat etc.).
+// Generated fresh on each backend restart — no persistence. Sidecars receive
+// it via the MICA_SIDECAR_TOKEN env var injected at spawn time. Other local
+// processes (a curl from the user, a different daemon) can't reach the API
+// without the token.
+export const MICA_SIDECAR_TOKEN = randomBytes(32).toString("hex");
+
+// The backend's own HTTP port — sidecars POST to ${MICA_BACKEND_URL}/api/llm/chat.
+// Falls back to 3002 (the default backend port; same default as
+// sdkMcpBuilder.ts uses for its loopback fetches).
+const BACKEND_PORT = parseInt(process.env.MICA_PORT || "3002", 10);
+const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
+
+// PYTHONPATH / NODE_PATH addition — Mica's `vendor/` directory holds the
+// `mica_sidecar` Python package and the `mica-sidecar` TS package. Sidecars
+// get this on their PYTHONPATH and NODE_PATH so `import mica_sidecar` /
+// `import mica from "mica-sidecar"` work without any per-card-class setup.
 
 const REPO_ROOT = process.env.REPO_ROOT || process.cwd();
 // Default Python interpreter. /usr/bin/python3 has the broadest package
@@ -80,6 +100,41 @@ interface SidecarHandle {
 // its own process (different chunks, different state). Two card instances
 // within ONE project sharing a class share the sidecar.
 const sidecars = new Map<string, SidecarHandle>();
+
+// Per-class log ring buffer. Survives the sidecar process lifecycle so the
+// agent can fetch the traceback EVEN AFTER the process has exited (the most
+// common case after a crashing handler). Capped at LOG_BUFFER_MAX_LINES per
+// key; oldest lines drop. Same key shape as `sidecars` so a respawn after
+// crash continues appending to the same buffer.
+//
+// Surfaces via `getCardSidecarLog()` for the `mica_sidecar_log` agent tool.
+// The line content is the BARE stdout/stderr line (no `[card-sidecar:<name>]`
+// prefix); the prefix is implicit because the caller queries by class name.
+const logBuffers = new Map<string, string[]>();
+const LOG_BUFFER_MAX_LINES = 500;
+
+function appendLog(k: string, line: string): void {
+  let buf = logBuffers.get(k);
+  if (!buf) {
+    buf = [];
+    logBuffers.set(k, buf);
+  }
+  buf.push(line);
+  if (buf.length > LOG_BUFFER_MAX_LINES) {
+    buf.splice(0, buf.length - LOG_BUFFER_MAX_LINES);
+  }
+}
+
+/** Return the last `lines` log lines for the sidecar identified by
+ *  (project, className). Includes stdout, stderr, spawn/exit notes, and
+ *  restart events. Survives sidecar exit — the buffer holds post-mortem
+ *  output that crashing sidecars left behind. */
+export function getCardSidecarLog(project: string, className: string, lines = 50): string[] {
+  const buf = logBuffers.get(key(project, className));
+  if (!buf || buf.length === 0) return [];
+  const n = Math.max(1, Math.min(lines, LOG_BUFFER_MAX_LINES));
+  return buf.slice(-n);
+}
 
 function key(project: string, className: string): string {
   return `${project}::${className}`;
@@ -229,17 +284,31 @@ export async function ensureCardSidecar(
     MICA_CARD_CLASS: className,
     MICA_CARD_CLASS_DIR: classDir,
     MICA_WORKSPACE_DIR: WORKSPACE_DIR,
+    // Backend loopback URL + sidecar auth token. The mica_sidecar Python /
+    // mica-sidecar TS packages use these to call Mica's internal REST APIs
+    // (POST /api/llm/chat, etc.). Sidecars never need to know the URL or
+    // model name — it lives on the Mica side of the token.
+    MICA_BACKEND_URL: BACKEND_URL,
+    MICA_SIDECAR_TOKEN,
     // PYTHONUNBUFFERED so [card-sidecar:X] logs appear in real time for
     // Python sidecars. Harmless for Node/tsx.
     PYTHONUNBUFFERED: "1",
+    // PYTHONPATH: prepend Mica's vendor/ so `import mica_sidecar` resolves
+    // to Mica's bundled client (vendor/mica_sidecar/). Preserves any
+    // pre-existing PYTHONPATH from the backend env.
+    PYTHONPATH: process.env.PYTHONPATH
+      ? `${join(REPO_ROOT, "vendor")}:${process.env.PYTHONPATH}`
+      : join(REPO_ROOT, "vendor"),
     // NODE_PATH so TypeScript/Node sidecars can `import` Mica's own
-    // node_modules (zod, fastify, hono, etc. — anything Mica ships). Cards
-    // that want libraries not in Mica's deps would need a project-local
+    // node_modules (zod, fastify, hono, etc. — anything Mica ships) AND
+    // Mica's vendor/ directory (where `mica-sidecar` lives). Cards that
+    // want libraries not in Mica's deps would need a project-local
     // node_modules or vendoring; not addressed in this prototype.
-    NODE_PATH: join(REPO_ROOT, "node_modules"),
+    NODE_PATH: `${join(REPO_ROOT, "node_modules")}:${join(REPO_ROOT, "vendor")}`,
   };
 
   console.log(`[${label}] spawning on :${port} (${command} ${args.join(" ")})`);
+  appendLog(k, `--- spawning on :${port} (${command} ${args.join(" ")}) ---`);
   const proc = spawn(command, args, {
     stdio: ["ignore", "pipe", "pipe"],
     env,
@@ -260,21 +329,25 @@ export async function ensureCardSidecar(
   proc.stdout?.on("data", (chunk: Buffer) => {
     for (const line of chunk.toString().split("\n").filter(Boolean)) {
       console.log(`[${label}] ${line}`);
+      appendLog(k, line);
     }
   });
   proc.stderr?.on("data", (chunk: Buffer) => {
     for (const line of chunk.toString().split("\n").filter(Boolean)) {
       console.log(`[${label}] ${line}`);
+      appendLog(k, line);
     }
   });
   proc.on("exit", (code, signal) => {
     console.log(`[${label}] exited (code=${code}, signal=${signal})`);
+    appendLog(k, `--- exited (code=${code}, signal=${signal}) ---`);
     handle.ready = false;
     freePort(handle.port);
     sidecars.delete(k);
   });
   proc.on("error", (err) => {
     console.error(`[${label}] spawn error: ${err.message}`);
+    appendLog(k, `--- spawn error: ${err.message} ---`);
     handle.ready = false;
     freePort(handle.port);
     sidecars.delete(k);
@@ -391,6 +464,48 @@ export async function reapOrphanCardSidecars(): Promise<void> {
   if (reaped > 0) {
     console.log(`[card-sidecar:orphan-reap] reaped ${reaped} orphan sidecar(s)`);
   }
+}
+
+/** Kill the running sidecar for (project, className) so the next call
+ *  spawns a fresh process. Returns a structured status describing what
+ *  happened — caller surfaces this to the agent.
+ *
+ *  Why this exists: editing server.py doesn't restart the running sidecar
+ *  (Python holds the old bytecode in memory). Agents reach for
+ *  `mica_shell pkill -f "card-classes/<X>/server"` to force a respawn, but
+ *  that bash subprocess has the pattern in its OWN argv, so pkill matches
+ *  itself (and sometimes the agent's CLI process whose argv contains the
+ *  user's prompt mentioning the card class name). Server-side SIGTERM via
+ *  the tracked PID avoids both failure modes. */
+export async function restartCardSidecar(
+  project: string,
+  className: string,
+): Promise<{ status: "killed" | "not_running"; oldPid?: number; port?: number }> {
+  const k = key(project, className);
+  const h = sidecars.get(k);
+  if (!h) {
+    return { status: "not_running" };
+  }
+  const oldPid = h.proc.pid;
+  const oldPort = h.port;
+  console.log(`[card-sidecar:${className}] restart requested (pid=${oldPid}, port=${oldPort})`);
+  try { h.proc.kill("SIGTERM"); } catch { /* best effort */ }
+  // Wait up to 5s for the existing exit handler to fire (it deletes from
+  // the map and frees the port).
+  const softDeadline = Date.now() + 5000;
+  while (Date.now() < softDeadline && sidecars.has(k)) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (sidecars.has(k)) {
+    // Process is ignoring SIGTERM — escalate.
+    console.log(`[card-sidecar:${className}] SIGTERM ignored after 5s, escalating to SIGKILL`);
+    try { h.proc.kill("SIGKILL"); } catch { /* best effort */ }
+    const hardDeadline = Date.now() + 2000;
+    while (Date.now() < hardDeadline && sidecars.has(k)) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  return { status: "killed", oldPid, port: oldPort };
 }
 
 /** SIGTERM all sidecars, then SIGKILL after 5s. Called from server shutdown. */
