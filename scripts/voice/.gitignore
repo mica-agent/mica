@@ -1,0 +1,3 @@
+# Local-only — don't ship the 6.4 GB Python venv. Recreated by running
+# `bash scripts/voice/install.sh`. See README.md.
+.venv/

@@ -6,8 +6,7 @@
 // Mirrors llamaServer.ts's pattern: lazy-spawn on first ensureVoiceServers()
 // call, expose status, gracefully shut down on backend exit. The Python
 // scripts live at scripts/sidecars/voice-{stt,tts}-server.py and run inside
-// the venv at scripts/benchmarks/voice/.venv (created by the benchmark
-// install.sh — same deps, no need to duplicate).
+// the venv at scripts/voice/.venv (created by scripts/voice/install.sh).
 //
 // MICA_DISABLE_VOICE=1 skips spawning entirely; .voice cards then show
 // a "voice servers disabled" placeholder.
@@ -20,7 +19,6 @@ const REPO_ROOT = process.env.REPO_ROOT || process.cwd();
 const VENV_PYTHON = join(
   REPO_ROOT,
   "scripts",
-  "benchmarks",
   "voice",
   ".venv",
   "bin",
@@ -71,7 +69,7 @@ export async function ensureVoiceServers(): Promise<void> {
   if (!existsSync(VENV_PYTHON)) {
     throw new Error(
       `voice venv not found at ${VENV_PYTHON}. ` +
-        `Run: bash scripts/benchmarks/voice/install.sh`,
+        `Run: bash scripts/voice/install.sh`,
     );
   }
   if (!existsSync(STT_SCRIPT)) {

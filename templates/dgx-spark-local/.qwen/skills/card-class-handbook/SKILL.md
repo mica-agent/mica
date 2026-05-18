@@ -134,6 +134,22 @@ per § Card-class-private sidecars below.
 | JSON-shaped APIs / web stack | TS (native fit) |
 | When in doubt | Python (broader ecosystem) |
 
+**Verify each Python dependency BEFORE writing the spec.** For every package the sidecar will `import`, call `mica_inspect_python_package({ name: "<import-name>", python: "system" | "voice-venv" })`. The return is `{ installed, version, top_level_classes, top_level_functions, module_file, error? }`. Confirm `installed: true` AND record the version in the spec. If a package returns `installed: false` against `system`, retry against `voice-venv` (sentence-transformers, librosa, soundfile, fastapi are pre-installed there). If neither has it, the dep is unavailable in this environment — pick a different package OR change the architecture to avoid needing it. **Do NOT commit `import X` to server.py without this check** — the failure mode is the sidecar spawning, crashing at import time with a `ModuleNotFoundError`, and the agent burning turns to discover what `mica_inspect_python_package` would have reported in one call.
+
+The spec for any sidecar-bearing card MUST include a **Verified dependencies** table — one row per import — alongside the Architecture Decomposition table. Same format as `inspect_url`'s output, persisted in the spec so future turns and human reviewers can audit what was checked against what interpreter:
+
+```
+## Verified dependencies (sidecar)
+
+| Import | Interpreter | Version | Top-level surface used | Notes |
+|---|---|---|---|---|
+| sentence_transformers | voice-venv | 2.7.0 | SentenceTransformer (class) | tested via mica_inspect_python_package |
+| fastapi | system | 0.115.0 | FastAPI (class), HTTPException | tested via mica_inspect_python_package |
+| fitz | system | 1.24.10 | open, Page | (pymupdf — import name differs from PyPI name) |
+```
+
+This is the Tier 4 analog of "verify CDN URLs are reachable before committing them to the spec" (Tier 1) and "verify CLI tools are on PATH before committing" (Tier 3). Same discipline; different surface.
+
 ### Worked decompositions
 
 Each subtask gets exactly one tier. The sidecar (if any) carries

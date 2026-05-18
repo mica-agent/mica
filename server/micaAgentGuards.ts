@@ -18,7 +18,7 @@ export const DANGEROUS_BASH_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   { re: /\bpkill\b.*\bvllm\b/i, reason: "pkill vllm would kill Mica's LLM inference server" },
   { re: /\bpkill\b.*\bnode\b/i, reason: "pkill node would kill Mica's own processes" },
   { re: /\bkillall\b.*\b(vite|tsx|vllm|node)\b/i, reason: "killall would kill Mica's processes" },
-  { re: /\bkill\s+(-\w+\s+)?-?(5173|3002|8012|8013)\b/, reason: "Never kill Mica's ports (5173/3002/8012/8013)" },
+  { re: /\bkill\s+(-\w+\s+)?-?(5173|3002|8012|8013|8014)\b/, reason: "Never kill Mica's ports (5173 frontend / 3002 backend / 8012 chat vLLM / 8013 voice STT / 8014 voice TTS)" },
   // Raw `kill <PID>` against a PID the agent discovered via `ps aux | grep tsx`
   // or similar. The catastrophic case: agent decides tsx hasn't hot-reloaded
   // and tries to kill+respawn the backend; SIGTERM cascades through the
@@ -29,7 +29,7 @@ export const DANGEROUS_BASH_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   // invocation of `tsx`, `vite`, or `node.*server/index`.
   { re: /\bkill\s+(-\w+\s+)?\d+\b[\s\S]{0,200}\b(?:tsx|vite|server\/index)\b/i, reason: "Killing the tsx/vite/backend PID by number is the same as `pkill tsx` — you (the agent) run INSIDE that process tree. The kill cascades SIGTERM through your own runtime, you die mid-tool-call, and any 'restart' command after the kill won't reliably execute from a dying parent. If you genuinely need a backend restart, ASK THE USER — they're outside your process tree. tsx does NOT auto-reload on file change; assume the change took effect on disk and ask the user to restart if a code change matters for what you're doing." },
   { re: /\b(?:tsx|vite)\b[\s\S]{0,200}\bkill\s+(-\w+\s+)?\d+/i, reason: "Same as above, opposite phrasing: killing the tsx/vite PID terminates the backend you run inside. Ask the user to restart instead." },
-  { re: /\bfuser\s.*\b(5173|3002|8012|8013)/, reason: "fuser would kill Mica's ports" },
+  { re: /\bfuser\s.*\b(5173|3002|8012|8013|8014)/, reason: "fuser would kill Mica's ports" },
   { re: /\brm\s+-rf\s+\/workspaces\/mica\b/, reason: "Refusing to delete the Mica install" },
   { re: /\brm\s+-rf\s+\/\s*(?:$|[^\w])/, reason: "Refusing rm -rf / (destructive)" },
   // The agent runs INSIDE the Mica backend's process tree. stop.sh/restart.sh

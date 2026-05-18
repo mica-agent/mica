@@ -29,7 +29,7 @@ import {
 import { markProjectActivity } from "./projectActivity.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
-import { appendTurnEvent } from "./turnEvents.js";
+import { analyzeTurnArtifacts, appendTurnEvent, readTurnEvents } from "./turnEvents.js";
 import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { recordSkillInvocation } from "./skillInvocationTracker.js";
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
@@ -710,6 +710,29 @@ export async function buildContext(
         );
       }
     } catch { /* ignore */ }
+  }
+
+  // Follow-up routing hint — per-turn re-injection of the routing rule for
+  // ANY turn that isn't the first in this chat. The prelude (system prompt)
+  // already states the rule, but observed builds (e.g. stt5, hotdog
+  // classifier follow-ups) show the agent freelancing investigation on
+  // follow-ups instead of dispatching through revise / fix-bug. The agent's
+  // training prior on "read code, then edit" beats prose pressure that sits
+  // back in working memory by the time follow-ups arrive. Re-injecting the
+  // routing rule fresh in EVERY follow-up turn's context puts it adjacent
+  // to the user's new message, at the most salient position. Cheap context
+  // cost (~10 lines), high leverage when it lands.
+  if (since) {
+    parts.push(
+      `## Routing for this turn\n\n` +
+      `This is a follow-up turn (you've responded before in this chat). Your FIRST tool call should be one of:\n\n` +
+      `- **Spec-affecting change** (new behavior, output shape, scope — "now also X", "include Y", "instead of A do B", "describe what it really is", "the output should…", or any repeated complaint like "still says X" 2+ times): \`skill('revise')\`\n` +
+      `- **Bug report with explicit error message or stack trace**: \`skill('fix-bug')\`\n` +
+      `- **New build request** ("build / create / make X" for a NEW artifact, distinct from prior work): \`skill('develop')\` — rare on follow-up turns; usually a follow-up adds to existing work.\n` +
+      `- **Pure visual tweak** ("make it bigger / blue / centered"): direct edit, no skill needed.\n` +
+      `- **Q&A about existing code** ("what does X do?", "where is Y defined?"): answer in chat, no edit.\n\n` +
+      `**Default bias: when uncertain, invoke \`skill('revise')\`.** False positives cost one turn (you propose an amendment; user redirects to fix-bug or direct edit). False negatives cost N turns of patching the wrong surface — observed in prior builds where 13+ follow-up turns failed to fix a problem whose root cause was a one-line spec gap. Do NOT issue \`read_file\`, \`mica_shell\`, or \`mica_edit_class_file\` as your first action — those come AFTER the routing decision the skill makes.`,
+    );
   }
 
   // Validator errors that fired since the agent's last response. These come
@@ -2218,6 +2241,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // fires, no Clear/Spawn affordance appears. Capture the message here
         // and route through the error broadcast below.
         let sdkResultError: string | null = null;
+        // Flag set when the SDK ended the turn via its maxSessionTurns cap
+        // (exit-53 / error_max_turns). The post-loop recovery block below
+        // reads this flag, analyzes the turn's events for convergence vs
+        // stuck signals, and either silently auto-continues (legitimate
+        // work cut short by the budget) or surfaces a user-visible error
+        // with the stuck diagnostic. See turnEvents.ts analyzeTurnArtifacts.
+        let wasMaxTurnsError = false;
 
         // Thinking-only termination guard. Qwen3.6 can emit a final assistant
         // event whose only block is `thinking` (no `text`, no `tool_use`),
@@ -2544,6 +2574,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
               // the likely cause and the recovery action — they need to know
               // their next message restarts the budget.
               if (/turn.*limit|max.*turn|FatalTurnLimited/i.test(raw) || subtype === "error_max_turns") {
+                wasMaxTurnsError = true;
                 sdkResultError =
                   "Agent hit the per-message step cap (30 tool rounds). This usually means a tool loop — render_capture re-captures, repeated retries, or a subagent that didn't settle. Send another message to continue; partial work is preserved.";
               } else {
@@ -2766,6 +2797,63 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         const tsEnd = Date.now();
         const durationMs = tsEnd - tsStart;
         const ttftMs = firstTokenTs !== null ? firstTokenTs - tsStart : null;
+
+        // Exit-53 recovery: when the SDK ended this turn via its
+        // maxSessionTurns hard cap, the failure mode is ambiguous —
+        // either (a) legitimate deep research / multi-step build cut
+        // short by the budget, or (b) a real loop (same tool repeated,
+        // recurring error). Analyze the turn's event stream and decide:
+        //
+        //   converging → silently enqueue a recovery message; agent
+        //                gets a fresh SDK turn budget with full chat
+        //                history intact. UI sees a subtle progress
+        //                breadcrumb, not a red error.
+        //   stuck      → fall through to the sdkResultError broadcast
+        //                with the stuck signal appended to the message.
+        //
+        // One auto-retry per user message — the recovery message is
+        // enqueued with source="recovery"; if that turn ALSO hits
+        // exit-53, the source !== "recovery" gate below skips the
+        // analysis and surfaces the error. Mirrors the thinking-only
+        // and skill-followthrough recovery patterns above.
+        if (wasMaxTurnsError && source !== "recovery") {
+          const events = await readTurnEvents(sessionProject, chatId, turnId);
+          const verdict = analyzeTurnArtifacts(events);
+          console.log(
+            `[mica-agent] exit-53 analysis: ${verdict.verdict} — ${verdict.summary} | ` +
+            `signals=${JSON.stringify(verdict.signals)}`,
+          );
+          if (verdict.verdict === "converging") {
+            ctx.broadcast({
+              type: "progress",
+              tool: "max-turns-recovery",
+              description: `⟳ Hit step cap mid-work (${verdict.summary}) — auto-continuing.`,
+            });
+            if (resultText.trim()) {
+              resultText = `${resultText}\n\n_(Step cap reached mid-work — continuing.)_`;
+            } else {
+              resultText = "_(Step cap reached mid-work — continuing.)_";
+            }
+            enqueueMessage(
+              "Your previous turn hit the per-message step cap before completing. " +
+                "Full chat history above shows the work in progress — pick up from " +
+                "exactly where you left off, do NOT restart the task. If you were " +
+                "deep in research, commit to a candidate and write the spec. If you " +
+                "were mid-build, continue the next concrete tool call. Do not " +
+                "re-read files you already read this thread; the prior turn's " +
+                "tool_result contents are still visible above.",
+              "recovery",
+            );
+            sdkResultError = null; // suppress the user-facing error
+          } else {
+            // Stuck → leave sdkResultError set, but enrich the message
+            // with the specific stuck signal so the user knows WHY.
+            sdkResultError =
+              `Agent appears stuck (${verdict.summary}). Step cap fired before completing. ` +
+              `Send a redirecting message to break the loop, or check the agent's recent ` +
+              `tool calls for the source of the repetition.`;
+          }
+        }
 
         // If the SDK reported a provider-side error on the result event
         // (most commonly llama-server 400 for context overflow), broadcast

@@ -114,6 +114,18 @@ architecture: decompose into the cheapest viable tier"). Columns:
 subtask, tier (1–4), mechanism (library / handler name / CLI tool /
 sidecar entry), verification step.
 
+**If any row in the decomposition is Tier 4 (sidecar): the spec MUST
+ALSO include a `## Verified dependencies (sidecar)` table.** For each
+Python package the sidecar will import, call
+`mica_inspect_python_package({ name, python })` BEFORE finalizing the
+spec, and record the result (import name, interpreter, version,
+top-level surface used). If any dep returns `installed: false`, change
+the dep or the interpreter selection before locking the spec — do
+NOT commit an unverified `import` to server.py. See
+`card-class-handbook` § Tier 4 for the table format. Same discipline
+as Tier 1's "verify CDN URLs return 200" and Tier 3's "verify CLI
+tools are on PATH" — pre-write verification across all tiers.
+
 | Subtask | Tier | Mechanism | Verify |
 |---|---|---|---|
 | Render chat history | 1 | card.js + DOM | render_capture |

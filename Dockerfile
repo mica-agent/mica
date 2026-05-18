@@ -11,7 +11,7 @@
 # (independent upgrade cycle, distinct GPU-memory profile, cleaner
 # logs) — not a technical necessity. The cuDNN ABI conflict between
 # the vLLM base's bundled cuDNN and the voice sidecars' torch-bundled
-# cuDNN is handled at build time by scripts/benchmarks/voice/install.sh,
+# cuDNN is handled at build time by scripts/voice/install.sh,
 # which detects the system cuDNN MAJOR.MINOR and force-reinstalls
 # nvidia-cudnn-cu13 in the venv to match. Same dance the devcontainer
 # uses — proven.
@@ -146,13 +146,10 @@ RUN npm run build 2>/dev/null || true
 
 # Voice sidecar Python venv (Parakeet STT via nemo_toolkit, Kokoro TTS).
 # We run install.sh at BUILD time rather than first-run so the
-# cuDNN MAJOR.MINOR alignment dance (see install.sh:68-97) happens once
+# cuDNN MAJOR.MINOR alignment dance (see install.sh) happens once
 # and the result is baked in. Adds ~3-4 GB to the image but removes the
-# 5-10 min first-run latency every fresh deploy would otherwise pay. The
-# script tolerates audio-sample-download failures during build (each
-# clip is fetched in a try/except) so an unreliable network at build
-# time doesn't fail the image build.
-RUN bash scripts/benchmarks/voice/install.sh
+# 5-10 min first-run latency every fresh deploy would otherwise pay.
+RUN bash scripts/voice/install.sh
 
 # Default workspace mount point. Override via `-v /host/path:/project`.
 ENV PROJECT_DIR=/project

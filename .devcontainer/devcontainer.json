@@ -79,7 +79,7 @@
 			"onAutoForward": "silent"
 		},
 		"8013": {
-			"label": "VLM Server",
+			"label": "Voice STT (Parakeet)",
 			"onAutoForward": "silent"
 		},
 		"9000": {

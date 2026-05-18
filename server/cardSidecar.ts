@@ -54,11 +54,11 @@ const REPO_ROOT = process.env.REPO_ROOT || process.cwd();
 // Default Python interpreter. /usr/bin/python3 has the broadest package
 // availability in the devcontainer (sentence-transformers, fastapi, numpy,
 // PyPDF2, etc. — installed by the user/agent over time). The voice venv at
-// scripts/benchmarks/voice/.venv exists too but is scoped to STT/TTS deps;
+// scripts/voice/.venv exists too but is scoped to STT/TTS deps;
 // a card class that needs voice-venv-specific packages can declare
 // `"sidecar": { "python": "voice-venv" }` in metadata.json.
 const DEFAULT_PYTHON = "/usr/bin/python3";
-const VOICE_VENV_PYTHON = join(REPO_ROOT, "scripts", "benchmarks", "voice", ".venv", "bin", "python");
+const VOICE_VENV_PYTHON = join(REPO_ROOT, "scripts", "voice", ".venv", "bin", "python");
 
 // TypeScript sidecars run via tsx (no separate build step). We use Mica's
 // own tsx — the same one running the backend — so card-class authors get

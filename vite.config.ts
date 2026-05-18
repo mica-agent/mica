@@ -33,8 +33,6 @@ export default defineConfig({
         '**/__pycache__/**',
         '**/.cache/**',
         '**/.mica-pids/**',
-        '**/scripts/benchmarks/voice/audio/**',
-        '**/scripts/benchmarks/voice/results/**',
       ],
     },
     proxy: {

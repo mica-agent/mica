@@ -57,8 +57,8 @@ const DANGEROUS_BASH_PATTERNS: Array<{ re: RegExp; reason: string }> = [
   { re: /\bpkill\b.*\bvllm\b/i, reason: "pkill vllm would kill Mica's LLM inference server" },
   { re: /\bpkill\b.*\bnode\b/i, reason: "pkill node would kill Mica's own processes" },
   { re: /\bkillall\b.*\b(vite|tsx|vllm|node)\b/i, reason: "killall would kill Mica's processes" },
-  { re: /\bkill\s+(-\w+\s+)?-?(5173|3002|8012|8013)\b/, reason: "Never kill Mica's ports (5173/3002/8012/8013)" },
-  { re: /\bfuser\s.*\b(5173|3002|8012|8013)/, reason: "fuser would kill Mica's ports" },
+  { re: /\bkill\s+(-\w+\s+)?-?(5173|3002|8012|8013|8014)\b/, reason: "Never kill Mica's ports (5173 frontend / 3002 backend / 8012 chat vLLM / 8013 voice STT / 8014 voice TTS)" },
+  { re: /\bfuser\s.*\b(5173|3002|8012|8013|8014)/, reason: "fuser would kill Mica's ports" },
   { re: /\brm\s+-rf\s+\/workspaces\/mica\b/, reason: "Refusing to delete the Mica install" },
   { re: /\brm\s+-rf\s+\/\s*(?:$|[^\w])/, reason: "Refusing rm -rf / (destructive)" },
 ];

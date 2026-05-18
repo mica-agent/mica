@@ -40,6 +40,7 @@ import { installSkillsTool } from "./installSkills.js";
 import { listSkillPackagesTool } from "./listSkillPackages.js";
 import { micaShellTool } from "./micaShell.js";
 import { inspectUrlTool } from "./inspectUrl.js";
+import { inspectPythonPackageTool } from "./inspectPythonPackage.js";
 import { restartSidecarTool } from "./restartSidecar.js";
 import { sidecarLogTool } from "./sidecarLog.js";
 
@@ -101,6 +102,7 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   installSkillsTool,
   listSkillPackagesTool,
   inspectUrlTool,
+  inspectPythonPackageTool,
   micaShellTool,
   restartSidecarTool,
   sidecarLogTool,

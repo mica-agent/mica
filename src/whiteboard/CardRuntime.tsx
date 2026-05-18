@@ -147,7 +147,11 @@ const loadedExternalStyles = new Set<string>();
 // Track in-flight script loads so concurrent callers wait on the same promise
 const scriptLoadPromises = new Map<string, Promise<void>>();
 
-function ensureScript(src: string): Promise<void> {
+function ensureScript(src: string, cardFilename?: string): Promise<void> {
+  // Register this CDN URL against the card's filename so the global
+  // window-error handler can route parse-time failures back to the right
+  // card-error reporter. See ensureScriptErrorHandler for the why.
+  if (cardFilename) registerScriptForCard(src, cardFilename);
   if (loadedExternalScripts.has(src)) return Promise.resolve();
 
   // If a load is already in-flight (e.g., StrictMode second run), wait for it
@@ -252,6 +256,68 @@ function sourceUrlForCard(filename: string): string {
   // URL-safe slug that includes the filename for stack-trace attribution.
   // Browsers display `//# sourceURL=` text verbatim in stack frames.
   return `mica-card://${encodeURIComponent(filename)}/card.js`;
+}
+
+// ── Script-load parse-error attribution ───────────────────────────
+//
+// A <script> element's onerror fires for NETWORK failures only (404,
+// blocked, DNS). When the script downloads with 200 OK but then fails
+// to PARSE (e.g. SyntaxError because the bundle is ESM-only and we
+// loaded it as a classic script), the load resolves as success and the
+// parse error fires on `window` as an `error` event — not on the
+// script tag. Without a global error listener, Mica's card-error
+// pipeline never sees these failures; the user has to manually paste
+// the browser console into chat. The map + handler below catch them.
+//
+// Attribution: when a card declares `dependencies.scripts`, each URL is
+// registered against the card's filename in `scriptUrlToCards`. When
+// the window error event fires, its `filename` field is the URL of the
+// failing script; we look it up in the map and route to every card
+// that depends on it (typically just one). Cleanup happens at unmount
+// via `unregisterCardFromScripts`.
+const scriptUrlToCards = new Map<string, Set<string>>();
+
+function registerScriptForCard(src: string, filename: string): void {
+  let set = scriptUrlToCards.get(src);
+  if (!set) {
+    set = new Set();
+    scriptUrlToCards.set(src, set);
+  }
+  set.add(filename);
+}
+
+function unregisterCardFromScripts(filename: string): void {
+  for (const [src, set] of scriptUrlToCards) {
+    set.delete(filename);
+    if (set.size === 0) scriptUrlToCards.delete(src);
+  }
+}
+
+let scriptErrorHandlerInstalled = false;
+function ensureScriptErrorHandler(): void {
+  if (scriptErrorHandlerInstalled) return;
+  scriptErrorHandlerInstalled = true;
+  // capture=true is REQUIRED. Script-load errors (parse failures, runtime
+  // throws inside a CDN script's top-level code) fire on the target element,
+  // not on window — they don't bubble. The capture phase reaches them on the
+  // way DOWN to the target, which is the only way to observe them at window
+  // level. Without capture=true the handler never fires for CDN parse errors.
+  window.addEventListener("error", (event) => {
+    const errFilename = event.filename || "";
+    if (!errFilename) return; // "Script error." (CORS-redacted); no info to route
+    const cards = scriptUrlToCards.get(errFilename);
+    if (!cards || cards.size === 0) return; // not one of our CDN scripts
+    const where = event.lineno
+      ? ` (line ${event.lineno}${event.colno ? ":" + event.colno : ""})`
+      : "";
+    const msg = `Script error in ${errFilename}${where}: ${event.message || "<no message>"}`;
+    for (const cardFilename of cards) {
+      const reporter = cardErrorReporters.get(cardFilename);
+      if (reporter) {
+        try { reporter(msg); } catch { /* swallow */ }
+      }
+    }
+  }, true);
 }
 
 // Install the global handler exactly once.
@@ -375,7 +441,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       // completes before its dependency's. Sequential = source-order = the
       // contract card-class authors expect.
       for (const src of declaredScripts) {
-        await ensureScript(src);
+        await ensureScript(src, filename);
       }
       // Wait for CSS rules to be fully applied
       if (declaredStyles.length > 0) {
@@ -524,6 +590,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       // The handler at the top of this file matches uncaught rejections to
       // a card via stack-trace sourceURL inspection.
       ensureUnhandledRejectionHandler();
+      ensureScriptErrorHandler();
       cardErrorReporters.set(filename, reportError);
 
       // Wrap a namespace object so unknown method access returns a helpful
@@ -989,7 +1056,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       };
 
       // Load any inline-declared scripts not already loaded via dependencies
-      const inlineScriptLoads = inlineExternalSrcs.map(ensureScript);
+      const inlineScriptLoads = inlineExternalSrcs.map((src) => ensureScript(src, filename));
       const allInlineLoads = [...inlineScriptLoads, ...cssLoads];
 
       if (allInlineLoads.length > 0) {
@@ -1033,6 +1100,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
     // OLD reporter; the new run installs a fresh one for the new closure.
     return () => {
       cardErrorReporters.delete(filename);
+      unregisterCardFromScripts(filename);
     };
 
   }, [html, project, canvas, filename]);

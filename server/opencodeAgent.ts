@@ -270,7 +270,8 @@ export async function buildContext(agentFilename: string, project: string | null
 You execute shell commands inside the same container that runs Mica itself. These processes belong to Mica and must NOT be touched:
 - **Port 5173** — Mica's frontend (vite). NEVER kill this.
 - **Port 3002** — Mica's backend API. NEVER kill this.
-- **Ports 8012, 8013** — vLLM inference. NEVER kill these.
+- **Port 8012** — chat vLLM inference. NEVER kill this.
+- **Ports 8013, 8014** — voice sidecars (Parakeet STT, Kokoro TTS). NEVER kill these.
 - Any process matching \`vite\`, \`tsx server/index.ts\`, \`vllm\`, \`npm run dev\`, or under \`/workspaces/mica/\` is Mica. Leave it alone.
 If you need to launch a test web app, use a different port (9000, 9090).`);
 
