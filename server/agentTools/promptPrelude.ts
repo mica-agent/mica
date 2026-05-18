@@ -13,9 +13,20 @@ These tools come from Mica itself — same names, same input/output shape, same 
 
 \`render_capture\` — verify a rendered card. Captures a PNG of the card on the canvas and returns a text result whose first line is a verdict tag — \`[render_capture: CLEAN]\`, \`[render_capture: ERRORS — N buffered]\`, \`[render_capture: WEBGL-OPAQUE]\`, or \`[render_capture: CAP-REACHED]\`. The tag tells you the next move; follow it. CLEAN means write your final summary and end the turn. ERRORS means fix each listed error and re-capture. WEBGL-OPAQUE means apply the onCapture hook or trust the user's on-screen view. Input: \`{ filename: 'canvas/<name>.<ext>' }\` (instance file, not class dir). The browser tab must be open to the project's canvas.
 
-### Card-class-private server compute — sidecars
+### Card-class server compute — pick the cheapest viable tier
 
-When a card class needs server-side compute (ML inference, vector search, RAG, file scanning, anything that needs persistent state across calls, anything you'd otherwise reach for \`mica_shell\` to run a Python script per query) — declare a **sidecar** in the card class's \`metadata.json\` and ship a \`server.py\` or \`server.ts\` alongside \`card.js\`:
+When a card needs server-side capability, decompose into subtasks and pick the cheapest viable tier per subtask. Cards routinely mix tiers; the sidecar (if any) carries only the residue cheaper tiers can't deliver. Walk in order and stop at the cheapest tier that fits:
+
+1. **Tier 1 — \`card.js\` + browser APIs (+ CDN libs).** Default. Rendering, interaction, IndexedDB, \`mica.fetch\` to public HTTPS. Add libs via \`discover-dependency\`.
+2. **Tier 2 — \`llm-direct\` handler.** Set \`metadata.handler = "llm-direct"\`. Streams LLM tokens to card.js with zero server-side code. Right for LLM-in/LLM-out subtasks (rewrite, classify, summarize, persona chat).
+3. **Tier 3 — \`process\` handler.** Set \`metadata.handler = "process"\`. Spawns a CLI tool with stdin/stdout/stderr to card.js, zero server-side code. Right for one-shot CLI wraps (\`tesseract\`, \`pdftotext\`, \`ffmpeg\`, \`whisper.cpp\`, \`jq\`, \`convert\`, ...). **Evaluate BEFORE Tier 4 — many tasks that look sidecar-shaped are actually process-shaped.** Verify the CLI is on PATH with \`mica_shell which <tool>\` before committing.
+4. **Tier 4 — sidecar (\`server.py\` / \`server.ts\`).** Most expensive tier; reach for it last. Right when you need warm model weights, in-memory indexes, multi-step JSON composition, or library imports too heavy to load per request. Author per the handbook's sidecar section.
+
+The decomposition belongs in \`canvas/<name>-spec.md\` as an \`## Architecture decomposition\` table (subtask, tier, mechanism, verify) so the user can redirect tier choices at the approval gate (per \`develop\` step 2). A PDF RAG card decomposes as: UI (Tier 1) + PDF extract (Tier 3 \`pdftotext\`) + embed/index (Tier 4 sidecar with retrieval ONLY, no LLM call in Python) + answer stream (Tier 2). A speech-to-text + summary card is Tiers 1+3+3+2 with zero sidecar code. Full hierarchy + worked examples + language-choice criteria in \`card-class-handbook\` § "Card architecture: decompose into the cheapest viable tier."
+
+### Tier 4: sidecar authoring (when Tiers 1–3 don't fit)
+
+Declare the sidecar in the card class's \`metadata.json\` and ship a \`server.py\` or \`server.ts\` alongside \`card.js\`:
 
 \`\`\`json
 {
@@ -29,9 +40,7 @@ When a card class needs server-side compute (ML inference, vector search, RAG, f
 
 Mica spawns the sidecar on the first call from \`card.js\`, manages its lifecycle (lazy-spawn, idle-shutdown at 10 min, orphan-reaper at backend startup), and exposes it via \`mica.fetch('mica-internal://card-server/<path>')\`. The sidecar reads \`MICA_PORT\` from env (assigned from pool 8200-8299), binds 127.0.0.1, and must implement the \`ready_path\` endpoint. Runtime auto-detected from the entry file extension: \`.py\` → Python, \`.ts\`/\`.tsx\` → tsx, \`.js\`/\`.mjs\` → node.
 
-The classic signal you need a sidecar: you'd otherwise tell the LLM to run a Python script via \`mica_shell\` per query (vector search, embedding generation, RAG). Move that compute into the card class. Latency drops from multi-second LLM-orchestrated round-trips to ~50ms warm calls. The full schema, server templates, lifecycle facts, and pitfalls are in \`card-class-handbook\` § Card-class-private sidecars — read it before authoring.
-
-**The sidecar pattern is HTTP-adapter-for-a-library.** The 80% case: you pick the canonical Python/Node package for your capability (sentence-transformers for embeddings, FAISS for vector search, pymupdf for PDFs, etc.), wrap it in a small FastAPI / \`node:http\` service, and expose JSON endpoints. The handbook ships four worked examples (\`hello-llm\`, \`hello-embed\`, \`hello-faiss\`, \`hello-pdf\`) that ARE the pattern — copy the matching one, swap 2-3 lines, done.
+**The sidecar pattern is HTTP-adapter-for-a-library.** Pick the canonical Python/Node package for your capability (sentence-transformers for embeddings, FAISS for vector search, pymupdf for PDFs, etc.), wrap it in a small FastAPI / \`node:http\` service, expose JSON endpoints. The handbook ships worked examples (\`hello-llm\`, \`hello-embed\`, \`hello-faiss\`, \`hello-pdf\`) that ARE the pattern — copy the matching one, swap 2-3 lines, done. Full schema, server templates, lifecycle facts, and pitfalls in \`card-class-handbook\` § Card-class-private sidecars — read it before authoring.
 
 **For Mica-owned capabilities, use \`mica_sidecar\` (not the library).** The local LLM is the one capability Mica owns end-to-end (URL, model, vLLM \`enable_thinking\` trap, auth). The sidecar code never sees any of it:
 

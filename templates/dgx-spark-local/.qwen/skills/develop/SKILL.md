@@ -107,6 +107,30 @@ solution references its researched library or the documented
 exists, update it instead of starting fresh. Use `grow-canvas` if a
 new doc dimension is needed.
 
+**For canvas card classes: the spec MUST include an `## Architecture
+decomposition` section** — a Markdown table mapping each subtask to
+the cheapest viable tier (per `card-class-handbook` § "Card
+architecture: decompose into the cheapest viable tier"). Columns:
+subtask, tier (1–4), mechanism (library / handler name / CLI tool /
+sidecar entry), verification step.
+
+| Subtask | Tier | Mechanism | Verify |
+|---|---|---|---|
+| Render chat history | 1 | card.js + DOM | render_capture |
+| Extract PDF text | 3 | `pdftotext` via process handler | spawn from card.js, first stdout chunk |
+| Embed + index | 4 | sidecar (Python: sentence-transformers + FAISS) | end-to-end click |
+| Generate answer | 2 | `llm-direct`, retrieved chunks as systemPrompt | end-to-end click |
+
+The decomposition table is what the user approves alongside the rest
+of the spec. If they want to redirect a tier choice ("don't write a
+sidecar for that — use `process`", "skip the LLM, just use a regex"),
+they do it HERE, before any code is written. Skipping the
+decomposition table means the architecture decision is made
+silently during step 4 — the failure mode where every card grows a
+sidecar even when cheaper tiers fit. Standalone and doc-only
+artifacts skip the table; the four-tier hierarchy only applies to
+Mica cards.
+
 **Approval gate (tenet 14)**: After writing the spec, **your turn
 ENDS**. Do NOT advance to step 3 or 4 in this turn — no
 `decompose-task`, no `mica_create_class`, no code writes. (The
@@ -150,6 +174,24 @@ Decomposition gates. Default to inline.
 ### 4. Execute — branch by artifact type
 
 #### 4a. Canvas artifact
+
+**First: re-read the decomposition table.** Before any
+`mica_create_class` / `mica_edit_class_file` call, re-load
+`canvas/<name>-spec.md`. The file is on disk but no longer in
+your working memory by this step. Each row of the Architecture
+Decomposition table is a **contract requirement**, not a
+suggestion: if a row assigns its subtask to Tier 2/3/4, card.js
+must use the named primitive (`llm-direct` handler, `process`
+handler, or sidecar fetch) for that subtask — not a client-side
+substitute, even if your training prior offers a familiar
+browser-API path for the same job. The most common drift mode is
+"spec assigned Tier 3 (or 4) but training prior offers a
+familiar browser-native path, so card.js silently bypasses the
+spec." Walk the table row by row and confirm each row's named
+mechanism appears in card.js BEFORE writing the file. If a row's
+mechanism can't be implemented as specified, the spec is wrong —
+go back to step 2 and revise (re-approval required), don't drift
+the implementation.
 
 The handbook is already loaded from step 2 — re-invoke
 `skill('card-class-handbook')` only if it was somehow skipped

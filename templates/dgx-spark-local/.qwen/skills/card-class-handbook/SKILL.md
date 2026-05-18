@@ -36,6 +36,164 @@ might fit but you're not sure, `read_file
 .mica/card-classes/<name>/metadata.json` (or the upstream
 `card-classes/<name>/metadata.json` for built-ins) before deciding.
 
+## Card architecture: decompose into the cheapest viable tier
+
+A non-trivial card decomposes into subtasks. **For each subtask,
+pick the cheapest viable tier from the four below.** Cards
+routinely mix tiers — UI in card.js, an LLM stream from the
+`llm-direct` handler, a CLI wrap from the `process` handler, plus a
+sidecar for the residue that genuinely needs warm state. The
+architecture lives in this decomposition; the rest of the handbook
+tells you how to author each piece.
+
+Walk the tiers in order. Stop at the cheapest tier that fits each
+subtask. Anything you can do at Tier 1 you should not do at Tier 4.
+
+### Tier 1 — `card.js` + browser APIs (+ optional CDN libraries)
+
+The default. Rendering, interaction, animation, DOM, WebGL, Canvas,
+Web Audio, IndexedDB, WebSockets. Plus any CDN library loaded via
+`<script>` tag (Three.js, D3, transformers.js, pdf.js, Chart.js,
+papaparse, ...). External HTTPS via `mica.fetch` (SSRF-guarded
+proxy). Add libraries via `discover-dependency` +
+`mica_install_skills` for canonical CDN URLs.
+
+**Use when:** the subtask is achievable entirely in the browser.
+Most data viz, most interactive UI, "show me something pretty,"
+CRUD on the card's own file, calls to a public HTTPS API.
+
+### Tier 2 — `mica.openChannel('turn', ...)` against the `llm-direct` handler
+
+LLM streaming chat with a configured persona and model. The card
+declares `metadata.handler = "llm-direct"` (or passes
+`systemPrompt`/`model` per openChannel call). Mica owns the LLM
+connection, streams tokens to card.js, and handles the vLLM
+`enable_thinking` trap. **Zero server-side code.**
+
+**Use when:** the subtask is "LLM in / LLM out" with no
+server-side preprocessing. Examples: persona chat, "rewrite this
+paragraph in a different tone," "explain like I'm five," code
+review of pasted code, summarize-pasted-text. See § Server-side
+channel handlers (or `curl /api/handlers`) for exact
+`sendShapes` / `recvShapes`.
+
+### Tier 3 — `mica.openChannel('session')` against the `process` handler
+
+Spawn a CLI tool; bidirectional stdin/stdout/stderr. Card sends
+`{ type: "start", command, args, ... }` to invoke; tool stdout
+streams back as `stdout` events. Mica owns the lifecycle (no
+sidecar boilerplate, no FastAPI, no port). **Zero server-side
+code.** Worked example: `hello-process` in the catalog below.
+
+**Use when:** the subtask is a one-shot wrap of an existing CLI
+tool. The CLI ecosystem is enormous and many tasks have no good
+Python/Node library equivalent — Tier 3 reaches all of it with one
+line of card.js. **Evaluate Tier 3 BEFORE Tier 4 — many tasks
+that look sidecar-shaped are actually process-shaped.**
+
+| Task | Tier-3 invocation |
+|---|---|
+| OCR an image | `tesseract image.png - -l eng` |
+| Extract PDF text | `pdftotext input.pdf -` |
+| Transcode audio | `ffmpeg -i in.mp3 -ar 16000 out.wav` |
+| Resize image | `convert in.jpg -resize 800x out.jpg` |
+| Query JSON | `jq '.users[] \| .name' data.json` |
+| Whisper.cpp transcribe | `whisper.cpp -f audio.wav -m model.bin` |
+| Compress | `tar czf out.tar.gz dir/` |
+| Code format | `prettier --write file.ts` |
+
+Verify the CLI tool is on `$PATH` before committing to it — `which
+<tool>` via `mica_shell` is enough.
+
+### Tier 4 — sidecar (`server.py` or `server.ts` in `.mica/card-classes/<name>/`)
+
+A long-running HTTP service wrapping libraries that need persistent
+warm state, structured JSON I/O, or composition the cheaper tiers
+can't deliver. The most expensive tier; reach for it last. Author
+per § Card-class-private sidecars below.
+
+**Use when:** none of tiers 1–3 cover the subtask. Specifically:
+
+- Model weights loaded once, reused across requests
+  (sentence-transformers, diffusers, transformers).
+- In-memory indexes (FAISS, vector DB clients).
+- Heavy library imports that take seconds to load (PyTorch, JAX).
+- Multi-step composition with a structured JSON contract
+  (retrieval that returns chunks + scores + sources together).
+- File-system operations beyond what `mica.*` exposes.
+
+**Language choice within Tier 4 — by ecosystem fit, not preference:**
+
+| Task domain | Pick |
+|---|---|
+| ML inference / embedding / vector search | Python (sentence-transformers, FAISS, transformers, torch) |
+| PDF / OCR / scientific data | Python (pymupdf, pandas, scipy) |
+| Speech-to-text / image generation | Python (whisper, diffusers) |
+| Time-series / forecasting | Python (prophet, statsmodels) |
+| Async I/O heavy / scraping | TS (cheerio, axios) |
+| JSON-shaped APIs / web stack | TS (native fit) |
+| When in doubt | Python (broader ecosystem) |
+
+### Worked decompositions
+
+Each subtask gets exactly one tier. The sidecar (if any) carries
+ONLY the residue that can't live in cheaper tiers.
+
+**PDF RAG card:**
+- UI (upload, chat history, status) → Tier 1
+- PDF text extraction → Tier 3 (`pdftotext`)
+- Chunk + embed + index + search → Tier 4 sidecar (Python:
+  sentence-transformers + FAISS)
+- LLM answer generation, streamed → Tier 2 (`llm-direct`,
+  retrieved chunks as systemPrompt)
+
+The sidecar does ONLY retrieval — no LLM call in Python, no PDF
+parsing in Python. A fraction of the surface area you'd write if
+the sidecar swallowed every step.
+
+**Speech-to-text + summary card:**
+- UI → Tier 1
+- Audio transcoding → Tier 3 (`ffmpeg`)
+- Transcription → Tier 3 (`whisper.cpp`)
+- Summary → Tier 2 (`llm-direct`)
+
+Zero sidecar code.
+
+**Web-scrape + summarize card:**
+- UI → Tier 1
+- HTML extraction → Tier 4 sidecar (TS: cheerio — Python ecosystem
+  worse here)
+- Summary → Tier 2
+
+**Image-generation card:**
+- UI → Tier 1
+- SDXL inference → Tier 4 sidecar (Python: diffusers — model load
+  is expensive, warm state required)
+- No LLM step; output is an image.
+
+**Currency converter card:**
+- UI + external API fetch → Tier 1 (card.js + `mica.fetch`)
+- No sidecar. No handler. No process.
+
+### The decomposition belongs in the spec
+
+The decomposition is a required section of
+`canvas/<name>-spec.md`, written before the approval gate. Format:
+a Markdown table with one row per subtask. Columns: subtask, tier,
+mechanism (library / handler / CLI / sidecar entry), verification
+step.
+
+| Subtask | Tier | Mechanism | Verify |
+|---|---|---|---|
+| Render chat history | 1 | card.js + DOM | render_capture |
+| Extract PDF text | 3 | `pdftotext` via process handler | spawn from card.js, capture first stdout chunk |
+| Vector index + search | 4 | sidecar (Python: sentence-transformers + FAISS) | end-to-end click |
+| Generate answer | 2 | `llm-direct`, retrieved chunks as systemPrompt | end-to-end click |
+
+The table is what the user approves. If they want a different
+tier assignment ("don't write a sidecar for that — use process"),
+they redirect HERE, not after the code is written.
+
 ## Author atomically with `mica_create_class`
 
 Card classes are authored via the `mica_create_class` tool, NOT raw `write_file`.
@@ -515,22 +673,155 @@ extensions stay routed by file extension as in the table above.
 The `metadata.handler` mechanism is additive and only kicks in
 when present.
 
+### Chained subprocess calls — when one subtask spans two CLI tools in sequence
+
+Some Tier-3 subtasks need two CLI tools where stage 1's output (a
+file written to canvas-root, or buffered stdout) becomes stage 2's
+input. Open the channel ONCE, then call `start` per stage. The
+card class declares `metadata.handler = "process"` once; the
+handler accepts sequential `start` messages on the same channel
+(one running subprocess at a time).
+
+```js
+const ch = mica.openChannel("session");
+let onExit = null;   // resolver for the currently-running stage
+let stderr = "";
+
+ch.onData((msg) => {
+  if (msg.type === "stderr") stderr += msg.data;
+  if (msg.type === "exit")   { onExit?.(msg.code); onExit = null; stderr = ""; }
+  if (msg.type === "error")  { onExit?.(-1); onExit = null; }
+});
+
+async function run(label, command, args) {
+  const code = await new Promise((resolve) => {
+    onExit = resolve;
+    ch.send({ type: "start", command, args });
+  });
+  if (code !== 0) throw new Error(`${label} failed (exit ${code}): ${stderr}`);
+}
+
+// stage 1: extract text from the uploaded PDF to an intermediate file
+await run("extract", "pdftotext", [pdfPath, "extracted.txt"]);
+
+// stage 2: count lines of the extracted text
+await run("count", "wc", ["-l", "extracted.txt"]);
+
+mica.onDestroy(() => { try { ch.close(); } catch {} });
+```
+
+**Why this idiom matters.** Without it, the most common drift is
+substituting stage 1 with a client-side equivalent (Web Audio API
+for audio, FileReader for parsing, browser-native HTML parsing,
+etc.) because one `openChannel` plus a familiar browser call
+*feels* simpler than two `openChannel` invocations. When the
+decomposition table assigns BOTH stages to Tier 3, both stages
+need a process call — substitution is spec drift (see `develop`
+step 4a).
+
+**Sequencing notes:**
+
+- One subprocess per channel at a time. Stage 2's `start` only
+  fires after stage 1's `exit` resolves the Promise.
+- Stage 1's output usually goes to a file (canvas-relative path);
+  stage 2 reads that file. If output is small, buffer `stdout` in
+  the handler and pass it to stage 2 via `{ type: "input", data:
+  ... }` messages (then `{ type: "close_stdin" }` to signal EOF).
+- For >2 stages: extend the pattern. `await run(...)` per stage,
+  in declaration order.
+
+### Worked example — `hello-process` (Tier 3, zero sidecar code)
+
+The minimal working `process`-handler card. Three files in
+`.mica/card-classes/hello-process/` — no `server.py`, no port, no
+`/health`, no `mica_restart_sidecar` cycle. Replace `echo` with
+`tesseract`, `pdftotext`, `ffmpeg`, `whisper.cpp`, `jq`, or any CLI
+and the rest is identical.
+
+**`metadata.json`** — declares the process handler:
+
+```json
+{
+  "extension": ".hello-process",
+  "badge": "HPR",
+  "defaultTitle": "Hello (Process)",
+  "handler": "process",
+  "dependencies": { "scripts": [], "styles": [] }
+}
+```
+
+**`card.html`** — input + button + output pane:
+
+```html
+<div class="hello-card">
+  <div class="hello-input-row">
+    <input type="text" class="hello-name" placeholder="Your name…" value="World" />
+    <button class="hello-greet">Greet</button>
+  </div>
+  <pre class="hello-output">click Greet to spawn echo</pre>
+</div>
+```
+
+**`card.js`** — opens the channel, sends `start`, streams stdout:
+
+```js
+const nameEl = container.querySelector('.hello-name');
+const btnEl  = container.querySelector('.hello-greet');
+const outEl  = container.querySelector('.hello-output');
+
+const ch = mica.openChannel("session");   // no args at open time
+let buffer = "";
+
+ch.onData((msg) => {
+  if (msg.type === "started") { buffer = ""; outEl.textContent = "(running)"; }
+  if (msg.type === "stdout")  { buffer += msg.data; outEl.textContent = buffer; }
+  if (msg.type === "stderr")  { outEl.textContent += "\nstderr: " + msg.data; }
+  if (msg.type === "exit")    { btnEl.disabled = false; }
+  if (msg.type === "error")   { outEl.textContent = "spawn error: " + msg.message; btnEl.disabled = false; }
+});
+
+btnEl.addEventListener('click', () => {
+  btnEl.disabled = true;
+  ch.send({
+    type: "start",
+    command: "echo",
+    args: [`Hello, ${nameEl.value.trim() || 'World'}!`],
+  });
+});
+
+mica.onDestroy(() => { try { ch.close(); } catch {} });
+```
+
+**What to observe on first run:**
+
+1. Click runs `echo`. `started` arrives, then `stdout` with the
+   greeting, then `exit`. Total round trip ~50ms — no sidecar
+   warmup tax because there is no sidecar.
+2. Re-clicks reuse the same channel (Mica spawns a fresh subprocess
+   per `start` message; the channel itself stays open).
+3. Backend log shows nothing process-specific — the subprocess is
+   not Mica-instrumented.
+
+**This is the right shape any time you'd otherwise reach for a
+sidecar just to shell out to a CLI tool.** Pair `process`-handler
+subtasks with Tier 1 UI and Tier 2 LLM streams to build cards that
+need no sidecar at all (e.g. speech-to-text + summary in §
+Worked decompositions above).
+
 ## Card-class-private sidecars — `metadata.sidecar` + `server.py` / `server.ts`
 
 The reusable handlers above are Mica-provided primitives (LLM stream, subprocess wrapper). When your card needs **its own server-side logic** — ML inference, vector search, RAG, file analysis, anything that needs persistent memory or runtime that doesn't fit a generic handler — declare a **sidecar**. Mica spawns a card-class-owned HTTP service on a port from its pool, manages lifecycle, and exposes it to your `card.js` via a stable URL scheme. The card class becomes self-contained: UI + server logic in one directory.
 
-### When to declare a sidecar vs reach for an existing handler
+### When a sidecar is the right tier
 
-Decision rules in priority order:
-
-| Signal | Action |
-|---|---|
-| You'd use `llm-direct` to wrap a single LLM prompt | Use `llm-direct` (no sidecar needed) |
-| You'd use `process` to wrap a CLI tool with line-delimited output | Use `process` |
-| You need to load a model / embeddings / chunks ONCE and serve queries against the warm state | **Sidecar** |
-| You need to compose multiple steps (vector search → LLM → return) per user action | **Sidecar** |
-| You're tempted to make the chat agent run `mica_shell` with a Python one-liner per query | **Sidecar** (this is the canonical signal that compute should live in the card class, not the LLM's tool-call loop) |
-| The compute is one-shot and trivial (string format, simple math, single API call) | Stay in `card.js` |
+Decide via the four-tier walkthrough in § Card architecture above —
+sidecar is Tier 4, the most expensive tier, and it should carry only
+the residue cheaper tiers can't deliver (warm model weights,
+in-memory indexes, multi-step composition with structured JSON).
+If a single `llm-direct` prompt or a `process`-wrapped CLI tool gets
+the job done, that's the right tier; don't escalate to a sidecar to
+wrap something cheaper. The rest of this section is the
+how-to-author once you've already decided.
 
 ### Declaring the sidecar in `metadata.json`
 
