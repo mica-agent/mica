@@ -383,6 +383,26 @@ const scene = new THREE.Scene();
 
 Use Pattern B whenever `mica_inspect_url` reports `format: 'ESM'`. The dynamic-import URL is the SAME ESM URL — you just load it inside card.js instead of via metadata.scripts. The library is accessed via the namespace object returned from `await import(...)`, not via a global.
 
+**Pattern B — addons / sub-modules.** Many modern ESM libraries split their surface across multiple sub-paths. The main namespace import gives you the core; addons live at sibling URLs under the same version. **Each addon is its own dynamic import.** Examples:
+
+```js
+// Three.js — core + commonly-used addons
+const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js");
+const { OrbitControls }  = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js");
+const { GLTFLoader }     = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js");
+const { RGBELoader }     = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/RGBELoader.js");
+const { EffectComposer } = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js");
+
+// Now use them as if they were on THREE
+const controls = new OrbitControls(camera, renderer.domElement);
+```
+
+**URL convention for Three.js addons:** `https://cdn.jsdelivr.net/npm/three@<ver>/examples/jsm/<category>/<Name>.js` — where `<category>` is `controls` / `loaders` / `postprocessing` / `helpers` / `lines` / `effects` / `objects` / `misc` / `nodes` etc., and `<Name>` is the exact class name. The destructured key in `const { Name } = await import(...)` IS the class name.
+
+**General principle for ESM libraries with sub-paths:** if the threejs-skills (or any other skill pack) shows `import { X } from "package/addons/sub/path.js"` in its examples, translate to `const { X } = await import("https://cdn.jsdelivr.net/npm/package@<ver>/<corresponding-path>")`. The CDN path mirrors the package's internal layout — find it via `https://www.jsdelivr.com/package/npm/<package>` or `mica_inspect_url` on a guessed path.
+
+**Anti-pattern: reimplementing addons inline.** When OrbitControls or similar isn't on the main namespace, DO NOT write your own `function OrbitControls(...) { ... }` in card.js. That's a 200-line reimplementation of debugged library code that will be subtly wrong. The correct fix is always a second `await import(...)` for the addon's URL.
+
 **Wrong combinations fail loudly.** The `deps-reachable` validator at metadata-write time refuses ESM URLs in `dependencies.scripts` with a prescriptive error naming both fixes. If you see `\`dependencies.scripts\`: <url> — detected ES module`, switch to Pattern B (or pin to a UMD-compatible version of the library).
 
 **Library-specific notes.** Three.js dropped UMD after r147 — pin to `three@0.146.0` for Pattern A, or use Pattern B for any later version. transformers.js / @xenova/* / lit / preact-signals are ESM-only — Pattern B mandatory.
