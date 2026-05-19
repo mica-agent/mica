@@ -577,6 +577,55 @@ async function checkUrlReachable(url: string, timeoutMs = 5000): Promise<Reachab
   return result;
 }
 
+// Format check for `dependencies.scripts` URLs. <script> tags require UMD /
+// classic-script format; an ESM module declared in metadata.scripts will
+// fetch fine but the library's namespace will be undefined at runtime. This
+// catches the mismatch at create-time with a prescriptive error.
+//
+// Cache shares the same TTL as reachability — both are about "what's at this
+// URL right now" and invalidate together.
+const FORMAT_HEAD_BYTES = 4096;
+type ScriptFormat = "UMD" | "ESM" | "CommonJS" | "data" | "unknown" | "unchecked";
+const scriptFormatCache = new Map<string, { format: ScriptFormat; checkedAt: number }>();
+
+async function checkScriptFormat(url: string, timeoutMs = 5000): Promise<ScriptFormat> {
+  const cached = scriptFormatCache.get(url);
+  if (cached && Date.now() - cached.checkedAt < DEP_REACHABILITY_TTL_MS) {
+    return cached.format;
+  }
+  let format: ScriptFormat = "unchecked";
+  try {
+    // Late import — avoids a static import cycle (cardValidators is imported
+    // from index.ts very early; inspectUrl pulls registry types that import
+    // back into the agent-tools graph).
+    const { detectFormat } = await import("./agentTools/inspectUrl.js");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { Range: `bytes=0-${FORMAT_HEAD_BYTES - 1}` },
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      if (res.ok || res.status === 206) {
+        const body = await res.text();
+        const detected = detectFormat(body);
+        format = (detected.format ?? "unknown") as ScriptFormat;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    // Network failure during the format probe is non-fatal — reachability
+    // check already covers "URL doesn't load." Leave format as "unchecked"
+    // so the validator doesn't claim ESM on a probe failure.
+    format = "unchecked";
+  }
+  scriptFormatCache.set(url, { format, checkedAt: Date.now() });
+  return format;
+}
+
 /** Fetches every URL in `dependencies.scripts` and `dependencies.styles`
  *  and broadcasts a card-error listing any that don't return 200/206/3xx.
  *  Runs after metadata.json writes; returns silently when the file is
@@ -632,23 +681,57 @@ export async function enforceDependenciesReachable(
     urls.map(({ url, field }) => checkUrlReachable(url).then((r) => ({ url, field, ...r }))),
   );
   const failures = results.filter((r) => !r.ok);
-  if (failures.length === 0) return;
 
-  const failureLines = failures
-    .map((f) => {
-      const detail = f.status === 0 ? f.error || "fetch failed" : `HTTP ${f.status}`;
-      return `  • \`dependencies.${f.field}\`: ${f.url} — ${detail}`;
-    })
-    .join("\n");
-
-  opts.onError?.(
-    `\`${dirName}/metadata.json\` declares dependency URLs that don't resolve:\n${failureLines}\n\n` +
-    `Tier-1 verification (per the card-class-handbook skill) must pass BEFORE these go in metadata.json. ` +
-    `Common causes: wrong version, missing \`@scope/\` prefix, wrong subpath. Look up the real URL via:\n` +
-    `  • npm registry: \`curl -s https://registry.npmjs.org/<pkg>\` → \`dist-tags.latest\` + \`main\` field\n` +
-    `  • jsdelivr file index: \`https://www.jsdelivr.com/package/npm/<pkg>\` lists every file in the published tarball\n` +
-    `Note for Three.js specifically: \`examples/js/\` was removed after r147 (so OrbitControls etc. are not script-loadable in 0.149+). Pin to <= 0.147 if you need vanilla \`<script>\` use, or pick a different 3D library.`,
+  // For every reachable `scripts` URL, also check the format. A 200 OK with
+  // ESM contents is a silent failure mode — fetches fine but the library's
+  // namespace is undefined at runtime. Catching it here, at metadata.json
+  // write time, saves the agent 5+ turns of "the card renders blank, no
+  // errors, why?"
+  const reachableScripts = results.filter((r) => r.ok && r.field === "scripts");
+  const formatChecks = await Promise.all(
+    reachableScripts.map((r) => checkScriptFormat(r.url).then((format) => ({ ...r, format }))),
   );
+  const esmInScripts = formatChecks.filter((r) => r.format === "ESM");
+
+  if (failures.length === 0 && esmInScripts.length === 0) return;
+
+  const sections: string[] = [];
+
+  if (failures.length > 0) {
+    const failureLines = failures
+      .map((f) => {
+        const detail = f.status === 0 ? f.error || "fetch failed" : `HTTP ${f.status}`;
+        return `  • \`dependencies.${f.field}\`: ${f.url} — ${detail}`;
+      })
+      .join("\n");
+    sections.push(
+      `\`${dirName}/metadata.json\` declares dependency URLs that don't resolve:\n${failureLines}\n\n` +
+      `Tier-1 verification (per the card-class-handbook skill) must pass BEFORE these go in metadata.json. ` +
+      `Common causes: wrong version, missing \`@scope/\` prefix, wrong subpath. Look up the real URL via:\n` +
+      `  • npm registry: \`curl -s https://registry.npmjs.org/<pkg>\` → \`dist-tags.latest\` + \`main\` field\n` +
+      `  • jsdelivr file index: \`https://www.jsdelivr.com/package/npm/<pkg>\` lists every file in the published tarball`,
+    );
+  }
+
+  if (esmInScripts.length > 0) {
+    const esmLines = esmInScripts
+      .map((f) => `  • \`dependencies.scripts\`: ${f.url} — detected ES module (top-level import/export)`)
+      .join("\n");
+    sections.push(
+      `\`${dirName}/metadata.json\` declares ES-module URL(s) in \`dependencies.scripts\` — \`<script>\` tags require UMD / classic-script format, not ESM. The URL fetches fine but the library's namespace will be UNDEFINED at runtime (e.g. \`THREE\` is not declared on \`window\` because ES modules don't pollute globals).\n${esmLines}\n\n` +
+      `Two fixes:\n` +
+      `  1. PIN to a UMD-compatible version of the same library. Many libraries shipped UMD historically and dropped it later — check the jsdelivr file index (\`https://www.jsdelivr.com/package/npm/<pkg>\`) for older versions that include a non-module \`.js\` or \`.min.js\` build under \`/build/\` or \`/dist/\`. Verify with \`mica_inspect_url\` that \`format: 'UMD'\` before committing.\n` +
+      `  2. REMOVE from \`metadata.scripts\` and load via dynamic import inside card.js (no metadata declaration needed):\n` +
+      `       const NS = await import("<url>");\n` +
+      `       // use NS.foo, NS.Bar, ...\n` +
+      `     CARD_SHIM wraps card.js in an async function — top-level \`await\` works without any extra setup.\n\n` +
+      `Library-specific notes:\n` +
+      `  • Three.js dropped UMD after r147. Last UMD build: \`https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.min.js\`. For >= r148, use dynamic import.\n` +
+      `  • transformers.js / @xenova/* / lit / preact-signals: ESM-only — use dynamic import.`,
+    );
+  }
+
+  opts.onError?.(sections.join("\n\n"));
 }
 
 // (former enforceCardClassPath retired. The regex-based wrong-path detector

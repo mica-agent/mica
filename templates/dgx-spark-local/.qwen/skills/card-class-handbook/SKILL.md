@@ -350,6 +350,43 @@ in `card.html`. External libraries go in
 
 **Dependencies — invoke `discover-dependency` FIRST.** If your card needs ANY external library (Three.js, Chart.js, Leaflet, D3, anything), your next action is to invoke the `discover-dependency` skill BEFORE writing card.js or metadata.json. The skill does the curl-verification, picks a working CDN URL, and records the decision on canvas. Don't write CDN URLs from memory — it's how stale versions, ESM-only URLs that don't load in card.js's classic-script context, and hallucinated paths sneak in. One curl-verified UMD URL beats three rounds of "Failed to load dependency" debugging.
 
+#### UMD vs ESM — two loading patterns
+
+Mica cards support two CDN-loading patterns. **Always run `mica_inspect_url` first** to learn which one the library needs (the `format` field is `'UMD' | 'ESM' | 'CommonJS' | 'data' | 'unknown'`).
+
+**Pattern A — UMD (`metadata.scripts` + global).** The default. `<script>` tag in card.html loads the library; access via a global namespace from card.js.
+
+```json
+// metadata.json
+{ "dependencies": { "scripts": ["https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.min.js"], "styles": [] } }
+```
+
+```js
+// card.js
+const scene = new THREE.Scene();  // THREE is the global from the UMD bundle
+```
+
+Use Pattern A whenever `mica_inspect_url` reports `format: 'UMD'`. This is most older libraries and stable versions of modern ones.
+
+**Pattern B — Dynamic ES module import (`await import` in card.js, nothing in metadata.scripts).** For libraries that ship ESM only. CARD_SHIM wraps card.js in an async function, so top-level `await` works natively.
+
+```json
+// metadata.json — note empty scripts array
+{ "dependencies": { "scripts": [], "styles": [] } }
+```
+
+```js
+// card.js — top of file
+const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.min.js");
+const scene = new THREE.Scene();
+```
+
+Use Pattern B whenever `mica_inspect_url` reports `format: 'ESM'`. The dynamic-import URL is the SAME ESM URL — you just load it inside card.js instead of via metadata.scripts. The library is accessed via the namespace object returned from `await import(...)`, not via a global.
+
+**Wrong combinations fail loudly.** The `deps-reachable` validator at metadata-write time refuses ESM URLs in `dependencies.scripts` with a prescriptive error naming both fixes. If you see `\`dependencies.scripts\`: <url> — detected ES module`, switch to Pattern B (or pin to a UMD-compatible version of the library).
+
+**Library-specific notes.** Three.js dropped UMD after r147 — pin to `three@0.146.0` for Pattern A, or use Pattern B for any later version. transformers.js / @xenova/* / lit / preact-signals are ESM-only — Pattern B mandatory.
+
 ### `metadata.json`
 
 ```json

@@ -49,7 +49,7 @@ interface InspectResult {
 // jsdelivr/unpkg JS files almost always lead with one of these
 // patterns when they're browser-loadable. Order matters: try the
 // most-specific (UMD wrapper detection) first.
-function detectFormat(body: string): {
+export function detectFormat(body: string): {
   format: InspectResult["format"];
   bodyHint?: string;
 } {

@@ -91,7 +91,15 @@ Order: \`mica_list_handlers\` + \`mica_list_classes\` FIRST, \`curl /api/handler
 
 ### Dependency-URL verification — \`mica_inspect_url\`, NOT raw curl
 
-\`mica_inspect_url\` — server-side inspection of a candidate dependency URL. Does the work of \`curl -sI\` + \`curl -s | head\` in one call but returns ~300-500 bytes of structured JSON instead of 1-3KB of raw body that would sit in chat history. Input: \`{ url }\`. Output: \`{ ok, status, contentType, sizeBytes, format, bodyHint, methods? }\` where \`format\` is \`'UMD' | 'ESM' | 'CommonJS' | 'data' | 'unknown'\`. Use this INSTEAD of curl for every library / plugin verification — it keeps the body bytes out of chat history and gives the format detection structurally. UMD = browser-loadable; CommonJS or ESM = WON'T load as a \`<script>\` in a card class (mark unverified for browser use). On 404 the result includes a \`reason\` with the jsdelivr file-listing pivot for the package. The optional \`methods\` array (extracted from the body sample) is the antidote to runtime \`X.method is not a function\` errors — read it when the agent has hallucinated a method name. Raw curl is still right for: jsdelivr file listings on 404 pivot, CORS header checks on asset URLs, and live-service smoke tests.
+\`mica_inspect_url\` — server-side inspection of a candidate dependency URL. Does the work of \`curl -sI\` + \`curl -s | head\` in one call but returns ~300-500 bytes of structured JSON instead of 1-3KB of raw body that would sit in chat history. Input: \`{ url }\`. Output: \`{ ok, status, contentType, sizeBytes, format, bodyHint, methods? }\` where \`format\` is \`'UMD' | 'ESM' | 'CommonJS' | 'data' | 'unknown'\`. Use this INSTEAD of curl for every library / plugin verification — it keeps the body bytes out of chat history and gives the format detection structurally. On 404 the result includes a \`reason\` with the jsdelivr file-listing pivot for the package. The optional \`methods\` array (extracted from the body sample) is the antidote to runtime \`X.method is not a function\` errors — read it when the agent has hallucinated a method name.
+
+**Format dispatches the loading pattern** for card-class dependencies:
+- \`format: 'UMD'\` → put the URL in \`metadata.scripts\`; access via the library's global namespace (\`THREE.Scene()\`, \`Chart()\`, etc.).
+- \`format: 'ESM'\` → put nothing in \`metadata.scripts\`; load inside card.js via \`const NS = await import("<url>");\` and use \`NS.Scene()\`. CARD_SHIM wraps card.js in an async function so top-level \`await\` works.
+- \`format: 'CommonJS'\` → not browser-loadable; pivot to a UMD or ESM build.
+- ESM URL in metadata.scripts is now caught at create time by the \`deps-reachable\` validator with a prescriptive two-fix error; don't try to force it.
+
+Raw curl is still right for: jsdelivr file listings on 404 pivot, CORS header checks on asset URLs, and live-service smoke tests.
 
 ### Python-package verification for sidecars — \`mica_inspect_python_package\`
 
