@@ -168,6 +168,7 @@ const MAX_HISTORY = 50;
 // dead under yolo) AND agentTools/micaShell.ts (the LIVE enforcement path
 // via MCP) share one source of truth.
 import { DANGEROUS_BASH_PATTERNS, isBackgroundWithoutRedirect } from "./micaAgentGuards.js";
+import { recordUserMessage } from "./userMessageTracker.js";
 
 /**
  * Check whether a tool call attempts to write a path that's owned by a
@@ -1513,6 +1514,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       const turnSource = source;
       busy = true; sessionState.busy = true;
       markProjectActivity(sessionProject, +1);
+      // Record real-user messages so toolPrerequisites can enforce the
+      // spec-approval gate (refuse mica_create_class until a real user
+      // message arrives after the spec write). "user" and "voice" count;
+      // "file-changes" and "recovery" are Mica-injected and don't count.
+      if (source === "user" || source === "voice") {
+        recordUserMessage(sessionProject, ctx.filename);
+      }
       console.log(`[mica-agent] processMessage START: ${message.slice(0, 60)}`);
       // Reset the per-turn render_capture cap. Fresh user message ⇒ fresh
       // budget for screenshot verifications. Without this the cap leaks

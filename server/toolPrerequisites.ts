@@ -41,6 +41,7 @@ import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { WORKSPACE_DIR } from "./files.js";
 import { hasSkillBeenInvoked } from "./skillInvocationTracker.js";
+import { getLastUserMessageAt } from "./userMessageTracker.js";
 
 export interface PredicateContext {
   /** Project name (e.g. "map2"). Never null at predicate time —
@@ -200,6 +201,70 @@ const requiredLibrarySkillsInstalled: Predicate = {
   },
 };
 
+// spec-approval-gate: after the spec is written, mica_create_class
+// must wait for a REAL user message before firing. Structural
+// enforcement of the human-in-the-loop checkpoint that orbit4
+// confabulated past: agent wrote canvas/moon-orbit-spec.md, generated
+// a THINKING block "I should end my turn and wait for the user's
+// next message," then in the very next thinking block fabricated
+// "The user said 'go ahead'" and proceeded to mica_create_class —
+// all inside a single agent turn with no real user input between
+// spec-write and class-create.
+//
+// The check compares spec mtime to the last user-message timestamp
+// recorded by userMessageTracker.ts. Only "user" and "voice" source
+// messages are recorded; Mica-injected "file-changes" and "recovery"
+// events don't count as approval. If the spec was written after the
+// last real user message, the agent is trying to skip the gate.
+//
+// Session-scoped: passes when chatFilename is null (caller can't
+// supply session scope — e.g. opencode bridge). The opencode-specific
+// version of this gate is a separate problem; out of scope for v1.
+const specApprovalGate: Predicate = {
+  name: "spec-approval-gate",
+  check: ({ project, projectDir, chatFilename, toolArgs }) => {
+    if (!chatFilename) return { ok: true };
+    const rawName = toolArgs.name;
+    if (typeof rawName !== "string" || !rawName.trim()) return { ok: true };
+    const className = rawName.trim();
+    const specPath = join(projectDir, "canvas", `${className}-spec.md`);
+    if (!existsSync(specPath)) return { ok: true }; // canvasHasSpecForClass handles
+    let specMtime: number;
+    try {
+      specMtime = statSync(specPath).mtimeMs;
+    } catch {
+      return { ok: true };
+    }
+    const lastUserAt = getLastUserMessageAt(project, chatFilename);
+    if (lastUserAt === null) {
+      // No real-user message has been recorded for this session at all.
+      // Defensive pass — the tracker should have a record by the time any
+      // tool fires, but if not, don't block on missing telemetry.
+      return { ok: true };
+    }
+    if (lastUserAt > specMtime) {
+      // A real user message arrived AFTER the spec write — approval crossed.
+      return { ok: true };
+    }
+    // Spec written more recently than the last real user message — agent is
+    // trying to build inside the same turn the spec was written. Refuse.
+    return {
+      ok: false,
+      reason:
+        `canvas/${className}-spec.md was written at ${new Date(specMtime).toISOString()} ` +
+        `but the last real user message arrived at ${new Date(lastUserAt).toISOString()} ` +
+        `(BEFORE the spec). No human-in-the-loop approval has crossed yet.`,
+      nextMove:
+        `End your turn now. Write a concise summary of the spec to the user — what the card ` +
+        `will do, what dependencies it uses, what's in/out of scope — and stop. The user must ` +
+        `send a NEW message approving the spec before mica_create_class can fire. Do NOT ` +
+        `fabricate approval inside a thinking block; the gate is enforced server-side and ` +
+        `you cannot bypass it by imagining the user replied. After the user actually ` +
+        `responds, retry this tool.`,
+    };
+  },
+};
+
 // session-has-card-class-handbook: skill('card-class-handbook') must
 // have been invoked in this chat session. Tracked in
 // skillInvocationTracker.ts; recorded by micaAgent.ts when the agent's
@@ -237,6 +302,7 @@ const sessionHasCardClassHandbook: Predicate = {
 export const TOOL_PREREQUISITES: Record<string, Predicate[]> = {
   mica_create_class: [
     canvasHasSpecForClass,
+    specApprovalGate,
     requiredLibrarySkillsInstalled,
     sessionHasCardClassHandbook,
   ],

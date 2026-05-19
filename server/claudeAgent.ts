@@ -27,6 +27,7 @@ import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
 import { markProjectActivity } from "./projectActivity.js";
+import { recordUserMessage } from "./userMessageTracker.js";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
 // tag the write as agent-originated. Covers the Qwen/OpenRouter dialect
@@ -693,6 +694,14 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       const turnSource = source;
       busy = true; sessionState.busy = true;
       markProjectActivity(sessionProject, +1);
+      // Record real-user messages so toolPrerequisites can enforce the
+      // spec-approval gate (refuse mica_create_class until a real user
+      // message arrives after the spec write). Excludes Mica-injected
+      // sources ("file-changes", "recovery") — those don't count as
+      // human approval.
+      if (source === "user" || source === "voice") {
+        recordUserMessage(sessionProject, ctx.filename);
+      }
       console.log(`[claude-agent] processMessage START: ${message.slice(0, 60)}`);
 
       // Per-turn read tracking — see micaAgent.ts for rationale.
