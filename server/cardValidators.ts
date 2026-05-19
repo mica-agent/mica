@@ -586,14 +586,18 @@ async function checkUrlReachable(url: string, timeoutMs = 5000): Promise<Reachab
 // URL right now" and invalidate together.
 const FORMAT_HEAD_BYTES = 4096;
 type ScriptFormat = "UMD" | "ESM" | "CommonJS" | "data" | "unknown" | "unchecked";
-const scriptFormatCache = new Map<string, { format: ScriptFormat; checkedAt: number }>();
+interface ScriptInfo {
+  format: ScriptFormat;
+  deprecation?: string;
+}
+const scriptFormatCache = new Map<string, { info: ScriptInfo; checkedAt: number }>();
 
-async function checkScriptFormat(url: string, timeoutMs = 5000): Promise<ScriptFormat> {
+async function checkScriptFormat(url: string, timeoutMs = 5000): Promise<ScriptInfo> {
   const cached = scriptFormatCache.get(url);
   if (cached && Date.now() - cached.checkedAt < DEP_REACHABILITY_TTL_MS) {
-    return cached.format;
+    return cached.info;
   }
-  let format: ScriptFormat = "unchecked";
+  let info: ScriptInfo = { format: "unchecked" };
   try {
     // Late import — avoids a static import cycle (cardValidators is imported
     // from index.ts very early; inspectUrl pulls registry types that import
@@ -611,7 +615,10 @@ async function checkScriptFormat(url: string, timeoutMs = 5000): Promise<ScriptF
       if (res.ok || res.status === 206) {
         const body = await res.text();
         const detected = detectFormat(body);
-        format = (detected.format ?? "unknown") as ScriptFormat;
+        info = {
+          format: (detected.format ?? "unknown") as ScriptFormat,
+          ...(detected.deprecation ? { deprecation: detected.deprecation } : {}),
+        };
       }
     } finally {
       clearTimeout(timer);
@@ -620,10 +627,10 @@ async function checkScriptFormat(url: string, timeoutMs = 5000): Promise<ScriptF
     // Network failure during the format probe is non-fatal — reachability
     // check already covers "URL doesn't load." Leave format as "unchecked"
     // so the validator doesn't claim ESM on a probe failure.
-    format = "unchecked";
+    info = { format: "unchecked" };
   }
-  scriptFormatCache.set(url, { format, checkedAt: Date.now() });
-  return format;
+  scriptFormatCache.set(url, { info, checkedAt: Date.now() });
+  return info;
 }
 
 /** Fetches every URL in `dependencies.scripts` and `dependencies.styles`
@@ -682,18 +689,22 @@ export async function enforceDependenciesReachable(
   );
   const failures = results.filter((r) => !r.ok);
 
-  // For every reachable `scripts` URL, also check the format. A 200 OK with
-  // ESM contents is a silent failure mode — fetches fine but the library's
-  // namespace is undefined at runtime. Catching it here, at metadata.json
-  // write time, saves the agent 5+ turns of "the card renders blank, no
-  // errors, why?"
+  // For every reachable `scripts` URL, also check the format + deprecation.
+  // A 200 OK with ESM contents is a silent failure mode — fetches fine but
+  // the library's namespace is undefined at runtime. Deprecation strings
+  // (Three.js r150+ UMD builds emit `console.warn('...deprecated...')` in
+  // their head) are a soft advisory — the URL works today but the agent
+  // should pivot before the next minor version drops UMD entirely. Both
+  // get caught at metadata-write time, saving 5–30 turns of "card renders
+  // blank with no clear error, why?" debugging.
   const reachableScripts = results.filter((r) => r.ok && r.field === "scripts");
   const formatChecks = await Promise.all(
-    reachableScripts.map((r) => checkScriptFormat(r.url).then((format) => ({ ...r, format }))),
+    reachableScripts.map((r) => checkScriptFormat(r.url).then((info) => ({ ...r, ...info }))),
   );
   const esmInScripts = formatChecks.filter((r) => r.format === "ESM");
+  const deprecatedScripts = formatChecks.filter((r) => r.format !== "ESM" && r.deprecation);
 
-  if (failures.length === 0 && esmInScripts.length === 0) return;
+  if (failures.length === 0 && esmInScripts.length === 0 && deprecatedScripts.length === 0) return;
 
   const sections: string[] = [];
 
@@ -728,6 +739,19 @@ export async function enforceDependenciesReachable(
       `Library-specific notes:\n` +
       `  • Three.js dropped UMD after r147. Last UMD build: \`https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.min.js\`. For >= r148, use dynamic import.\n` +
       `  • transformers.js / @xenova/* / lit / preact-signals: ESM-only — use dynamic import.`,
+    );
+  }
+
+  if (deprecatedScripts.length > 0) {
+    const depLines = deprecatedScripts
+      .map((f) => `  • \`dependencies.scripts\`: ${f.url}\n    Deprecation notice from the bundle: "${(f.deprecation ?? "").slice(0, 240)}"`)
+      .join("\n");
+    sections.push(
+      `\`${dirName}/metadata.json\` declares URL(s) that work TODAY but the bundle itself emits a deprecation warning. The URL still loads as UMD and the library global gets defined — but the upstream library is signaling it will REMOVE this build in a future minor version. When that happens the URL will start returning 404 or non-UMD content, and this card will silently break.\n${depLines}\n\n` +
+      `Recommended fixes (pick one, in order of how aggressively to address):\n` +
+      `  1. PIN to an older, safer version. For Three.js, the last build with permanent UMD is \`three@0.146.0\`. Other libraries: check their release notes for the version where UMD was deprecated, pin to the prior release.\n` +
+      `  2. SWITCH to Pattern B (dynamic import inside card.js) so the card uses the library's recommended modern shape and isn't on the deprecation timeline at all. Empty \`metadata.scripts\`, then \`const NS = await import("<esm-url>");\` at the top of card.js.\n\n` +
+      `This is an ADVISORY — the card builds and runs. But the upstream warning is the canonical "this is going away" signal; addressing it now is cheaper than discovering the breakage in production later.`,
     );
   }
 

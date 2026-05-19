@@ -35,6 +35,11 @@ interface InspectResult {
   sizeBytes?: number;
   format?: "UMD" | "ESM" | "CommonJS" | "data" | "unknown";
   bodyHint?: string;
+  /** When the body emits a `console.warn` containing "deprecated" or
+   *  "removed in/with" in its head. Surfaced as a soft advisory — the URL
+   *  works today but pin to a safer version. Three.js r150+ UMD bundles
+   *  are the canonical case. */
+  deprecation?: string;
   /** Public method/function names extracted from the body sample.
    *  Used by the agent when a runtime "X.foo is not a function" error
    *  appears — instead of guessing other method names, the agent reads
@@ -52,6 +57,12 @@ interface InspectResult {
 export function detectFormat(body: string): {
   format: InspectResult["format"];
   bodyHint?: string;
+  /** Set when the bundle emits a `console.warn(...)` containing "deprecated"
+   *  or "removed in/with" in its head — typical of last-gasp UMD builds
+   *  shipped for compatibility (Three.js r150–r159, for example). The
+   *  validator surfaces this as a soft advisory so the agent can pivot
+   *  before the next minor version drops UMD entirely. */
+  deprecation?: string;
 } {
   const head = body.slice(0, 4096);
   const firstNonEmpty = head
@@ -77,6 +88,20 @@ export function detectFormat(body: string): {
   const codeHead = codeLines.join("\n");
   const firstCodeLine = codeLines[0] ?? firstNonEmpty[0];
 
+  // Extract a deprecation notice from the head if present. Pattern:
+  // `console.warn("...deprecated...")` or `console.log("... removed in ...")`.
+  // Captures the inner string so the validator can surface it. The match is
+  // independent of the format detection — UMD bundles increasingly ship with
+  // a deprecation warning prefixed to nudge users toward ESM (Three.js
+  // r150+ is the canonical case).
+  let deprecation: string | undefined;
+  {
+    const m = codeHead.match(/console\.(?:warn|log|error)\s*\(\s*['"`]([^'"`]{0,400})['"`]/);
+    if (m && /\b(deprecated|removed (?:in|with)\b)/i.test(m[1])) {
+      deprecation = m[1];
+    }
+  }
+
   // Data: JSON / CSS / plain text starting with structural punctuation.
   if (/^[{\[]/.test(firstCodeLine)) return { format: "data", bodyHint: firstCodeLine.slice(0, 80) };
 
@@ -89,14 +114,14 @@ export function detectFormat(body: string): {
     // Some bundlers emit: `(self.webpackChunk = ...).push(...)` — also UMD-ish.
     /\(self\.[A-Za-z_$][\w$]*\s*=/.test(firstCodeLine)
   ) {
-    return { format: "UMD", bodyHint: firstCodeLine.slice(0, 80) };
+    return { format: "UMD", bodyHint: firstCodeLine.slice(0, 80), deprecation };
   }
 
   // ESM: top-level import/export statements. Look for them in the
   // code-head (after stripping comments).
   if (/^(import|export)\b/m.test(codeHead)) {
     const line = codeLines.find((l) => /^(import|export)\b/.test(l));
-    return { format: "ESM", bodyHint: (line ?? firstCodeLine).slice(0, 80) };
+    return { format: "ESM", bodyHint: (line ?? firstCodeLine).slice(0, 80), deprecation };
   }
 
   // CommonJS: require()/module.exports/exports.X with no IIFE wrap.
@@ -106,10 +131,28 @@ export function detectFormat(body: string): {
     const line = codeLines.find(
       (l) => /\brequire\s*\(/.test(l) || /\bmodule\.exports\b/.test(l) || /^exports\./.test(l),
     );
-    return { format: "CommonJS", bodyHint: (line ?? firstCodeLine).slice(0, 80) };
+    return { format: "CommonJS", bodyHint: (line ?? firstCodeLine).slice(0, 80), deprecation };
   }
 
-  return { format: "unknown", bodyHint: firstCodeLine.slice(0, 80) };
+  // Fallback UMD detection: bundles whose first code line is a banner
+  // statement (Three.js r150+ leads with `console.warn(...)` deprecating the
+  // UMD build, then the actual wrapper follows in a comma expression). Scan
+  // the codeHead for the classic UMD markers that show up in ALL such
+  // wrappers — `typeof exports === "object"`, `typeof module === "object"`,
+  // `typeof define === "function"`, `define.amd`. Any of these inside the
+  // first 4KB is conclusive evidence the body is a UMD-ish bundle, even when
+  // the first code line is a console.warn or a comma expression that breaks
+  // the strict-first-line pattern above.
+  if (
+    /typeof\s+exports\s*===?\s*['"]object['"]/.test(codeHead) ||
+    /typeof\s+module\s*===?\s*['"]object['"]/.test(codeHead) ||
+    /typeof\s+define\s*===?\s*['"]function['"]/.test(codeHead) ||
+    /\bdefine\s*\.\s*amd\b/.test(codeHead)
+  ) {
+    return { format: "UMD", bodyHint: firstCodeLine.slice(0, 80), deprecation };
+  }
+
+  return { format: "unknown", bodyHint: firstCodeLine.slice(0, 80), deprecation };
 }
 
 // Extract plausible public-method names from a JS bundle's body sample.
@@ -308,6 +351,7 @@ export const inspectUrlTool: AgentToolDef<typeof inputSchema> = {
         sizeBytes: bodySize ?? sizeBytes,
         format: fmt.format,
         bodyHint: fmt.bodyHint,
+        ...(fmt.deprecation ? { deprecation: fmt.deprecation } : {}),
         ...(methods && methods.length > 0 ? { methods } : {}),
       };
       return { text: JSON.stringify(result) };

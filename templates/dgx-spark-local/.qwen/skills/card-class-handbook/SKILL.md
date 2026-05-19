@@ -1546,6 +1546,28 @@ right move; it should be a last resort, not a debugging step.
 
 ## Pitfalls
 
+### Partial edit followed by full-file rewrite eats your own fix
+
+The single most common iteration-cost amplifier across observed builds (rag2–rag6, hotdog, orbit2, orbit3). The shape:
+
+1. **Turn N**: agent makes a small targeted edit via `mica_edit_class_file({ old_string, new_string })`. The fix is precise — replaces one line, e.g. `const clock = THREE.Clock;` → `const clock = new THREE.Clock();`.
+
+2. **Turn N+1 or later**: agent reads the file, decides to "improve" something unrelated, and calls `mica_edit_class_file({ content: "<entire new card.js>" })` — full-file rewrite. The rewrite re-types card.js from scratch based on the agent's mental model, which may still reflect the PRE-fix state of the file (the agent's training-memory pattern is `const clock = THREE.Clock`, not the post-fix `new THREE.Clock()`).
+
+3. **Result**: the previous turn's fix is silently reverted. The original bug is back. The card errors again. The agent doesn't notice because nothing tells it "you just undid your last fix."
+
+**Why this happens:** the partial edit lives only in the file on disk; the agent's working memory of the file's contents is whatever it last *read* via `read_file`. If the agent edits without re-reading, its mental model of the file is stale. A subsequent full-file rewrite, generated from that stale model, eats the targeted fix.
+
+**Rules to avoid this:**
+
+1. **Prefer targeted edits over full rewrites whenever possible.** The `mica_edit_class_file({ old_string, new_string })` form preserves every line you didn't touch. The `mica_edit_class_file({ content: ... })` form replaces everything.
+
+2. **If you MUST do a full rewrite, `read_file` immediately before** so your content includes the latest state — including any targeted fix from a prior turn. Stale-model rewrites are the bug; reading-before-writing is the prevention.
+
+3. **After a full rewrite, re-verify with `render_capture`** (with `user_intent`) so a re-introduced bug surfaces in the same turn. If the captioner reports MISMATCH on a request you thought was already satisfied, that's the eat-your-own-fix signal.
+
+4. **Multiple turns of `clock.getElapsedTime is not a function` across consecutive edits** is the canonical observable symptom — same error after each edit means the edit isn't actually changing the broken line. Stop editing; re-read the file; verify the broken line is what you think it is.
+
 ### Card class not appearing? Never restart.
 
 The file watcher hot-reloads card-class directories on disk
