@@ -12,6 +12,7 @@ import { existsSync } from "fs";
 import { z } from "zod";
 import { WORKSPACE_DIR, micaDir, readCanvasConfig, clearCardClassMetaCache, findCardClassInLibraries } from "../files.js";
 import { lintCardJsContent } from "../cardValidators.js";
+import { readSpecForClass, urlFromDep, type ParsedSpec } from "../specFrontmatter.js";
 
 // SDK loader — these are populated lazily once micaAgent loads the SDK.
 // We don't import them statically because cardClassTools.ts is loaded at
@@ -62,7 +63,7 @@ function classDir(project: string, name: string): string {
 // ── Tool: mica_create_class ────────────────────────────────────────
 
 export const createClassSchema = {
-  name: z.string().describe("Card class identifier (becomes the directory name and, by default, the file extension). Lowercase alphanumeric + dashes only — e.g. \"world-clock\", \"burndown\". No dots. THIS IS THE ONLY REQUIRED FIELD; everything else has reasonable defaults."),
+  name: z.string().describe("Card class identifier (becomes the directory name and, by default, the file extension). Lowercase alphanumeric + dashes only — e.g. \"world-clock\", \"burndown\". No dots. THIS IS THE ONLY REQUIRED FIELD. When `canvas/<name>-spec.md` has YAML frontmatter at its top (a `---`-delimited `card-class:` block per card-class-handbook § \"Spec format\"), Mica reads the other fields (badge, defaultTitle, scripts, styles, handler, sidecar, primaryFile) from there — you can call this tool with just `{ name }` and the spec frontmatter fills the rest. Explicit args still win over frontmatter when both are present."),
   badge: z.string().optional().describe("1-4 character abbreviation shown on the card's title bar (e.g. \"WCK\", \"BRN\"). Defaults to the first 3 letters of name, uppercase."),
   defaultTitle: z.string().optional().describe("Human-readable card title (e.g. \"World Clock\", \"Burndown\"). Defaults to title-cased name (\"world-clock\" → \"World Clock\")."),
   extension: z.string().optional().describe("File extension instances will use, with leading dot. Defaults to '.' + name. Override only when the extension differs from the directory name (rare)."),
@@ -91,21 +92,65 @@ export async function createClassImpl(
     return { isError: true, content: [{ type: "text", text: nameResult.error }] };
   }
   const name = nameResult.name;
+
+  // Spec-frontmatter fallback: when canvas/<name>-spec.md has a YAML
+  // frontmatter block at its top, read structured fields from there and
+  // use them as defaults for any args the caller didn't pass. This
+  // collapses the spec → tool-call translation step: the agent writes
+  // the structured data ONCE in the spec, mica_create_class reads it
+  // directly. Caller's explicit args still win (override). Specs without
+  // frontmatter parse to null — backward compatible with the prior shape
+  // where the agent had to pass every field to mica_create_class.
+  let parsedSpec: ParsedSpec | null = null;
+  try {
+    parsedSpec = await readSpecForClass(projectDir(project), name);
+  } catch {
+    // Spec read failed — treat as no frontmatter. The canvasHasSpecForClass
+    // predicate handles missing-spec separately; we don't fail closed here.
+  }
+  if (parsedSpec?.parseError) {
+    return {
+      isError: true,
+      content: [{
+        type: "text",
+        text:
+          `Spec frontmatter at canvas/${name}-spec.md has a YAML syntax error:\n  ${parsedSpec.parseError}\n\n` +
+          `Fix the YAML block at the top of the spec (between \`---\` delimiters), then retry. ` +
+          `Common issues: unquoted strings containing colons, mixed tabs/spaces, missing dashes for list items.`,
+      }],
+    };
+  }
+  const fm = parsedSpec?.cardClass ?? null;
+
   const extension = normalizeExtension(args.extension, name);
 
-  // Auto-default badge and defaultTitle from name. Local/weak models often
-  // can't reliably construct 3 string params on a tool call; making name the
-  // only required field eliminates that failure mode. Caller can still pass
-  // explicit badge/defaultTitle for nicer display values.
-  const badgeRaw = String(args.badge || "").trim();
+  // Auto-default chain: caller's explicit arg → spec frontmatter → derived
+  // default. Each successive layer fills in only what the prior left empty.
+  // Local/weak models often can't reliably construct multiple string params
+  // on one tool call; with frontmatter populated, the agent can call
+  // mica_create_class with just { name } and Mica fills everything else.
+  const badgeRaw = String(args.badge ?? fm?.badge ?? "").trim();
   const badge = badgeRaw || name.replace(/-/g, "").slice(0, 4).toUpperCase();
   if (badge.length > 4) return { isError: true, content: [{ type: "text", text: `badge "${badge}" too long — keep it 1-4 chars` }] };
 
-  const defaultTitleRaw = String(args.defaultTitle || "").trim();
+  const defaultTitleRaw = String(args.defaultTitle ?? fm?.default_title ?? "").trim();
   const defaultTitle = defaultTitleRaw || name
     .split("-")
     .map(p => p.charAt(0).toUpperCase() + p.slice(1))
     .join(" ");
+
+  // Pre-merge the remaining frontmatter-eligible fields so downstream code
+  // (existing-class diff, metadata-build, recovery path) reads from a
+  // single resolved snapshot. Bare-string URLs and structured
+  // {url, format, version} entries both collapse to plain string arrays
+  // via urlFromDep for compatibility with the existing metadata.json shape.
+  const resolvedScripts: string[] | undefined =
+    args.scripts ?? (fm?.dependencies?.scripts?.map(urlFromDep));
+  const resolvedStyles: string[] | undefined =
+    args.styles ?? (fm?.dependencies?.styles?.map(urlFromDep));
+  const resolvedHandler: string | undefined = args.handler ?? fm?.handler;
+  const resolvedPrimaryFile: string | undefined = args.primaryFile ?? fm?.primary_file;
+  const resolvedSidecar = args.sidecar ?? fm?.sidecar;
 
   // Idempotency + in-place metadata update:
   //   - Dir exists, metadata.json missing/corrupt → REGENERATE it (recovery).
@@ -149,34 +194,35 @@ export async function createClassImpl(
       if (existing.badge !== badge) changes.push(`badge "${existing.badge}" → "${badge}"`);
       if (existing.defaultTitle !== defaultTitle) changes.push(`defaultTitle "${existing.defaultTitle}" → "${defaultTitle}"`);
       const exScripts = (existing.dependencies?.scripts ?? []).join(",");
-      const nwScripts = (args.scripts ?? []).join(",");
-      if (exScripts !== nwScripts) changes.push(`scripts (${(existing.dependencies?.scripts ?? []).length} → ${(args.scripts ?? []).length})`);
+      const nwScripts = (resolvedScripts ?? []).join(",");
+      if (exScripts !== nwScripts) changes.push(`scripts (${(existing.dependencies?.scripts ?? []).length} → ${(resolvedScripts ?? []).length})`);
       const exStyles = (existing.dependencies?.styles ?? []).join(",");
-      const nwStyles = (args.styles ?? []).join(",");
-      if (exStyles !== nwStyles) changes.push(`styles (${(existing.dependencies?.styles ?? []).length} → ${(args.styles ?? []).length})`);
-      if ((existing.handler ?? "") !== (args.handler ?? "")) changes.push(`handler "${existing.handler ?? ""}" → "${args.handler ?? ""}"`);
-      if ((existing.primaryFile ?? "") !== (args.primaryFile ?? "")) changes.push(`primaryFile "${existing.primaryFile ?? ""}" → "${args.primaryFile ?? ""}"`);
+      const nwStyles = (resolvedStyles ?? []).join(",");
+      if (exStyles !== nwStyles) changes.push(`styles (${(existing.dependencies?.styles ?? []).length} → ${(resolvedStyles ?? []).length})`);
+      if ((existing.handler ?? "") !== (resolvedHandler ?? "")) changes.push(`handler "${existing.handler ?? ""}" → "${resolvedHandler ?? ""}"`);
+      if ((existing.primaryFile ?? "") !== (resolvedPrimaryFile ?? "")) changes.push(`primaryFile "${existing.primaryFile ?? ""}" → "${resolvedPrimaryFile ?? ""}"`);
       const exSidecar = existing.sidecar ? JSON.stringify(existing.sidecar) : "";
-      const nwSidecar = args.sidecar ? JSON.stringify(args.sidecar) : "";
+      const nwSidecar = resolvedSidecar ? JSON.stringify(resolvedSidecar) : "";
       if (exSidecar !== nwSidecar) changes.push(`sidecar (${exSidecar ? "set" : "unset"} → ${nwSidecar ? "set" : "unset"})`);
       updateChanges = changes;
     } catch { /* metadata corrupt — fall through to recovery write below */ }
   }
 
   // Build metadata.json from typed inputs — agent never writes JSON shape
-  // directly. Only Mica-recognized fields land in the file.
+  // directly. Only Mica-recognized fields land in the file. resolvedX
+  // values already incorporated frontmatter fallback above.
   const metadata: Record<string, unknown> = {
     extension,
     badge,
     defaultTitle,
     dependencies: {
-      scripts: args.scripts ?? [],
-      styles: args.styles ?? [],
+      scripts: resolvedScripts ?? [],
+      styles: resolvedStyles ?? [],
     },
   };
-  if (args.handler) metadata.handler = args.handler;
-  if (args.primaryFile) metadata.primaryFile = args.primaryFile;
-  if (args.sidecar) metadata.sidecar = args.sidecar;
+  if (resolvedHandler) metadata.handler = resolvedHandler;
+  if (resolvedPrimaryFile) metadata.primaryFile = resolvedPrimaryFile;
+  if (resolvedSidecar) metadata.sidecar = resolvedSidecar;
 
   await mkdir(dir, { recursive: true });
   // Always write metadata (this is the recovery target — partial states or

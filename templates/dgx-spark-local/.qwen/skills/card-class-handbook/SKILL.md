@@ -203,24 +203,49 @@ Zero sidecar code.
 - UI + external API fetch → Tier 1 (card.js + `mica.fetch`)
 - No sidecar. No handler. No process.
 
-### The decomposition belongs in the spec
+### The decomposition belongs in the spec frontmatter
 
-The decomposition is a required section of
-`canvas/<name>-spec.md`, written before the approval gate. Format:
-a Markdown table with one row per subtask. Columns: subtask, tier,
-mechanism (library / handler / CLI / sidecar entry), verification
-step.
+`canvas/<name>-spec.md` opens with a YAML frontmatter block that holds the structured part of the spec — the contract `mica_create_class` reads directly. Below it, the body is prose (intent, tradeoffs, open questions) for human review.
 
-| Subtask | Tier | Mechanism | Verify |
-|---|---|---|---|
-| Render chat history | 1 | card.js + DOM | render_capture |
-| Extract PDF text | 3 | `pdftotext` via process handler | spawn from card.js, capture first stdout chunk |
-| Vector index + search | 4 | sidecar (Python: sentence-transformers + FAISS) | end-to-end click |
-| Generate answer | 2 | `llm-direct`, retrieved chunks as systemPrompt | end-to-end click |
+```markdown
+---
+card-class:
+  name: pdf-rag                          # MUST match the spec filename stem
+  badge: PRG
+  default_title: PDF RAG
+  handler: ~
+  sidecar:
+    entry: server.py
+    ready_path: /health
+    ready_timeout_ms: 30000
+    python: voice-venv
+  dependencies:
+    scripts: []
+    styles: []
+  subtasks:
+    - {name: "render chat history", tier: 1, mechanism: "card.js + DOM", verify: "render_capture"}
+    - {name: "extract PDF text", tier: 3, mechanism: "pdftotext via process handler", verify: "spawn from card.js, capture first stdout"}
+    - {name: "vector index + search", tier: 4, mechanism: "Python sidecar: sentence-transformers + FAISS", verify: "end-to-end click"}
+    - {name: "generate answer", tier: 2, mechanism: "llm-direct, retrieved chunks as systemPrompt", verify: "end-to-end click"}
+  out_of_scope:
+    - "multi-PDF corpora"
+    - "OCR for image-only PDFs"
+---
 
-The table is what the user approves. If they want a different
-tier assignment ("don't write a sidecar for that — use process"),
-they redirect HERE, not after the code is written.
+# PDF RAG Card
+
+## Overview
+A canvas card that ingests a PDF, indexes its text, and lets the user ask questions …
+[1–3 paragraphs of intent, key tradeoffs, anything the user should review]
+```
+
+**The frontmatter is the contract.** When you call `mica_create_class({ name: "pdf-rag" })` — passing only the name — Mica reads the frontmatter and pulls badge, defaultTitle, dependencies, sidecar, handler, primaryFile from there. You only need to pass extra args explicitly when overriding what the spec said. **Write the structured part once in the spec; don't re-derive it for the tool call.** This eliminates the most common build-time bug (spec says `three@0.146 UMD`, tool call ends up passing `three@0.160 module` — the translation step is gone).
+
+**The `subtasks` array is the decomposition forcing function.** Each entry asks for `{ name, tier, mechanism, verify? }` — the same thinking the older Markdown table forced, in the schema. **Don't skip it on Tier-1-only cards** (just write one row; that's still the discipline working). Skipping is the failure mode where every card silently grows a sidecar.
+
+The frontmatter is what the user approves. If they want a different tier assignment ("don't write a sidecar for that — use process"), they redirect HERE, not after the code is written.
+
+**For sidecar-bearing cards**, the prose body should also include a `## Verified dependencies (sidecar)` section that records `mica_inspect_python_package` results for each Python import (import name, interpreter, version, top-level surface used) — that's human-skim material; the structured frontmatter doesn't capture it. Verify deps BEFORE locking the frontmatter; if any return `installed: false`, change the dep or the interpreter and re-verify.
 
 ## Author atomically with `mica_create_class`
 
@@ -231,9 +256,19 @@ you go through the tool. Raw `write_file` to `.mica/card-classes/...` is
 reserved for *editing existing* class files; class creation is exclusively
 through this tool.
 
-Pull verified `scripts` / `styles` URLs from the canvas decision that
-`develop` step 1 wrote (`discover-dependency` records them in spec.md /
-decisions.md). Don't write CDN URLs from memory.
+**With spec frontmatter (recommended):** call the tool with just `{ name }` (plus optional `card_html` / `card_js` / `card_css` content). Mica reads `canvas/<name>-spec.md`'s frontmatter and pulls everything else (badge, defaultTitle, scripts, styles, handler, sidecar, primaryFile) from there. **Write the structured part once in the spec; don't re-derive it for the tool call** — that translation is where wrong-version / wrong-URL / wrong-shape bugs sneak in.
+
+```
+mica_create_class({
+  name: "world-clock",
+  card_html: "<div class=\"card-world-clock\">...</div>",
+  card_js:   "/* see CANONICAL CARD.JS pattern below */",
+  card_css:  ".card-world-clock { ... }",  // optional
+})
+// metadata.json fields read from canvas/world-clock-spec.md frontmatter
+```
+
+**Without spec frontmatter (legacy / overrides):** any explicit arg wins over the spec. Pass badge, defaultTitle, scripts, styles, handler, sidecar, primaryFile inline when you need to override the spec OR when the spec has no frontmatter block. Pull verified `scripts` / `styles` URLs from the canvas decision that `discover-dependency` wrote — don't write CDN URLs from memory.
 
 ```
 mica_create_class({

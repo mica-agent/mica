@@ -99,49 +99,47 @@ both this spec step and the code step (4a); no double-load.
 **For standalone / doc-only artifacts**: skip the handbook — no
 `mica.*` surface to ground against.
 
-Write `canvas/<name>-spec.md`: what, why, files involved, **dependencies
-(with the library decisions from step 1 already baked in — versions,
-CDN URLs, global names)**, subproblems → solutions (each subproblem's
-solution references its researched library or the documented
-"no-library-fits, custom" decision), out-of-scope items. If a spec
-exists, update it instead of starting fresh. Use `grow-canvas` if a
-new doc dimension is needed.
+Write `canvas/<name>-spec.md`. **For canvas card classes**, the spec uses a structured shape: a YAML frontmatter block at the top (the contract `mica_create_class` reads directly), then human-readable prose below for review.
 
-**For canvas card classes: the spec MUST include an `## Architecture
-decomposition` section** — a Markdown table mapping each subtask to
-the cheapest viable tier (per `card-class-handbook` § "Card
-architecture: decompose into the cheapest viable tier"). Columns:
-subtask, tier (1–4), mechanism (library / handler name / CLI tool /
-sidecar entry), verification step.
+```markdown
+---
+card-class:
+  name: world-clock                      # MUST match the spec filename stem
+  badge: WCK                             # 1–4 chars
+  default_title: World Clock
+  handler: ~                             # null unless using a built-in handler (llm-direct, llm-agent, process)
+  sidecar: ~                             # null unless this card needs a server.py / server.ts
+  dependencies:
+    scripts:
+      - {url: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js", format: UMD, version: "1.9.4"}
+    styles:
+      - "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+  subtasks:
+    - {name: "render world map", tier: 1, mechanism: "card.js + Leaflet UMD", verify: "render_capture"}
+    - {name: "show 4 clock times", tier: 1, mechanism: "card.js + Date()", verify: "render_capture"}
+  out_of_scope:
+    - "timezone autocomplete (defer to v2)"
+    - "DST history (Intl.DateTimeFormat is enough)"
+---
 
-**If any row in the decomposition is Tier 4 (sidecar): the spec MUST
-ALSO include a `## Verified dependencies (sidecar)` table.** For each
-Python package the sidecar will import, call
-`mica_inspect_python_package({ name, python })` BEFORE finalizing the
-spec, and record the result (import name, interpreter, version,
-top-level surface used). If any dep returns `installed: false`, change
-the dep or the interpreter selection before locking the spec — do
-NOT commit an unverified `import` to server.py. See
-`card-class-handbook` § Tier 4 for the table format. Same discipline
-as Tier 1's "verify CDN URLs return 200" and Tier 3's "verify CLI
-tools are on PATH" — pre-write verification across all tiers.
+# World Clock
 
-| Subtask | Tier | Mechanism | Verify |
-|---|---|---|---|
-| Render chat history | 1 | card.js + DOM | render_capture |
-| Extract PDF text | 3 | `pdftotext` via process handler | spawn from card.js, first stdout chunk |
-| Embed + index | 4 | sidecar (Python: sentence-transformers + FAISS) | end-to-end click |
-| Generate answer | 2 | `llm-direct`, retrieved chunks as systemPrompt | end-to-end click |
+## Overview
+A canvas card that shows a Leaflet world map with 4 city clocks overlaid …
+[1–3 paragraphs of human-readable intent, tradeoffs, and any open questions]
+```
 
-The decomposition table is what the user approves alongside the rest
-of the spec. If they want to redirect a tier choice ("don't write a
-sidecar for that — use `process`", "skip the LLM, just use a regex"),
-they do it HERE, before any code is written. Skipping the
-decomposition table means the architecture decision is made
-silently during step 4 — the failure mode where every card grows a
-sidecar even when cheaper tiers fit. Standalone and doc-only
-artifacts skip the table; the four-tier hierarchy only applies to
-Mica cards.
+**The frontmatter is the contract.** `mica_create_class` reads it directly when the agent calls the tool with just `{ name }`. Explicit args to the tool still override, but the agent's life is easier when they don't have to be passed twice. Fill the frontmatter once; the build flows from there.
+
+**Required frontmatter fields**: `name`. **Strongly recommended**: `badge`, `default_title`, `dependencies` (verified URLs from step 1), `subtasks` (one row per subtask with its tier assignment per `card-class-handbook` § decomposition). **As-needed**: `handler` (only when a built-in channel handler fits), `sidecar` (only when Tier-4 server compute is required), `out_of_scope` (capture things you decided NOT to build).
+
+**The `subtasks` array is the decomposition forcing function.** Each entry asks for `{ name, tier, mechanism, verify? }` — the same thinking the older Markdown table forced, in the schema. **Don't skip it on Tier-1-only cards** (just write one row; that's still the discipline working). Skipping it is the failure mode where every card silently grows a sidecar.
+
+**For sidecar-bearing cards (`sidecar:` non-null OR any subtask `tier: 4`)**: before locking the frontmatter, call `mica_inspect_python_package({ name, python })` for each Python import the sidecar will use. Record the version + top-level surface in the prose section below — humans skim this when reviewing. If any package returns `installed: false`, change the package or the interpreter selection BEFORE the spec ships. Same Tier-1-pattern as verifying CDN URLs return 200 and Tier-3-pattern as verifying CLI tools are on PATH — pre-write verification at every tier.
+
+**The frontmatter is what the user approves at the gate.** When the user wants to redirect a tier choice ("don't sidecar that — use `process`"), they edit the YAML directly OR send a chat message naming the change. Either way, the structured part is small enough to skim in seconds.
+
+Standalone and doc-only artifacts skip frontmatter entirely — the four-tier hierarchy only applies to Mica cards.
 
 **Approval gate (tenet 14)**: After writing the spec, **your turn
 ENDS**. Do NOT advance to step 3 or 4 in this turn — no
