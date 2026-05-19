@@ -110,10 +110,14 @@ card-class:
   handler: ~                             # null unless using a built-in handler (llm-direct, llm-agent, process)
   sidecar: ~                             # null unless this card needs a server.py / server.ts
   dependencies:
-    scripts:
+    umd_scripts:                         # <script>-tag-loaded UMD URLs ONLY
       - {url: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js", format: UMD, version: "1.9.4"}
     styles:
       - "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+    # ESM URLs do NOT go in umd_scripts. Load them inside card.js via:
+    #   const NS = await import("https://cdn.jsdelivr.net/npm/<pkg>@<ver>/<esm-path>");
+    # The CARD_SHIM wraps card.js in an async function — top-level await works.
+    # Document ESM deps in the prose body below for human review.
   subtasks:
     - {name: "render world map", tier: 1, mechanism: "card.js + Leaflet UMD", verify: "render_capture"}
     - {name: "show 4 clock times", tier: 1, mechanism: "card.js + Date()", verify: "render_capture"}

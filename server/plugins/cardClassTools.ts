@@ -144,8 +144,13 @@ export async function createClassImpl(
   // single resolved snapshot. Bare-string URLs and structured
   // {url, format, version} entries both collapse to plain string arrays
   // via urlFromDep for compatibility with the existing metadata.json shape.
+  // `umd_scripts` is the frontmatter slot for `<script>`-tag-loaded CDN
+  // URLs. The name is explicit about format so the agent can't put ESM
+  // URLs here by mistake (no ambiguous "scripts" slot to misuse). ESM
+  // libraries are loaded inside card.js via `await import(url)`; they
+  // have no frontmatter slot because they don't write into metadata.json.
   const resolvedScripts: string[] | undefined =
-    args.scripts ?? (fm?.dependencies?.scripts?.map(urlFromDep));
+    args.scripts ?? (fm?.dependencies?.umd_scripts?.map(urlFromDep));
   const resolvedStyles: string[] | undefined =
     args.styles ?? (fm?.dependencies?.styles?.map(urlFromDep));
   const resolvedHandler: string | undefined = args.handler ?? fm?.handler;

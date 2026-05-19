@@ -220,8 +220,10 @@ card-class:
     ready_timeout_ms: 30000
     python: voice-venv
   dependencies:
-    scripts: []
+    umd_scripts: []                      # <script>-tag-loaded UMD URLs ONLY
     styles: []
+    # ESM URLs do NOT go in umd_scripts. Load them inside card.js via
+    # await import(url) and document them in the prose body for human review.
   subtasks:
     - {name: "render chat history", tier: 1, mechanism: "card.js + DOM", verify: "render_capture"}
     - {name: "extract PDF text", tier: 3, mechanism: "pdftotext via process handler", verify: "spawn from card.js, capture first stdout"}

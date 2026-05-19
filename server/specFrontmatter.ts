@@ -69,10 +69,15 @@ export interface CardClassFrontmatter {
    *  directories containing a specific file. */
   primary_file?: string;
   dependencies?: {
-    /** CDN URLs loaded via <script> tag (UMD only — ESM URLs are
-     *  refused at metadata-write time by the deps-reachable validator). */
-    scripts?: Array<string | SpecDependencyEntry>;
-    /** CDN URLs loaded via <link rel="stylesheet">. */
+    /** CDN URLs loaded via `<script>` tag in card.html — **UMD only**.
+     *  ESM URLs do NOT go here; they're loaded inside card.js via
+     *  `await import(url)`. The deps-reachable validator refuses ESM
+     *  URLs in this slot at metadata-write time with a prescriptive
+     *  error naming both fixes. Format detection runs against the
+     *  body content (Three.js r150+ UMD bundles that ship a
+     *  console.warn deprecation prefix are still recognized as UMD). */
+    umd_scripts?: Array<string | SpecDependencyEntry>;
+    /** CDN URLs loaded via `<link rel="stylesheet">`. */
     styles?: Array<string | SpecDependencyEntry>;
   };
   /** Required for canvas card classes. Each row maps a subtask to its
