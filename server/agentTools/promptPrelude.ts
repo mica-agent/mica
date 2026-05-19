@@ -11,7 +11,11 @@ These tools come from Mica itself — same names, same input/output shape, same 
 
 ### Visual verification
 
-\`render_capture\` — verify a rendered card. Captures a PNG of the card on the canvas and returns a text result whose first line is a verdict tag — \`[render_capture: CLEAN]\`, \`[render_capture: ERRORS — N buffered]\`, \`[render_capture: WEBGL-OPAQUE]\`, or \`[render_capture: CAP-REACHED]\`. The tag tells you the next move; follow it. CLEAN means write your final summary and end the turn. ERRORS means fix each listed error and re-capture. WEBGL-OPAQUE means apply the onCapture hook or trust the user's on-screen view. Input: \`{ filename: 'canvas/<name>.<ext>' }\` (instance file, not class dir). The browser tab must be open to the project's canvas.
+\`render_capture\` — verify a rendered card. Captures a PNG and returns a text result whose first line is a verdict tag — \`[render_capture: CLEAN | ERRORS | WEBGL-OPAQUE | CAP-REACHED | MATCHES | MISMATCH | UNVERIFIABLE | INTENT-UNPARSED]\`. The tag tells you the next move; follow it. Input: \`{ filename, user_intent? }\` (instance file path; pass \`user_intent\` whenever the user just made a UX request).
+
+**Pass \`user_intent\` on every UX-correction follow-up turn** (e.g. "the label should say X not Y", "spinner is stuck", "result is in the wrong place"). When supplied, the captioner COMPARES the image against the request and returns MATCHES / MISMATCH / UNVERIFIABLE instead of just CLEAN. **MISMATCH means do NOT declare done** — the visible UI doesn't match what the user asked for; edit and re-capture. UNVERIFIABLE means the request is about behavior a still image can't show (animations, post-click state) — describe expected behavior in your summary or trigger the state change before re-capturing. Without \`user_intent\`, the loop runs in describe-only mode and \`CLEAN\` can mean "no JS errors but the UI may still be wrong" — that's the gaslight you avoid by always passing intent on UX follow-ups.
+
+Verdict cheat sheet: CLEAN → end turn (initial build, no UX claim to verify). ERRORS → fix each listed error and re-capture. WEBGL-OPAQUE → apply the onCapture hook or trust user's view. MATCHES → end turn (intent satisfied). MISMATCH → edit + re-capture with same intent. UNVERIFIABLE → describe expected behavior to user. INTENT-UNPARSED → captioner didn't follow format; read the caption manually. CAP-REACHED → end the turn with a summary.
 
 ### Card-class server compute — pick the cheapest viable tier
 
@@ -70,6 +74,16 @@ TypeScript: \`import mica from "mica-sidecar"; await mica.llm.chat({ messages: [
 ### Shell — use \`mica_shell\`, NOT \`run_shell_command\`
 
 \`mica_shell\` — runs shell commands with Mica's safety guards. The SDK's built-in \`run_shell_command\` is excluded from your tool surface in this session because it bypasses our guards in yolo mode. Use \`mica_shell\` for ALL shell needs (curl, ls, grep, git, npm, etc.). Same parameters as \`run_shell_command\` (\`command\`, \`description\`, \`is_background\`, \`cwd\`, \`timeout\`) plus refusal-with-reason for commands that would: kill Mica's backend (pkill tsx, kill <backend-pid>), kill Mica's ports (3002/5173/8012/8013), run scripts/stop.sh/restart.sh/start.sh from inside the agent (you run INSIDE the backend's process tree — these kill you mid-call), or place card-class files outside \`.mica/card-classes/\`. Returns structured \`{ exit_code, stdout, stderr, duration_ms }\` as JSON text. If you genuinely need a backend restart, ASK THE USER — they're outside your process tree.
+
+### Capability discovery — what does Mica already provide?
+
+Before reaching for CDN libraries or external services, list what's already wired into this Mica install. Three tools cover the inventory:
+
+- **\`mica_list_handlers\`** — every registered channel handler (\`llm-direct\`, \`llm-agent\`, \`process\`, ...) with whenToUse, args summary, and modelConstraints (vision support, image limits, output token caps, model-specific gotchas). **The first stop for any "card needs LLM / vision / classification / subprocess wrap" subproblem.** Common reach-for: image classification → \`llm-direct\` + \`qwen3-vl-local\` (NOT TFJS/MobileNet/transformers.js); CLI wrap → \`process\` handler; chat with persona → \`llm-direct\` (text model).
+- **\`mica_list_classes\`** — every card class registered (project-scoped + built-in). Now includes each class's \`handler\` (or \`(sidecar)\` / \`(static)\`) plus defaultTitle and primaryFile, so you can see at a glance which classes already wrap a capability you might want.
+- **\`curl /api/handlers\`** — full manifest for any handler you've picked: sendShapes, recvShapes, examples (copy-pasteable card.js skeletons), and the modelConstraints block with the actual per-model design info (max images per turn, max image dimension, supported formats, gotchas). Use AFTER list_handlers narrows the choice.
+
+Order: \`mica_list_handlers\` + \`mica_list_classes\` FIRST, \`curl /api/handlers\` for the picked handler's full detail, \`mcp__tavily__tavily_search\` / \`mica_inspect_url\` for open-web library candidates only when Mica doesn't already provide the capability. The discover-dependency skill enforces this ordering in its "Step 0" section.
 
 ### Library-skills discovery
 

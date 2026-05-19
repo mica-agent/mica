@@ -77,6 +77,18 @@ review of pasted code, summarize-pasted-text. See § Server-side
 channel handlers (or `curl /api/handlers`) for exact
 `sendShapes` / `recvShapes`.
 
+**Read `/api/handlers` for the handler you're using BEFORE
+writing card.js.** Every handler's entry there documents
+`argsSchema` (what `openChannel` accepts — model selection, history
+policy, persona prompt, ...), `sendShapes` / `recvShapes` (message
+formats), `examples` (copy-pasteable skeletons covering each
+common usage shape), and `modelConstraints` (per-model limits like
+max images per turn, max image dimension, supported formats, output
+token cap, model-specific notes). That's the design info — limits,
+shapes, knobs — that distinguishes "ships working" from "errors on
+the 5th call." Each handler self-documents there; the handbook stays
+generic, the manifest stays specific.
+
 ### Tier 3 — `mica.openChannel('session')` against the `process` handler
 
 Spawn a CLI tool; bidirectional stdin/stdout/stderr. Card sends
@@ -1406,10 +1418,24 @@ appears on the canvas.
 
 ## Verify with `render_capture`
 
-`render_capture({ filename: "canvas/my.<extension>" })` — inspect
+`render_capture({ filename, user_intent? })` — inspect
 the PNG. JSON validity and `node -c` only prove syntax; only a
 visual check proves the card mounted, the layout works, and no
 error banner appears.
+
+**Pass `user_intent` on every UX-correction follow-up turn.** The
+parameter takes the user's most recent UX request in your own words
+(e.g. `user_intent: "label should say 'Hot Dog' without the 🌭 emoji"`).
+When supplied, the captioner COMPARES the screenshot against the
+request and returns MATCHES / MISMATCH / UNVERIFIABLE instead of the
+plain CLEAN. Omit `user_intent` only on initial build verification
+where there's no specific UX claim to verify yet.
+
+This solves the failure mode where the JS-error buffer is empty
+(CLEAN verdict) but the visible UI is still wrong — so the agent
+declares done, the user looks at the screen, the bug is still there,
+they report it again, and the cycle repeats. With `user_intent`,
+MISMATCH stops that loop at agent-time.
 
 For every CDN script/style URL and every URL hardcoded in
 card.js, `curl -sI -L <url> | head -1` to confirm reachability
@@ -1432,14 +1458,20 @@ Guessing alternate method names is the failure mode that compounds
 
 ### After render_capture: follow the verdict tag
 
-The tool's result starts with one of four verdict tags. Each maps to a single next move:
+The tool's result starts with one of eight verdict tags. Each maps to a single next move:
 
-- `[render_capture: CLEAN]` — write your one-paragraph summary to the user (what you built, key choices) and END THE TURN. Do not call render_capture again.
+- `[render_capture: CLEAN]` — initial build verified (no `user_intent` passed). Write your one-paragraph summary to the user and END THE TURN. Do not call render_capture again.
+- `[render_capture: MATCHES]` — UX request verified against image (you passed `user_intent`, captioner confirmed match). Same terminal state as CLEAN — write the summary and end.
+- `[render_capture: MISMATCH]` — captioner says the visible card does NOT satisfy the user's request. **Do NOT declare done.** Edit (`mica_edit_class_file`), then re-call render_capture with the same `user_intent`. The captioner's EVIDENCE line names what's wrong.
+- `[render_capture: UNVERIFIABLE]` — user's request is about behavior, state, or interaction a still image can't show (animations, post-click state, dynamic updates). Three valid moves: (1) trigger the state change and re-capture, (2) end the turn with a clear summary describing expected behavior so the user can verify on their screen, (3) re-read the request — if it was actually about visible appearance, re-call without `UNVERIFIABLE`-friendly framing.
+- `[render_capture: INTENT-UNPARSED]` — captioner didn't follow the VERDICT/EVIDENCE format. Read the caption manually, decide if the user's request is satisfied, and proceed accordingly.
 - `[render_capture: ERRORS — N buffered]` — fix each listed error (`mica_edit_class_file`), then re-call render_capture once. ERRORS means the build is NOT complete regardless of how the screenshot looks.
 - `[render_capture: WEBGL-OPAQUE]` — captioner sees black; apply the `mica.onCapture` hook or `preserveDrawingBuffer: true` (handbook § "render_capture screenshot is black for WebGL / Three.js cards"). Then re-capture once. Don't iterate on CSS/dependencies/scene composition — that's the phantom-chase failure mode.
 - `[render_capture: CAP-REACHED]` — end the turn with a plain-text summary; the cap resets on the user's next message.
 
-CLEAN is a terminal state: the next thing the agent emits should be the user-visible summary, not another tool call. Don't relitigate "is this really done?" — the tag is the signal.
+CLEAN and MATCHES are terminal states: the next thing the agent emits should be the user-visible summary, not another tool call. Don't relitigate "is this really done?" — the tag is the signal.
+
+**MISMATCH is the most common new failure mode to attend to.** Before MATCHES existed, the agent's habit on a UX-correction turn was: edit → render_capture → CLEAN → "done!" → user re-reports the bug. With MISMATCH, the agent learns mid-turn that the edit didn't actually fix the visible problem and can iterate before the user is involved. **Always pass `user_intent` on UX-correction follow-up turns** so the loop short-circuits at agent-time instead of user-time.
 
 ### Card-error buffer can lag the file
 

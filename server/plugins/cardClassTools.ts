@@ -467,7 +467,16 @@ export async function listClassesImpl(
   const projectClassesDir = join(micaDir(project), "card-classes");
   const builtinClassesDir = join(process.cwd(), "card-classes");
 
-  type Entry = { name: string; extension: string; source: "project" | "builtin"; badge: string };
+  type Entry = {
+    name: string;
+    extension: string;
+    source: "project" | "builtin";
+    badge: string;
+    defaultTitle: string;
+    handler: string;          // metadata.handler if declared, else ""
+    primaryFile: string;      // metadata.primaryFile if declared, else ""
+    hasSidecar: boolean;      // metadata.sidecar declared (Tier 4)
+  };
   const entries: Entry[] = [];
   const seenNames = new Set<string>();
 
@@ -480,12 +489,23 @@ export async function listClassesImpl(
       if (!d.isDirectory()) continue;
       if (seenNames.has(d.name)) continue;  // project takes precedence over builtin
       try {
-        const m = JSON.parse(await readFile(join(dir, d.name, "metadata.json"), "utf-8")) as { extension?: string; badge?: string };
+        const m = JSON.parse(await readFile(join(dir, d.name, "metadata.json"), "utf-8")) as {
+          extension?: string;
+          badge?: string;
+          defaultTitle?: string;
+          handler?: string;
+          primaryFile?: string;
+          sidecar?: unknown;
+        };
         entries.push({
           name: d.name,
           extension: typeof m.extension === "string" ? m.extension : `.${d.name}`,
           source: src,
           badge: typeof m.badge === "string" ? m.badge : "",
+          defaultTitle: typeof m.defaultTitle === "string" ? m.defaultTitle : "",
+          handler: typeof m.handler === "string" ? m.handler : "",
+          primaryFile: typeof m.primaryFile === "string" ? m.primaryFile : "",
+          hasSidecar: Boolean(m.sidecar && typeof m.sidecar === "object"),
         });
         seenNames.add(d.name);
       } catch { /* skip unreadable */ }
@@ -496,11 +516,31 @@ export async function listClassesImpl(
     return { content: [{ type: "text", text: "No card classes registered for this project (project + builtin both empty)." }] };
   }
 
-  const lines = entries.map(e => `  ${e.name.padEnd(20)} ext=${e.extension.padEnd(20)} badge=${e.badge.padEnd(6)} (${e.source})`);
+  // Format each line with the new metadata. When the class declares a
+  // handler or sidecar, surface that BEFORE name padding — that's the
+  // capability signal the agent needs during decomposition. Without it,
+  // `mica_list_classes` looks like a flat name list and the agent reaches
+  // for CDN libraries for capabilities a built-in handler already provides.
+  const lines = entries.map((e) => {
+    const cap = e.handler
+      ? `handler=${e.handler}`
+      : e.hasSidecar
+        ? `(sidecar)`
+        : `(static)`;
+    const title = e.defaultTitle ? `  ${e.defaultTitle}` : "";
+    const primary = e.primaryFile ? `  primaryFile=${e.primaryFile}` : "";
+    return `  ${e.name.padEnd(20)} ext=${e.extension.padEnd(18)} badge=${e.badge.padEnd(6)} ${cap.padEnd(28)} (${e.source})${title}${primary}`;
+  });
   return {
     content: [{
       type: "text",
-      text: `Registered card classes (${entries.length}):\n${lines.join("\n")}\n\nProject classes live at .mica/card-classes/<name>/; builtins at <mica-repo>/card-classes/<name>/. Project takes precedence on name collision.`,
+      text:
+        `Registered card classes (${entries.length}):\n${lines.join("\n")}\n\n` +
+        `Project classes live at .mica/card-classes/<name>/; builtins at <mica-repo>/card-classes/<name>/. Project takes precedence on name collision.\n` +
+        `The capability column shows how each class talks to the backend:\n` +
+        `  handler=<name>   uses a registered channel handler — run mica_list_handlers for what each handler offers and its modelConstraints.\n` +
+        `  (sidecar)        declares its own card-class-private server.py/server.ts (Tier 4).\n` +
+        `  (static)         no server-side compute — pure card.js + browser APIs (Tier 1).`,
     }],
   };
 }

@@ -68,7 +68,7 @@
 	},
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	"forwardPorts": [3002, 5173, 8013, 9000, 9090],
+	"forwardPorts": [3002, 5173, 8013, 8014, 9000, 9090],
 	"portsAttributes": {
 		"3002": {
 			"label": "Mica API",
@@ -80,6 +80,10 @@
 		},
 		"8013": {
 			"label": "Voice STT (Parakeet)",
+			"onAutoForward": "silent"
+		},
+		"8014": {
+			"label": "Voice TTS (Kokoro)",
 			"onAutoForward": "silent"
 		},
 		"9000": {

@@ -30,6 +30,30 @@ Whenever you're about to design or implement a subproblem that pulls from outsid
 - **During bug fixes** (via `fix-bug`): if your fix would need >30 lines of new bespoke code, or pulls in a new external resource, run this skill first.
 - **Recursively, per subproblem.** Picking Leaflet for the map does NOT discharge discovery for sub-features built on top: a day/night terminator overlay is its own library subproblem (`leaflet.terminator`); the tile server is its own asset/service subproblem; the marker icons are their own asset subproblem.
 
+## Step 0 — does Mica already provide this capability?
+
+**Before searching the open web, check Mica's own discovery surface.** Many capabilities are already wired in via channel handlers or built-in card classes — picking those is cheaper than authoring a new CDN dependency, AND it avoids per-card churn for things Mica is responsible for (auth, model selection, error handling, lifecycle).
+
+Three tool calls cover the inventory:
+
+1. **`mica_list_handlers()`** — every registered channel handler (e.g. `llm-direct`, `llm-agent`, `process`) with its `whenToUse`, args, and `modelConstraints` (per-model limits and capabilities — vision support, max images per turn, output token cap, gotchas). **This is THE surface for "Mica already has a vision model / chat model / subprocess wrapper / agent loop."**
+2. **`mica_list_classes()`** — every card class on disk (built-in + project-scoped). Each entry shows the `handler` it uses (or `(sidecar)` / `(static)`) and `defaultTitle`. Tells you whether a card class already wraps the capability you want.
+3. **`curl /api/handlers`** — full manifest detail for any handler you picked: `sendShapes`, `recvShapes`, `examples` (copy-pasteable card.js skeletons covering common usage), `argsSchema` (every config knob). Use AFTER `mica_list_handlers` narrows the choice.
+
+**Common capability → handler mapping (verify each via the tools above; this is recall, not the source of truth):**
+
+| Subproblem | Likely Mica-provided path |
+|---|---|
+| Classify / describe / extract from an image | `llm-direct` + a vision-capable model (`qwen3-vl-local`) — NOT TFJS/MobileNet/transformers.js |
+| Stream LLM completions for chat / summarization / rewriting | `llm-direct` (text-only model like `coder`) |
+| Tool-using agent inside a card | `llm-agent` (lighter than the project-wide chat card) |
+| Wrap a CLI tool (ffmpeg, pdftotext, whisper.cpp, jq) | `process` handler — Tier 3, zero server code |
+| Voice STT / TTS | already-running sidecars (8013 Parakeet, 8014 Kokoro) — see `voice` built-in card class |
+
+If a Mica path fits → spec records *"uses handler X / card class Y; verified via mica_list_handlers"* and you skip web search for that subproblem. If nothing fits → continue to the open-web flow below.
+
+**The failure mode this catches**: agent reaches for `@tensorflow/tfjs` + MobileNet (in-browser ML, 30 MB+ of CDN payload, slow cold start) when `mica.openChannel('turn', { model: 'qwen3-vl-local', history: 'stateless' })` does the same classification with one line. Same anti-pattern for: chat (don't bundle ollama-js when llm-direct is right there), subprocess wraps (don't write a Node `child_process.exec` shim from card.js — that doesn't work), speech (don't ship vosk.js when the voice sidecars exist).
+
 ## Tool choice — pick by content shape
 
 Two real costs on each external call: **wall clock** (how long the tool takes) and **context bloat** (how much of the response sits in chat history for the rest of the session). The cheapest tool depends on the response shape.

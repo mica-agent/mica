@@ -37,6 +37,14 @@ interface DirectArgs {
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+  /** Conversation memory policy. 'persist' (default) retains turn-by-turn
+   *  history across send() calls — the canonical chat pattern. 'stateless'
+   *  treats each send() as a one-shot query: only the system prompt + the
+   *  current user turn reach the model; no history accumulation. Stateless
+   *  is the right pick for classification/generation cards where every
+   *  query is independent — prevents the "history accumulates images and
+   *  hits the model's per-turn cap" failure mode that bit stt7. */
+  history?: "persist" | "stateless";
 }
 
 export function createLlmChatHandler() {
@@ -51,6 +59,7 @@ export function createLlmChatHandler() {
       baseUrl: typeof args.baseUrl === "string" ? args.baseUrl : undefined,
       temperature: typeof args.temperature === "number" ? args.temperature : 0.7,
       maxTokens: typeof args.maxTokens === "number" ? args.maxTokens : 2048,
+      history: args.history === "stateless" ? "stateless" : "persist",
     };
 
     const history: ChatMessage[] = [];
@@ -129,7 +138,22 @@ export function createLlmChatHandler() {
         const endpoint = `${resolveBaseUrl(cfg)}/v1/chat/completions`;
 
         const messageForLlm: string | ContentBlock[] = userContent || userMessage || "";
-        history.push({ role: "user", content: messageForLlm });
+        // History policy: in 'persist' mode we accumulate the turn into the
+        // shared history; in 'stateless' mode we build a fresh messages list
+        // per turn (system + just this user turn) and skip the push so the
+        // next call doesn't see anything carried over. Net effect: stateless
+        // cards (classification, generation) never hit per-turn caps from
+        // accumulated context (e.g. vLLM's "At most 4 images" rejection).
+        const stateless = cfg.history === "stateless";
+        const messagesForLlm: ChatMessage[] = stateless
+          ? [
+              ...(cfg.systemPrompt ? [{ role: "system" as const, content: cfg.systemPrompt }] : []),
+              { role: "user" as const, content: messageForLlm },
+            ]
+          : history;
+        if (!stateless) {
+          history.push({ role: "user", content: messageForLlm });
+        }
         ctx.broadcast({ type: "user", content: userMessage || "[image]" });
         ctx.broadcast({ type: "thinking", model: modelKey });
 
@@ -141,7 +165,7 @@ export function createLlmChatHandler() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               model: modelKey,
-              messages: history,
+              messages: messagesForLlm,
               max_tokens: cfg.maxTokens,
               temperature: cfg.temperature,
               stream: true,
@@ -188,7 +212,7 @@ export function createLlmChatHandler() {
             }
           }
 
-          if (assistantText) {
+          if (assistantText && !stateless) {
             history.push({ role: "assistant", content: assistantText });
           }
           ctx.broadcast({
@@ -234,6 +258,13 @@ export const manifest: HandlerManifest = {
       baseUrl: { type: "string", description: "OpenAI-compatible base URL (without /v1). When set, bypasses the LLM_PORTS table and the model id is forwarded as-is." },
       temperature: { type: "number", description: "Sampling temperature. Default: 0.7." },
       maxTokens: { type: "number", description: "Max output tokens per turn. Default: 2048." },
+      history: {
+        type: "string",
+        enum: ["persist", "stateless"],
+        default: "persist",
+        description:
+          "Conversation memory policy. 'persist' (default) retains turn-by-turn history across send() calls — the canonical chat pattern. 'stateless' treats each send() as a one-shot query: only the system prompt + the current user turn reach the model; no history accumulation. PICK 'stateless' for classification, generation, transformation cards where every query is independent — it prevents the 'accumulated images hit per-turn cap' failure (vLLM rejects more than maxImagesPerTurn — see modelConstraints).",
+      },
     },
   },
   sendShapes: {
@@ -256,7 +287,9 @@ export const manifest: HandlerManifest = {
       "{ type: 'error', error: string } on failure.",
   },
   examples:
-    "// card.js skeleton\n" +
+    "// ── card.js skeleton — TEXT-ONLY persistent chat ─────────────\n" +
+    "// Default history: 'persist' — turn-by-turn history accumulates.\n" +
+    "// Right for chat-style cards where the user has a back-and-forth.\n" +
     "const channel = mica.openChannel('turn', {\n" +
     "  systemPrompt: 'You are a children\\'s storyteller. Reply in 2 short paragraphs.',\n" +
     "  model: 'coder',\n" +
@@ -267,5 +300,62 @@ export const manifest: HandlerManifest = {
     "  if (evt.type === 'error') showError(evt.error);\n" +
     "});\n" +
     "// to send: channel.send({ message: 'Tell me about a frog.' });\n" +
-    "// to abort:  channel.send({ type: 'interrupt' });\n",
+    "// to abort:  channel.send({ type: 'interrupt' });\n" +
+    "// to reset:  channel.send({ type: 'clear' });   // drops history, keeps system prompt\n" +
+    "\n" +
+    "// ── STATELESS classification — vision model (qwen3-vl-local) ─\n" +
+    "// history: 'stateless' makes each send() a one-shot query — no\n" +
+    "// turn history retained. Required for classification/generation\n" +
+    "// cards that send multiple images: otherwise history accumulates\n" +
+    "// images and hits modelConstraints.maxImagesPerTurn (see below).\n" +
+    "//\n" +
+    "// Two REQUIRED differences from text-only:\n" +
+    "//   1. model: vision-capable id like 'qwen3-vl-local' (NOT 'coder').\n" +
+    "//   2. image_url.url MUST be a base64 data: URL.\n" +
+    "//      URL.createObjectURL(file) returns blob:http://localhost:5173/...\n" +
+    "//      The LLM server runs in a DIFFERENT process and cannot fetch\n" +
+    "//      blob: URLs. Use FileReader.readAsDataURL to inline the bytes.\n" +
+    "//   `message` stays REQUIRED — the text turn. `content` is ADDITIONAL.\n" +
+    "//   Resize images that exceed modelConstraints.maxImageDimensionPx BEFORE\n" +
+    "//   sending (HTMLCanvasElement.toDataURL is the canonical browser path).\n" +
+    "const classifyChannel = mica.openChannel('turn', {\n" +
+    "  systemPrompt: 'You classify images. Reply concisely.',\n" +
+    "  model: 'qwen3-vl-local',\n" +
+    "  history: 'stateless',   // ← key for classification cards\n" +
+    "});\n" +
+    "classifyChannel.onData((evt) => {\n" +
+    "  if (evt.type === 'delta') appendToBubble(evt.content);\n" +
+    "  if (evt.type === 'done') finishBubble(evt.content);\n" +
+    "  if (evt.type === 'error') showError(evt.error);\n" +
+    "});\n" +
+    "const reader = new FileReader();\n" +
+    "reader.onload = () => {\n" +
+    "  classifyChannel.send({\n" +
+    "    message: 'What is in this image?',         // REQUIRED — the text turn\n" +
+    "    content: [                                  // ADDITIONAL inputs\n" +
+    "      { type: 'image_url', image_url: { url: reader.result } }\n" +
+    "    ],\n" +
+    "  });\n" +
+    "};\n" +
+    "reader.readAsDataURL(file);  // produces 'data:image/jpeg;base64,...'\n",
+  modelConstraints: {
+    "qwen3-vl-local": {
+      maxImagesPerTurn: 4,
+      maxImageDimensionPx: 1568,
+      supportedImageFormats: ["jpeg", "png", "webp"],
+      maxOutputTokens: 8192,
+      notes: "Vision input must be a data: URL (NOT blob:) — the LLM server cannot fetch browser-process blob URLs. Resize images >1568px (long edge) BEFORE sending, otherwise vLLM rejects with a 400. For classification/generation cards that send multiple images across calls, use `history: 'stateless'` at openChannel — otherwise accumulated images hit the maxImagesPerTurn cap on the 5th call.",
+    },
+    "qwen-vl": {
+      maxImagesPerTurn: 4,
+      maxImageDimensionPx: 1568,
+      supportedImageFormats: ["jpeg", "png", "webp"],
+      maxOutputTokens: 8192,
+      notes: "Alias for qwen3-vl-local. Same constraints.",
+    },
+    "coder": {
+      maxOutputTokens: 8192,
+      notes: "Text-only. Sending image_url content blocks will be ignored or error depending on the model variant.",
+    },
+  },
 };

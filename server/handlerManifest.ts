@@ -43,8 +43,28 @@ export interface HandlerManifest {
   recvShapes: JSONSchemaLike;
   /** Optional copy-pasteable card.js skeleton. */
   examples?: string;
+  /** Optional structured limits / constraints for the underlying transport
+   *  or model. Keyed by model id (or a single "*" key for handler-wide
+   *  constraints). Surfaced alongside argsSchema so authoring agents see
+   *  the relevant ceilings BEFORE designing the card's input/output flow,
+   *  rather than discovering them via runtime errors (e.g. "At most 4
+   *  images per prompt" on first overrun). */
+  modelConstraints?: Record<string, ModelConstraints>;
   /** Semver of the handler contract. Cards built against v1 can detect drift to v2. */
   version: string;
+}
+
+export interface ModelConstraints {
+  /** Max image content blocks per single turn (per vLLM/model context limit). */
+  maxImagesPerTurn?: number;
+  /** Largest accepted image dimension in pixels (long edge). */
+  maxImageDimensionPx?: number;
+  /** Accepted image formats (lowercase, no dot). */
+  supportedImageFormats?: string[];
+  /** Max tokens the model can produce per response. */
+  maxOutputTokens?: number;
+  /** Free-text gotchas / known caveats. Short — one or two sentences. */
+  notes?: string;
 }
 
 const manifests = new Map<string, HandlerManifest>();
