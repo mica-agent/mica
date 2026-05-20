@@ -77,17 +77,24 @@ review of pasted code, summarize-pasted-text. See § Server-side
 channel handlers (or `curl /api/handlers`) for exact
 `sendShapes` / `recvShapes`.
 
-**Read `/api/handlers` for the handler you're using BEFORE
-writing card.js.** Every handler's entry there documents
-`argsSchema` (what `openChannel` accepts — model selection, history
-policy, persona prompt, ...), `sendShapes` / `recvShapes` (message
-formats), `examples` (copy-pasteable skeletons covering each
-common usage shape), and `modelConstraints` (per-model limits like
-max images per turn, max image dimension, supported formats, output
-token cap, model-specific notes). That's the design info — limits,
-shapes, knobs — that distinguishes "ships working" from "errors on
-the 5th call." Each handler self-documents there; the handbook stays
-generic, the manifest stays specific.
+**The handler's working card.js skeleton is in your baseline.**
+Once your spec declares `handler: <name>` (or `metadata.handler` is
+set on the materialized class), every turn's canvas baseline
+includes a `## Channel handler contracts in this project` section
+with that handler's example skeleton — the canonical
+`mica.openChannel(...)`, `channel.send({...})`, and
+`channel.onData(evt => ...)` shapes plus per-model constraints.
+**Copy from that section verbatim** when writing card.js — do NOT
+invent the channel API from prior assumptions. Common hallucination
+shapes that the manifest example refutes: `channel.on('token', cb)`
+(does not exist — use `channel.onData(evt => { if (evt.type ===
+'delta') ... })`), `mica.openChannel({handler, args})` (wrong shape
+— first arg is the channel name string like `'turn'`, second arg
+is the args object), `channel.send({role, content})` with OpenAI-
+style chat shape (the handler's `sendShapes` is its own contract;
+don't assume OpenAI-compat). If you don't see the section in your
+baseline, your spec's `handler:` field isn't set — fix the spec,
+the section appears next turn.
 
 ### Tier 3 — `mica.openChannel('session')` against the `process` handler
 
@@ -580,7 +587,7 @@ For cards that reflect on the canvas itself — overview/minimap, navigation, la
 const layout = await mica.layout();
 // {
 //   cards: {
-//     "canvas/foo.chat": { x: 40, y: 40, w: 551, h: 766 },
+//     "canvas/foo.qwen": { x: 40, y: 40, w: 551, h: 766 },
 //     "canvas/bar.todo": { x: 619, y: 40, w: 300, h: 200 },
 //     ...
 //   },
@@ -600,8 +607,8 @@ const unsub = mica.on('layout-changed', async () => {
 For card-class metadata (badge, defaultTitle, dependencies):
 
 ```js
-const meta = await mica.cardClasses.get('chat');
-// { extension: '.chat', badge: 'CHA', defaultTitle: 'Chat', dependencies: { ... } }
+const meta = await mica.cardClasses.get('qwen');
+// { extension: '.qwen', badge: 'QWEN', defaultTitle: 'Qwen Agent', displayName: 'Qwen Code', dependencies: { ... } }
 ```
 
 Use `mica.cardClasses.list()` first if you don't know the class name. Combine with `mica.files.list()` to build a full picture: file paths + extensions from `list()`, positions from `layout()`, badges/titles from `cardClasses.get(ext)`.
@@ -666,7 +673,7 @@ handlers wired to fixed extensions (no work to use them):
 
 | Card class | Handler | What it does |
 |---|---|---|
-| `.chat` | Qwen agent loop | Project-wide chat with skills + canvas baseline |
+| `.qwen` | Qwen agent loop | Project-wide chat with skills + canvas baseline |
 | `.claude` | Claude Code agent loop | Same shape, Claude SDK |
 | `.terminal` | PTY (node-pty) | Terminal |
 | `.llm-chat` | Streaming chat | Generic LLM chat |
@@ -790,7 +797,7 @@ of "No handler registered for: <your-extension>", the
 the available handlers — pick the right one, set the field, save
 metadata.json, retry.
 
-The legacy `.llm-chat` / `.terminal` / `.chat` / `.claude`
+The legacy `.llm-chat` / `.terminal` / `.qwen` / `.claude`
 extensions stay routed by file extension as in the table above.
 The `metadata.handler` mechanism is additive and only kicks in
 when present.

@@ -302,7 +302,7 @@ SDK, the qwen-code SDK against local llama-server, or the
 opencode SDK against opencode-serve) and manages conversation
 state, tool use, and file writes.
 
-Today three agent card classes ship with Mica: `.chat` (qwen-code
+Today three agent card classes ship with Mica: `.qwen` (qwen-code
 SDK + local llama-server), `.claude` (Claude Code subprocess),
 and `.opencode` (opencode-serve, supports both local llama-server
 and cloud providers). All three see the same internal tool

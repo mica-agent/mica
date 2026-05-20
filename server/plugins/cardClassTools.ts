@@ -66,6 +66,7 @@ export const createClassSchema = {
   name: z.string().describe("Card class identifier (becomes the directory name and, by default, the file extension). Lowercase alphanumeric + dashes only — e.g. \"world-clock\", \"burndown\". No dots. THIS IS THE ONLY REQUIRED FIELD. When `canvas/<name>-spec.md` has YAML frontmatter at its top (a `---`-delimited `card-class:` block per card-class-handbook § \"Spec format\"), Mica reads the other fields (badge, defaultTitle, scripts, styles, handler, sidecar, primaryFile) from there — you can call this tool with just `{ name }` and the spec frontmatter fills the rest. Explicit args still win over frontmatter when both are present."),
   badge: z.string().optional().describe("1-4 character abbreviation shown on the card's title bar (e.g. \"WCK\", \"BRN\"). Defaults to the first 3 letters of name, uppercase."),
   defaultTitle: z.string().optional().describe("Human-readable card title (e.g. \"World Clock\", \"Burndown\"). Defaults to title-cased name (\"world-clock\" → \"World Clock\")."),
+  displayName: z.string().optional().describe("Human-friendly name shown on the canvas toolbar's create-card button tooltip and in class-picker surfaces (e.g. \"Qwen Code\", \"Claude Code\", \"Open Code\"). Independent of defaultTitle — defaultTitle is what each card instance calls itself in its title bar; displayName is what the CLASS is called on meta UI surfaces. Optional; when absent the toolbar falls back to a generic tooltip."),
   extension: z.string().optional().describe("File extension instances will use, with leading dot. Defaults to '.' + name. Override only when the extension differs from the directory name (rare)."),
   card_html: z.string().optional().describe("Full contents of card.html. If omitted, a minimal skeleton is written so subsequent edits land on the correct path. card.html is a FRAGMENT, not a full HTML document — no <!DOCTYPE>, no <html>, no <script src=\"card.js\">."),
   card_js: z.string().optional().describe("Full contents of card.js. If omitted, a minimal stub is written. card.js runs as a top-level script (NOT a module) — no import/export statements; the CARD_SHIM provides `mica`, `container`, etc. as globals."),
@@ -139,6 +140,11 @@ export async function createClassImpl(
     .map(p => p.charAt(0).toUpperCase() + p.slice(1))
     .join(" ");
 
+  // Optional: explicit displayName for toolbar / class-picker surfaces.
+  // No default — when absent, the toolbar uses its generic fallback.
+  const displayNameRaw = String(args.displayName ?? fm?.display_name ?? "").trim();
+  const displayName = displayNameRaw || undefined;
+
   // Pre-merge the remaining frontmatter-eligible fields so downstream code
   // (existing-class diff, metadata-build, recovery path) reads from a
   // single resolved snapshot. Bare-string URLs and structured
@@ -180,6 +186,7 @@ export async function createClassImpl(
         extension?: string;
         badge?: string;
         defaultTitle?: string;
+        displayName?: string;
         dependencies?: { scripts?: string[]; styles?: string[] };
         handler?: string;
         primaryFile?: string;
@@ -198,6 +205,7 @@ export async function createClassImpl(
       const changes: string[] = [];
       if (existing.badge !== badge) changes.push(`badge "${existing.badge}" → "${badge}"`);
       if (existing.defaultTitle !== defaultTitle) changes.push(`defaultTitle "${existing.defaultTitle}" → "${defaultTitle}"`);
+      if ((existing.displayName ?? "") !== (displayName ?? "")) changes.push(`displayName "${existing.displayName ?? ""}" → "${displayName ?? ""}"`);
       const exScripts = (existing.dependencies?.scripts ?? []).join(",");
       const nwScripts = (resolvedScripts ?? []).join(",");
       if (exScripts !== nwScripts) changes.push(`scripts (${(existing.dependencies?.scripts ?? []).length} → ${(resolvedScripts ?? []).length})`);
@@ -225,6 +233,7 @@ export async function createClassImpl(
       styles: resolvedStyles ?? [],
     },
   };
+  if (displayName) metadata.displayName = displayName;
   if (resolvedHandler) metadata.handler = resolvedHandler;
   if (resolvedPrimaryFile) metadata.primaryFile = resolvedPrimaryFile;
   if (resolvedSidecar) metadata.sidecar = resolvedSidecar;

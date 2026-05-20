@@ -1,6 +1,6 @@
 // Lean Qwen-agent channel — runs query() through the SDK with a card-supplied
 // system prompt, model, and tool exclusions. NO canvas baseline, NO auto-loaded
-// skills, NO project-file scanning — that's the heavy `.chat` handler's role.
+// skills, NO project-file scanning — that's the heavy `.qwen` handler's role.
 // This is the lightweight cousin: a focused tool with one job and a fixed prompt,
 // configured entirely from args at openChannel time.
 
@@ -119,7 +119,7 @@ export function createLlmAgentHandler() {
           // current user message. The lean handler doesn't track an SDK-side
           // session id; we rebuild from history on every turn. Trim hard at
           // the front if the transcript grows long — defensive cap; cards
-          // that need huge context should use the full `.chat` handler.
+          // that need huge context should use the full `.qwen` handler.
           const HISTORY_CAP = 12;
           const recent = history.slice(-HISTORY_CAP - 1, -1);  // exclude current user msg
           const lines: string[] = [];

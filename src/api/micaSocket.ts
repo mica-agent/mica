@@ -166,7 +166,7 @@ export function connect(url?: string): void {
     // the same so the card class's captured `ch.send(...)` references
     // continue to address the same server-side session. Without this,
     // sessions live on the client but not on the server, and
-    // cross-card routing (e.g., voice → qwen.chat) fails with
+    // cross-card routing (e.g., voice → qwen.qwen) fails with
     // `dispatchToFilename` ok=false until the user refreshes the tab.
     if (isReconnect && activeChannels.size > 0) {
       console.log(`[mica-socket] Replaying ${activeChannels.size} channel(s) after reconnect`);

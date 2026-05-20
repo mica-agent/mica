@@ -2,7 +2,7 @@
  * ChannelManager — transport-agnostic session manager.
  *
  * Sessions are keyed by per-file UUID (sessionId). The same file across
- * different projects (e.g. template-seeded `docs/qwen.chat`) get distinct
+ * different projects (e.g. template-seeded `docs/qwen.qwen`) get distinct
  * UUIDs and thus distinct sessions, so state never leaks across projects.
  * Multiple clients can attach/detach from the same session. Handlers are
  * created by registered factory functions keyed by card class (derived from

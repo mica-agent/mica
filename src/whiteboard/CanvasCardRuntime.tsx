@@ -51,8 +51,8 @@ export default function CanvasCardRuntime({ project }: Props) {
   // Project's canvasRoot — drives canvas-relative display in CardFrame titles
   // and filename labels. Cards see canvas-relative paths via mica.filename;
   // the UI shell mirrors that for display so users see one consistent
-  // namespace ("qwen.chat" everywhere, not "canvas/qwen.chat" in the title bar
-  // and "qwen.chat" inside the card). Empty string when canvas IS project root.
+  // namespace ("qwen.qwen" everywhere, not "canvas/qwen.qwen" in the title bar
+  // and "qwen.qwen" inside the card). Empty string when canvas IS project root.
   const [canvasRoot, setCanvasRoot] = useState<string>("");
   useEffect(() => {
     let cancelled = false;

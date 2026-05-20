@@ -3,5 +3,6 @@
   "badge": "OC",
   "primaryFile": "chat.json",
   "defaultTitle": "OpenCode",
+  "displayName": "Open Code",
   "dependencies": {}
 }

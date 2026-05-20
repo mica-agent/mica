@@ -58,8 +58,14 @@ export interface CardClassFrontmatter {
   name: string;
   /** 1-4 character abbreviation shown on the canvas card tile. */
   badge?: string;
-  /** Pretty display title. */
+  /** Pretty display title (per-instance card title bar). */
   default_title?: string;
+  /** Human-friendly name shown on the canvas toolbar's create-card button
+   *  tooltip and class-picker surfaces (e.g. "Qwen Code", "Claude Code").
+   *  Independent of default_title — default_title is what each card
+   *  instance calls itself; display_name is what the CLASS is called on
+   *  meta UI surfaces. Optional. */
+  display_name?: string;
   /** Optional. Routes the card's channel to a reusable handler
    *  (`llm-direct`, `llm-agent`, `process`). */
   handler?: string;

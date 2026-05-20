@@ -54,7 +54,7 @@ async function buildSystemPrompt(project: string | undefined): Promise<string> {
     const files = await listFiles(project);
     if (files.length > 0) {
       system += `## Project Files\n`;
-      const TEXT_EXTS = new Set([".md", ".txt", ".json", ".todo", ".chat", ".mmd", ".yaml", ".yml"]);
+      const TEXT_EXTS = new Set([".md", ".txt", ".json", ".todo", ".qwen", ".mmd", ".yaml", ".yml"]);
       for (const f of files) {
         const ext = f.name.substring(f.name.lastIndexOf(".")).toLowerCase();
         if (TEXT_EXTS.has(ext) && f.size < 50000) {

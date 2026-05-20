@@ -18,6 +18,132 @@ const execAsync = promisify(execCb);
 /** The workspace root. Defaults to /project (Docker mount point). */
 export const WORKSPACE_DIR = process.env.PROJECT_DIR || "/project";
 
+/** Workspace-shared docs directory. Files here are pinnable into any project
+ *  via the `shared/` virtual prefix — see `isSharedFilename` /
+ *  `resolveSharedPath`. Distinct from per-project pins (which stay
+ *  project-relative) so the boundary is grep-able everywhere. */
+export const SHARED_DIR = process.env.MICA_SHARED_DIR || "/workspaces/shared";
+
+/** Virtual prefix used in `pinned` listings and layout.json keys to refer
+ *  to a file under SHARED_DIR. e.g. `shared/cdn-library-catalog.md`. */
+export const SHARED_PREFIX = "shared/";
+
+/** True iff `filename` references a workspace-shared file via the
+ *  `shared/` prefix. */
+export function isSharedFilename(filename: string): boolean {
+  return filename.startsWith(SHARED_PREFIX);
+}
+
+/** Resolve a `shared/<name>` virtual path to its absolute on-disk path
+ *  under SHARED_DIR. Rejects traversal. */
+export function resolveSharedPath(filename: string): string {
+  if (!isSharedFilename(filename)) {
+    throw new Error(`Not a shared path: ${filename}`);
+  }
+  const rest = filename.slice(SHARED_PREFIX.length);
+  if (!rest || rest.includes("..") || rest.startsWith("/")) {
+    throw new Error(`Invalid shared filename: ${filename}`);
+  }
+  return join(SHARED_DIR, rest);
+}
+
+export interface SharedDocSummary {
+  /** Bare filename inside SHARED_DIR (e.g. "cdn-library-catalog.md"). */
+  name: string;
+  /** Virtual canvas-visible name including prefix. */
+  virtualName: string;
+  /** Absolute on-disk path. Exposed so the agent's filesystem-level
+   *  `read_file` tool (which doesn't route the `shared/` virtual prefix
+   *  through Mica's REST API) can read the doc directly without
+   *  fumbling three different path guesses. */
+  path: string;
+  /** Title from frontmatter, or first H1, or the filename stem. */
+  title: string;
+  /** Description from frontmatter, or empty string. */
+  description: string;
+  /** Tags from frontmatter, or []. */
+  tags: string[];
+  size: number;
+  modifiedAt: string;
+}
+
+/** Strip a leading YAML frontmatter block and return its parsed
+ *  `shared-doc:` section plus the body. Tolerant: missing frontmatter,
+ *  missing `shared-doc`, or YAML parse failures all collapse to nulls. */
+async function readSharedDocFrontmatter(absPath: string, fallbackName: string): Promise<{
+  title: string;
+  description: string;
+  tags: string[];
+}> {
+  let text = "";
+  try {
+    text = await readFile(absPath, "utf-8");
+  } catch {
+    return { title: stemOf(fallbackName), description: "", tags: [] };
+  }
+  const m = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+  let title = "";
+  let description = "";
+  let tags: string[] = [];
+  if (m) {
+    try {
+      const yaml = await import("js-yaml");
+      const parsed = yaml.load(m[1]) as Record<string, unknown> | null;
+      const sd = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>)["shared-doc"] : null;
+      if (sd && typeof sd === "object") {
+        const s = sd as Record<string, unknown>;
+        if (typeof s.title === "string") title = s.title;
+        if (typeof s.description === "string") description = s.description;
+        if (Array.isArray(s.tags)) tags = s.tags.filter((t): t is string => typeof t === "string");
+      }
+    } catch { /* malformed YAML — fall through to heading-derived title */ }
+  }
+  if (!title) {
+    // First H1 in the body wins; otherwise filename stem.
+    const body = m ? text.slice(m[0].length) : text;
+    const h1 = body.match(/^\s*#\s+(.+)$/m);
+    title = h1 ? h1[1].trim() : stemOf(fallbackName);
+  }
+  return { title, description, tags };
+}
+
+function stemOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/** Enumerate workspace-shared docs under SHARED_DIR. Currently scoped to
+ *  the directory's direct children — no nested layout yet. Returns an
+ *  empty array if SHARED_DIR doesn't exist or is unreadable. */
+export async function listSharedDocs(): Promise<SharedDocSummary[]> {
+  let entries: import("fs").Dirent[];
+  try {
+    entries = await readdir(SHARED_DIR, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: SharedDocSummary[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    if (!entry.isFile()) continue;
+    const abs = join(SHARED_DIR, entry.name);
+    let s;
+    try { s = await stat(abs); } catch { continue; }
+    const fm = await readSharedDocFrontmatter(abs, entry.name);
+    out.push({
+      name: entry.name,
+      virtualName: `${SHARED_PREFIX}${entry.name}`,
+      path: abs,
+      title: fm.title,
+      description: fm.description,
+      tags: fm.tags,
+      size: s.size,
+      modifiedAt: s.mtime.toISOString(),
+    });
+  }
+  return out.sort((a, b) => a.title.localeCompare(b.title));
+}
+
 /** Extensions that are known-binary; agent buildContext skips these. */
 export const BINARY_EXTS = new Set<string>([
   ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg",
@@ -49,7 +175,7 @@ export const CONTEXT_SOFT_CAP_CHARS = 100_000;
 // — their content lives elsewhere and shouldn't be dumped into the agent's
 // "Project Files" section.
 
-interface ClassMeta { badge: string; meta: boolean; handler: string | null }
+interface ClassMeta { badge: string; meta: boolean; handler: string | null; displayName: string }
 const classMetaCache = new Map<string, ClassMeta>();
 
 export async function getCardClassMeta(ext: string, project: string | null | undefined): Promise<ClassMeta> {
@@ -74,17 +200,18 @@ export async function getCardClassMeta(ext: string, project: string | null | und
   for (const dir of candidates) {
     try {
       const raw = await readFile(join(dir, "metadata.json"), "utf-8");
-      const m = JSON.parse(raw) as { badge?: unknown; meta?: unknown; handler?: unknown };
+      const m = JSON.parse(raw) as { badge?: unknown; meta?: unknown; handler?: unknown; displayName?: unknown };
       const out: ClassMeta = {
         badge: typeof m.badge === "string" ? m.badge : "",
         meta: m.meta === true,
         handler: typeof m.handler === "string" && m.handler.length > 0 ? m.handler : null,
+        displayName: typeof m.displayName === "string" ? m.displayName : "",
       };
       classMetaCache.set(cacheKey, out);
       return out;
     } catch { /* try next candidate */ }
   }
-  const empty: ClassMeta = { badge: "", meta: false, handler: null };
+  const empty: ClassMeta = { badge: "", meta: false, handler: null, displayName: "" };
   classMetaCache.set(cacheKey, empty);
   return empty;
 }
@@ -406,7 +533,7 @@ export interface FileMeta {
 // Each file in a project gets a stable UUID stored in a sidecar at
 // `.mica/cards/<sanitized>.id.json`. The UUID is the session key used by
 // channelManager — using it instead of filename means two projects with
-// the same filename (e.g. template-seeded `docs/qwen.chat`) don't share
+// the same filename (e.g. template-seeded `docs/qwen.qwen`) don't share
 // state.
 //
 // In-memory cache is the runtime source of truth; sidecar is durability.
@@ -590,13 +717,28 @@ export interface FileInfo {
   modifiedAt?: string;
 }
 
-/** Read canvas config (canvasRoot, pinned) from .mica/config.json. */
-export async function readCanvasConfig(project?: string): Promise<{ canvasRoot: string; pinned: string[] }> {
+export interface CanvasConfig {
+  canvasRoot: string;
+  pinned: string[];
+  /** Bare filenames (no path) under SHARED_DIR that this project has pinned.
+   *  Surfaced in `listCanvasFiles` with the `shared/` virtual prefix; the
+   *  prefix is the boundary at file-read time. Separate from `pinned` so
+   *  the existing project-relative semantics stay untouched and the
+   *  workspace-vs-project distinction is grep-able everywhere. */
+  sharedPinned: string[];
+}
+
+/** Read canvas config (canvasRoot, pinned, sharedPinned) from .mica/config.json. */
+export async function readCanvasConfig(project?: string): Promise<CanvasConfig> {
   // Default matches initProject's default (DEFAULT_CANVAS_ROOT). Older
   // projects whose config explicitly carries `canvasRoot: "docs"` still
   // work — this fallback only kicks in for configs that omit the field
   // entirely.
-  const defaults = { canvasRoot: DEFAULT_CANVAS_ROOT, pinned: [] as string[] };
+  const defaults: CanvasConfig = {
+    canvasRoot: DEFAULT_CANVAS_ROOT,
+    pinned: [],
+    sharedPinned: [],
+  };
   try {
     const configPath = project
       ? join(WORKSPACE_DIR, project, ".mica", "config.json")
@@ -606,6 +748,7 @@ export async function readCanvasConfig(project?: string): Promise<{ canvasRoot: 
     return {
       canvasRoot: cfg.canvasRoot || cfg.docsDir || defaults.canvasRoot,
       pinned: Array.isArray(cfg.pinned) ? cfg.pinned : defaults.pinned,
+      sharedPinned: Array.isArray(cfg.sharedPinned) ? cfg.sharedPinned : defaults.sharedPinned,
     };
   } catch {
     return defaults;
@@ -615,7 +758,7 @@ export async function readCanvasConfig(project?: string): Promise<{ canvasRoot: 
 /** Update canvas config fields in .mica/config.json (merges with existing). */
 export async function updateCanvasConfig(
   project: string | undefined,
-  updates: { canvasRoot?: string; pinned?: string[] },
+  updates: { canvasRoot?: string; pinned?: string[]; sharedPinned?: string[] },
 ): Promise<void> {
   const configPath = project
     ? join(WORKSPACE_DIR, project, ".mica", "config.json")
@@ -626,6 +769,7 @@ export async function updateCanvasConfig(
   } catch { /* start fresh */ }
   if (updates.canvasRoot !== undefined) cfg.canvasRoot = updates.canvasRoot;
   if (updates.pinned !== undefined) cfg.pinned = updates.pinned;
+  if (updates.sharedPinned !== undefined) cfg.sharedPinned = updates.sharedPinned;
   await writeFile(configPath, JSON.stringify(cfg, null, 2), "utf-8");
 }
 
@@ -767,7 +911,7 @@ export async function writeOpenAICompatConfig(
  * 2+ seconds. Now it's O(canvas-files + pinned-count).
  */
 export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
-  const { canvasRoot, pinned } = await readCanvasConfig(project);
+  const { canvasRoot, pinned, sharedPinned } = await readCanvasConfig(project);
   const projectRoot = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
   const normalizedRoot = canvasRoot === "." || canvasRoot === "" ? "" : canvasRoot.replace(/\/$/, "");
   const canvasAbs = normalizedRoot === "" ? projectRoot : join(projectRoot, normalizedRoot);
@@ -810,6 +954,30 @@ export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
     } catch { /* pinned file doesn't exist — silently skip */ }
   }
   void pinnedSet;
+
+  // 3. Workspace-shared pins. Surfaced under the `shared/` virtual prefix.
+  // Resolution and read/write routing happen in resolveFilePath; the canvas
+  // listing here just exposes them as files the agent and UI can discover.
+  // Missing files (catalog removed, pin stale) are silently skipped — pin
+  // hygiene is the user's job via the discovery card.
+  for (const name of sharedPinned) {
+    if (!name || name.includes("/") || name.includes("..")) continue;
+    const virtualName = `${SHARED_PREFIX}${name}`;
+    if (seen.has(virtualName)) continue;
+    try {
+      const s = await stat(join(SHARED_DIR, name));
+      if (s.isFile()) {
+        out.push({
+          name: virtualName,
+          type: "file",
+          size: s.size,
+          modifiedAt: s.mtime.toISOString(),
+          pinned: true,
+        });
+        seen.add(virtualName);
+      }
+    } catch { /* shared file missing — skip */ }
+  }
 
   // UUIDs are created ONLY for canvas-visible files, post-filter. This bounds
   // the sidecar population to the canvas — previously we created IDs for every
@@ -891,6 +1059,7 @@ async function scanDir(dir: string, root: string, files: FileMeta[], showHidden:
  * Used by the raw file serving endpoint.
  */
 export function resolveFilePath(filename: string, project?: string): string {
+  if (isSharedFilename(filename)) return resolveSharedPath(filename);
   validateFilename(filename);
   const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
   return join(root, filename);
@@ -901,9 +1070,9 @@ export function resolveFilePath(filename: string, project?: string): string {
  * Used server-side for AI context building, chat, etc.
  */
 export async function readProjectFile(filename: string, project?: string): Promise<FileInfo> {
-  validateFilename(filename);
-  const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
-  const filePath = join(root, filename);
+  const filePath = isSharedFilename(filename)
+    ? resolveSharedPath(filename)
+    : (validateFilename(filename), join(project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR, filename));
   const content = await readFile(filePath, "utf-8");
   const fileStat = await stat(filePath);
   return {
@@ -918,10 +1087,9 @@ export async function readProjectFile(filename: string, project?: string): Promi
  * Creates parent directories if needed.
  */
 export async function writeProjectFile(filename: string, content: string, project?: string): Promise<void> {
-  validateFilename(filename);
-  const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
-  const filePath = join(root, filename);
-  // Create parent directories if needed
+  const filePath = isSharedFilename(filename)
+    ? resolveSharedPath(filename)
+    : (validateFilename(filename), join(project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR, filename));
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, content, "utf-8");
 }
@@ -930,6 +1098,11 @@ export async function writeProjectFile(filename: string, content: string, projec
  * Delete a file from a project directory.
  */
 export async function deleteProjectFile(filename: string, project?: string): Promise<void> {
+  if (isSharedFilename(filename)) {
+    // Workspace-shared files are not deletable through a project's file API.
+    // Use the discovery card or the workspace filesystem directly.
+    throw new Error(`Shared files cannot be deleted through a project context: ${filename}`);
+  }
   validateFilename(filename);
   const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
   await unlink(join(root, filename));

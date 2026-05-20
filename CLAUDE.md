@@ -437,7 +437,7 @@ walk through:
    but `mica.isSelfEcho(event)` filters it, so window A does
    not rebuild unnecessarily.
 4. **Agent channels.**
-   Create a `.chat` card. Verify the card opens a channel,
+   Create a `.qwen` card. Verify the card opens a channel,
    the llama-server is started if not already running, and a
    message round-trips. Then create a `.claude` card and
    verify the same round-trip with the Claude Code subprocess
@@ -450,7 +450,7 @@ walk through:
    new prompt. This validates the ChannelManager's detach-vs-
    destroy distinction.
 6. **Reactivity.**
-   In a project that has a `.chat` or `.claude` card, edit a
+   In a project that has a `.qwen` or `.claude` card, edit a
    file inside the agent's canvas scope. After ~15 seconds of
    no further edits, the agent should receive a synthetic
    "user edited these files" turn. Continuous typing must not

@@ -1194,18 +1194,25 @@ function buildToolbar() {
             // or built-in (default). `scope` is the canonical field; older
             // builds without it fall back to the legacy builtIn boolean.
             const shortcut = '\n\nOption/Alt-click to create immediately with an auto-generated filename (skips the name prompt).';
+            // displayName: friendly product name from metadata.json (e.g.
+            // "Qwen Code", "Claude Code"). When present, prepended to the
+            // tooltip so the button label (which is the file extension)
+            // is annotated with what it actually creates. Absent for
+            // most editor classes; falls back to scope-only tooltip.
+            const friendly = classes[name].displayName;
+            const friendlyPrefix = friendly ? `${friendly}\n` : '';
             const scope = classes[name].scope || (classes[name].builtIn ? 'builtin' : 'project');
             if (scope === 'library') {
                 const libPath = classes[name].libraryProject || '';
                 const libName = libPath.split('/').filter(Boolean).pop() || libPath;
-                btn.title = `From library project: ${libName}${shortcut}`;
+                btn.title = `${friendlyPrefix}From library project: ${libName}${shortcut}`;
                 btn.style.borderColor = 'rgba(96,165,250,0.4)';
             } else if (scope === 'project') {
-                btn.title = `Project card class${shortcut}`;
+                btn.title = `${friendlyPrefix}Project card class${shortcut}`;
                 btn.style.borderColor = 'rgba(74,222,128,0.3)';
                 btn.style.fontStyle = 'italic';
             } else {
-                btn.title = `Built-in card class${shortcut}`;
+                btn.title = `${friendlyPrefix}Built-in card class${shortcut}`;
             }
 
             // Pre-fill the prompt with the lowest free name. The base is

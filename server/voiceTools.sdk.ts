@@ -114,7 +114,7 @@ export function buildVoiceTools(deps: VoiceToolDeps) {
     read_recent_replies: tool({
       description: "Fetch the last N assistant replies from a chat card. Use for 'what did Qwen just say?' or to verify a chat card's recent thread before dispatching a follow-up.",
       inputSchema: z.object({
-        file: z.string().describe("Chat-card filename, e.g. canvas/qwen.chat"),
+        file: z.string().describe("Chat-card filename, e.g. canvas/qwen.qwen"),
         n: z.number().int().min(1).max(5).default(RECENT_REPLIES_DEFAULT_N).describe("How many recent replies to fetch (1–5)"),
       }),
       execute: async ({ file, n }) => {
@@ -129,7 +129,7 @@ export function buildVoiceTools(deps: VoiceToolDeps) {
     card_status: tool({
       description: "Check a chat card's CURRENT status: busy/idle, what user request the agent is processing right now (currentTask), queue depth, and the first 5 queued items with their IDs. You MUST call this when the user asks 'what's X doing?', 'is X busy?', 'what's queued?' — DO NOT guess or fabricate an agent's state from training data or context. Returns `currentTask` (a preview of the in-flight user request) so you can answer 'what's Qwen doing?' in one tool call without also reading replies. Also call BEFORE a dispatch to a chat card that may be busy — reason over the queue to decide whether to add, replace, delete, or wait. Speaking 'Qwen is working on X' or 'Qwen has N items queued' WITHOUT first calling this tool is a hallucination.",
       inputSchema: z.object({
-        file: z.string().describe("Chat-card filename, e.g. canvas/qwen.chat"),
+        file: z.string().describe("Chat-card filename, e.g. canvas/qwen.qwen"),
       }),
       execute: async ({ file }) => {
         const status = await cardStatusFor(sessionProject, file);
@@ -178,9 +178,9 @@ export function buildVoiceTools(deps: VoiceToolDeps) {
     }),
 
     send_to_card: tool({
-      description: "Route a message to a chat-card agent (Qwen, Claude Code, OpenCode) — the only way to ask them to do work. You MUST call this tool whenever you decide to dispatch. Saying 'let me ask Qwen' or 'I'll send this to X' in your spoken response WITHOUT calling this tool is a lie; the user expects the dispatch to actually happen. Use for: (a) project work — edit files, write code, draft a spec, create cards, build a visualization, run analysis on canvas data; (b) help with hard analytical questions where a quick voice reply short-changes the user; (c) anything that needs file access, code execution, or multi-step reasoning that voice can't do. Look at the 'Chat cards' section in the system prompt for the target filename (e.g. canvas/qwen.chat).",
+      description: "Route a message to a chat-card agent (Qwen, Claude Code, OpenCode) — the only way to ask them to do work. You MUST call this tool whenever you decide to dispatch. Saying 'let me ask Qwen' or 'I'll send this to X' in your spoken response WITHOUT calling this tool is a lie; the user expects the dispatch to actually happen. Use for: (a) project work — edit files, write code, draft a spec, create cards, build a visualization, run analysis on canvas data; (b) help with hard analytical questions where a quick voice reply short-changes the user; (c) anything that needs file access, code execution, or multi-step reasoning that voice can't do. Look at the 'Chat cards' section in the system prompt for the target filename (e.g. canvas/qwen.qwen).",
       inputSchema: z.object({
-        file: z.string().describe("Exact filename from the 'Chat cards' section, e.g. canvas/qwen.chat"),
+        file: z.string().describe("Exact filename from the 'Chat cards' section, e.g. canvas/qwen.qwen"),
         message: z.string().describe("The exact words Parakeet transcribed from the user — pass through unchanged, no rewriting"),
       }),
       execute: async ({ file, message }) => {

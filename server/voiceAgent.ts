@@ -1,6 +1,6 @@
 // voiceAgent.ts — `.voice` card class handler.
 //
-// Mica's voice assistant. Distinct from the chat agents (.chat / .claude /
+// Mica's voice assistant. Distinct from the chat agents (.qwen / .claude /
 // .opencode): voice runs a fast, canvas-aware LLM with a tiny tool surface
 // and never enters a tool loop, so it always responds in <2s. The slow
 // chat agents do real work; voice does navigation, status, and dispatch.
@@ -327,7 +327,7 @@ function parseField(inner: string, field: string): string {
 // retry rather than pretend it worked. Mirrors the message-taking
 // handlers in server/index.ts § registerHandler block.
 const CHAT_CLASS_EXTENSIONS = new Set<string>([
-  "chat", "claude", "opencode",
+  "qwen", "claude", "opencode",
   "llm-chat", "llm-direct", "llm-agent",
 ]);
 
@@ -336,7 +336,7 @@ const CHAT_CLASS_EXTENSIONS = new Set<string>([
 // The user can always override per-card by editing the file via
 // the pen icon — that text becomes the role line.
 const AGENT_NAME_DEFAULTS: Record<string, string> = {
-  "chat": "Qwen",
+  "qwen": "Qwen",
   "claude": "Claude Code",
   "opencode": "OpenCode",
   "llm-chat": "LLM",
@@ -483,7 +483,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     // after 2 turns without re-delegation — older context is more
     // likely a fresh request than a correction.
     interface DelegationContext {
-      filename: string;     // e.g. "qwen.chat"
+      filename: string;     // e.g. "qwen.qwen"
       agentName: string;    // resolved via AGENT_NAME_DEFAULTS
       summary: string;      // first ~150 chars of the dispatched <message>
       turnsAgo: number;     // 0 = just dispatched; cleared at >2
@@ -1224,7 +1224,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             chatCards.map((c) => readChatCardRole(sessionProject, c.name)),
           );
           const chatCardsLines = chatCards.length === 0
-            ? "  (none — open a .chat / .claude / .opencode / .llm-chat card to route work)"
+            ? "  (none — open a .qwen / .claude / .opencode / .llm-chat card to route work)"
             : chatCards
                 .map((c, i) => {
                   const dot = c.name.lastIndexOf(".");
@@ -1274,15 +1274,15 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
 
           // Pick a representative chat-style card filename to use in
           // examples — grounds the LLM in the actual canvas vocabulary.
-          // Falls back to a generic "chat.chat" when no chat-style card
+          // Falls back to a generic "qwen.qwen" when no chat-style card
           // exists, in which case the LLM should still recognize that
           // dispatch isn't possible without a target.
-          const chatLikeKinds = new Set(["chat", "claude", "opencode", "llm-chat"]);
+          const chatLikeKinds = new Set(["qwen", "claude", "opencode", "llm-chat"]);
           const exampleCard = cards.find((c) => {
             const dot = c.name.lastIndexOf(".");
             return dot !== -1 && chatLikeKinds.has(c.name.slice(dot + 1));
           });
-          const exampleFilename = exampleCard ? exampleCard.name : "chat.chat";
+          const exampleFilename = exampleCard ? exampleCard.name : "qwen.qwen";
 
           // ── System prompt ───────────────────────────────────────
           //

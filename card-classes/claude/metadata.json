@@ -3,5 +3,6 @@
   "badge": "Claude",
   "primaryFile": "chat.json",
   "defaultTitle": "Claude Code",
+  "displayName": "Claude Code",
   "dependencies": {}
 }

@@ -46,6 +46,7 @@ import {
   resolveFilePath,
   writeProjectFile,
   deleteProjectFile,
+  listSharedDocs,
   getOrCreateCardId,
   lookupCardId,
   deleteCardId,
@@ -80,6 +81,7 @@ import {
   type CardSettings,
 } from "./files.js";
 import { readSnapshot } from "./turnSnapshots.js";
+import { getOpenrouterModels } from "./contextWindow.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
 import { createWriteStream } from "fs";
 import mimeTypes from "mime-types";
@@ -125,6 +127,7 @@ import {
   clearProjectActivity,
   broadcastProjectListChanged,
 } from "./projectActivity.js";
+import { setSharedPinBroadcast, pinSharedDoc, unpinSharedDoc } from "./sharedPin.js";
 
 const execAsync = promisify(execCb);
 const PORT = parseInt(process.env.MICA_PORT || "3002");
@@ -631,6 +634,9 @@ app.get("/api/card-classes", async (req, res) => {
     try {
       const m = await getCardClassMeta(`.${name}`, reqProject);
       (classes[name] as Record<string, unknown>).meta = m.meta;
+      if (m.displayName) {
+        (classes[name] as Record<string, unknown>).displayName = m.displayName;
+      }
     } catch { /* leave meta undefined */ }
   }
 
@@ -741,10 +747,10 @@ app.get("/api/canvas-card", async (req, res) => {
 // the key itself — only `{ hasKey }` — so the client can render a "Key set ✓"
 // indicator without exposing the secret.
 
-// Cards send their canvas-relative `mica.filename` (e.g. "qwen.chat" with no
+// Cards send their canvas-relative `mica.filename` (e.g. "qwen.qwen" with no
 // canvasRoot prefix) when reading/writing their settings. The agent reads
 // settings later via the project-relative SessionContext filename
-// (e.g. "canvas/qwen.chat"). Canonicalize incoming paths to project-relative
+// (e.g. "canvas/qwen.qwen"). Canonicalize incoming paths to project-relative
 // here so save/load both land on the same sidecar regardless of which form
 // the client sent.
 async function canonicalizeSettingsPath(rawPath: string, project: string | undefined): Promise<string> {
@@ -879,67 +885,13 @@ app.post("/api/openrouter/validate", async (req, res) => {
   }
 });
 
-// List available OpenRouter models. Proxies the public OpenRouter endpoint
-// and caches in-memory for an hour — the catalog is stable on minute-to-hour
-// timescales, the chat card hits this once per settings-panel-open, and a
-// 1h TTL is invisible to users while sparing OpenRouter from a fan-out hit.
-// No auth required (public catalog). Returns slim shape including pricing
-// (per-million-tokens, since that's how model prices are universally quoted)
-// and context length.
-type ModelEntry = {
-  id: string;
-  name?: string;
-  promptPerM?: number;       // USD per million prompt tokens
-  completionPerM?: number;   // USD per million completion tokens
-  contextLength?: number;    // tokens
-};
-let _modelsCache: { ts: number; data: ModelEntry[] } | null = null;
-const MODELS_TTL_MS = 60 * 60 * 1000;
-
-function parseUsdPerToken(v: unknown): number | undefined {
-  // OpenRouter returns prices as strings in USD-per-token. Convert to USD per
-  // million tokens for human-readable display ($5/M reads more cleanly than
-  // 0.000005 per token). Empty string / missing / NaN → undefined.
-  if (typeof v !== "string" || !v) return undefined;
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 0) return undefined;
-  return n * 1_000_000;
-}
-
+// List available OpenRouter models. The cache + fetch lives in
+// server/contextWindow.ts so the server-side context resolver and this
+// HTTP endpoint share the same model catalog. 1h TTL invisible to users.
 app.get("/api/openrouter/models", async (_req, res) => {
-  if (_modelsCache && Date.now() - _modelsCache.ts < MODELS_TTL_MS) {
-    res.json({ ok: true, models: _modelsCache.data, cached: true });
-    return;
-  }
   try {
-    const r = await fetch("https://openrouter.ai/api/v1/models", { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) {
-      res.status(502).json({ ok: false, error: `OpenRouter returned ${r.status}` });
-      return;
-    }
-    const json = await r.json() as {
-      data?: Array<{
-        id?: unknown;
-        name?: unknown;
-        pricing?: { prompt?: unknown; completion?: unknown };
-        context_length?: unknown;
-      }>;
-    };
-    const models: ModelEntry[] = (json.data || [])
-      .filter((m) => typeof m.id === "string" && m.id)
-      .map((m) => {
-        const entry: ModelEntry = { id: m.id as string };
-        if (typeof m.name === "string" && m.name) entry.name = m.name;
-        const promptPerM = parseUsdPerToken(m.pricing?.prompt);
-        const completionPerM = parseUsdPerToken(m.pricing?.completion);
-        if (promptPerM !== undefined) entry.promptPerM = promptPerM;
-        if (completionPerM !== undefined) entry.completionPerM = completionPerM;
-        if (typeof m.context_length === "number" && m.context_length > 0) entry.contextLength = m.context_length;
-        return entry;
-      })
-      .sort((a, b) => a.id.localeCompare(b.id));
-    _modelsCache = { ts: Date.now(), data: models };
-    res.json({ ok: true, models, cached: false });
+    const models = await getOpenrouterModels();
+    res.json({ ok: true, models, cached: true });
   } catch (err) {
     res.status(502).json({ ok: false, error: (err as Error).message });
   }
@@ -1968,6 +1920,53 @@ app.delete("/api/canvas/pin", async (req, res) => {
   }
 });
 
+// Pin/unpin a workspace-shared doc into the current project's canvas.
+// Body: { name: string }  — bare filename under /workspaces/shared/
+// Optional: { source: "agent" | "user" }  — drives the toast notification
+// type so the UI can label it ("Mica pinned ..." vs silent user-initiated).
+// Default source is "user" since the most common caller is the discovery
+// card responding to a human click.
+app.post("/api/canvas/shared-pin", async (req, res) => {
+  try {
+    const { name, source } = req.body as { name?: string; source?: "agent" | "user" };
+    if (!name || typeof name !== "string") {
+      res.status(400).json({ error: "name (bare filename under /workspaces/shared/) required" });
+      return;
+    }
+    const proj = getRequestProject(req) || undefined;
+    if (!proj) { res.status(400).json({ error: "active project required" }); return; }
+    const next = await pinSharedDoc(proj, name, source === "agent" ? "agent" : "user");
+    res.json({ ok: true, sharedPinned: next });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/canvas/shared-pin", async (req, res) => {
+  try {
+    const { name } = req.body as { name?: string };
+    if (!name || typeof name !== "string") { res.status(400).json({ error: "name required" }); return; }
+    const proj = getRequestProject(req) || undefined;
+    if (!proj) { res.status(400).json({ error: "active project required" }); return; }
+    const next = await unpinSharedDoc(proj, name);
+    res.json({ ok: true, sharedPinned: next });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// List all workspace-shared docs available under /workspaces/shared/, with
+// their frontmatter (title, description, tags) parsed. Used by the
+// `shared-library` discovery card to render the browse list, and by the
+// `mica_list_shared_docs` agent tool for self-help library discovery.
+app.get("/api/shared-docs", async (_req, res) => {
+  try {
+    res.json(await listSharedDocs());
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // Get/update canvas config
 app.get("/api/canvas/config", async (req, res) => {
   try {
@@ -2159,6 +2158,13 @@ app.post("/api/files/:filename/upload", async (req, res) => {
   const filename = req.params.filename;
   const source = typeof req.query.source === "string" ? req.query.source : undefined;
   const cardSource = typeof req.query.cardSource === "string" ? req.query.cardSource : undefined;
+  // Shared docs are workspace-scoped; upload writes go through the project
+  // file API, not the shared one, so reject early with a useful message.
+  // The discovery card never uploads — this guard only fires on misuse.
+  if (filename.startsWith("shared/")) {
+    res.status(400).json({ error: "Shared docs cannot be uploaded via project file API. Edit /workspaces/shared/ directly." });
+    return;
+  }
   const reqProject = getRequestProject(req);
   const root = reqProject ? join(WORKSPACE_DIR, reqProject) : WORKSPACE_DIR;
   const filePath = join(root, filename);
@@ -2931,6 +2937,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // Uses `broadcast` (all clients) rather than `broadcastToProject` because
   // the project-list page isn't subscribed to any specific project.
   setActivityBroadcast(broadcast);
+  setSharedPinBroadcast(broadcastToProject);
   registerMicaHandler("render", renderHandler);  // mica.render.capture
 
   // Register agent-tools REST routes (POST /api/tools/<tool>). These are
@@ -2944,7 +2951,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   registerLlmRestApi(app, MICA_SIDECAR_TOKEN);
 
   // Register channel-based plugins
-  channelManager.registerHandler("chat", createAgentHandler(fileWatcher));  // .chat files -> Qwen agent
+  channelManager.registerHandler("qwen", createAgentHandler(fileWatcher));  // .qwen files -> Qwen Code (renamed from .chat 2026-05-19)
   channelManager.registerHandler("voice", createVoiceAgentHandler(channelManager));  // .voice files -> canvas-aware voice assistant
   channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
   channelManager.registerHandler("opencode", createOpencodeAgentHandler(fileWatcher));  // .opencode files -> OpenCode agent (lazy-spawned opencode serve)

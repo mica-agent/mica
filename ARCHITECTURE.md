@@ -34,7 +34,7 @@ All paths relative to `/workspaces/mica/server/`.
 | `writeSource.ts` | Tracks who initiated a write (windowId, "agent", "external") so the next file-changed broadcast carries that source |
 | `llamaServer.ts` | Singleton llama.cpp subprocess lifecycle (start, health check, graceful shutdown) |
 | `claudeAgent.ts` | Channel handler for `.claude` cards. Spawns the Claude Code CLI via `@anthropic-ai/claude-agent-sdk` |
-| `micaAgent.ts` | Channel handler for `.chat` cards. Speaks OpenAI-compatible HTTP to llama-server |
+| `micaAgent.ts` | Channel handler for `.qwen` cards. Speaks OpenAI-compatible HTTP to llama-server |
 | `micaChat.ts` | Thin wrapper around the Qwen chat path |
 | `subagents.ts` | Subagent concurrency control and task delegation |
 | `cardValidators.ts` | Card-class preconditions and metadata consistency checks applied to agent-initiated writes |
@@ -235,7 +235,7 @@ for: <class>`.
 
 | Card class | Handler factory | Source | Purpose |
 |---|---|---|---|
-| `.chat` | `createAgentHandler` | `server/micaAgent.ts` | Qwen agent SDK loop with subagent dispatch + tools |
+| `.qwen` | `createAgentHandler` | `server/micaAgent.ts` | Qwen agent SDK loop with subagent dispatch + tools |
 | `.claude` | `createClaudeAgentHandler` | `server/claudeAgent.ts` | Claude Code SDK loop, parallel shape |
 | `.terminal` | `createPtyHandler` | `server/plugins/pty.ts` | Terminal PTY (node-pty) |
 | `.llm-chat` | `createLlmChatHandler` | `server/plugins/llmChat.ts` | OpenAI-compatible streaming chat, switchable models, no tools |
@@ -243,7 +243,7 @@ for: <class>`.
 | `.canvas-back` | `createCanvasBackComposeHandler` | `server/plugins/canvasBackCompose.ts` | Propose-then-apply edits to canvas-back.md |
 
 **For LLM access in a custom card class**, prefer reusing `.llm-chat`
-(if the off-the-shelf streaming-chat UX fits) or `.chat` / `.claude`
+(if the off-the-shelf streaming-chat UX fits) or `.qwen` / `.claude`
 (if the full agent loop fits). Build a new handler under
 `server/plugins/<name>.ts` only when the LLM contract is genuinely
 domain-specific (custom system prompt managed server-side, structured
@@ -280,7 +280,7 @@ whose `card.js` opens a `mica.openChannel` to a server handler,
 and the handler wraps a model. Same channel contract; different
 backends.
 
-### Qwen (`.chat`)
+### Qwen (`.qwen`)
 
 `server/micaAgent.ts` is the channel handler. Uses the qwen-code
 SDK (`@qwen-code/sdk`) talking to llama-server's OpenAI-compatible
@@ -811,7 +811,7 @@ on the server.
 Registration at startup looks like this:
 
 ```typescript
-channelManager.registerHandler("chat",       createAgentHandler(fileWatcher));   // .chat  → Qwen agent
+channelManager.registerHandler("qwen",       createAgentHandler(fileWatcher));   // .qwen → Qwen Code (renamed from .chat)
 channelManager.registerHandler("claude",     createClaudeAgentHandler(fileWatcher)); // .claude → Claude Code agent
 channelManager.registerHandler("terminal",   createPtyHandler());                 // .terminal → PTY
 channelManager.registerHandler("llm-chat",   createLlmChatHandler());             // .llm-chat → direct LLM chat
@@ -1104,7 +1104,7 @@ not implemented today.
 
 ### Agent architecture — two built-in classes, set will change
 
-Today two agent card classes ship. `.chat` is backed by local
+Today two agent card classes ship. `.qwen` is backed by local
 Qwen through llama-server. `.claude` is backed by the Claude
 Code SDK via a spawned CLI subprocess. Both are regular card
 classes whose `card.js` opens a `mica.openChannel` to a server
