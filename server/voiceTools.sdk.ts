@@ -36,7 +36,7 @@ const RECENT_REPLIES_MAX_CHARS = 4000;
  *  conversational messages, so dispatching to them produces a "success"
  *  at the channel layer but nothing useful happens. */
 const CHAT_CLASS_EXTENSIONS = new Set<string>([
-  "chat", "claude", "opencode",
+  "qwen", "claude", "opencode",
   "llm-chat", "llm-direct", "llm-agent",
 ]);
 

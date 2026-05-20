@@ -947,7 +947,7 @@ const defaultStubs = {
     'md': (name) => `# ${name}\n`,
     'todo': (name) => `---\nmica: todo\n---\n# ${name}\n\n## Active\n- [ ] @human First task\n\n## Done\n`,
     'mmd': (name) => `graph TD\n    A[Start] --> B[End]\n`,
-    'chat': (name) => { const id = `chat-${Date.now().toString(36)}`; return `---\nmica: chat\nid: ${id}\n---\nMica AI chat session.\n`; },
+    'qwen': (name) => { const id = `qwen-${Date.now().toString(36)}`; return `---\nmica: qwen\nid: ${id}\n---\nQwen Code agent session.\n`; },
     'terminal': () => '',
 };
 
@@ -1216,9 +1216,9 @@ function buildToolbar() {
             }
 
             // Pre-fill the prompt with the lowest free name. The base is
-            // the sanitized PROJECT name (cards read as "quickstart.chat",
+            // the sanitized PROJECT name (cards read as "quickstart.qwen",
             // "trip.md" — the project is the noun, the class is the type
-            // via extension), not the class name doubled ("chat.chat",
+            // via extension), not the class name doubled ("qwen.qwen",
             // "filebrowser.filebrowser" — the old default, repetitive).
             // Collisions append "-2", "-3", … as before. Filenames are
             // durable identifiers (layout.json key, agent references) and

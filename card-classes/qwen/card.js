@@ -1372,7 +1372,7 @@ sendBtn.addEventListener("click", send);
 // broadcasts chat-cleared; this card + any peer windows on the same project
 // reset their scroll.
 //
-// Spawn: writes a new .chat file next to this one with a user-chosen name.
+// Spawn: writes a new .qwen file next to this one with a user-chosen name.
 // The canvas picks it up via the file watcher and lays it out as a sibling.
 //
 // Archive browser: dropdown listing per-card archived conversations. Clicking
@@ -1404,29 +1404,32 @@ function clearCard(opts) {
   });
 }
 
-// Spawn a new chat card as a sibling of this one. Wired today only from
+// Spawn a new qwen card as a sibling of this one. Wired today only from
 // the Clear/Spawn suggestion panel that appears under context pressure —
-// the chat card's header "+" button now advances the horizon instead
-// (see advanceHorizon below). For a deliberate "make a separate chat
+// the qwen card's header "+" button now advances the horizon instead
+// (see advanceHorizon below). For a deliberate "make a separate qwen
 // card" outside the suggestion-panel flow, use the canvas toolbar's
-// `+ Chat` button — that's the canonical path.
+// `+ Qwen` button — that's the canonical path.
 function spawnSiblingCard() {
+  // Match both .qwen (current) and .chat (legacy, pre-2026-05-20 rename)
+  // so suggestions derived from a long-lived card name still strip
+  // cleanly. New files always land with .qwen.
   const suggested = (mica.filename || "")
-    .replace(/\.chat$/i, "")
+    .replace(/\.(qwen|chat)$/i, "")
     .replace(/[^a-zA-Z0-9_-]/g, "-");
   const base = window.prompt(
-    "Name for the new chat card (without .chat extension):",
-    suggested ? (suggested + "-next") : "new-chat"
+    "Name for the new qwen card (without .qwen extension):",
+    suggested ? (suggested + "-next") : "new-qwen"
   );
   if (!base) return;
-  const name = base.trim().replace(/\.chat$/i, "");
+  const name = base.trim().replace(/\.(qwen|chat)$/i, "");
   if (!name) return;
   const parts = mica.filename.split("/");
   parts.pop();
   const dir = parts.join("/");
-  const target = (dir ? dir + "/" : "") + name + ".chat";
+  const target = (dir ? dir + "/" : "") + name + ".qwen";
   mica.files.write(target, "").catch(function(err) {
-    console.error("[chat] spawn failed:", err);
+    console.error("[qwen] spawn failed:", err);
     window.alert("Could not create " + target + ": " + (err && err.message ? err.message : "unknown"));
   });
 }

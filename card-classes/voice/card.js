@@ -415,7 +415,7 @@ function resetReplyDisplay() {
   replyWrap.style.display = 'none';
   // Activity log persists across turns — only the reply bubble resets.
   // Reset the reply label in case it was tagged by a prior ambient
-  // announcement ("🔔 Qwen (canvas/qwen.chat)").
+  // announcement ("🔔 Qwen (canvas/qwen.qwen)").
   const labelEl = container.querySelector('.vc-reply-label');
   if (labelEl) labelEl.textContent = 'Mica';
   // NOTE: do NOT stopVoicePlayback() here. Audio outlives the visual
