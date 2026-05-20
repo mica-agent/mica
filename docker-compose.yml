@@ -182,8 +182,11 @@ services:
       # about unauthenticated requests in vLLM's startup logs.
       - path: .env
         required: false
+    # Model as the first positional arg to `vllm serve` (the image's
+    # ENTRYPOINT). The legacy `--model` flag still works but emits a
+    # deprecation warning at startup and is slated for removal upstream.
     command: >
-      --model RedHatAI/Qwen3.6-35B-A3B-NVFP4
+      RedHatAI/Qwen3.6-35B-A3B-NVFP4
       --served-model-name qwen-vl qwen-voice openai:qwen-vl qwen3-vl-local openai:qwen3-vl-local
       --host 0.0.0.0 --port 8000
       --quantization compressed-tensors
