@@ -20,6 +20,7 @@
 
 import { createOpencodeServer, createOpencodeClient, type OpencodeClient, type OpencodeClientConfig } from "@opencode-ai/sdk";
 import { buildOpencodeConfig } from "./opencodeConfig.js";
+import { readOpenRouterKey, readOpenAICompatConfig } from "./files.js";
 
 interface ServerHandle {
   url: string;
@@ -39,6 +40,19 @@ export async function getOpencodeServer(): Promise<ServerHandle> {
 }
 
 async function spawn(): Promise<ServerHandle> {
+  // Plumb workspace API credentials into env BEFORE spawning opencode so
+  // its subprocess inherits them. opencode auto-discovers cloud providers
+  // by env var convention (OPENROUTER_API_KEY → openrouter,
+  // OPENAI_API_KEY + OPENAI_BASE_URL → openai), so populating these is
+  // the cheapest way to make the chat card's "OpenRouter" and
+  // "OpenAI-compatible" radio options actually route through opencode.
+  // Workspace-scope here (project=undefined) because opencode is one
+  // daemon per backend, not per-project — the credentials are shared
+  // across every .opencode card in the workspace. Failure to read leaves
+  // the env unset (opencode reports "no usable provider" at spawn — the
+  // existing reportProviderState() surfaces that loudly).
+  await injectWorkspaceCredentials();
+
   // Build config at spawn time. Subagents from server/builtin-agents/ + any
   // workspace-level MCPs from env (Tavily). Per-project MCPs are NOT merged
   // here — opencode is one daemon per backend, so all projects share the
@@ -97,6 +111,36 @@ async function reportProviderState(client: OpencodeClient): Promise<void> {
     console.log(`[opencode-server] ${usable.length} usable provider(s): ${names}`);
   } catch (err) {
     console.warn(`[opencode-server] provider check failed: ${(err as Error).message}`);
+  }
+}
+
+/** Read workspace-level OpenRouter key + OpenAI-compat baseUrl/key from
+ *  Mica's persisted config and inject into `process.env` so opencode's
+ *  subprocess (inheriting our env) sees the credentials and auto-registers
+ *  the matching providers. Skips any env var that's already set so a
+ *  user's explicit `.env` / shell export wins. */
+async function injectWorkspaceCredentials(): Promise<void> {
+  try {
+    const orKey = await readOpenRouterKey(undefined);
+    if (orKey && !process.env.OPENROUTER_API_KEY) {
+      process.env.OPENROUTER_API_KEY = orKey;
+      console.log("[opencode-server] injected OPENROUTER_API_KEY from workspace credentials");
+    }
+  } catch (err) {
+    console.warn(`[opencode-server] OpenRouter key read failed: ${(err as Error).message}`);
+  }
+  try {
+    const oc = await readOpenAICompatConfig(undefined);
+    if (oc.baseUrl && !process.env.OPENAI_BASE_URL) {
+      process.env.OPENAI_BASE_URL = oc.baseUrl;
+      console.log(`[opencode-server] injected OPENAI_BASE_URL=${oc.baseUrl} from workspace credentials`);
+    }
+    if (oc.key && !process.env.OPENAI_API_KEY) {
+      process.env.OPENAI_API_KEY = oc.key;
+      console.log("[opencode-server] injected OPENAI_API_KEY from workspace credentials");
+    }
+  } catch (err) {
+    console.warn(`[opencode-server] OpenAI-compat config read failed: ${(err as Error).message}`);
   }
 }
 

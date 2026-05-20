@@ -73,6 +73,31 @@ export async function buildOpencodeConfig(): Promise<Config> {
     config.agent = agentMap;
   }
 
+  // ── Local LLM as a first-class opencode provider ─────────────────
+  // The opencode card's "Local" radio (mirroring the chat card's
+  // Local/OpenRouter/OpenAI-compat picker) routes prompts to Mica's
+  // own llama-server/vLLM. opencode itself doesn't know about that
+  // endpoint, so we declare a custom provider `mica-local` here
+  // pointing at LLAMA_URL via the Vercel AI SDK's openai-compatible
+  // adapter (which opencode bundles). Models are discovered live
+  // from /v1/models so whichever container vLLM started serves is
+  // selectable in the card's dropdown — no hardcoded model list to
+  // drift against deployment.
+  await injectMicaLocalProvider(config);
+
+  // ── OpenRouter live-model extension ──────────────────────────────
+  // opencode validates `body.model.modelID` against its internal
+  // provider registry (sourced from models.dev) BEFORE forwarding to
+  // OpenRouter. That registry drifts behind OpenRouter's actual model
+  // catalog — e.g. `google/gemini-3.5-flash` is live on openrouter.ai
+  // but absent from opencode 1.15.5's bundled cache, producing a
+  // client-side "Model not found" rejection (observed in the
+  // gemini-3.6 test project). We fetch OpenRouter's authoritative
+  // model list at spawn time and inject every entry into
+  // `Config.provider.openrouter.models` so opencode accepts whatever
+  // OpenRouter actually exposes — no models.dev refresh required.
+  await injectOpenRouterModels(config);
+
   // ── MCP servers ─────────────────────────────────────────────────
   const mcp: Record<string, McpLocalConfig> = {};
 
@@ -212,6 +237,18 @@ function mapToolName(toolName: string): string | null {
   // Names not in this list ARE NOT VALID opencode tools and would silently
   // no-op if listed in an agent's tools allowlist — drop them at translation
   // time instead.
+  // Mica-builtins tools (mica_* + render_capture) reach opencode via the
+  // stdio MCP bridge under the namespaced id `mica-builtins_<name>`.
+  // When a Mica subagent's `.qwen/agents/<name>.md` allowlist names one
+  // of these directly, translate it to the namespaced opencode id so
+  // the subagent's allowlist actually matches what opencode sees in
+  // its tool list. Without this, subagents lose access to mica_inspect_url,
+  // mica_list_handlers, mica_pin_shared_doc, etc. — even though the
+  // tools are globally registered via the bridge — because the
+  // allowlist contract silently drops them.
+  if (toolName.startsWith("mica_") || toolName === "render_capture") {
+    return `mica-builtins_${toolName}`;
+  }
   const map: Record<string, string> = {
     read_file: "read",
     read_many_files: "read",
@@ -231,4 +268,144 @@ function mapToolName(toolName: string): string | null {
     //   todo_read       (opencode bundles read+write into todowrite)
   };
   return map[toolName] ?? null;
+}
+
+/** Inject a `mica-local` provider into opencode's Config so the
+ *  opencode card's "Local" radio routes to Mica's own LLM endpoint
+ *  (vLLM or llama-server, whichever is running on LLAMA_URL). Uses
+ *  the @ai-sdk/openai-compatible adapter — opencode bundles a
+ *  superset of the Vercel AI SDK providers, so npm declaration here
+ *  is enough.
+ *
+ *  Model discovery: probes /v1/models on the local endpoint and
+ *  registers each served id as a model. Best-effort — a probe
+ *  timeout / no-response leaves opencode without the local provider
+ *  (the card's "Local" radio then falls back to "no override" and
+ *  hits opencode's free-tier proxy). Better than hardcoding a model
+ *  name that drifts as the user swaps containers. */
+async function injectMicaLocalProvider(config: Config): Promise<void> {
+  const baseUrlRaw = process.env.LLAMA_URL || "http://127.0.0.1:8012";
+  const baseUrl = baseUrlRaw.replace(/\/+$/, "") + "/v1";
+
+  // Probe served models. 1.5s timeout — long enough for the local
+  // endpoint to respond, short enough not to delay opencode spawn
+  // when the endpoint is down. AbortSignal.timeout is Node 18+ native.
+  let modelIds: string[] = [];
+  try {
+    const res = await fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(1500) });
+    if (res.ok) {
+      const data = await res.json() as { data?: Array<{ id?: string }> };
+      modelIds = (data.data ?? [])
+        .map((m) => m?.id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0);
+    }
+  } catch (err) {
+    console.warn(`[opencode-config] mica-local model probe failed (${baseUrl}/models): ${(err as Error).message}`);
+  }
+
+  if (modelIds.length === 0) {
+    console.warn(`[opencode-config] mica-local: no models discovered at ${baseUrl}/models — skipping provider injection. .opencode cards with provider=Local will fall through to opencode's default.`);
+    return;
+  }
+
+  // De-duplicate while preserving order (vLLM often serves aliases
+  // alongside the canonical id; both deserve a dropdown entry).
+  const seen = new Set<string>();
+  const unique = modelIds.filter((id) => seen.has(id) ? false : (seen.add(id), true));
+
+  const models: Record<string, { name?: string }> = {};
+  for (const id of unique) models[id] = { name: id };
+
+  config.provider = config.provider || {};
+  config.provider["mica-local"] = {
+    npm: "@ai-sdk/openai-compatible",
+    name: "Mica Local",
+    options: {
+      baseURL: baseUrl,
+      apiKey: "none",  // vLLM/llama-server ignore auth; supplying any string satisfies the SDK
+    },
+    models,
+  };
+  console.log(`[opencode-config] mica-local provider registered at ${baseUrl} (${unique.length} model(s): ${unique.join(", ")})`);
+}
+
+/** Fetch OpenRouter's live model catalog and inject every entry into
+ *  `config.provider.openrouter.models`. opencode validates the modelID
+ *  against this map before forwarding a prompt; without the injection,
+ *  models that postdate opencode's bundled models.dev cache (e.g.
+ *  `google/gemini-3.5-flash` against opencode 1.15.5) get rejected
+ *  client-side with `Model not found`. The injection overrides that
+ *  validation so any model OpenRouter currently exposes becomes
+ *  selectable from the .opencode card's gear panel.
+ *
+ *  Skips entirely when OPENROUTER_API_KEY isn't in env — `injectWorkspaceCredentials`
+ *  in opencodeServer.ts populates the env var if the user has stored
+ *  an OpenRouter key in workspace credentials, so absence means the
+ *  user isn't using OpenRouter and there's no need to pay the fetch
+ *  cost.
+ *
+ *  Failure paths leave opencode's bundled cache as the fallback. Worst
+ *  case: spawn proceeds, user picks a model OpenRouter added recently,
+ *  opencode rejects — same state as before this injection existed. */
+async function injectOpenRouterModels(config: Config): Promise<void> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    // No key plumbed — user isn't routing through OpenRouter. Skip the
+    // fetch; opencode's bundled cache is fine for the providers it ships.
+    return;
+  }
+
+  let entries: Array<{ id?: string; name?: string }> = [];
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) {
+      console.warn(
+        `[opencode-config] openrouter model fetch returned HTTP ${res.status} — ` +
+          `falling back to opencode's bundled cache.`,
+      );
+      return;
+    }
+    const data = await res.json() as { data?: Array<{ id?: string; name?: string }> };
+    entries = data.data ?? [];
+  } catch (err) {
+    console.warn(
+      `[opencode-config] openrouter model fetch failed: ${(err as Error).message} — ` +
+        `falling back to opencode's bundled cache.`,
+    );
+    return;
+  }
+
+  const models: Record<string, { name?: string }> = {};
+  for (const m of entries) {
+    if (typeof m.id !== "string" || !m.id) continue;
+    // OpenRouter occasionally prefixes deprecated/migrated ids with `~`
+    // (e.g. `~google/gemini-flash-latest`). The `~` form isn't a valid
+    // identifier for a routed request — strip the prefix so it doesn't
+    // surface as a bogus selectable id.
+    const id = m.id.replace(/^~+/, "");
+    if (!id) continue;
+    models[id] = { name: typeof m.name === "string" && m.name ? m.name : id };
+  }
+
+  if (Object.keys(models).length === 0) {
+    console.warn(`[opencode-config] openrouter live model list was empty after parsing — falling back to opencode's bundled cache.`);
+    return;
+  }
+
+  config.provider = config.provider || {};
+  // Preserve any options opencode's bundled openrouter entry already
+  // declares (auth headers, api endpoint, etc.) by merging into the
+  // existing entry if one's present. Our override only touches
+  // `models` — everything else stays opencode-managed.
+  const existing = config.provider.openrouter ?? {};
+  config.provider.openrouter = {
+    ...existing,
+    models: { ...(existing.models ?? {}), ...models },
+  };
+  console.log(
+    `[opencode-config] openrouter provider extended with ${Object.keys(models).length} model(s) from openrouter.ai/api/v1/models`,
+  );
 }

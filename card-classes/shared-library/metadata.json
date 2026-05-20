@@ -1,0 +1,7 @@
+{
+  "extension": ".shared-library",
+  "badge": "SHARED",
+  "defaultTitle": "Shared Library",
+  "meta": true,
+  "dependencies": {}
+}

@@ -126,6 +126,16 @@ WORKDIR /opt/mica
 ENV PATH=/home/vscode/.local/bin:$PATH
 RUN curl -fsSL https://claude.ai/install.sh | bash || true
 
+# OpenCode CLI (for .opencode cards). Same spawn-by-name pattern as
+# Claude: @opencode-ai/sdk's createOpencodeServer calls cross-spawn
+# ("opencode") so the standalone binary MUST be on PATH at backend
+# spawn time. The npm package only ships the TypeScript client; the
+# CLI is a separate install. Lands at ~/.opencode/bin/opencode under
+# the active USER (vscode at this point), so the PATH update finds it.
+# Tolerate offline builds the same way Claude does.
+ENV PATH=/home/vscode/.opencode/bin:$PATH
+RUN curl -fsSL https://opencode.ai/install | bash || true
+
 # Mica deps first (layer cache): just package*.json → npm ci.
 COPY --chown=vscode:vscode package.json package-lock.json ./
 RUN npm ci

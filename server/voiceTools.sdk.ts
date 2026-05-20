@@ -98,16 +98,43 @@ export function buildVoiceTools(deps: VoiceToolDeps) {
     }),
 
     read_card: tool({
-      description: "Read a card's text content. Use when answering needs project-specific data you don't already have from the system-prompt context.",
+      description: "Read a card's text content. Use when answering needs project-specific data you don't already have from the system-prompt context. IMPORTANT: empty content does NOT mean the card is missing or doesn't exist — agent cards (.qwen, .opencode, .voice), shared-library, skills, and canvas-back instance files are almost always empty placeholders. Those cards render purely from their class definition; the instance file is just a handle for layout + session. If `content` is empty and `present: true`, the card IS on the canvas — say so, don't tell the user the card doesn't exist. If you actually need to verify presence, call `list_cards` instead.",
       inputSchema: z.object({
         file: z.string().describe("Exact filename from the canvas listing, e.g. canvas/info.md"),
       }),
       execute: async ({ file }) => {
-        const c = await readProjectFile(file, sessionProject || undefined);
-        const text = String(c?.content || "");
-        const truncated = text.length > READ_CARD_MAX_CHARS;
-        const body = truncated ? text.slice(0, READ_CARD_MAX_CHARS) + "\n(truncated)" : text;
-        return { file, content: body, truncated, originalLength: text.length };
+        try {
+          const c = await readProjectFile(file, sessionProject || undefined);
+          const text = String(c?.content || "");
+          const truncated = text.length > READ_CARD_MAX_CHARS;
+          const body = truncated ? text.slice(0, READ_CARD_MAX_CHARS) + "\n(truncated)" : text;
+          return {
+            file,
+            present: true,
+            content: body,
+            truncated,
+            originalLength: text.length,
+            // Explicit marker so the LLM never confuses "empty placeholder
+            // card" with "no such card." Set when the file exists but has
+            // no readable body — common for agent cards (.qwen, .opencode,
+            // .voice), shared-library, skills, canvas-back instances, etc.
+            isEmptyPlaceholder: text.length === 0,
+          };
+        } catch (err) {
+          // Distinguish ACTUAL missing files (ENOENT) from other failures.
+          // present:false means the card is genuinely not on the canvas;
+          // any other error is a read failure (perms, IO, etc.).
+          const message = (err as Error).message || String(err);
+          const isMissing = /ENOENT/i.test(message);
+          return {
+            file,
+            present: false,
+            content: "",
+            truncated: false,
+            originalLength: 0,
+            error: isMissing ? "file not found" : message,
+          };
+        }
       },
     }),
 

@@ -60,7 +60,17 @@ if (activityClearEl) {
 }
 const audioEl = container.querySelector('#vc-audio');
 const metaEl = container.querySelector('#vc-meta');
-const voiceSelectEl = container.querySelector('#vc-voice-select');
+// Settings-panel elements. The old in-header voice selector was removed
+// in favor of a gear-icon overlay panel mirroring the qwen/opencode/claude
+// card pattern. voiceSelectEl now points at the dropdown inside the panel.
+const settingsBtn = container.querySelector('#vc-settings-btn');
+const settingsPanel = container.querySelector('#vc-settings-panel');
+const settingsCloseEl = container.querySelector('#vc-settings-close');
+const settingsCancelBtn = container.querySelector('#vc-settings-cancel');
+const settingsSaveBtn = container.querySelector('#vc-settings-save');
+const voiceSelectEl = container.querySelector('#vc-settings-voice');
+const settingsAutoReadEl = container.querySelector('#vc-settings-autoread');
+const settingsDefaultTargetEl = container.querySelector('#vc-settings-default-target');
 
 // Currently-selected Kokoro voice. Default `af_sky` (calmer, lower-pitched
 // reading voice) — matches the sidecar env `VOICE_TTS_VOICE=af_sky` so
@@ -103,32 +113,37 @@ let silenceStartedAt = 0;
 let lastSpeechMs = 0;          // captured at endUtterance() so onstop can read it
 let suppressNextUtterance = false; // turnMicOff() sets this so the final partial recording is discarded
 
-// Tunables. RMS is in [0..1]; with echoCancellation + noiseSuppression on,
+// VAD presets — bundled (SPEECH_RMS, SILENCE_MS, BARGE_IN_DURATION_MS)
+// values keyed by environment. The user picks the preset via the gear-
+// icon settings panel; the active values become mutable references read
+// at runtime by detectSpeech / detectBargeIn / endUtterance. Defaults
+// (the "normal" row) match the historical hardcoded values exactly so
+// the change is backward-compatible.
+//
+// RMS is in [0..1]; with echoCancellation + noiseSuppression on,
 // quiet rooms idle around 0.001-0.005. Speaking voice typically registers
-// 0.05-0.30. The default 0.02 trips reliably on conversational speech and
-// rejects fan/keyboard noise. SILENCE_MS controls how long a pause must
-// be before we treat it as end-of-utterance.
-const SPEECH_RMS = 0.02;
-// Barge-in (interrupting Mica's TTS) is gated by SUSTAINED speech-level
-// activity. Same RMS threshold as ordinary speech detection (so normal
-// conversational volume triggers) but requires the energy stay above
-// threshold for BARGE_IN_DURATION_MS continuously — that filters the
-// false-positive sources (cough/click/chair-creak/keyboard-tap), which
-// are all sub-150ms transients that decay fast.
-// Tuning notes:
-//   - Bump BARGE_IN_RMS if Mica's own speaker echo trips barge (rare;
-//     speaker→mic bleed is usually well below 0.02 RMS).
-//   - Bump BARGE_IN_DURATION_MS if false positives still occur (e.g.
-//     500 for very rapid mid-noisy environments). Trade-off: laggier
-//     barge response.
-const BARGE_IN_RMS = SPEECH_RMS;
-const BARGE_IN_DURATION_MS = 150;
-// 1500ms silence to end an utterance. 800ms tripped on normal mid-
-// sentence thinking pauses and shipped partial transcripts ("I want
-// to know") to STT/LLM, which then dispatched a confused half-request
-// to Qwen. The completeness-check on the server side catches the
-// remaining cases where the user pauses for >1.5s mid-thought.
-const SILENCE_MS = 1500;
+// 0.05-0.30. SILENCE_MS controls how long a pause must be before we
+// treat it as end-of-utterance. BARGE_IN_DURATION_MS is the minimum
+// sustained-speech duration that interrupts Mica's TTS playback.
+const VAD_PRESETS = {
+  quiet:  { speechRms: 0.015, silenceMs: 1200, bargeInMs: 120 },
+  normal: { speechRms: 0.02,  silenceMs: 1500, bargeInMs: 150 },
+  noisy:  { speechRms: 0.035, silenceMs: 1800, bargeInMs: 250 },
+};
+let SPEECH_RMS = VAD_PRESETS.normal.speechRms;
+let SILENCE_MS = VAD_PRESETS.normal.silenceMs;
+let BARGE_IN_DURATION_MS = VAD_PRESETS.normal.bargeInMs;
+let BARGE_IN_RMS = SPEECH_RMS;
+function applyVadPreset(name) {
+  const p = VAD_PRESETS[name] || VAD_PRESETS.normal;
+  SPEECH_RMS = p.speechRms;
+  SILENCE_MS = p.silenceMs;
+  BARGE_IN_DURATION_MS = p.bargeInMs;
+  BARGE_IN_RMS = p.speechRms;
+}
+// Sentence pause — silent gap (ms) inserted between TTS sentence buffers
+// in playNextWav. Default 200ms gives multi-item lists a natural beat.
+let SENTENCE_PAUSE_MS = 150;
 // 200ms catches short single-word answers like "yes" / "no" / "ok"
 // (typical 200–300ms) without flooding STT with random blips. Server-
 // side Silero VAD rejects non-speech audio (0 segments → empty
@@ -342,7 +357,13 @@ function playNextWav() {
   src.connect(ctx.destination);
   src.onended = function() {
     if (currentSource === src) currentSource = null;
-    playNextWav();
+    // Inter-sentence pause — silent gap before kicking the next buffer.
+    // Skipped entirely (next tick) when SENTENCE_PAUSE_MS is 0 or the
+    // queue is already empty (so the "playback finished, status →
+    // Ready" path isn't delayed). Configurable via the gear panel.
+    const gap = wavQueue.length > 0 ? (SENTENCE_PAUSE_MS || 0) : 0;
+    if (gap > 0) setTimeout(playNextWav, gap);
+    else playNextWav();
   };
   currentSource = src;
   updateStopSpeakingButton();
@@ -797,11 +818,18 @@ function _openVoiceChannel() {
       : true;
     _ch.send({ type: 'presence', visible: visible });
   } catch (_) {}
-  // Sync the currently-selected voice to the server so the session's
-  // voicePref matches the dropdown. Updates ambient TTS path which
-  // doesn't see per-message voice fields. Re-sent on reconnect.
+  // Sync per-card settings to the server on (re)connect:
+  //   - voice → ambient TTS pref
+  //   - autoReadAmbient → ambient-announcement TTS gate
+  //   - defaultDispatchTarget → voice system-prompt hint for send_to_card
+  // VAD preset and sentence pause are client-only (no server signal).
   try {
     if (currentVoice) _ch.send({ type: 'set_voice', voice: currentVoice });
+    _ch.send({
+      type: 'set_settings',
+      autoReadAmbient: currentSettings.autoReadAmbient !== false,
+      defaultDispatchTarget: currentSettings.defaultDispatchTarget || '',
+    });
   } catch (_) {}
   _ch.onClose(function() {
     console.warn('[voice] channel closed; will retry');
@@ -824,43 +852,148 @@ const ch = {
   send: function(payload) { if (_ch) _ch.send(payload); },
 };
 
-// ── Voice selection (persisted to instance file) ────────────────
+// ── Settings panel (gear icon → overlay) ─────────────────────────
 //
-// Load saved voice on init (if any), apply to dropdown + currentVoice,
-// re-send set_voice so server matches persisted state. Dropdown
-// changes update currentVoice, persist, and notify the server. The
-// instance file is plain JSON: {"voice": "af_sky"}.
-async function loadVoiceState() {
+// All persisted per-card settings live in the instance file as a JSON
+// blob. Shape (back-compat: older files with just `{voice}` keep working):
+//   {
+//     voice: "af_sky",
+//     autoReadAmbient: true,
+//     defaultDispatchTarget: "",
+//     vadPreset: "normal",          // "quiet" | "normal" | "noisy"
+//     sentencePauseMs: 150,         // one of the radio-button values
+//                                   // (0/150/250/400) so the panel always
+//                                   // has a selected option on open
+//   }
+//
+// On mount: load → apply VAD preset + sentence pause locally, notify
+// server of voice + autoRead + defaultTarget via control messages.
+// On save: write the blob back, re-apply locally, re-notify server.
+const currentSettings = {
+  voice: DEFAULT_VOICE,
+  autoReadAmbient: true,
+  defaultDispatchTarget: '',
+  vadPreset: 'normal',
+  sentencePauseMs: 150,
+};
+
+async function loadSettings() {
   try {
     const raw = await mica.getContent();
     if (!raw || !raw.trim()) return;
     const parsed = JSON.parse(raw);
-    if (typeof parsed.voice === 'string' && parsed.voice.trim()) {
-      currentVoice = parsed.voice.trim();
-      if (voiceSelectEl) voiceSelectEl.value = currentVoice;
-      // Re-sync server in case the initial set_voice (during channel
-      // open) used the default. Idempotent on the server side.
+    if (typeof parsed.voice === 'string' && parsed.voice.trim()) currentSettings.voice = parsed.voice.trim();
+    if (typeof parsed.autoReadAmbient === 'boolean') currentSettings.autoReadAmbient = parsed.autoReadAmbient;
+    if (typeof parsed.defaultDispatchTarget === 'string') currentSettings.defaultDispatchTarget = parsed.defaultDispatchTarget.trim();
+    if (typeof parsed.vadPreset === 'string' && VAD_PRESETS[parsed.vadPreset]) currentSettings.vadPreset = parsed.vadPreset;
+    if (typeof parsed.sentencePauseMs === 'number' && parsed.sentencePauseMs >= 0) currentSettings.sentencePauseMs = parsed.sentencePauseMs;
+  } catch (_) { /* fresh card or non-JSON; stick with defaults */ }
+  // Apply local-only settings immediately.
+  currentVoice = currentSettings.voice;
+  applyVadPreset(currentSettings.vadPreset);
+  SENTENCE_PAUSE_MS = currentSettings.sentencePauseMs;
+  // Re-sync server so the session's voicePref + autoRead + defaultTarget
+  // match the persisted values. Idempotent on the server side.
+  try {
+    ch.send({ type: 'set_voice', voice: currentVoice });
+    ch.send({
+      type: 'set_settings',
+      autoReadAmbient: currentSettings.autoReadAmbient,
+      defaultDispatchTarget: currentSettings.defaultDispatchTarget,
+    });
+  } catch (_) {}
+}
+
+function persistSettings() {
+  // Fire-and-forget — errors here are non-fatal (worst case, the change
+  // won't survive a reload). Written as pretty-JSON for human edits.
+  mica.files.write(mica.filename, JSON.stringify(currentSettings, null, 2)).catch(() => {});
+}
+
+function openSettingsPanel() {
+  // Populate fields from currentSettings every time the panel opens so
+  // the form reflects state, not stale dropdown values.
+  if (voiceSelectEl) voiceSelectEl.value = currentSettings.voice;
+  if (settingsAutoReadEl) settingsAutoReadEl.checked = currentSettings.autoReadAmbient !== false;
+  if (settingsDefaultTargetEl) settingsDefaultTargetEl.value = currentSettings.defaultDispatchTarget || '';
+  const vadRadios = container.querySelectorAll('input[name="vc-vad-preset"]');
+  vadRadios.forEach(function(r) { r.checked = (r.value === currentSettings.vadPreset); });
+  // Snap an out-of-range sentencePauseMs (e.g. legacy 200 from earlier
+  // builds, or an arbitrary value the user wrote into the JSON file)
+  // to the nearest radio option so the panel always shows a selection.
+  // Without this, an unmatched value leaves all radios unchecked and the
+  // user can't tell which option is in effect.
+  const pauseRadios = container.querySelectorAll('input[name="vc-sentence-pause"]');
+  const pauseValues = Array.from(pauseRadios).map(function(r) { return parseInt(r.value, 10); });
+  let nearest = pauseValues[0];
+  for (let i = 1; i < pauseValues.length; i++) {
+    if (Math.abs(pauseValues[i] - currentSettings.sentencePauseMs) < Math.abs(nearest - currentSettings.sentencePauseMs)) {
+      nearest = pauseValues[i];
+    }
+  }
+  pauseRadios.forEach(function(r) { r.checked = (parseInt(r.value, 10) === nearest); });
+  settingsPanel.style.display = 'block';
+}
+
+function closeSettingsPanel() { settingsPanel.style.display = 'none'; }
+
+if (settingsBtn) settingsBtn.addEventListener('click', openSettingsPanel);
+if (settingsCloseEl) settingsCloseEl.addEventListener('click', closeSettingsPanel);
+if (settingsCancelBtn) settingsCancelBtn.addEventListener('click', closeSettingsPanel);
+
+if (settingsSaveBtn) {
+  settingsSaveBtn.addEventListener('click', function() {
+    // Collect form state.
+    const nextVoice = (voiceSelectEl && voiceSelectEl.value || '').trim() || currentSettings.voice;
+    const nextAutoRead = settingsAutoReadEl ? !!settingsAutoReadEl.checked : true;
+    const nextTarget = (settingsDefaultTargetEl && settingsDefaultTargetEl.value || '').trim();
+    let nextVadPreset = 'normal';
+    container.querySelectorAll('input[name="vc-vad-preset"]').forEach(function(r) {
+      if (r.checked) nextVadPreset = r.value;
+    });
+    let nextPause = 200;
+    container.querySelectorAll('input[name="vc-sentence-pause"]').forEach(function(r) {
+      if (r.checked) nextPause = parseInt(r.value, 10) || 0;
+    });
+
+    // Track what changed for the server-notify decision.
+    const voiceChanged = nextVoice !== currentSettings.voice;
+    const autoReadChanged = nextAutoRead !== currentSettings.autoReadAmbient;
+    const targetChanged = nextTarget !== (currentSettings.defaultDispatchTarget || '');
+
+    currentSettings.voice = nextVoice;
+    currentSettings.autoReadAmbient = nextAutoRead;
+    currentSettings.defaultDispatchTarget = nextTarget;
+    currentSettings.vadPreset = nextVadPreset;
+    currentSettings.sentencePauseMs = nextPause;
+
+    // Apply client-side immediately.
+    currentVoice = nextVoice;
+    applyVadPreset(nextVadPreset);
+    SENTENCE_PAUSE_MS = nextPause;
+
+    // Persist + notify server. Only send messages for the slices the
+    // server cares about and that actually changed.
+    persistSettings();
+    if (voiceChanged) {
       try { ch.send({ type: 'set_voice', voice: currentVoice }); } catch (_) {}
     }
-  } catch (_) { /* fresh card or non-JSON content; stick with default */ }
-}
-function persistVoiceState() {
-  // Fire-and-forget — errors here are non-fatal (worst case, the
-  // selection won't survive a reload).
-  mica.files.write(mica.filename, JSON.stringify({ voice: currentVoice })).catch(() => {});
-}
-if (voiceSelectEl) {
-  voiceSelectEl.value = currentVoice;
-  voiceSelectEl.addEventListener('change', function() {
-    const next = (voiceSelectEl.value || '').trim();
-    if (!next || next === currentVoice) return;
-    currentVoice = next;
-    persistVoiceState();
-    try { ch.send({ type: 'set_voice', voice: currentVoice }); } catch (_) {}
-    console.log('[voice] voice changed to ' + currentVoice);
+    if (autoReadChanged || targetChanged) {
+      try {
+        ch.send({
+          type: 'set_settings',
+          autoReadAmbient: currentSettings.autoReadAmbient,
+          defaultDispatchTarget: currentSettings.defaultDispatchTarget,
+        });
+      } catch (_) {}
+    }
+
+    console.log('[voice] settings saved: ' + JSON.stringify(currentSettings));
+    closeSettingsPanel();
   });
 }
-loadVoiceState();
+
+loadSettings();
 
 let turnStartedAt = 0;
 let firstAudioMs = null;

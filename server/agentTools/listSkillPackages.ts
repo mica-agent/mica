@@ -29,24 +29,24 @@ interface PackageRow {
   shorthands: string[];
 }
 
-function rollUp(entries: Record<string, string>): PackageRow[] {
+function rollUp(entries: Record<string, { url: string; canonicalName: string }>): PackageRow[] {
   // URL → row, collecting every shorthand that resolves to it.
   const byUrl = new Map<string, PackageRow>();
-  for (const [shorthand, url] of Object.entries(entries)) {
-    let row = byUrl.get(url);
+  for (const [shorthand, entry] of Object.entries(entries)) {
+    let row = byUrl.get(entry.url);
     if (!row) {
       // Pick the canonical "<x>-skills" shorthand as the package name
       // when present; otherwise the first shorthand seen.
       const skillsShorthand = Object.entries(entries)
-        .filter(([, u]) => u === url)
+        .filter(([, e]) => e.url === entry.url)
         .map(([s]) => s)
         .find((s) => s.endsWith("-skills"));
       row = {
         package: skillsShorthand || shorthand,
-        url,
+        url: entry.url,
         shorthands: [],
       };
-      byUrl.set(url, row);
+      byUrl.set(entry.url, row);
     }
     row.shorthands.push(shorthand);
   }

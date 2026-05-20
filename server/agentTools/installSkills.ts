@@ -14,7 +14,7 @@
 
 import { z } from "zod";
 import { join } from "path";
-import { mkdir, readdir, readFile, symlink, writeFile } from "fs/promises";
+import { mkdir, readdir, readFile, symlink, writeFile, lstat, unlink } from "fs/promises";
 import { existsSync } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -26,12 +26,24 @@ const execFileP = promisify(execFile);
 // Curated lookup table — well-known library → skills repo. Hint list, not a
 // registry. Agent can also pass `github:owner/repo` or full URL directly.
 // Expand as the ecosystem grows; ship empty rather than wrong.
-export const KNOWN_SKILL_PACKAGES: Record<string, string> = {
-  three: "https://github.com/cloudai-x/threejs-skills.git",
-  threejs: "https://github.com/cloudai-x/threejs-skills.git",
-  "three.js": "https://github.com/cloudai-x/threejs-skills.git",
-  "threejs-skills": "https://github.com/cloudai-x/threejs-skills.git",
-  "three-skills": "https://github.com/cloudai-x/threejs-skills.git",
+//
+// Each entry carries a `canonicalName` so EVERY alias for the same package
+// resolves to the SAME install dirname. Without this, `source: "three"`
+// installed to `.qwen/skills/three/` while `source: "threejs-skills"`
+// installed to `.qwen/skills/threejs/` — and the `required-library-skills-installed`
+// predicate in toolPrerequisites.ts (which only knows one dirname per
+// library) would report "not installed" for the wrong-alias install. The
+// canonicalName decouples agent-facing alias choice from on-disk layout.
+interface SkillPackageEntry {
+  url: string;
+  canonicalName: string;
+}
+export const KNOWN_SKILL_PACKAGES: Record<string, SkillPackageEntry> = {
+  three:             { url: "https://github.com/cloudai-x/threejs-skills.git", canonicalName: "threejs" },
+  threejs:           { url: "https://github.com/cloudai-x/threejs-skills.git", canonicalName: "threejs" },
+  "three.js":        { url: "https://github.com/cloudai-x/threejs-skills.git", canonicalName: "threejs" },
+  "threejs-skills":  { url: "https://github.com/cloudai-x/threejs-skills.git", canonicalName: "threejs" },
+  "three-skills":    { url: "https://github.com/cloudai-x/threejs-skills.git", canonicalName: "threejs" },
 };
 
 const inputSchema = {
@@ -49,9 +61,14 @@ const inputSchema = {
     .string()
     .optional()
     .describe(
-      "Override the directory name for the install (default: derived from source — " +
-        "e.g. 'github:cloudai-x/threejs-skills' → 'threejs', stripping the '-skills' suffix). " +
-        "Use alphanumeric, dash, underscore only.",
+      "**OMIT THIS for curated shorthands** (e.g. 'threejs-skills'). The default " +
+        "dirname is part of Mica's contract — the `required-library-skills-installed` " +
+        "predicate looks at a specific dirname per library, and overriding it here " +
+        "silently breaks that predicate (the install succeeds, then mica_create_class " +
+        "still reports 'not installed'). Server-side enforces this for curated " +
+        "shorthands by ignoring any override. " +
+        "Only meaningful for github:/https: sources where you want a non-default " +
+        "dirname. Alphanumeric, dash, underscore only.",
     ),
   approve: z
     .boolean()
@@ -67,12 +84,27 @@ const inputSchema = {
     ),
 } as const;
 
-interface ResolvedSource { url: string; defaultName: string }
+interface ResolvedSource {
+  url: string;
+  defaultName: string;
+  /** True when `source` was matched against the curated lookup table.
+   *  Curated entries lock the install dirname to canonicalName — the
+   *  agent's optional `name` arg is ignored for them, because the
+   *  `required-library-skills-installed` predicate checks a specific
+   *  dirname per library and a name override silently breaks that
+   *  contract (observed: agent helpfully passed name="threejs-skills"
+   *  expecting it to match, predicate then said "not installed"
+   *  because it was looking for .qwen/skills/threejs/). */
+  isCurated: boolean;
+}
 
 function resolveSource(source: string): ResolvedSource | { error: string } {
   // Lookup-table shorthand — preferred path; agent doesn't need to know URLs.
-  if (KNOWN_SKILL_PACKAGES[source]) {
-    return { url: KNOWN_SKILL_PACKAGES[source], defaultName: source.replace(/-skills$/, "").replace(/^three\.js$/, "threejs") };
+  // canonicalName from the table wins so every alias for the same package
+  // installs to the same dirname (see KNOWN_SKILL_PACKAGES rationale).
+  const entry = KNOWN_SKILL_PACKAGES[source];
+  if (entry) {
+    return { url: entry.url, defaultName: entry.canonicalName, isCurated: true };
   }
   // github:owner/repo[#ref]
   const ghMatch = source.match(/^github:([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+?)(?:\.git)?(?:#([a-zA-Z0-9_./-]+))?$/);
@@ -81,6 +113,7 @@ function resolveSource(source: string): ResolvedSource | { error: string } {
     return {
       url: `https://github.com/${owner}/${repo}.git`,
       defaultName: repo.replace(/-skills$/, "").replace(/\.git$/, ""),
+      isCurated: false,
     };
   }
   // Full https URL on a known git host.
@@ -93,6 +126,7 @@ function resolveSource(source: string): ResolvedSource | { error: string } {
     return {
       url: source.endsWith(".git") ? source : `${source}.git`,
       defaultName: repo.replace(/-skills$/, ""),
+      isCurated: false,
     };
   }
   return {
@@ -137,7 +171,7 @@ async function recordApproval(project: string, url: string): Promise<void> {
   await writeFile(approvalsPath(project), JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
 
-const CURATED_URLS = new Set(Object.values(KNOWN_SKILL_PACKAGES));
+const CURATED_URLS = new Set(Object.values(KNOWN_SKILL_PACKAGES).map((e) => e.url));
 
 async function summarizeSkills(skillsRoot: string): Promise<Array<{ name: string; description: string }>> {
   const found: Array<{ name: string; description: string }> = [];
@@ -200,7 +234,21 @@ export const installSkillsTool: AgentToolDef<typeof inputSchema> = {
     if ("error" in resolved) {
       return { isError: true, text: resolved.error };
     }
-    const rawName = (input.name && input.name.trim()) || resolved.defaultName;
+    // For curated packages, ignore any `name` override the agent passed.
+    // The canonicalName is part of the contract that
+    // `required-library-skills-installed` (toolPrerequisites.ts) reads;
+    // honoring an override here silently breaks the predicate. The
+    // agent's `name` arg only takes effect for github:/https: sources
+    // where there's no curated dirname to enforce.
+    const overrideName = input.name && input.name.trim() ? input.name.trim() : "";
+    if (resolved.isCurated && overrideName && overrideName !== resolved.defaultName) {
+      console.log(
+        `[install-skills] ignoring name="${overrideName}" override for curated source — ` +
+          `using canonical "${resolved.defaultName}" so the install dirname matches ` +
+          `the prerequisite predicate's expectation.`,
+      );
+    }
+    const rawName = resolved.isCurated ? resolved.defaultName : (overrideName || resolved.defaultName);
     if (!/^[a-zA-Z0-9_-]+$/.test(rawName)) {
       return {
         isError: true,
@@ -272,13 +320,37 @@ export const installSkillsTool: AgentToolDef<typeof inputSchema> = {
     // Cheaper than a copy and stays in sync with the qwen tree if either is
     // updated. Falls back gracefully if the FS doesn't support symlinks
     // (rare in our Linux/Docker setup, but possible).
+    //
+    // Idempotency: a stale symlink from a prior install (e.g. one that the
+    // user removed `.qwen/skills/<name>` from under, leaving a dangling
+    // `.claude/skills/<name>` pointing at nothing) makes the bare
+    // `symlink()` call fail with EEXIST. We `lstat` to see if anything's
+    // already at the target; if it's a symlink, replace it (the new
+    // symlink is the authoritative one); if it's a real file/directory,
+    // leave it alone — the user may have put real content there
+    // intentionally, and silently overwriting would lose data.
+    let canSymlink = true;
     try {
-      await symlink(join("..", "..", ".qwen", "skills", name), claudeTarget);
-    } catch (err) {
-      console.warn(
-        `[install-skills] symlink to .claude/skills/${name} failed: ${(err as Error).message}. ` +
-          `qwen sees the skills; Claude/opencode may need a manual mirror.`,
-      );
+      const s = await lstat(claudeTarget);
+      if (s.isSymbolicLink()) {
+        await unlink(claudeTarget);
+      } else {
+        console.warn(
+          `[install-skills] .claude/skills/${name} exists and is not a symlink — leaving alone. ` +
+            `qwen sees the skills; the existing path was preserved.`,
+        );
+        canSymlink = false;
+      }
+    } catch { /* nothing at target — clean install path */ }
+    if (canSymlink) {
+      try {
+        await symlink(join("..", "..", ".qwen", "skills", name), claudeTarget);
+      } catch (err) {
+        console.warn(
+          `[install-skills] symlink to .claude/skills/${name} failed: ${(err as Error).message}. ` +
+            `qwen sees the skills; Claude/opencode may need a manual mirror.`,
+        );
+      }
     }
 
     // Record approval for future installs of the same URL. Curated and

@@ -64,6 +64,24 @@ RUN set -eux; \
     cmake --build build --config Release --target llama-server -j"$jobs"; \
     ln -sf /opt/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
 
+# OpenCode CLI (for .opencode cards). The .opencode card class spawns
+# `opencode serve` via @opencode-ai/sdk's createOpencodeServer, which
+# calls cross-spawn("opencode") and so requires the BINARY on PATH at
+# backend spawn time — the npm `@opencode-ai/sdk` package alone is just
+# the TypeScript client; the standalone CLI is a separate install.
+#
+# Install as vscode (the user the backend runs as in this devcontainer)
+# so it lands in /home/vscode/.opencode/bin/opencode rather than root's
+# home (unreachable when the container later runs as vscode). ENV PATH
+# update applies to all subsequent docker layers AND the running
+# container, so the backend finds the binary without start.sh needing
+# to know about it. Tolerate offline builds — opencode.ai unreachable
+# during `docker build` shouldn't break the image; users can run the
+# installer ad-hoc later via `bash scripts/install-opencode.sh` or the
+# `curl | bash` line documented in QUICKSTART.
+ENV PATH=/home/vscode/.opencode/bin:$PATH
+RUN su -l vscode -c 'curl -fsSL https://opencode.ai/install | bash' || true
+
 # NOTE: keep transformers at vLLM 0.15's pinned 4.57.5. Newer transformers
 # breaks Qwen2VL/Qwen3VL image processor (max_pixels removed). Gemma 4 needs
 # transformers 5.x AND has additional vLLM 0.15 bugs (top_k assertion for

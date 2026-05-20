@@ -36,8 +36,9 @@
 //   { type: "clear" }                 — reset conversation history
 
 import type { ChannelHandler, SessionContext, ChannelManager } from "./channelManager.js";
-import { listCanvasFiles, readProjectFile, getOrCreateCardId, loadChatQueue } from "./files.js";
-import { readFile } from "fs/promises";
+import { listCanvasFiles, readProjectFile, getOrCreateCardId, loadChatQueue, micaDir } from "./files.js";
+import { readdir, readFile } from "fs/promises";
+import { existsSync } from "fs";
 import { join } from "path";
 import {
   ensureVoiceServers,
@@ -82,6 +83,54 @@ async function readChatHistoryFor(
   } catch {
     return [];
   }
+}
+
+/** List card-class names registered for the project: project-scoped
+ *  (under `.mica/card-classes/<name>/`) plus built-in (under
+ *  `<repo>/card-classes/<name>/`). Each entry includes its scope so the
+ *  voice prompt can disambiguate "this is a custom class for THIS
+ *  project" vs "this is one of Mica's built-ins."
+ *
+ *  Used purely to inform the system prompt — voice doesn't introspect
+ *  class internals beyond knowing they exist. The agent uses this to
+ *  answer "is the card class for `.hotdog` built?" without having to
+ *  read `.mica/card-classes/hotdog/card.html` directly. */
+interface RegisteredClass { name: string; scope: "project" | "builtin" }
+async function listRegisteredCardClasses(project: string | null): Promise<RegisteredClass[]> {
+  const seen = new Set<string>();
+  const out: RegisteredClass[] = [];
+  // Project-scoped first (they shadow built-ins by the same name).
+  if (project) {
+    try {
+      const dir = join(micaDir(project), "card-classes");
+      if (existsSync(dir)) {
+        const entries = await readdir(dir, { withFileTypes: true });
+        for (const e of entries) {
+          if (!e.isDirectory() || e.name.startsWith(".")) continue;
+          if (!existsSync(join(dir, e.name, "card.html"))) continue;
+          if (seen.has(e.name)) continue;
+          seen.add(e.name);
+          out.push({ name: e.name, scope: "project" });
+        }
+      }
+    } catch { /* readdir failed — fall through */ }
+  }
+  // Built-in card classes.
+  try {
+    const dir = join(process.cwd(), "card-classes");
+    if (existsSync(dir)) {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith(".")) continue;
+        if (!existsSync(join(dir, e.name, "card.html"))) continue;
+        if (seen.has(e.name)) continue;
+        seen.add(e.name);
+        out.push({ name: e.name, scope: "builtin" });
+      }
+    }
+  } catch { /* ignore */ }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
 
 /** Read the project's spec/intent file if present. Returns the first
@@ -447,6 +496,18 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     // aloud) so a voice change applies everywhere.
     let voicePref: string | undefined =
       typeof args.voice === "string" ? (args.voice as string) : undefined;
+    // Per-session settings, updated via `set_settings` control messages
+    // from the card. Defaults preserve the historical behavior so
+    // pre-rollout sessions keep working unchanged.
+    //   autoReadAmbient: gates the assistant_speech (TTS audio) emission
+    //     on the ambient-announcement path. When false, the reply panel
+    //     still receives assistant_speech_text (the text appears), but
+    //     no audio frames are broadcast. Default true.
+    //   defaultDispatchTarget: when non-empty, injected into the voice
+    //     system prompt as a hint for send_to_card so phrases like
+    //     "ask the agent" route to this card without naming it.
+    let autoReadAmbient = true;
+    let defaultDispatchTarget = "";
     const history: VoiceTurn[] = [];
     let activeAbort: AbortController | null = null;
     // `busy` gates new USER utterances. True from STT through the LLM
@@ -785,11 +846,18 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           agent: next.agent,
           mode: next.mode,
         });
-        // Skip Kokoro round-trip when no subscriber is currently visible.
-        // Sentence text frames still go out so a hidden tab will see the
-        // announcement when it next becomes visible.
-        const skipTts = !anyVisible();
-        if (skipTts) console.log(`[voice-agent:ambient] all subscribers hidden — skipping TTS for ${next.filename}`);
+        // Skip Kokoro round-trip when:
+        //   - no subscriber is currently visible (the tab is hidden, so
+        //     audio would go nowhere usefully), OR
+        //   - the user has turned off "Auto-read replies" in the gear
+        //     panel (autoReadAmbient = false). The sentence text frames
+        //     still go out so the reply panel keeps updating; the audio
+        //     just doesn't get synthesized.
+        const skipTts = !anyVisible() || !autoReadAmbient;
+        if (skipTts) {
+          const why = !autoReadAmbient ? "autoReadAmbient=false" : "all subscribers hidden";
+          console.log(`[voice-agent:ambient] ${why} — skipping TTS for ${next.filename}`);
+        }
         const fanout = new SentenceFanout({
           ttsUrl: getTtsUrl(),
           voice: voicePref,
@@ -955,6 +1023,11 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // Presence ping: the voice card reports its tab visibility so
           // the server can skip TTS work when every subscriber is hidden.
           visible?: boolean;
+          // set_settings payload (sent by the card's gear panel on save
+          // + on reconnect echo). Both fields optional; only the slices
+          // that changed need to be sent, but the card always sends both.
+          autoReadAmbient?: boolean;
+          defaultDispatchTarget?: string;
         };
 
         // Diagnostic log: every inbound channel message. Helps debug
@@ -1016,6 +1089,26 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             if (next !== voicePref) {
               voicePref = next;
               console.log(`[voice-agent] voicePref updated to ${voicePref}`);
+            }
+          }
+          return;
+        }
+        if (msg.type === "set_settings") {
+          // Card's gear-panel save (or reconnect echo). Updates the
+          // session-scoped autoReadAmbient and defaultDispatchTarget
+          // knobs. Cheap, idempotent — call as many times as the card
+          // wants without side effects on in-flight turns.
+          if (typeof msg.autoReadAmbient === "boolean") {
+            if (msg.autoReadAmbient !== autoReadAmbient) {
+              autoReadAmbient = msg.autoReadAmbient;
+              console.log(`[voice-agent] autoReadAmbient → ${autoReadAmbient}`);
+            }
+          }
+          if (typeof msg.defaultDispatchTarget === "string") {
+            const next = msg.defaultDispatchTarget.trim();
+            if (next !== defaultDispatchTarget) {
+              defaultDispatchTarget = next;
+              console.log(`[voice-agent] defaultDispatchTarget → "${defaultDispatchTarget}"`);
             }
           }
           return;
@@ -1262,6 +1355,18 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // Empty string when there's no spec — section is omitted.
           const projectIntent = await loadProjectIntent(sessionProject);
 
+          // Registered card classes — project-scoped (custom, in
+          // .mica/card-classes/) + built-in. Inlined in the prompt so
+          // the agent can answer "is the .hotdog class built?" without
+          // introspecting class files (which it can't). The agent uses
+          // this with canvas instance listing to distinguish:
+          //   - Instance exists, class registered → card renders normally
+          //   - Instance exists, class missing    → broken card (rare)
+          //   - No instance, class registered     → user hasn't placed it
+          const registeredClasses = await listRegisteredCardClasses(sessionProject);
+          const projectClasses = registeredClasses.filter((c) => c.scope === "project");
+          const builtinClasses = registeredClasses.filter((c) => c.scope === "builtin");
+
           // Ambient context: every small .md/.txt card on the canvas
           // root, content-inlined so voice "just knows" what's there
           // without a read_card round-trip. Spec.md is excluded when
@@ -1323,6 +1428,42 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             "If the user references the in-flight item (currentTask) rather than a queued one, you can't edit it — speak that and offer to send the amendment as a follow-up instead.\n",
           );
 
+          // World-model primer — explicit definition of the Mica card
+          // abstraction. Without this, the model reasons from generic
+          // "card / file" intuitions and conflates instance-file
+          // emptiness with "the card isn't built." This block defines
+          // the three distinct files involved (spec / class / instance)
+          // and forbids build-status inference from file size alone.
+          promptParts.push(
+            "## What a Mica card is\n" +
+            "A Mica project has THREE different kinds of files that can describe one feature; do not conflate them:\n" +
+            "1. **Spec** (e.g. `canvas/foo-spec.md`) — a Markdown design doc the user wrote. Tells you what the feature should do. Has nothing to do with whether the renderer exists.\n" +
+            "2. **Card class definition** (e.g. `.mica/card-classes/foo/card.html` + `card.js` + `card.css` + `metadata.json`) — the actual rendered code. You can NOT see this directly; rely on the \"Registered card classes\" list below to know whether `.foo` has a class defined.\n" +
+            "3. **Instance file** (e.g. `canvas/myfoo.foo`) — a tiny handle on the canvas. The extension routes to the card class; the file body is OFTEN EMPTY or a small JSON blob. For ALL card classes (built-in or custom), an empty instance file is the normal default state — it means \"this card is placed on the canvas; no per-instance content has been authored.\" It does NOT mean the card class is unbuilt, broken, or missing.\n\n" +
+            "Therefore: if you see `canvas/myfoo.foo` on the canvas AND `.foo` appears in the registered-classes list below, the card IS built and rendering — period. Whether the user has typed anything INTO that instance file is irrelevant to build-status. NEVER say phrases like \"the card is still empty\", \"the card hasn't been built\", \"nothing's been built yet\", or \"the card file is empty\" based on `read_card` returning empty content. Those statements confuse the user, who is looking at a working card on their screen.\n\n" +
+            "If the user asks \"where are we?\" or \"is the card built?\", check the registered-classes list AND the canvas listing below before answering. If a card class isn't registered, you can truthfully say the class needs to be built. If the class IS registered, say the card is on the canvas and ready, even if its instance file is empty.\n",
+          );
+
+          // Registered card classes — class definitions actually present.
+          // Splits into built-in (ship with Mica) and project-scoped
+          // (custom classes in .mica/card-classes/). The voice agent
+          // uses this with the canvas listing below to answer build-
+          // status questions truthfully.
+          if (registeredClasses.length > 0) {
+            const builtinLine = builtinClasses.length > 0
+              ? "Built-in classes: " + builtinClasses.map((c) => `.${c.name}`).join(", ") + ".\n"
+              : "";
+            const projectLine = projectClasses.length > 0
+              ? "Project-scoped classes (custom for THIS project): " + projectClasses.map((c) => `.${c.name}`).join(", ") + ". These ARE built — their definitions live in `.mica/card-classes/`.\n"
+              : "No project-scoped classes registered yet (no entries under `.mica/card-classes/`). Any instance file whose extension matches a built-in class is still a working card.\n";
+            promptParts.push(
+              "## Registered card classes (renderers that exist)\n" +
+              projectLine +
+              builtinLine +
+              "An instance file (e.g. `canvas/foo.bar`) is a working, rendered card on the canvas if AND ONLY IF `.bar` appears above. The instance file's body content has no bearing on whether the class is built.\n",
+            );
+          }
+
           if (projectIntent) {
             promptParts.push(
               "## Project intent (from canvas/spec.md — already in your context)\n" +
@@ -1358,8 +1499,28 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
 
           promptParts.push(
             "## Chat cards (the only valid targets for send_to_card)\n" +
-            chatCardsLines + "\n",
+            chatCardsLines + "\n" +
+            "Empty instance files are NORMAL — agent cards render from their " +
+            "class definition, not from file content. If `read_card` returns " +
+            "empty content for a card listed here (or anywhere in the canvas " +
+            "above), the card IS on the canvas; do NOT tell the user it " +
+            "doesn't exist.\n",
           );
+
+          // Default-target hint from the gear panel. When set, the LLM
+          // should default to this filename when the user says "ask the
+          // agent" / "send it to the agent" / similar without naming a
+          // specific card. Only injected when defaultDispatchTarget
+          // points at a card that's actually in the chatCards list —
+          // otherwise it'd send the LLM toward a target send_to_card
+          // would reject as not-open.
+          if (defaultDispatchTarget && chatCards.some((c) => c.name === defaultDispatchTarget)) {
+            promptParts.push(
+              "## Default dispatch target\n" +
+              `When the user says "ask the agent" / "send this along" / similar without naming a specific card, default the send_to_card target to: \`${defaultDispatchTarget}\`.\n` +
+              "If the user explicitly names a different card, route to that one instead.\n",
+            );
+          }
 
           if (delegation) {
             const turnsLabel = delegation.turnsAgo === 0

@@ -15,6 +15,8 @@ These tools come from Mica itself — same names, same input/output shape, same 
 
 **Pass \`user_intent\` on every UX-correction follow-up turn** (e.g. "the label should say X not Y", "spinner is stuck", "result is in the wrong place"). When supplied, the captioner COMPARES the image against the request and returns MATCHES / MISMATCH / UNVERIFIABLE instead of just CLEAN. **MISMATCH means do NOT declare done** — the visible UI doesn't match what the user asked for; edit and re-capture. UNVERIFIABLE means the request is about behavior a still image can't show (animations, post-click state) — describe expected behavior in your summary or trigger the state change before re-capturing. Without \`user_intent\`, the loop runs in describe-only mode and \`CLEAN\` can mean "no JS errors but the UI may still be wrong" — that's the gaslight you avoid by always passing intent on UX follow-ups.
 
+**Don't verify post-interaction state on the initial render.** If the user's request is about content that only appears AFTER a user action (an image preview after upload, a result after clicking analyze, output after submitting a form), DON'T pass that as \`user_intent\` immediately after editing — the captioner will see the empty pre-action state and (correctly) return UNVERIFIABLE, but agents reading "no match" sometimes loop on phantom bugs. Instead: verify in describe-only mode (omit \`user_intent\`) that the initial-state controls + layout are correct, then in your reply tell the user what they should see when they take the next step. Reserve \`user_intent\` for the FOLLOW-UP turn after the user has actually performed the action, or for verifications that are about the visible-on-load state.
+
 Verdict cheat sheet: CLEAN → end turn (initial build, no UX claim to verify). ERRORS → fix each listed error and re-capture. WEBGL-OPAQUE → apply the onCapture hook or trust user's view. MATCHES → end turn (intent satisfied). MISMATCH → edit + re-capture with same intent. UNVERIFIABLE → describe expected behavior to user. INTENT-UNPARSED → captioner didn't follow format; read the caption manually. CAP-REACHED → end the turn with a summary.
 
 ### Card-class server compute — pick the cheapest viable tier
@@ -89,6 +91,14 @@ Order: \`mica_list_handlers\` + \`mica_list_classes\` FIRST, \`curl /api/handler
 
 \`mica_list_skill_packages\` — list Mica's curated library-skills packs (the ones \`mica_install_skills\` accepts as shorthands). When discover-dependency surfaces a library, check this list to see if there's a curated skill pack for it. If yes, install via \`mica_install_skills source="<pack>"\` before writing code that uses the library — the pack carries patterns the base model misses (container sizing, init order, disposer rules). One call per build is enough; the list is short and stable.
 
+### Shared workspace docs — \`mica_list_shared_docs\` + \`mica_pin_shared_doc\`
+
+\`mica_list_shared_docs\` — list every workspace-shared doc available for pinning into the current project. Shared docs live at \`/workspaces/shared/\` and are pre-vetted by the team (verified CDN URLs, reusable reference cards, design notes). Each entry has \`{ name, virtualName, path, title, description, tags }\`. **Call this BEFORE Tavily / inspect_url for any "I need to pick a library / endpoint / format" subtask** — if the catalog already has the answer, you save 30+ tool calls of research. Common case: \`cdn-library-catalog.md\` carries Three.js, D3, marked, etc. with verified UMD/ESM URLs.
+
+\`mica_pin_shared_doc\` — **one-shot pin AND read.** Pins the doc to the current project's canvas (user sees a "Mica pinned X" toast) AND returns the doc's full body in the tool result's \`content\` field. You don't need a separate \`read_file\` — the body is in the same tool call. Idempotent: pinning twice is safe (no duplicate toast), and re-pinning returns the body again if you need to refresh mid-build. Use when \`mica_list_shared_docs\` surfaces something relevant.
+
+Order: \`mica_list_shared_docs\` → if relevant, \`mica_pin_shared_doc\` (the result \`content\` IS the doc; use it directly). Only fall back to web research when nothing in the catalog fits.
+
 ### Dependency-URL verification — \`mica_inspect_url\`, NOT raw curl
 
 \`mica_inspect_url\` — server-side inspection of a candidate dependency URL. Does the work of \`curl -sI\` + \`curl -s | head\` in one call but returns ~300-500 bytes of structured JSON instead of 1-3KB of raw body that would sit in chat history. Input: \`{ url }\`. Output: \`{ ok, status, contentType, sizeBytes, format, bodyHint, methods? }\` where \`format\` is \`'UMD' | 'ESM' | 'CommonJS' | 'data' | 'unknown'\`. Use this INSTEAD of curl for every library / plugin verification — it keeps the body bytes out of chat history and gives the format detection structurally. On 404 the result includes a \`reason\` with the jsdelivr file-listing pivot for the package. The optional \`methods\` array (extracted from the body sample) is the antidote to runtime \`X.method is not a function\` errors — read it when the agent has hallucinated a method name.
@@ -110,6 +120,10 @@ Use this BEFORE writing the sidecar's spec — for every package the sidecar wil
 The \`top_level_classes\` / \`top_level_functions\` arrays are the antidote to method hallucination at sidecar-write time (same pattern as \`mica_inspect_url\`'s \`methods\` field). Reference the actual API surface returned by inspection instead of guessing class/function names.
 
 ### Web tools — pick by content shape
+
+**Recall before search.** Before any \`tavily_search\` / \`web_fetch\`, state in thinking what you already know: canonical URL shape, host API pattern, version you trust. Your training prior is free (zero tokens, zero round trips); web search costs ~600-1500 tokens per result × N results, permanent in context. For common resources (Three.js / Leaflet / D3 / Chart.js / jsdelivr / GitHub raw / Wikimedia API / Open-Meteo / OSM tiles) you already know the URL or the API to query — verify with **one** \`mica_inspect_url\` or \`curl\` call, commit, move on. Only reach for tavily when recall genuinely produces no candidate.
+
+**Cap: 3 web searches per subproblem.** If 3 searches haven't yielded a working URL or endpoint, STOP. The failure mode "keep iterating query phrasing" wastes context without converging — adding quotes, swapping "4k" for "2k", appending \`site:...\` are not new searches. Escalate in order: (1) **try the host's API** — Wikimedia / npm registry / jsdelivr file listing / GitHub API return canonical URLs in one call, (2) **drop the resource and substitute** (colored sphere instead of texture, stub instead of live data — document in spec), (3) **ask the user** for a preferred source — one round-trip beats 10 more searches.
 
 Four outside-the-project lookup tools. Two real costs to weigh on each call:
 - **Wall clock**: how long the call takes.

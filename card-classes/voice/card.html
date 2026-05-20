@@ -1,29 +1,7 @@
 <div class="vc-root">
   <div class="vc-header">
     <h2 class="vc-title">Voice</h2>
-    <p class="vc-subtitle" id="vc-subtitle">Click the mic to turn it on. Speak whenever — Mica will hear each phrase and reply.</p>
-    <label class="vc-voice-row">
-      <span class="vc-voice-label">Voice</span>
-      <select id="vc-voice-select" class="vc-voice-select">
-        <optgroup label="American Female">
-          <option value="af_bella">Bella (warm)</option>
-          <option value="af_sky">Sky (bright)</option>
-          <option value="af_heart">Heart (gentle)</option>
-          <option value="af_nicole">Nicole (clear)</option>
-          <option value="af_sarah">Sarah (mellow)</option>
-        </optgroup>
-        <optgroup label="American Male">
-          <option value="am_adam">Adam (calm)</option>
-          <option value="am_michael">Michael (deeper)</option>
-        </optgroup>
-        <optgroup label="British Female">
-          <option value="bf_emma">Emma</option>
-        </optgroup>
-        <optgroup label="British Male">
-          <option value="bm_george">George</option>
-        </optgroup>
-      </select>
-    </label>
+    <button class="vc-settings-btn" id="vc-settings-btn" type="button" title="Voice settings" aria-label="Voice settings">&#9881;</button>
   </div>
 
   <div class="vc-body">
@@ -58,5 +36,88 @@
     <audio class="vc-audio" id="vc-audio" preload="auto" style="display:none;"></audio>
 
     <div class="vc-meta" id="vc-meta">—</div>
+  </div>
+
+  <!-- Settings panel — overlays the entire card when open. Mirrors the
+       gear-icon → overlay-panel pattern used by the qwen/opencode/claude
+       cards. position:absolute;inset:0 with backdrop blur. -->
+  <div class="vc-settings-panel" id="vc-settings-panel" style="display:none;position:absolute;inset:0;background:rgba(13,17,23,0.96);backdrop-filter:blur(2px);z-index:20;padding:16px;overflow-y:auto;color:#e6edf3;font-size:12px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div style="font-weight:600;color:#e6edf3;font-size:13px;">Voice settings</div>
+      <span id="vc-settings-close" title="Close" style="cursor:pointer;color:#8b949e;font-size:16px;line-height:1;padding:0 4px;">&times;</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px;">
+
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">Voice</div>
+        <select id="vc-settings-voice" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;">
+          <optgroup label="American Female">
+            <option value="af_bella">Bella (warm)</option>
+            <option value="af_sky">Sky (bright)</option>
+            <option value="af_heart">Heart (gentle)</option>
+            <option value="af_nicole">Nicole (clear)</option>
+            <option value="af_sarah">Sarah (mellow)</option>
+          </optgroup>
+          <optgroup label="American Male">
+            <option value="am_adam">Adam (calm)</option>
+            <option value="am_michael">Michael (deeper)</option>
+          </optgroup>
+          <optgroup label="British Female">
+            <option value="bf_emma">Emma</option>
+          </optgroup>
+          <optgroup label="British Male">
+            <option value="bm_george">George</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="vc-settings-autoread" style="margin:0;" />
+          <span style="color:#ccc;">Auto-read replies aloud</span>
+        </label>
+        <div style="color:#6e7681;font-size:11px;margin-top:4px;padding-left:22px;">When other chat cards finish a turn, Mica announces the reply aloud. Uncheck to keep the text-only reply in the panel without speaking it.</div>
+      </div>
+
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">Default dispatch target</div>
+        <input id="vc-settings-default-target" type="text" placeholder="canvas/agent.opencode" autocomplete="off" spellcheck="false" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div style="color:#6e7681;font-size:11px;margin-top:4px;">When the user says "ask the agent" without naming a specific card, dispatch to this card by default. Leave empty to let the LLM pick freely each turn.</div>
+      </div>
+
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">VAD environment preset</div>
+        <label style="display:block;margin-bottom:4px;cursor:pointer;">
+          <input type="radio" name="vc-vad-preset" value="quiet" style="vertical-align:middle;margin-right:6px;" />
+          <span>Quiet — home office, headset</span>
+        </label>
+        <label style="display:block;margin-bottom:4px;cursor:pointer;">
+          <input type="radio" name="vc-vad-preset" value="normal" style="vertical-align:middle;margin-right:6px;" />
+          <span>Normal — typical room (default)</span>
+        </label>
+        <label style="display:block;cursor:pointer;">
+          <input type="radio" name="vc-vad-preset" value="noisy" style="vertical-align:middle;margin-right:6px;" />
+          <span>Noisy — café, open office</span>
+        </label>
+        <div style="color:#6e7681;font-size:11px;margin-top:4px;">Adjusts the speech-detection threshold and barge-in sensitivity. Applies on next mic-toggle.</div>
+      </div>
+
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">Sentence pause</div>
+        <div style="display:flex;gap:4px;">
+          <label style="flex:1;cursor:pointer;"><input type="radio" name="vc-sentence-pause" value="0" style="margin-right:4px;" />0 ms</label>
+          <label style="flex:1;cursor:pointer;"><input type="radio" name="vc-sentence-pause" value="150" style="margin-right:4px;" />150 ms</label>
+          <label style="flex:1;cursor:pointer;"><input type="radio" name="vc-sentence-pause" value="250" style="margin-right:4px;" />250 ms</label>
+          <label style="flex:1;cursor:pointer;"><input type="radio" name="vc-sentence-pause" value="400" style="margin-right:4px;" />400 ms</label>
+        </div>
+        <div style="color:#6e7681;font-size:11px;margin-top:4px;">Silent gap between spoken sentences. Helps multi-item lists not run together.</div>
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button id="vc-settings-cancel" type="button" style="background:transparent;color:#ccc;border:1px solid #30363d;border-radius:4px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;">Cancel</button>
+        <button id="vc-settings-save" type="button" style="background:#7c3aed;color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Save</button>
+      </div>
+    </div>
   </div>
 </div>

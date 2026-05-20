@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchWorkspace, fetchProjects, openProjectApi } from './api/canvasFiles';
 import type { WorkspaceInfo, ProjectInfo } from './api/canvasFiles';
-import { connect as connectMicaSocket, onConnectionChange, subscribeProject, unsubscribeProject } from './api/micaSocket';
+import { connect as connectMicaSocket, onConnectionChange, on as onSocketEvent, subscribeProject, unsubscribeProject } from './api/micaSocket';
 import CanvasCardRuntime from './whiteboard/CanvasCardRuntime';
 import ProjectList from './ProjectList';
 import './App.css';
@@ -28,6 +28,12 @@ export default function App() {
   // fires the mica-libraries-changed event after a toggle.
   const [libraryPaths, setLibraryPaths] = useState<Set<string>>(new Set());
   const [exportedClasses, setExportedClasses] = useState<string[]>([]);
+  // Transient toast queue for agent-initiated pin events. Surfaces "Mica
+  // pinned <name>" so the user knows what just landed on their canvas
+  // without scrolling to find a new card. User-initiated pins (via the
+  // shared-library discovery card) don't emit pin-added — the user
+  // already saw their own click.
+  const [toasts, setToasts] = useState<Array<{ id: number; text: string }>>([]);
 
   const loadLibraryPaths = useCallback(async () => {
     try {
@@ -76,6 +82,21 @@ export default function App() {
     setWsConnected(val);
     if (val) setWasConnected(true);
   }), []);
+
+  // Subscribe to agent-initiated pin notifications. Toast auto-dismisses
+  // after 4s. The shared-library card class reacts to file-created
+  // independently to refresh its pinned-state badge.
+  useEffect(() => {
+    const unsub = onSocketEvent("pin-added", (data: unknown) => {
+      const ev = data as { filename?: string; source?: string };
+      if (ev.source !== "agent" || !ev.filename) return;
+      const name = ev.filename.startsWith("shared/") ? ev.filename.slice("shared/".length) : ev.filename;
+      const id = Date.now() + Math.random();
+      setToasts((cur) => [...cur, { id, text: `Mica pinned ${name}` }]);
+      window.setTimeout(() => setToasts((cur) => cur.filter((t) => t.id !== id)), 4000);
+    });
+    return unsub;
+  }, []);
 
   // Arm the reload failsafe button after 10s of continuous disconnect.
   // 10s is past the natural reconnect window (auto-poll fires every 2s),
@@ -287,6 +308,31 @@ export default function App() {
           />
         )}
       </div>
+
+      {/* Pin-added toasts (agent-initiated only) */}
+      {toasts.length > 0 && (
+        <div
+          style={{
+            position: 'fixed', top: 56, right: 16, zIndex: 1000,
+            display: 'flex', flexDirection: 'column', gap: 8,
+            pointerEvents: 'none',
+          }}
+        >
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              style={{
+                background: 'rgba(34, 197, 94, 0.92)', color: '#fff',
+                padding: '8px 14px', borderRadius: 6, fontSize: 13,
+                fontWeight: 600, boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+                maxWidth: 360,
+              }}
+            >
+              📌 {t.text}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Reconnection overlay */}
       {wasConnected && !wsConnected && (

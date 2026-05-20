@@ -14,6 +14,33 @@ import {
 } from "./registry.js";
 
 export function registerAgentToolRoutes(app: Express): void {
+  // Discovery endpoint — the opencode stdio MCP bridge fetches this at
+  // startup to learn the full tool surface and registers each entry
+  // dynamically with opencode's MCP SDK. Eliminates the drift that
+  // accumulated when the bridge hardcoded its own subset (10 tools
+  // shipped to qwen but missing from opencode before this endpoint
+  // existed). Auth-gated like the per-tool POST endpoints so card
+  // browsers can't enumerate the surface.
+  //
+  // For each tool we also expose `params: [{name, description, optional}]`
+  // — extracted from the zod shape so the bridge can recreate
+  // permissive-typed but name+description-rich MCP input schemas. The
+  // canonical zod schemas stay server-side; validation happens at
+  // tool POST time, not bridge-side.
+  app.get("/api/tools", (req, res) => {
+    const supplied = req.header(AGENT_TOOL_AUTH_HEADER);
+    if (supplied !== AGENT_TOOL_AUTH_SECRET) {
+      res.status(401).json({ error: "agent auth required" });
+      return;
+    }
+    res.json(AGENT_TOOLS.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      restPath: tool.restPath,
+      params: paramShapeOf(tool.inputSchema),
+    })));
+  });
+
   for (const tool of AGENT_TOOLS) {
     app.post(tool.restPath, async (req, res) => {
       // Auth — reject any request that doesn't carry the per-startup secret.
@@ -61,4 +88,22 @@ export function registerAgentToolRoutes(app: Express): void {
     });
   }
   console.log(`[agent-tools] registered ${AGENT_TOOLS.length} tool route(s): ${AGENT_TOOLS.map((t) => t.restPath).join(", ")}`);
+}
+
+/** Extract a serializable parameter summary from a tool's zod input
+ *  shape. The bridge uses this to reconstruct MCP input schemas that
+ *  carry the model-facing description but accept any value type
+ *  (canonical type validation happens at POST time, server-side). */
+function paramShapeOf(inputSchema: Record<string, z.ZodTypeAny>): Array<{ name: string; description: string; optional: boolean }> {
+  return Object.entries(inputSchema).map(([name, zodType]) => {
+    // zod stores describe() text in `_def.description`. The public
+    // `.description` getter forwards to it but isn't always typed; the
+    // cast covers older zod minor versions that ship _def differently.
+    const def = (zodType as { _def?: { description?: string } })._def ?? {};
+    const description = typeof def.description === "string" ? def.description : "";
+    // ZodOptional / ZodDefault / ZodNullable all report isOptional() === true;
+    // we treat any of these as "not required" for MCP-input purposes.
+    const optional = typeof zodType.isOptional === "function" ? zodType.isOptional() : false;
+    return { name, description, optional };
+  });
 }

@@ -973,9 +973,17 @@ function buildToolbar() {
     const tidyBtn = window.document.createElement('button');
     tidyBtn.className = 'toolbar-btn';
     tidyBtn.textContent = 'Tidy Up';
-    tidyBtn.title = 'Tidy layout — resolves overlaps with minimal displacement (cards stay where you put them). Hold Option/Alt for fit-all-on-screen grid.';
+    tidyBtn.title = 'Tidy layout — resolves overlaps with minimal displacement (cards stay where you put them). Hold Option/Alt for fit-all-on-screen uniform grid. Hold Shift for content-fit (each card resizes its height to fit its current content).';
     tidyBtn.addEventListener('click', (e) => {
         const cards = Array.from(freeform.querySelectorAll('.wb-card'));
+        // Loud diagnostic so we can tell what mode the click actually
+        // entered. If a user reports "Shift+Tidy did nothing," the first
+        // question is whether shiftKey registered at all.
+        console.log(
+            `[tidy click] mode=${e.shiftKey && !e.altKey ? 'shift' : e.altKey ? 'alt' : 'normal'}` +
+            ` shiftKey=${e.shiftKey} altKey=${e.altKey} ctrlKey=${e.ctrlKey} metaKey=${e.metaKey}` +
+            ` cards=${cards.length}`,
+        );
         if (cards.length === 0) return;
 
         // Commit any expanded cards' current size as permanent: clear the
@@ -1017,6 +1025,142 @@ function buildToolbar() {
                 const ay = yOf(a), by = yOf(b);
                 if (Math.abs(ay - by) > ROW_TOLERANCE) return ay - by;
                 return xOf(a) - xOf(b);
+            });
+        }
+
+        // Shift+Tidy (only when Alt isn't also held — Alt's uniform grid
+        // takes precedence): content-fit. Each card's height shrinks or
+        // grows to fit its current content. Width stays at whatever the
+        // user has set — only height auto-fits. Collapsed cards are
+        // skipped (they're intentionally compressed; respect that).
+        //
+        // Measurement: the card-frame has a flex column with header + body
+        // + footer. The body has overflow:auto and a 280px max-height cap
+        // on non-expanded cards. To measure the REAL content height we
+        // temporarily lift the body's max-height, read body.scrollHeight
+        // (the body's natural content extent including overflow), and
+        // compose target = headerH + bodyScrollHeight + footerH + buffer.
+        // Setting outer card.style.height = 'auto' instead would collapse
+        // the flex:1 body to nothing — that produced the bug where Shift+
+        // Tidy shrunk cards to just their chrome.
+        if (e.shiftKey && !e.altKey) {
+            // Shift+Tidy: content-fit by GROWING. Each card expands toward
+            // its inner content's intrinsic size in both height AND width.
+            // Never SHRINK — we can't reliably distinguish "sparse but
+            // correctly sized" from "oversized for sparse content."
+            //
+            // Collapsed cards are skipped (intentionally compressed).
+            const MIN_GROW_PX = 24;                       // ignore tiny height overflows
+            const MIN_GROW_W = 40;                        // ignore tiny width overflows
+            const MAX_FIT_H = isDisplay ? 720 : 600;
+            const MAX_FIT_W = isDisplay ? 700 : 600;
+            // Cap per-Shift-Tidy width growth. Text content with no
+            // wrapping reports very wide `max-content` (a 5000-char
+            // paragraph would be thousands of pixels). Limit the jump so
+            // the user can re-Shift-Tidy a few times to expand further
+            // and stop at a comfortable size.
+            const MAX_WIDTH_GROW_PER_TIDY = 240;
+            cards.forEach((card) => {
+                if (card.classList.contains('wb-card--collapsed')) return;
+                const body = card.querySelector('.wb-card-body');
+                if (!body) return;
+                const currentH = card.offsetHeight || CARD_H;
+
+                // Measure the inner content's INTRINSIC size, not its
+                // flex-laid-out size. The card-body wraps a flex column
+                // whose first child (chat-root, vc-root, custom card root)
+                // typically has `flex: 1` and fills the body. That makes
+                // `scrollHeight === clientHeight` regardless of how much
+                // content there actually is — so the obvious "overflow"
+                // signals don't work.
+                //
+                // Trick: temporarily set the inner element to
+                // `flex: 0 0 auto; height: max-content; width: max-content`
+                // so the browser computes its natural content size as if
+                // nothing forced it to fill the flex parent. Read offsets,
+                // restore. This accounts for layouts like the hotdog card
+                // (preview area + button) where no overflow:auto exists
+                // but the content has measurable intrinsic size.
+                let intrinsicContentH = 0;
+                let intrinsicContentW = 0;
+                const inner = body.firstElementChild;
+                if (inner) {
+                    const innerEl = /** @type {HTMLElement} */ (inner);
+                    const prevFlex = innerEl.style.flex;
+                    const prevHeight = innerEl.style.height;
+                    const prevWidth = innerEl.style.width;
+                    const prevMinHeight = innerEl.style.minHeight;
+                    const prevMinWidth = innerEl.style.minWidth;
+                    innerEl.style.flex = '0 0 auto';
+                    innerEl.style.height = 'max-content';
+                    innerEl.style.width = 'max-content';
+                    innerEl.style.minHeight = 'auto';
+                    innerEl.style.minWidth = 'auto';
+                    void innerEl.offsetHeight;  // force reflow
+                    intrinsicContentH = innerEl.offsetHeight;
+                    intrinsicContentW = innerEl.offsetWidth;
+                    // Restore IMMEDIATELY so user never sees an intermediate
+                    // layout state — the measurement is invisible.
+                    innerEl.style.flex = prevFlex;
+                    innerEl.style.height = prevHeight;
+                    innerEl.style.width = prevWidth;
+                    innerEl.style.minHeight = prevMinHeight;
+                    innerEl.style.minWidth = prevMinWidth;
+                }
+
+                // Combine with scroll-overflow signals from any descendant
+                // that uses overflow-y: auto/scroll (chat-messages,
+                // vc-activity-list, markdown editor) so a chat card with
+                // scrolled-back history doesn't get its messages dropped
+                // when the intrinsic-content measurement collapses them.
+                let maxScrollOverflow = body.scrollHeight - body.clientHeight;
+                const descendants = body.querySelectorAll('*');
+                for (let i = 0; i < descendants.length; i++) {
+                    const el = descendants[i];
+                    const cs = window.getComputedStyle(el);
+                    if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') {
+                        const overflow = el.scrollHeight - el.clientHeight;
+                        if (overflow > maxScrollOverflow) maxScrollOverflow = overflow;
+                    }
+                }
+
+                // Height: grow by EITHER (a) enough room for intrinsic
+                // content to fit without flex compression, OR (b) the
+                // worst scroll overflow inside. Whichever is larger.
+                const innerCurrentH = inner ? inner.offsetHeight : body.clientHeight;
+                const intrinsicGapH = Math.max(0, intrinsicContentH - innerCurrentH);
+                const maxOverflowH = Math.max(intrinsicGapH, maxScrollOverflow);
+
+                // Width: grow by intrinsic width overflow, capped per-tidy
+                // so a long-text element doesn't blow the card to 3000px
+                // in one click. User can re-Shift-Tidy to grow further.
+                const currentW = card.offsetWidth || CARD_W;
+                const innerCurrentW = inner ? inner.offsetWidth : body.clientWidth;
+                const intrinsicGapW = Math.max(0, intrinsicContentW - innerCurrentW);
+                const widthGrowth = Math.min(intrinsicGapW, MAX_WIDTH_GROW_PER_TIDY);
+
+                const name = card.getAttribute('data-filename') || '?';
+                console.log(
+                    `[shift-tidy] ${name} | curH=${currentH} curW=${currentW}` +
+                    ` | intrinsicH=${intrinsicContentH} (innerCurH=${innerCurrentH}, gapH=${intrinsicGapH})` +
+                    ` | intrinsicW=${intrinsicContentW} (innerCurW=${innerCurrentW}, gapW=${intrinsicGapW})` +
+                    ` | scrollOverflow=${maxScrollOverflow}` +
+                    ` | grow H=${maxOverflowH} W=${widthGrowth}`,
+                );
+
+                const shouldGrowH = maxOverflowH >= MIN_GROW_PX;
+                const shouldGrowW = widthGrowth >= MIN_GROW_W;
+                if (!shouldGrowH && !shouldGrowW) return;
+
+                if (shouldGrowH) {
+                    const targetH = Math.min(MAX_FIT_H, currentH + maxOverflowH);
+                    if (targetH > currentH) card.style.height = `${targetH}px`;
+                }
+                if (shouldGrowW) {
+                    const targetW = Math.min(MAX_FIT_W, currentW + widthGrowth);
+                    if (targetW > currentW) card.style.width = `${targetW}px`;
+                }
+                card.classList.add('wb-card--resized');
             });
         }
 
