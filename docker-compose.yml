@@ -70,6 +70,17 @@ services:
     # the host user, not root. If your host UID differs, override
     # USER_UID/USER_GID via `.env` or shell env before `docker compose up`.
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    # Explicit public DNS. Docker otherwise copies the host's
+    # /etc/resolv.conf verbatim; on hosts running systemd-resolved the
+    # nameserver line is 127.0.0.53 (systemd's stub), which from inside
+    # a container resolves to the CONTAINER'S own loopback where nothing
+    # is listening — so external lookups (huggingface.co, raw.github,
+    # npm registry, etc.) silently fail. Cloudflare + Google is a safe
+    # default; override via MICA_DNS in .env if your network requires
+    # internal resolvers.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     depends_on:
       mica-init:
         condition: service_completed_successfully
@@ -140,6 +151,12 @@ services:
     # what the Mica container writes, so the shared /cache/huggingface
     # mount has consistent ownership.
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    # See `mica` service for rationale — first-run model pulls from HF
+    # Hub need a working resolver, and the host's systemd-resolved stub
+    # at 127.0.0.53 is unreachable from inside the container.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     depends_on:
       mica-init:
         condition: service_completed_successfully
