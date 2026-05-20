@@ -36,6 +36,8 @@ import {
   listCanvasFiles,
   readProjectFile,
   readCanvasConfig,
+  readCardSettings,
+  readOpenAICompatConfig,
   BINARY_EXTS,
   isLikelyBinary,
   CONTEXT_SOFT_CAP_CHARS,
@@ -47,8 +49,9 @@ import {
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
+import { buildHandlerContractsBaseline } from "./handlerBaselineInjection.js";
 import { loadProjectSubagents } from "./subagents.js";
-import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { getFreshPendingValidatorErrors, getRecentlyClearedFlaps } from "./validatorErrorBuffer.js";
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
 import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
 import { markProjectActivity } from "./projectActivity.js";
@@ -56,21 +59,37 @@ import { setLastActiveOpencodeProject } from "./agentTools/registry.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { getOpencodeServer } from "./opencodeServer.js";
+import { captureCard } from "./screenshot.js";
+import { readFile as fsReadFile } from "fs/promises";
+import { resolveCtxWindow } from "./contextWindow.js";
 import type { Event, Part } from "@opencode-ai/sdk";
+
+interface TurnTokens {
+  input: number;            // billed sum across steps
+  output: number;           // sum across steps
+  peak: number;              // max single step.input (capacity-relevant)
+  reasoning: number;        // sum of thinking tokens (Claude/o1/deepseek-r1/etc.)
+  cache_read: number;       // sum of cached input reads (cheap)
+  cache_write: number;      // sum of cache writes
+  ctx: number;              // effective context window for this turn
+  duration_ms: number;      // wall-clock turn duration
+  tool_calls?: Record<string, number>;  // tool name → call count
+  files_changed?: boolean;
+}
 
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   agent?: string;
   turn_id?: string;
+  tokens?: TurnTokens;       // populated for assistant turns; used by card's chevron footer
 }
 
 const MAX_HISTORY = 50;
-// opencode is provider-agnostic; the model picked at session time defines the
-// real context window. 200K is a generous default that fits Claude 3.5 Sonnet
-// (the most common opencode default) and OpenAI o1; the gauge will be
-// approximate for other models.
-const OPENCODE_CTX_WINDOW = 200_000;
+// Context window is resolved per-turn via resolveCtxWindow (see
+// contextWindow.ts) — OpenRouter catalog lookup, openai-compat /v1/models
+// probe, local LLAMA_CTX_SIZE env, or 200K fallback for unknown providers.
+const OPENCODE_CTX_WINDOW_FALLBACK = 200_000;
 // No per-turn timeout. Earlier versions had a soft timeout that gave up
 // after N minutes, fetched whatever was in the session, and surfaced a
 // "Mica stopped waiting" note — but the agent loop kept running on
@@ -79,7 +98,7 @@ const OPENCODE_CTX_WINDOW = 200_000;
 //
 // Architecture now: we wait for `session.idle` indefinitely (or
 // `session.error`), or for a user-initiated interrupt via the Stop
-// button. Same as how the .chat / .claude cards behave. If the model
+// button. Same as how the .qwen / .claude cards behave. If the model
 // genuinely hangs the user can hit Stop. opencode's persistent session
 // also means a backend restart preserves the conversation: on reload,
 // the chat card reattaches to the same opencode session and any
@@ -91,6 +110,37 @@ function getProjectDir(project: string | null) {
   return project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
 }
 function getMicaDir(project: string | null) { return micaDir(project || undefined); }
+
+/** Cache the first served model id from Mica's local LLM endpoint
+ *  briefly so per-prompt resolution doesn't fan out into a /v1/models
+ *  call every turn. 10s TTL — long enough to amortize a chat burst,
+ *  short enough to pick up a fresh container in normal user time. */
+let _localModelCache: { ts: number; id: string | null } | null = null;
+const LOCAL_MODEL_TTL_MS = 10_000;
+
+async function firstLocalModelId(): Promise<string | null> {
+  if (_localModelCache && Date.now() - _localModelCache.ts < LOCAL_MODEL_TTL_MS) {
+    return _localModelCache.id;
+  }
+  const baseUrl = (process.env.LLAMA_URL || "http://127.0.0.1:8012").replace(/\/+$/, "");
+  let id: string | null = null;
+  try {
+    const res = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(1000) });
+    if (res.ok) {
+      const data = await res.json() as { data?: Array<{ id?: string }> };
+      const first = (data.data ?? [])
+        .map((m) => m?.id)
+        .find((x): x is string => typeof x === "string" && x.length > 0);
+      id = first ?? null;
+    }
+  } catch {
+    // Probe failed (endpoint down) — leave id null. The caller skips
+    // the override; opencode falls through to its own default which at
+    // least produces an actionable session.error rather than hanging.
+  }
+  _localModelCache = { ts: Date.now(), id };
+  return id;
+}
 
 // ── History persistence ──────────────────────────────────────────
 
@@ -179,6 +229,28 @@ export async function buildContext(agentFilename: string, project: string | null
         errorLines.join("\n\n"),
       );
     }
+
+    // Flap advisory: errors that briefly cleared but reappeared. The
+    // /ok-then-/error cycle empties the active buffer between turns, so a
+    // genuinely-broken card with a transient clean mount looks "fixed" to
+    // buildContext on the next turn. Flap entries persist across the clear
+    // and surface here as a softer signal — "you may have suppressed the
+    // symptom; recheck root cause."
+    const pendingNames = new Set(pendingErrors.map((e) => e.filename));
+    const flaps = getRecentlyClearedFlaps(project).filter((f) => !pendingNames.has(f.filename));
+    if (flaps.length > 0) {
+      const flapNames = flaps.map((f) => `${f.filename} (×${f.flapCount})`).join(", ");
+      console.log(`[buildContext:${project}] (opencode) flap advisory: ${flapNames}`);
+      const flapLines = flaps.map((f) => {
+        const ageSec = Math.max(1, Math.round((Date.now() - f.firstSeen) / 1000));
+        return `### \`${f.filename}\` (flapped ${f.flapCount}× over the last ${ageSec}s, currently clearing)\n\n${f.error}`;
+      });
+      parts.push(
+        `## Recently flapping errors\n\n` +
+        `The following file(s) errored, briefly stopped erroring after an edit, and errored again — that's the pattern of a fix that suppresses the symptom rather than solving the root cause. Inspect each file and check that your edit addresses the underlying problem (not just the path that throws). If you believe the file is now genuinely fixed, ignore this section.\n\n` +
+        flapLines.join("\n\n"),
+      );
+    }
   }
 
   // Instance-level AI context
@@ -231,6 +303,13 @@ export async function buildContext(agentFilename: string, project: string | null
     }
   } catch { /* ignore */ }
 
+  // Channel handler contracts — auto-inject card.js skeleton for any handler
+  // declared in spec or metadata. See handlerBaselineInjection.ts.
+  try {
+    const handlerBlock = await buildHandlerContractsBaseline(project);
+    if (handlerBlock) parts.push(handlerBlock);
+  } catch { /* best-effort */ }
+
   let canvasRoot = DEFAULT_CANVAS_ROOT;
   try {
     const cfg = JSON.parse(await readFile(join(getMicaDir(project), "config.json"), "utf-8"));
@@ -262,7 +341,7 @@ export async function buildContext(agentFilename: string, project: string | null
 
   parts.push(`## File Locations
 - The canvas directory is \`${canvasRoot}/\` — everything visible on the canvas lives there.
-- ALL cards you create (.chat, .todo, .terminal, .mmd, .md, etc.) MUST go in \`${canvasRoot}/\`.
+- ALL cards you create (.qwen, .todo, .terminal, .mmd, .md, etc.) MUST go in \`${canvasRoot}/\`.
 - ALL planning files (specs, decisions, notes) MUST go in \`${canvasRoot}/\`.
 - NEVER write files to \`.mica/\` — that directory is Mica-managed metadata.
 
@@ -395,17 +474,48 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
     // again when title / metadata fills in), so a naive "broadcast on every
     // running event" emits the same line 2-3×.
     const broadcastedToolCalls = new Set<string>();
+    // Per-turn token tracking. step-finish events fire once per LLM-call
+    // step within a turn (one model call per tool-call cycle); each
+    // carries that step's input + output token counts.
+    //   - turnInputTokens / turnOutputTokens: SUM across all steps. Each
+    //     step's input redundantly includes the conversation history, so
+    //     SUM tracks billable tokens (and cache pressure) — NOT working-set
+    //     size. Surfaced in the 5s heartbeat and as the user-facing
+    //     "tokens spent this turn" number.
+    //   - peakInputTokens: MAX(step.input). That's the actual working-set
+    //     size — the largest context the model held in a single call —
+    //     and the only one that maps to the model's context window for
+    //     capacity math and the proactive-compaction trigger.
+    // Both reset at turn start.
+    let turnInputTokens = 0;
+    let turnOutputTokens = 0;
     let peakInputTokens = 0;
+    let turnReasoningTokens = 0;   // sum of thinking tokens (Claude extended, o1/o3, deepseek-r1)
+    let turnCacheReadTokens = 0;   // sum of cache reads (cheap input, ~10% normal price)
+    let turnCacheWriteTokens = 0;  // sum of cache writes
+    // Effective context window for the current turn — resolved per-turn from
+    // the user's (provider, model) settings (see processMessage). Cached at
+    // session scope so the 5s event-heartbeat log can include it without
+    // re-resolving. Falls back to OPENCODE_CTX_WINDOW_FALLBACK when no turn
+    // has run yet.
+    let sessionCtxWindow = OPENCODE_CTX_WINDOW_FALLBACK;
     // Card-side error captured from session.error events; surfaced as the
     // assistant reply if non-empty when the turn ends.
     let sessionErrorMsg = "";
 
     let busy = false;
-    interface QueuedMsg { text: string; source: "user" | "voice" | "file-changes" }
+    interface QueuedMsg { text: string; source: "user" | "voice" | "file-changes"; attach?: string }
     let queue: QueuedMsg[] = [];
     // Tracks the in-flight prompt so onData (interrupt) can abort it. Same
     // pattern as activeAbort in claudeAgent.ts.
     let activePromptAbort: AbortController | null = null;
+    // Last per-prompt model override forwarded to opencode. Captured here
+    // (vs computed only in processMessage scope) so the SSE session.error
+    // handler can pass the SAME provider/model to session.summarize on a
+    // ContextOverflowError recovery — summarizing against the WRONG model
+    // (e.g. the empty default after openrouter-routed turns) silently
+    // produces no compaction.
+    let lastModelOverride: { providerID: string; modelID: string } | null = null;
 
     // ── TUI control bridge state ────────────────────────────────
     // opencode's `question` tool delivers requests via /tui/control/next
@@ -648,10 +758,24 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       const t = ev.type;
       eventTypeCounts[t] = (eventTypeCounts[t] || 0) + 1;
       // Periodic summary so we can see what's flowing without log spam.
+      // Token line piggybacks on the same 5s heartbeat so a single grep
+      // surfaces both event flow and context pressure.
       const now = Date.now();
       if (now - lastEventTypeLog > 5000) {
         lastEventTypeLog = now;
-        console.log(`[opencode-agent] event counts so far: ${JSON.stringify(eventTypeCounts)}`);
+        // Two numbers because they answer two questions. `in` (sum) is
+        // "how many input tokens have you billed this turn" — grows with
+        // every tool cycle. `peak` (max single step) is "how full did
+        // context get at its worst" — the number that maps to ctx for
+        // overflow risk. peak/ctx% is the meaningful capacity ratio.
+        const reasoningPart = turnReasoningTokens > 0 ? ` reasoning=${turnReasoningTokens}` : "";
+        const cachePart = (turnCacheReadTokens > 0 || turnCacheWriteTokens > 0)
+          ? ` cache_r=${turnCacheReadTokens} cache_w=${turnCacheWriteTokens}`
+          : "";
+        const tokenSummary = (turnInputTokens > 0 || turnOutputTokens > 0)
+          ? ` turn_tokens: in=${turnInputTokens} out=${turnOutputTokens}${reasoningPart}${cachePart} peak_in=${peakInputTokens} ctx=${sessionCtxWindow} peak/ctx=${Math.round((peakInputTokens / sessionCtxWindow) * 100)}%`
+          : "";
+        console.log(`[opencode-agent:${sessionProject ?? "-"}/${ctx.filename}] event counts so far: ${JSON.stringify(eventTypeCounts)}${tokenSummary}`);
       }
 
       // Fast filter: only events for OUR session matter.
@@ -693,14 +817,19 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           }
         } else if (part.type === "step-finish") {
           const sf = part as Extract<Part, { type: "step-finish" }>;
-          if (sf.tokens?.input && sf.tokens.input > peakInputTokens) {
-            peakInputTokens = sf.tokens.input;
+          if (sf.tokens?.input) {
+            turnInputTokens += sf.tokens.input;
+            if (sf.tokens.input > peakInputTokens) peakInputTokens = sf.tokens.input;
           }
+          if (sf.tokens?.output) turnOutputTokens += sf.tokens.output;
+          if (sf.tokens?.reasoning) turnReasoningTokens += sf.tokens.reasoning;
+          if (sf.tokens?.cache?.read) turnCacheReadTokens += sf.tokens.cache.read;
+          if (sf.tokens?.cache?.write) turnCacheWriteTokens += sf.tokens.cache.write;
         }
       } else if (t === "todo.updated") {
         // opencode's todowrite tool publishes the full todo list on each
         // change. Surface it as a `progress` event so the chat card shows
-        // the current in-progress task — same surface the .chat / .claude
+        // the current in-progress task — same surface the .qwen / .claude
         // cards use for tool calls. Pick the in_progress item if any,
         // else the first pending one, else summarize done count.
         const props = ev.properties as { todos?: Array<{ content: string; status: string; priority?: string }> };
@@ -742,7 +871,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           console.warn(`[opencode-agent] question.asked event missing expected fields: ${JSON.stringify(props).slice(0, 200)}`);
         }
       } else if (t === "permission.updated" || (t as string) === "permission.asked") {
-        // Auto-approve all permission requests (yolo) — matches the .chat
+        // Auto-approve all permission requests (yolo) — matches the .qwen
         // and .claude trust model. opencode emits both "permission.asked"
         // (newer name, what 1.14 actually sends) and "permission.updated"
         // (the original name in the SDK type union); handle both. If we
@@ -756,11 +885,80 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           });
         }
       } else if (t === "session.error") {
-        const props = ev.properties as { error?: { name?: string; data?: unknown; message?: string } };
+        // opencode wraps each error type with a discriminated `name` and
+        // a `data` payload (NOT a flat `.message` on the error object —
+        // the previous extraction collapsed everything to the bare name
+        // like "ContextOverflowError" with zero context). Drill into
+        // data.message + data.responseBody so the user sees the real
+        // reason. See @opencode-ai/sdk types.gen.d.ts: ContextOverflowError,
+        // ProviderAuthError, UnknownError, ApiError all share the
+        // `{ name, data: { message, ... } }` shape.
+        const props = ev.properties as {
+          error?: {
+            name?: string;
+            data?: { message?: string; responseBody?: string; statusCode?: number };
+            message?: string;
+          };
+        };
         const e = props.error;
-        const msg = e ? (e.message || e.name || JSON.stringify(e.data ?? "")) : "session error (no detail)";
-        sessionErrorMsg = String(msg).slice(0, 1000);
-        console.warn(`[opencode-agent] session.error: ${sessionErrorMsg.slice(0, 200)}`);
+        const inner = e?.data?.message;
+        const rawMsg = inner || e?.message || e?.name || "session error (no detail)";
+        const errorName = e?.name ?? "Error";
+        const responseBody = e?.data?.responseBody;
+        // Build a user-facing message that opens with the error class
+        // (ContextOverflowError / ProviderAuthError / etc.) followed by
+        // the actual reason — gives the user enough to know what failed
+        // AND what to try next.
+        let surfaceMsg: string;
+        if (errorName === "ContextOverflowError") {
+          surfaceMsg =
+            `Context window full. The session history exceeded the model's input limit. ` +
+            `Attempting automatic compaction — once it finishes, retry your message. ` +
+            `(Detail: ${rawMsg.slice(0, 200)})`;
+          // Fire-and-forget: compress the session so the next user prompt fits.
+          // The user re-sends manually because opencode's session-prompt API
+          // is request/response per turn and we don't have the original
+          // text in scope here. The card.js UI sees the surfaceMsg and the
+          // user can hit Send again — the compacted history fits the next
+          // prompt. If summarize itself fails (rare), the next prompt
+          // overflows again with the same surfaceMsg; user can clear/spawn.
+          (async () => {
+            if (!sid) return;
+            try {
+              const { client } = await getOpencodeServer();
+              // session.summarize requires explicit providerID + modelID
+              // (the SDK doesn't infer from the session's last-used model).
+              // Reuse the override captured for the LAST prompt — that's
+              // the model that just overflowed; using a different one
+              // here would either fail (provider not configured) or
+              // silently produce nothing.
+              if (!lastModelOverride) {
+                console.warn(`[opencode-agent] session.summarize skipped: no lastModelOverride (session may have been on opencode's default provider)`);
+                return;
+              }
+              const result = await client.session.summarize({
+                path: { id: sid },
+                body: lastModelOverride,
+                query: { directory: getProjectDir(sessionProject) },
+              });
+              if (result.error) {
+                console.warn(`[opencode-agent] session.summarize error: ${JSON.stringify(result.error).slice(0, 200)}`);
+              } else {
+                console.log(`[opencode-agent] session.summarize OK for ${sid?.slice(0, 8)} (model=${lastModelOverride.providerID}/${lastModelOverride.modelID}) — user can retry`);
+              }
+            } catch (err) {
+              console.warn(`[opencode-agent] session.summarize threw: ${(err as Error).message}`);
+            }
+          })();
+        } else if (errorName === "ProviderAuthError") {
+          surfaceMsg = `Provider auth failed: ${rawMsg.slice(0, 300)}. Check the API key in the gear panel and retry.`;
+        } else {
+          surfaceMsg = responseBody
+            ? `${errorName}: ${rawMsg.slice(0, 300)} (response: ${responseBody.slice(0, 200)})`
+            : `${errorName}: ${rawMsg.slice(0, 500)}`;
+        }
+        sessionErrorMsg = surfaceMsg.slice(0, 1000);
+        console.warn(`[opencode-agent] session.error: ${errorName} — ${rawMsg.slice(0, 200)}`);
         // Wake the awaiter so we surface the error rather than waiting for an
         // idle that may never come.
         if (idleResolver) { idleResolver(); idleResolver = null; }
@@ -787,8 +985,8 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
 
     // ── Per-turn process ────────────────────────────────────────
 
-    async function processMessage(message: string, source: QueuedMsg["source"] = "user"): Promise<void> {
-      if (busy) { queue.push({ text: message, source }); return; }
+    async function processMessage(message: string, source: QueuedMsg["source"] = "user", attachmentFilename?: string): Promise<void> {
+      if (busy) { queue.push({ text: message, source, attach: attachmentFilename }); return; }
       const turnSource = source;
       busy = true;
       markProjectActivity(sessionProject, +1);
@@ -804,7 +1002,12 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       // Reset per-turn collectors
       Object.keys(turnToolCalls).forEach((k) => delete turnToolCalls[k]);
       broadcastedToolCalls.clear();
+      turnInputTokens = 0;
+      turnOutputTokens = 0;
       peakInputTokens = 0;
+      turnReasoningTokens = 0;
+      turnCacheReadTokens = 0;
+      turnCacheWriteTokens = 0;
       sessionErrorMsg = "";
 
       const turnId = randomUUID();
@@ -812,10 +1015,13 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       let firstTokenTs: number | null = null;
       void firstTokenTs;  // not yet measured per-event; reserved
 
-      ctx.broadcast({ type: "user", content: message });
+      ctx.broadcast({ type: "user", content: message, ...(attachmentFilename ? { attachmentFilename } : {}) });
 
       const history = await loadHistory(chatId, sessionProject);
-      history.push({ role: "user", content: message });
+      history.push({
+        role: "user",
+        content: attachmentFilename ? `${message}\n\n[📷 attached: ${attachmentFilename}]` : message,
+      });
       await saveHistory(chatId, history, sessionProject);
 
       ctx.broadcast({ type: "thinking" });
@@ -878,6 +1084,103 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         const promptAbort = new AbortController();
         activePromptAbort = promptAbort;
 
+        // Per-card model override. The opencode card's settings panel
+        // mirrors the chat card's `{provider, model}` shape — same UX
+        // (Local / OpenRouter / OpenAI-compat radios, OR model search,
+        // key validation). Mapping to opencode's `body.model = { providerID,
+        // modelID }`:
+        //   - provider: "local"           → providerID: "mica-local"
+        //                                   (a custom provider opencode-
+        //                                   Config injects at spawn time
+        //                                   pointing at LLAMA_URL). The
+        //                                   modelID is either the user's
+        //                                   pick or the first model vLLM
+        //                                   is currently serving.
+        //   - provider: "openrouter"      → providerID: "openrouter".
+        //                                   Requires OPENROUTER_API_KEY in
+        //                                   opencode's env (plumbed at
+        //                                   spawn time by opencodeServer).
+        //   - provider: "openai-compat"   → providerID: "openai".
+        //                                   Requires OPENAI_API_KEY +
+        //                                   OPENAI_BASE_URL in opencode's
+        //                                   env (plumbed at spawn time).
+        // Read per-prompt (not cached) so a settings change applies on the
+        // very next turn without a card reopen.
+        const settings = await readCardSettings(sessionProject || undefined, ctx.filename);
+        let modelOverride: { providerID: string; modelID: string } | undefined;
+        const provider = settings.provider ?? "local";
+        if (provider === "openrouter" && settings.model) {
+          modelOverride = { providerID: "openrouter", modelID: settings.model };
+        } else if (provider === "openai-compat" && settings.model) {
+          modelOverride = { providerID: "openai", modelID: settings.model };
+        } else if (provider === "local") {
+          // Pick the user's chosen model when present, otherwise probe
+          // the local endpoint for its served set and take the first id.
+          // Probing per-prompt is fine — local /v1/models is sub-ms and
+          // honest about "what the server is actually loaded with right
+          // now" (the user could have hot-swapped containers).
+          const modelID = settings.model || (await firstLocalModelId());
+          if (modelID) {
+            modelOverride = { providerID: "mica-local", modelID };
+          }
+        }
+        if (modelOverride) {
+          console.log(`[opencode-agent] prompt model override: ${modelOverride.providerID}/${modelOverride.modelID}`);
+          lastModelOverride = modelOverride;
+        }
+
+        // Resolve the effective context window for this turn (provider-aware).
+        // OpenRouter looks up the model's contextLength in our cached catalog;
+        // openai-compat probes <baseUrl>/models for vLLM/llama.cpp-style
+        // context fields; local uses LLAMA_CTX_SIZE env. Falls back to 200K
+        // for anything unknown.
+        let openaiBaseUrl: string | undefined;
+        if (provider === "openai-compat") {
+          try {
+            const cfg = await readOpenAICompatConfig(sessionProject || undefined);
+            if (cfg.baseUrl) openaiBaseUrl = cfg.baseUrl;
+          } catch { /* ignore — falls through to default */ }
+        }
+        const effectiveCtxWindow = await resolveCtxWindow({
+          provider,
+          modelId: settings.model || undefined,
+          baseUrl: openaiBaseUrl,
+        });
+        sessionCtxWindow = effectiveCtxWindow;
+        console.log(`[opencode-agent:${sessionProject ?? "-"}/${ctx.filename}] effective context window: ${effectiveCtxWindow} (provider=${provider}, model=${settings.model || "(default)"}, ocSession=${ocSessionId?.slice(0, 8) ?? "?"})`);
+
+        // Build message parts. Text always present. When the user attached a
+        // screenshot via the 📷 picker, capture the rendered card from the
+        // browser and inline it as a FilePartInput with a data URL — opencode
+        // routes this to whichever provider/model the user picked. For
+        // multimodal models (Claude, GPT-4o, gemini, qwen-vl) it lands as
+        // image content; non-multimodal providers will either error visibly
+        // or downgrade to text-only, which the user can correct in settings.
+        const parts: Array<{ type: "text"; text: string } | { type: "file"; mime: string; url: string; filename?: string }> = [
+          { type: "text", text: message },
+        ];
+        if (attachmentFilename) {
+          try {
+            const capture = await captureCard(sessionProject || "", attachmentFilename);
+            const pngBuffer = await fsReadFile(capture.path);
+            const base64 = pngBuffer.toString("base64");
+            parts.push({
+              type: "file",
+              mime: "image/png",
+              filename: attachmentFilename,
+              url: `data:image/png;base64,${base64}`,
+            });
+            console.log(`[opencode-agent] attached screenshot of ${attachmentFilename} (${capture.bytes} bytes)`);
+          } catch (err) {
+            const errMsg = (err as Error).message || String(err);
+            console.warn(`[opencode-agent] screenshot capture failed for ${attachmentFilename}: ${errMsg}`);
+            parts[0] = {
+              type: "text",
+              text: `${message}\n\n(Screenshot of ${attachmentFilename} was requested but capture failed: ${errMsg})`,
+            };
+          }
+        }
+
         // Use promptAsync (fire-and-return) instead of prompt (which streams
         // its body until session.idle and hangs the SDK fetch's await chain).
         // After the POST returns, we watch SSE for session.idle / session.error
@@ -887,8 +1190,9 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         const sendResult = await client.session.promptAsync({
           path: { id: sid },
           body: {
-            parts: [{ type: "text", text: message }],
+            parts,
             system: context,
+            ...(modelOverride ? { model: modelOverride } : {}),
           },
           query: { directory: getProjectDir(sessionProject) },
           signal: promptAbort.signal,
@@ -942,12 +1246,24 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           }
         }
 
-        // Token peak — prefer SSE step-finish observation; fall back to the
-        // assistant message's own usage block.
-        let inputTokens = peakInputTokens;
-        if (inputTokens === 0 && assistantTokens?.input) {
-          inputTokens = assistantTokens.input;
+        // Two distinct measures from step-finish events:
+        //   - billed input (sum across steps): what the user pays for /
+        //     what cache pressure looks like
+        //   - peak input (max single step): the largest context the model
+        //     held in one call — what the window cap actually constrains
+        // Capacity math + the proactive-compaction trigger use peak. The
+        // user-facing total is surfaced separately. Fall back to the
+        // assistant message's reported usage if step-finish never fired
+        // (rare; opencode emits step-finish for every model step).
+        let billedInputTokens = turnInputTokens;
+        let peakInput = peakInputTokens;
+        if (billedInputTokens === 0 && assistantTokens?.input) {
+          billedInputTokens = assistantTokens.input;
+          peakInput = assistantTokens.input;
         }
+        // Reference name for downstream code that previously used
+        // `inputTokens` to mean "the number worth comparing against ctx".
+        const inputTokens = peakInput;
 
         if (sessionErrorMsg && !resultText.trim()) {
           resultText = `[opencode error] ${sessionErrorMsg}`;
@@ -961,13 +1277,27 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         const arcComplete = ARC_COMPLETE_RE.test(resultText);
         if (arcComplete) resultText = resultText.replace(ARC_COMPLETE_RE, "").trim();
 
-        const capacity = inputTokens / OPENCODE_CTX_WINDOW;
+        const capacity = inputTokens / effectiveCtxWindow;
         const cursor = await readChatCursor(chatId, sessionProject);
         let cursorAdvanced = false;
         let newCursor = cursor;
 
+        const tsEndForTokens = Date.now();
+        const turnTokens: TurnTokens = {
+          input: billedInputTokens,
+          output: turnOutputTokens,
+          peak: peakInput,
+          reasoning: turnReasoningTokens,
+          cache_read: turnCacheReadTokens,
+          cache_write: turnCacheWriteTokens,
+          ctx: effectiveCtxWindow,
+          duration_ms: tsEndForTokens - tsStart,
+          tool_calls: { ...turnToolCalls },
+          files_changed: filesChanged,
+        };
+
         const updated = await loadHistory(chatId, sessionProject);
-        updated.push({ role: "assistant", content: resultText, agent: "OpenCode", turn_id: turnId });
+        updated.push({ role: "assistant", content: resultText, agent: "OpenCode", turn_id: turnId, tokens: turnTokens });
         await saveHistory(chatId, updated, sessionProject);
 
         if (arcComplete && capacity > 0.80) {
@@ -977,6 +1307,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         }
 
         const tsEnd = Date.now();
+        console.log(`[opencode-agent:${sessionProject ?? "-"}/${ctx.filename}] broadcasting assistant: contextWindow=${effectiveCtxWindow} inputTokens=${inputTokens} billed=${billedInputTokens} ocSession=${ocSessionId?.slice(0, 8) ?? "?"} clients=${ctx.clientCount?.() ?? "?"}`);
         ctx.broadcast({
           type: "assistant",
           content: resultText,
@@ -987,9 +1318,12 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           // this reply aloud (only voice-dispatched turns get TTS).
           source: turnSource,
           viaVoice: turnSource === "voice",
-          contextWindow: OPENCODE_CTX_WINDOW,
+          contextWindow: effectiveCtxWindow,
           baselineTokens: inputTokens,
-          inputTokens,
+          inputTokens,         // peak — for the capacity gauge
+          billedInputTokens,   // sum across steps — for the cost view
+          outputTokens: turnOutputTokens,
+          tokens: turnTokens,  // full per-turn token breakdown for the chevron footer
           arcComplete,
           capacity,
           cursor: newCursor,
@@ -997,6 +1331,65 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           durationMs: tsEnd - tsStart,
           turn_id: turnId,
         });
+
+        // Proactive compaction: when the peak input tokens approached the
+        // model's context limit, trigger session.summarize before the next
+        // turn fires. Threshold 0.75 sits well above normal-turn capacity
+        // (typical builds peak at 0.3-0.5) but with enough headroom that
+        // the NEXT turn's tool I/O fits even if it lands an unusually
+        // large tool result. Reactive compaction on ContextOverflowError
+        // (above, in the SSE session.error handler) stays as the safety
+        // net for cases where a single turn alone overflows (e.g. a huge
+        // file read mid-turn).
+        //
+        // Fire-and-forget: don't block this turn's completion. The
+        // session.summarize call runs against the same provider/model the
+        // session was using (lastModelOverride captured at prompt time)
+        // and replaces history with a compact summary. opencode handles
+        // ordering if the user sends a new prompt while summarize is
+        // still in flight — either queues or errors with a clear msg
+        // that our session.error handler now surfaces.
+        const COMPACT_THRESHOLD = 0.75;
+        if (capacity >= COMPACT_THRESHOLD && lastModelOverride && sid) {
+          console.log(
+            `[opencode-agent] proactive compaction triggered: capacity=${Math.round(capacity * 100)}% ` +
+              `>= ${Math.round(COMPACT_THRESHOLD * 100)}% threshold (input=${inputTokens}, ` +
+              `window=${effectiveCtxWindow})`,
+          );
+          ctx.broadcast({
+            type: "progress",
+            tool: "compact",
+            description: `Compacting conversation (${Math.round(capacity * 100)}% of context used) — next turn starts fresh`,
+          });
+          const compactSid = sid;
+          const compactModel = lastModelOverride;
+          (async () => {
+            try {
+              const { client } = await getOpencodeServer();
+              const result = await client.session.summarize({
+                path: { id: compactSid },
+                body: compactModel,
+                query: { directory: getProjectDir(sessionProject) },
+              });
+              if (result.error) {
+                console.warn(
+                  `[opencode-agent] proactive compaction error for ${compactSid.slice(0, 8)}: ` +
+                    `${JSON.stringify(result.error).slice(0, 200)}`,
+                );
+              } else {
+                console.log(
+                  `[opencode-agent] proactive compaction OK for ${compactSid.slice(0, 8)} ` +
+                    `(model=${compactModel.providerID}/${compactModel.modelID})`,
+                );
+              }
+            } catch (err) {
+              console.warn(
+                `[opencode-agent] proactive compaction threw for ${compactSid.slice(0, 8)}: ` +
+                  `${(err as Error).message}`,
+              );
+            }
+          })();
+        }
       } catch (err) {
         const errMsg = (err as Error).message || String(err);
         console.error(`[opencode-agent] turn error: ${errMsg}`);
@@ -1011,7 +1404,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         busy = false;
         if (queue.length > 0) {
           const next = queue.shift()!;
-          setImmediate(() => processMessage(next.text, next.source));
+          setImmediate(() => processMessage(next.text, next.source, next.attach));
         }
       }
     }
@@ -1041,7 +1434,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       },
 
       onData(clientId, data) {
-        const msg = data as { type?: string; message?: string };
+        const msg = data as { type?: string; message?: string; attachmentFilename?: string };
 
         if (msg.type === "interrupt") {
           // Two-step interrupt:
@@ -1102,8 +1495,8 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         // be tagged with viaVoice:true so voice's ambient gate plays it.
         const turnSource: QueuedMsg["source"] = clientId === "voice-dispatch" ? "voice" : "user";
 
-        if (busy) { queue.push({ text: message, source: turnSource }); return; }
-        processMessage(message, turnSource);
+        if (busy) { queue.push({ text: message, source: turnSource, attach: msg.attachmentFilename }); return; }
+        processMessage(message, turnSource, msg.attachmentFilename);
       },
 
       onDestroy() {

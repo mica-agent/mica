@@ -37,13 +37,52 @@ interface BufferedError {
 // project -> filename -> latest error for that file
 const buffer = new Map<string, Map<string, BufferedError>>();
 
+// Flap trail: when an error is cleared (browser POSTs /ok), we MOVE the entry
+// here instead of dropping it. If the same filename re-errors within
+// RECENT_TTL_MS, bump flapCount — that's the signal the agent's "fix" was a
+// transient illusion. buildContext reads this as an advisory so the next turn
+// after a flap-and-clear cycle still mentions the recently-seen problem.
+const RECENT_TTL_MS = 2 * 60_000;
+interface RecentEntry {
+  filename: string;
+  error: string;
+  firstSeen: number;
+  lastSeen: number;
+  flapCount: number;
+}
+const recentlyCleared = new Map<string, Map<string, RecentEntry>>();
+
+function pruneRecentlyCleared(project: string): void {
+  const map = recentlyCleared.get(project);
+  if (!map) return;
+  const cutoff = Date.now() - RECENT_TTL_MS;
+  for (const [k, v] of Array.from(map.entries())) {
+    if (v.lastSeen < cutoff) map.delete(k);
+  }
+}
+
 /** Append (or replace) an error for a project+filename. The latest call
  *  wins — older entries for the same file are overwritten so the buffer
  *  always reflects the validator's most recent verdict. */
 export function recordValidatorError(project: string, filename: string, error: string): void {
   if (!project || !filename || !error) return;
+  const now = Date.now();
   if (!buffer.has(project)) buffer.set(project, new Map());
-  buffer.get(project)!.set(filename, { filename, error, ts: Date.now() });
+  buffer.get(project)!.set(filename, { filename, error, ts: now });
+
+  // Update flap trail. If a recently-cleared entry exists for this filename,
+  // bump flapCount and refresh lastSeen — same error returning within the TTL
+  // is the flap signal. Otherwise start a new entry at flapCount=1.
+  if (!recentlyCleared.has(project)) recentlyCleared.set(project, new Map());
+  const recents = recentlyCleared.get(project)!;
+  const existing = recents.get(filename);
+  if (existing) {
+    existing.error = error;
+    existing.lastSeen = now;
+    existing.flapCount += 1;
+  } else {
+    recents.set(filename, { filename, error, firstSeen: now, lastSeen: now, flapCount: 1 });
+  }
 }
 
 /** Clear any buffered error for one file. Called from the file-watcher
@@ -73,6 +112,21 @@ export function getPendingValidatorErrors(project: string): BufferedError[] {
  *  same name. */
 export function clearProjectValidatorErrors(project: string): void {
   buffer.delete(project);
+  recentlyCleared.delete(project);
+}
+
+/** Read the recently-cleared trail for a project. Entries older than
+ *  RECENT_TTL_MS are pruned in-place before returning. Only entries with
+ *  flapCount >= 2 are returned — first-time-and-cleared errors are
+ *  presumed genuinely fixed; flaps mean the agent's previous fix didn't
+ *  hold. Returned in oldest-first order. */
+export function getRecentlyClearedFlaps(project: string): RecentEntry[] {
+  pruneRecentlyCleared(project);
+  const map = recentlyCleared.get(project);
+  if (!map || map.size === 0) return [];
+  return Array.from(map.values())
+    .filter((e) => e.flapCount >= 2)
+    .sort((a, b) => a.firstSeen - b.firstSeen);
 }
 
 /** Peek whether a project+filename currently has a buffered error. Used by

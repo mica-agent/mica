@@ -1,6 +1,6 @@
 // micaAgent.ts -- Qwen Code agent channel handler.
 // Uses @qwen-code/sdk to provide an agentic coding assistant.
-// Registered as a ChannelManager handler for .chat files.
+// Registered as a ChannelManager handler for .qwen files.
 
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
@@ -10,6 +10,7 @@ import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFrom
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
+import { buildHandlerContractsBaseline } from "./handlerBaselineInjection.js";
 import { SentenceFanout } from "./voiceStreaming.js";
 import { getTtsUrl, getVoiceServerStatus } from "./voiceServers.js";
 // buildCardClassMcpServer retired — its tools (mica_create_class,
@@ -27,10 +28,11 @@ import {
   getConcurrencyStatus,
 } from "./subagents.js";
 import { markProjectActivity } from "./projectActivity.js";
+import { resolveCtxWindow } from "./contextWindow.js";
 import { recordTurn, recordSubagent } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { analyzeTurnArtifacts, appendTurnEvent, readTurnEvents } from "./turnEvents.js";
-import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { getFreshPendingValidatorErrors, getRecentlyClearedFlaps } from "./validatorErrorBuffer.js";
 import { recordSkillInvocation } from "./skillInvocationTracker.js";
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
 import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
@@ -576,6 +578,19 @@ export async function buildSubagentCanvasContext(
     }
   } catch { /* ignore */ }
 
+  // Channel handler contracts — for any handler declared in a canvas spec
+  // or card-class metadata, inject the manifest example here. Prevents the
+  // hot-dog-style failure where the agent picks `llm-direct` at spec time,
+  // then in a later turn writes card.js with hallucinated channel APIs
+  // (`channel.on('token', cb)`, `openChannel({handler, args})`) because the
+  // manifest examples never re-entered context. Auto-injection means the
+  // working skeleton is in front of the agent EVERY turn it works on this
+  // canvas. See handlerBaselineInjection.ts for the cost rationale.
+  try {
+    const handlerBlock = await buildHandlerContractsBaseline(project);
+    if (handlerBlock) parts.push(handlerBlock);
+  } catch { /* injection is best-effort — bad metadata shouldn't break baseline */ }
+
   // File location rules. Default matches initProject's DEFAULT_CANVAS_ROOT
   // — a missing / unreadable config falls back to the new default, not the
   // legacy "docs" name.
@@ -781,6 +796,26 @@ export async function buildContext(
         errorLines.join("\n\n"),
       );
     }
+
+    // Flap advisory — errors that briefly cleared but reappeared. The /ok-
+    // then-/error cycle empties the active buffer between turns; the flap
+    // trail survives the clear and surfaces here as the softer "your fix
+    // may have only suppressed the symptom" signal.
+    const pendingNames = new Set(pendingErrors.map((e) => e.filename));
+    const flaps = getRecentlyClearedFlaps(project).filter((f) => !pendingNames.has(f.filename));
+    if (flaps.length > 0) {
+      const flapNames = flaps.map((f) => `${f.filename} (×${f.flapCount})`).join(", ");
+      console.log(`[buildContext:${project}] flap advisory: ${flapNames}`);
+      const flapLines = flaps.map((f) => {
+        const ageSec = Math.max(1, Math.round((Date.now() - f.firstSeen) / 1000));
+        return `### \`${f.filename}\` (flapped ${f.flapCount}× over the last ${ageSec}s, currently clearing)\n\n${f.error}`;
+      });
+      parts.push(
+        `## Recently flapping errors\n\n` +
+        `The following file(s) errored, briefly stopped erroring after an edit, and errored again — that's the pattern of a fix that suppresses the symptom rather than solving the root cause. Inspect each file and check that your edit addresses the underlying problem (not just the path that throws). If you believe the file is now genuinely fixed, ignore this section.\n\n` +
+        flapLines.join("\n\n"),
+      );
+    }
   }
 
   // 1. Instance-level AI context (per-card behavior instructions)
@@ -913,6 +948,16 @@ export async function buildContext(
     }
   } catch { /* ignore */ }
 
+  // Channel handler contracts — same auto-injection as the subagent baseline.
+  // Surfaces the working card.js skeleton for every handler declared in any
+  // canvas spec or card-class metadata, so the agent's card.js writes copy
+  // from the canonical example instead of hallucinating channel APIs across
+  // turns. See handlerBaselineInjection.ts for cost rationale.
+  try {
+    const handlerBlock = await buildHandlerContractsBaseline(project);
+    if (handlerBlock) parts.push(handlerBlock);
+  } catch { /* injection is best-effort */ }
+
   // Resolve canvasRoot once — both the delegation cheat sheet and the
   // "File Locations" block below need it. Default matches initProject's
   // DEFAULT_CANVAS_ROOT so a missing config doesn't dump stale "docs"
@@ -998,7 +1043,7 @@ export async function buildContext(
 
   parts.push(`## File Locations
 - The canvas directory is \`${canvasRoot}/\` — this is where everything visible on the canvas lives
-- ALL cards you create (.chat, .todo, .terminal, .mmd, .md, etc.) MUST go in \`${canvasRoot}/\`
+- ALL cards you create (.qwen, .todo, .terminal, .mmd, .md, etc.) MUST go in \`${canvasRoot}/\`
 - ALL planning files (specs, decisions, notes) MUST go in \`${canvasRoot}/\`
 - Files OUTSIDE \`${canvasRoot}/\` are not on the canvas by default — the user can pin them via the filebrowser if they want them visible
 - NEVER write files to .mica/ — that directory is managed by Mica internally
@@ -1675,6 +1720,21 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         }
         console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
 
+        // Resolve the effective context window for this turn. OpenRouter
+        // looks up the model's contextLength in our cached catalog;
+        // openai-compat probes <baseUrl>/models for vLLM/llama.cpp-style
+        // context fields; local uses LLAMA_CTX_SIZE env. The resolved value
+        // drives buildContext (banner + subagent budget + intent-inline
+        // cap), the capacity gauge, and overflow detection. Falls back to
+        // LOCAL_CTX_WINDOW for unknown providers.
+        const effectiveCtxWindow = await resolveCtxWindow({
+          provider,
+          modelId: cardSettings.model || undefined,
+          baseUrl: provider === "openai-compat" ? baseUrl : undefined,
+          localFallback: LOCAL_CTX_WINDOW,
+        });
+        console.log(`[mica-agent] effective context window: ${effectiveCtxWindow} (provider=${provider}, model=${modelName})`);
+
         const since = getLastTurnAt(ctx.filename);
 
         // Surface validator/runtime errors entering this turn as a step in
@@ -1709,7 +1769,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           }
         }
 
-        const context = await buildContext(ctx.filename, sessionProject, since, modelName);
+        const context = await buildContext(ctx.filename, sessionProject, since, modelName, effectiveCtxWindow);
         // Capture the rendered system-prompt context for this turn so the chat
         // card's per-turn footer can surface a "view snapshot" link. Sidecar
         // file at `.mica/chats/<chatId>/snapshots/<turnId>.txt`. Fire-and-forget;
@@ -2239,7 +2299,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // (openrouter, openai-compat): unknown until the SDK reports
         // it via modelUsage on first turn — start at 0 and let the
         // SDK fill it in.
-        let contextWindow: number = provider === "local" ? LOCAL_CTX_WINDOW : 0;
+        // Initialize with the resolver's value — OpenRouter/openai-compat
+        // get the real window upfront (catalog/probe), not after first
+        // SDK response. SDK modelUsage events still override below if the
+        // model reports a different number per turn.
+        let contextWindow: number = effectiveCtxWindow;
         // SDK error result detection: when llama-server / OpenRouter returns a
         // 400 (e.g. context overflow), the SDK emits a result event with
         // `is_error: true, subtype: "error_during_execution", error: { message }`

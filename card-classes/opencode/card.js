@@ -12,6 +12,12 @@ const statusLabel = container.querySelector("#chat-status-label");
 const statusMeta = container.querySelector("#chat-status-meta");
 const statusToggle = container.querySelector("#chat-status-toggle");
 const statusDetail = container.querySelector("#chat-status-detail");
+const attachBtn = container.querySelector("#chat-attach-btn");
+const attachRow = container.querySelector("#chat-attach-row");
+const attachFilenameEl = container.querySelector("#chat-attach-filename");
+const attachClearBtn = container.querySelector("#chat-attach-clear");
+const attachPicker = container.querySelector("#chat-attach-picker");
+const attachOptionsEl = container.querySelector("#chat-attach-options");
 // Fuel gauge (B — future: capacity trajectory). See chat card for rationale.
 // recentBaselines is misnamed — stores PEAK input_tokens; recentBaselinesActual
 // stores the turn-start baseline. The gap between them on the gauge shows
@@ -37,6 +43,11 @@ let busy = false;
 let contextCursor = 0;
 let messageIndex = 0;
 let lastCapacity = 0;
+// Per-turn token + tool data, keyed by turn_id. Populated from the assistant
+// broadcast at end-of-turn AND from saved history records on attach (so the
+// chevron footer works after a page reload). Read by the chevron click
+// handler to build the token chips without a server round-trip.
+const turnDataByTurnId = new Map();
 
 function projectHeaders(extra) {
   const h = { "X-Mica-Project": (typeof mica !== "undefined" && mica.project) || "" };
@@ -93,6 +104,368 @@ hydrateFuelGauge();
 // OpenCode uses the cloud — no local model-loading status to poll.
 inputEl.placeholder = 'Ask OpenCode...';
 sendBtn.disabled = false;
+
+// ── Per-card LLM settings (provider + model) ────────────────
+// Mirrors the qwen.qwen card's settings UX exactly: Local / OpenRouter /
+// OpenAI-compatible radios, OpenRouter has a searchable model dropdown +
+// key validation against openrouter.ai, OpenAI-compatible takes a custom
+// baseUrl + model + key. Persistence shape `{ provider, model }` is shared
+// with the chat card (same /api/cards/settings sidecar). Workspace-level
+// credentials — OpenRouter key, OpenAI-compat baseUrl+key — are stored at
+// /api/openrouter-key and /api/openai-config, shared across both card
+// classes. server/opencodeAgent.ts reads the per-card {provider, model} on
+// each prompt and maps to opencode's body.model + provider env injection.
+const modelLabelEl = container.querySelector('#chat-model-label');
+const settingsBtn = container.querySelector('#chat-settings-btn');
+const settingsPanel = container.querySelector('#chat-settings-panel');
+const settingsClose = container.querySelector('#chat-settings-close');
+const settingsCancel = container.querySelector('#chat-settings-cancel');
+const settingsSave = container.querySelector('#chat-settings-save');
+const settingsModel = container.querySelector('#chat-settings-model');
+const settingsModelHint = container.querySelector('#chat-settings-model-hint');
+const settingsModelDropdown = container.querySelector('#chat-settings-model-dropdown');
+const settingsKeyRow = container.querySelector('#chat-settings-key-row');
+const settingsKey = container.querySelector('#chat-settings-key');
+const settingsKeyStatus = container.querySelector('#chat-settings-key-status');
+const settingsKeyLabel = container.querySelector('#chat-settings-key-label');
+const settingsBaseurlRow = container.querySelector('#chat-settings-baseurl-row');
+const settingsBaseurl = container.querySelector('#chat-settings-baseurl');
+const providerRadios = container.querySelectorAll('input[name="chat-provider"]');
+
+const MODEL_DEFAULTS = {
+  local: 'opencode default',
+  openrouter: 'anthropic/claude-3.5-sonnet',
+  'openai-compat': 'gpt-4o-mini',
+};
+
+let currentSettings = { provider: 'local', model: '' };
+
+function settingsUrl(qs) {
+  const sep = (qs && qs.indexOf('?') >= 0) ? '&' : '?';
+  return '/api/cards/settings' + (qs || '') + sep + 'path=' + encodeURIComponent(mica.filename);
+}
+
+function renderModelLabel() {
+  if (!modelLabelEl) return;
+  const provider = currentSettings.provider || 'local';
+  let providerShort;
+  if (provider === 'openrouter') providerShort = 'OpenRouter';
+  else if (provider === 'openai-compat') providerShort = 'OpenAI';
+  else providerShort = 'OpenCode';
+  const model = currentSettings.model || '';
+  const display = model ? providerShort + ' · ' + model : providerShort;
+  modelLabelEl.textContent = display;
+  modelLabelEl.title = display;
+}
+
+// Lazy-loaded OpenRouter model catalog (same /api/openrouter/models the
+// chat card consumes — server caches for an hour, so two cards opening
+// settings in succession share the result).
+let openrouterModels = null;        // null = not loaded; [] = loaded empty/failed; [...] = loaded
+let openrouterFetchInflight = null;
+
+function formatPricePerM(usdPerM) {
+  if (typeof usdPerM !== 'number' || !isFinite(usdPerM)) return null;
+  if (usdPerM === 0) return '$0';
+  if (usdPerM < 0.01) return '$' + usdPerM.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  if (usdPerM < 1) return '$' + usdPerM.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  if (usdPerM < 10) return '$' + usdPerM.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  return '$' + Math.round(usdPerM);
+}
+
+function formatContextLen(n) {
+  if (typeof n !== 'number' || n <= 0) return null;
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1).replace(/\.0$/, '') + 'M ctx';
+  if (n >= 1000) return Math.round(n / 1000) + 'K ctx';
+  return n + ' ctx';
+}
+
+function formatModelMeta(m) {
+  const parts = [];
+  const pIn = formatPricePerM(m.promptPerM);
+  const pOut = formatPricePerM(m.completionPerM);
+  if (m.promptPerM === 0 && m.completionPerM === 0) parts.push('free');
+  else if (pIn || pOut) parts.push((pIn || '?') + '/M in · ' + (pOut || '?') + '/M out');
+  const ctx = formatContextLen(m.contextLength);
+  if (ctx) parts.push(ctx);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function fetchOpenrouterModels() {
+  if (openrouterModels !== null) return Promise.resolve(openrouterModels);
+  if (openrouterFetchInflight) return openrouterFetchInflight;
+  openrouterFetchInflight = fetch('/api/openrouter/models', { headers: projectHeaders() })
+    .then(function(r) { return r.ok ? r.json() : { models: [] }; })
+    .then(function(j) { openrouterModels = Array.isArray(j.models) ? j.models : []; return openrouterModels; })
+    .catch(function() { openrouterModels = []; return openrouterModels; })
+    .finally(function() { openrouterFetchInflight = null; });
+  return openrouterFetchInflight;
+}
+
+function renderModelDropdown(query) {
+  if (!Array.isArray(openrouterModels) || openrouterModels.length === 0) {
+    settingsModelDropdown.style.display = 'none';
+    settingsModelDropdown.innerHTML = '';
+    return;
+  }
+  const q = (query || '').trim().toLowerCase();
+  const matches = [];
+  for (const m of openrouterModels) {
+    const id = m.id || '';
+    const idLow = id.toLowerCase();
+    const name = m.name || '';
+    const nameLow = name.toLowerCase();
+    if (!q) { matches.push({ m, rank: 0 }); continue; }
+    if (idLow.startsWith(q)) matches.push({ m, rank: 0 });
+    else if (idLow.includes(q)) matches.push({ m, rank: 1 });
+    else if (nameLow.includes(q)) matches.push({ m, rank: 2 });
+  }
+  if (matches.length === 0) {
+    settingsModelDropdown.innerHTML = '<div style="padding:8px;color:#6e7681;font-size:11px;">No matches. The id is still saved as-is — useful for private/preview models.</div>';
+    settingsModelDropdown.style.display = 'block';
+    return;
+  }
+  matches.sort(function(a, b) { return a.rank - b.rank || a.m.id.localeCompare(b.m.id); });
+  const top = matches.slice(0, 50);
+  settingsModelDropdown.innerHTML = '';
+  top.forEach(function(entry) {
+    const m = entry.m;
+    const row = window.document.createElement('div');
+    row.className = 'or-model-row';
+    row.style.cssText = 'padding:6px 8px;cursor:pointer;font-size:12px;border-bottom:1px solid rgba(255,255,255,0.04);';
+    row.dataset.modelId = m.id;
+    const idEl = window.document.createElement('div');
+    idEl.style.cssText = 'color:#e6edf3;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;';
+    idEl.textContent = m.id;
+    row.appendChild(idEl);
+    if (m.name && m.name !== m.id) {
+      const nameEl = window.document.createElement('div');
+      nameEl.style.cssText = 'color:#8b949e;font-size:11px;margin-top:1px;';
+      nameEl.textContent = m.name;
+      row.appendChild(nameEl);
+    }
+    const meta = formatModelMeta(m);
+    if (meta) {
+      const metaEl = window.document.createElement('div');
+      metaEl.style.cssText = 'color:#7ec699;font-size:11px;margin-top:1px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;';
+      metaEl.textContent = meta;
+      row.appendChild(metaEl);
+    }
+    row.addEventListener('mouseenter', function() { row.style.background = 'rgba(124,58,237,0.18)'; });
+    row.addEventListener('mouseleave', function() { row.style.background = 'transparent'; });
+    // mousedown rather than click so the input's blur doesn't hide the
+    // dropdown before the selection registers.
+    row.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      settingsModel.value = m.id;
+      hideModelDropdown();
+    });
+    settingsModelDropdown.appendChild(row);
+  });
+  if (matches.length > top.length) {
+    const more = window.document.createElement('div');
+    more.style.cssText = 'padding:6px 8px;color:#6e7681;font-size:11px;';
+    more.textContent = '+ ' + (matches.length - top.length) + ' more — refine to narrow.';
+    settingsModelDropdown.appendChild(more);
+  }
+  settingsModelDropdown.style.display = 'block';
+}
+
+function hideModelDropdown() {
+  settingsModelDropdown.style.display = 'none';
+}
+
+function showModelDropdownIfOpenrouter() {
+  let provider = 'local';
+  providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
+  if (provider !== 'openrouter') { hideModelDropdown(); return; }
+  fetchOpenrouterModels().then(function() {
+    renderModelDropdown(settingsModel.value);
+  });
+}
+
+settingsModel.addEventListener('focus', showModelDropdownIfOpenrouter);
+settingsModel.addEventListener('input', function() {
+  let provider = 'local';
+  providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
+  if (provider !== 'openrouter') return;
+  if (openrouterModels === null) fetchOpenrouterModels().then(function() { renderModelDropdown(settingsModel.value); });
+  else renderModelDropdown(settingsModel.value);
+});
+settingsModel.addEventListener('blur', function() {
+  setTimeout(hideModelDropdown, 120);
+});
+
+function updateProviderUI(provider) {
+  if (provider === 'openrouter') {
+    settingsKeyRow.style.display = 'block';
+    settingsBaseurlRow.style.display = 'none';
+    settingsKeyLabel.innerHTML = 'OpenRouter API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span>';
+    settingsModel.placeholder = MODEL_DEFAULTS.openrouter + ' (default)';
+    settingsModelHint.textContent = 'Pick from the list or type any OpenRouter model id, e.g. anthropic/claude-3.5-sonnet, openai/gpt-4o.';
+    fetchOpenrouterModels();
+  } else if (provider === 'openai-compat') {
+    settingsKeyRow.style.display = 'block';
+    settingsBaseurlRow.style.display = 'block';
+    settingsKeyLabel.innerHTML = 'API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span>';
+    settingsModel.placeholder = MODEL_DEFAULTS['openai-compat'] + ' (default)';
+    settingsModelHint.textContent = 'Type the model id your endpoint expects (e.g. gpt-4o-mini, mistralai/Mixtral-8x7B-Instruct-v0.1, your-vllm-model-name).';
+    hideModelDropdown();
+  } else {
+    settingsKeyRow.style.display = 'none';
+    settingsBaseurlRow.style.display = 'none';
+    settingsModel.placeholder = MODEL_DEFAULTS.local + ' (default)';
+    settingsModelHint.textContent = 'Uses OpenCode\'s default provider (whichever is first configured in auth.json or opencode.jsonc). Model field is informational — OpenCode picks the model from its own config.';
+    hideModelDropdown();
+  }
+}
+
+providerRadios.forEach(function(r) {
+  r.addEventListener('change', function() { updateProviderUI(r.value); });
+});
+
+function openSettings() {
+  // Pull fresh state every time so opening the panel after another tab saved
+  // shows current values, not a stale snapshot.
+  Promise.allSettled([
+    fetch(settingsUrl(''), { headers: projectHeaders() }).then(function(r) { return r.json(); }),
+    fetch('/api/openrouter-key', { headers: projectHeaders() }).then(function(r) { return r.json(); }),
+    fetch('/api/openai-config', { headers: projectHeaders() }).then(function(r) { return r.json(); }),
+  ]).then(function(results) {
+    const s = results[0].status === 'fulfilled' ? results[0].value : {};
+    const k = results[1].status === 'fulfilled' ? results[1].value : { hasKey: false };
+    const oc = results[2].status === 'fulfilled' ? results[2].value : { baseUrl: null, hasKey: false };
+    const provider = s.provider || 'local';
+    providerRadios.forEach(function(r) { r.checked = (r.value === provider); });
+    settingsModel.value = s.model || '';
+    settingsKey.value = '';
+    settingsBaseurl.value = oc.baseUrl || '';
+    let hasKeyForProvider, keyHint;
+    if (provider === 'openai-compat') {
+      hasKeyForProvider = !!oc.hasKey;
+      keyHint = hasKeyForProvider ? 'sk-••••••••••••••••' : 'sk-... (or any token your endpoint expects)';
+    } else {
+      hasKeyForProvider = !!k.hasKey;
+      keyHint = hasKeyForProvider ? 'sk-or-••••••••••••••••' : 'sk-or-...';
+    }
+    settingsKey.placeholder = keyHint;
+    settingsKeyStatus.style.color = '#6e7681';
+    settingsModelHint.style.color = '#6e7681';
+    settingsKeyStatus.textContent = hasKeyForProvider
+      ? 'Key set ✓ — paste a new one to replace, or clear it to remove.'
+      : 'No key set yet.';
+    updateProviderUI(provider);
+    settingsPanel.style.display = 'block';
+    setTimeout(function() {
+      (provider === 'openrouter' || provider === 'openai-compat' ? settingsKey : settingsModel).focus();
+    }, 0);
+  });
+}
+
+function closeSettings() { settingsPanel.style.display = 'none'; }
+
+settingsBtn.addEventListener('click', openSettings);
+settingsClose.addEventListener('click', closeSettings);
+settingsCancel.addEventListener('click', closeSettings);
+
+settingsSave.addEventListener('click', function() {
+  let provider = 'local';
+  providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
+  const model = settingsModel.value.trim();
+  const keyValue = settingsKey.value;
+  const baseurlValue = settingsBaseurl.value.trim();
+  settingsSave.disabled = true;
+  settingsSave.textContent = 'Saving...';
+
+  settingsKeyStatus.style.color = '#6e7681';
+  settingsModelHint.style.color = '#6e7681';
+
+  // OpenAI-compat requires baseUrl. Surface a clean message before save.
+  if (provider === 'openai-compat' && !baseurlValue) {
+    settingsModelHint.textContent = 'Base URL required (e.g., https://api.openai.com/v1).';
+    settingsModelHint.style.color = '#f87171';
+    settingsSave.disabled = false;
+    settingsSave.textContent = 'Save';
+    return;
+  }
+
+  // OpenRouter (key, model) validation BEFORE save.
+  const needsValidation = provider === 'openrouter' && (keyValue.length > 0 || model.length > 0);
+  const validateP = needsValidation
+    ? fetch('/api/openrouter/validate', {
+        method: 'POST',
+        headers: projectHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: keyValue, model: model }),
+      }).then(function(r) { return r.json(); })
+    : Promise.resolve({ ok: true, errors: {} });
+
+  validateP.then(function(v) {
+    const errors = v.errors || {};
+    if (errors.key) {
+      settingsKeyStatus.textContent = errors.key;
+      settingsKeyStatus.style.color = '#f87171';
+    }
+    if (errors.model) {
+      settingsModelHint.textContent = errors.model;
+      settingsModelHint.style.color = '#f87171';
+    }
+    if (!v.ok) { const e = new Error('validation failed'); e.validationFailure = true; throw e; }
+
+    const cardP = fetch(settingsUrl(''), {
+      method: 'PUT',
+      headers: projectHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ provider: provider, model: model }),
+    }).then(function(r) { return r.json(); });
+    let credP;
+    if (provider === 'openrouter') {
+      credP = keyValue.length > 0
+        ? fetch('/api/openrouter-key', {
+            method: 'PUT',
+            headers: projectHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ key: keyValue }),
+          }).then(function(r) { return r.json(); })
+        : Promise.resolve(null);
+    } else if (provider === 'openai-compat') {
+      const body = { baseUrl: baseurlValue };
+      if (keyValue.length > 0) body.key = keyValue;
+      credP = fetch('/api/openai-config', {
+        method: 'PUT',
+        headers: projectHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      }).then(function(r) { return r.json(); });
+    } else {
+      credP = Promise.resolve(null);
+    }
+    return Promise.all([cardP, credP]).then(function() {
+      return { warning: v.warning };
+    });
+  }).then(function(meta) {
+    currentSettings = { provider: provider, model: model };
+    renderModelLabel();
+    closeSettings();
+    const saveMsg = meta && meta.warning ? 'Saved. ' + meta.warning : 'Settings saved.';
+    statusBar.style.display = 'block';
+    statusLabel.textContent = saveMsg;
+    statusDot.style.background = meta && meta.warning ? '#d29922' : '#4ade80';
+    setTimeout(function() {
+      if (statusLabel.textContent === saveMsg) statusBar.style.display = 'none';
+    }, 3000);
+  }).catch(function(err) {
+    if (!err || !err.validationFailure) {
+      window.alert('Save failed: ' + (err && err.message ? err.message : 'unknown'));
+    }
+  }).finally(function() {
+    settingsSave.disabled = false;
+    settingsSave.textContent = 'Save';
+  });
+});
+
+// Initial load: pull current settings, then render label.
+fetch(settingsUrl(''), { headers: projectHeaders() }).then(function(r) { return r.json(); }).then(function(s) {
+  currentSettings = { provider: s.provider || 'local', model: s.model || '' };
+}).catch(function() { /* defaults */ }).finally(function() {
+  renderModelLabel();
+});
 
 function scrollBottom() {
   requestAnimationFrame(function() {
@@ -358,35 +731,73 @@ function addMessage(role, content, agent, questions, turnId) {
   scrollBottom();
 }
 
-// A — past, per-turn footer (delegated click handler). See chat card for
-// full rationale. Lazy-builds the chip strip + snapshot link on first
-// expand; toggles visibility on subsequent clicks without re-fetching.
-function formatChips(turn, subagents) {
-  const tc = turn.tool_calls || {};
-  const skillsList = Array.isArray(turn.skills_invoked) ? turn.skills_invoked : [];
-  const subList = Array.isArray(subagents) ? subagents : [];
+// Past per-turn footer chips. Source of truth is `turnDataByTurnId` — the
+// in-memory map populated from the assistant broadcast (live) and the
+// history record on attach (durable). Server fetch is no longer required;
+// it's still attempted as a best-effort enrichment for skills/subagents
+// chips that come from the optional /api/agent/turn-record endpoint (which
+// opencode doesn't write today — qwen does).
+function chip(label, title) {
+  return '<span class="chat-turn-chip" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</span>';
+}
+
+function formatTokenChips(td) {
+  if (!td) return "";
+  const parts = [];
+  // Input chip: billed sum across all model calls this turn. Tooltip shows
+  // the peak (largest single call's input) — that's the number that maps
+  // to ctx for overflow risk. Cached reads broken out so users can see the
+  // discount.
+  const inLabel = formatK(td.input || 0) + " in";
+  const peakLine = td.peak ? "Peak (largest single call): " + formatK(td.peak) + (td.ctx ? " / " + formatK(td.ctx) + " ctx (" + Math.round((td.peak / td.ctx) * 100) + "%)" : "") : "";
+  const cacheReadLine = td.cache_read > 0 ? "Cache read: " + formatK(td.cache_read) + " (cheap)" : "";
+  const cacheWriteLine = td.cache_write > 0 ? "Cache write: " + formatK(td.cache_write) : "";
+  const inTitle = ["Billed input total (sum across steps): " + (td.input || 0), peakLine, cacheReadLine, cacheWriteLine].filter(Boolean).join("\n");
+  parts.push(chip(inLabel, inTitle));
+
+  // Output chip: completion tokens this turn.
+  const outLabel = formatK(td.output || 0) + " out";
+  parts.push(chip(outLabel, "Output total this turn: " + (td.output || 0)));
+
+  // Reasoning chip (only when non-zero — reasoning models only). Claude
+  // extended thinking, o1/o3, deepseek-r1, gpt-5-thinking, gemini-2.5-flash-thinking.
+  if (td.reasoning > 0) {
+    parts.push(chip(formatK(td.reasoning) + " thinking", "Reasoning / thinking tokens: " + td.reasoning + "\n(billed as output by most providers)"));
+  }
+
+  // Tools chip: total tool calls + top three by name in the tooltip.
+  const tc = td.tool_calls || {};
   const toolEntries = Object.keys(tc).map(function(k) { return [k, tc[k]]; }).sort(function(a, b) { return b[1] - a[1]; });
   const totalToolCalls = toolEntries.reduce(function(s, e) { return s + e[1]; }, 0);
-  const topTools = toolEntries.slice(0, 3).map(function(e) { return e[0] + " " + e[1]; }).join(" · ");
-  const skillsTitle = skillsList.length > 0 ? skillsList.join(", ") : "(none)";
-  const subsTitle = subList.length > 0
-    ? subList.map(function(s) { return s.subagent_name + " · " + Math.round(s.duration_ms / 100) / 10 + "s"; }).join("\n")
-    : "(none)";
-  const durationSec = turn.duration_ms ? Math.round(turn.duration_ms / 100) / 10 : 0;
-  // Per-turn footer chip — same format function as the live status meta.
-  // Sub-second durations stay decimal (e.g. "3.4s"); past 60s switch to
-  // M:SS, past an hour H:MM:SS.
-  const durationLabel = durationSec < 60
-    ? durationSec + "s"
-    : formatDuration(Math.round(durationSec));
-  function chip(label, title) {
-    return '<span class="chat-turn-chip" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</span>';
+  if (totalToolCalls > 0) {
+    const topTools = toolEntries.slice(0, 6).map(function(e) { return e[0] + " ×" + e[1]; }).join("\n");
+    parts.push(chip(totalToolCalls + " tools", topTools));
   }
+
+  // Duration chip.
+  if (td.duration_ms > 0) {
+    const durationSec = Math.round(td.duration_ms / 100) / 10;
+    const durationLabel = durationSec < 60 ? durationSec + "s" : formatDuration(Math.round(durationSec));
+    parts.push(chip(durationLabel, "Wall-clock turn duration"));
+  }
+
+  return parts.join("");
+}
+
+// Legacy qwen-shape chips (skills, subagents) — populated only when the
+// turn-record endpoint returns data (qwen writes it; opencode doesn't yet).
+function formatLegacyChips(turn, subagents) {
+  if (!turn) return "";
+  const skillsList = Array.isArray(turn.skills_invoked) ? turn.skills_invoked : [];
+  const subList = Array.isArray(subagents) ? subagents : [];
   const parts = [];
-  parts.push(chip(skillsList.length + " skills", skillsTitle));
-  parts.push(chip(subList.length + " subagents", subsTitle));
-  parts.push(chip(totalToolCalls + " tools", topTools || "(none)"));
-  parts.push(chip(durationLabel, "elapsed"));
+  if (skillsList.length > 0) {
+    parts.push(chip(skillsList.length + " skills", skillsList.join(", ")));
+  }
+  if (subList.length > 0) {
+    const subsTitle = subList.map(function(s) { return s.subagent_name + " · " + Math.round(s.duration_ms / 100) / 10 + "s"; }).join("\n");
+    parts.push(chip(subList.length + " subagents", subsTitle));
+  }
   return parts.join("");
 }
 
@@ -405,32 +816,43 @@ messagesEl.addEventListener("click", function(e) {
     toggle.style.transform = isHidden ? "rotate(90deg)" : "rotate(0deg)";
     return;
   }
-  toggle.textContent = "…";
+  // Build the footer immediately from in-memory token data — no server
+  // round-trip needed for the common case. Optional best-effort fetch of
+  // the legacy /api/agent/turn-record endpoint enriches the strip with
+  // skills/subagents chips when available (qwen path; opencode 404s and
+  // we silently skip).
+  toggle.textContent = "▸";
+  toggle.style.transform = "rotate(90deg)";
+  footer = window.document.createElement("div");
+  footer.className = "chat-turn-footer";
+  footer.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;padding-top:6px;border-top:1px solid rgba(48,54,61,0.5);font-size:11px;color:#8b949e;";
+  const td = turnDataByTurnId.get(turnId);
+  const tokenChips = formatTokenChips(td);
+  const snapHref = "/api/agent/turn-snapshot/" + encodeURIComponent(mica.cardId) + "/" + encodeURIComponent(turnId)
+    + "?project=" + encodeURIComponent(mica.project || "");
+  footer.innerHTML = tokenChips +
+    '<a class="chat-turn-snapshot-link" href="' + snapHref + '" target="_blank" rel="noopener" ' +
+    'style="color:#7c3aed;text-decoration:none;font-size:11px;margin-left:auto;" ' +
+    'title="Open the captured rendered system prompt for this turn">view snapshot →</a>';
+  bubble.appendChild(footer);
+
+  // Best-effort enrichment from the legacy metrics endpoint. Silently skip
+  // on 404 (the opencode-handler doesn't write recordTurn today).
   fetch("/api/agent/turn-record/" + encodeURIComponent(mica.cardId) + "/" + encodeURIComponent(turnId), {
     headers: projectHeaders(),
   }).then(function(r) {
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) return null;
     return r.json();
-  }).then(function(data) {
-    toggle.textContent = "▸";
-    toggle.style.transform = "rotate(90deg)";
-    footer = window.document.createElement("div");
-    footer.className = "chat-turn-footer";
-    footer.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;padding-top:6px;border-top:1px solid rgba(48,54,61,0.5);font-size:11px;color:#8b949e;";
-    const chipsHtml = formatChips(data.turn || {}, data.subagents || []);
-    // Pass project as a query param — opening in a new tab via <a target="_blank">
-    // strips the X-Mica-Project header. Server's getRequestProject() accepts either.
-    const snapHref = "/api/agent/turn-snapshot/" + encodeURIComponent(mica.cardId) + "/" + encodeURIComponent(turnId)
-      + "?project=" + encodeURIComponent(mica.project || "");
-    footer.innerHTML = chipsHtml +
-      '<a class="chat-turn-snapshot-link" href="' + snapHref + '" target="_blank" rel="noopener" ' +
-      'style="color:#7c3aed;text-decoration:none;font-size:11px;margin-left:auto;" ' +
-      'title="Open the captured rendered system prompt for this turn">view snapshot →</a>';
-    bubble.appendChild(footer);
-  }).catch(function(err) {
-    toggle.textContent = "▸";
-    toggle.title = "Failed to load: " + err.message;
-  });
+  }).then(function(extra) {
+    if (!extra || !footer) return;
+    const legacyChips = formatLegacyChips(extra.turn || {}, extra.subagents || []);
+    if (legacyChips) {
+      // Prepend so skills/subagents appear before the token chips.
+      const tmp = window.document.createElement("div");
+      tmp.innerHTML = legacyChips;
+      while (tmp.firstChild) footer.insertBefore(tmp.firstChild, footer.firstChild);
+    }
+  }).catch(function() { /* enrichment is optional */ });
 });
 
 function setStatus(text, dot, pulsing) {
@@ -635,9 +1057,14 @@ ch.onData(function(data) {
       messagesEl.innerHTML = "";
       contextCursor = typeof data.cursor === "number" ? data.cursor : 0;
       messageIndex = 0;
+      turnDataByTurnId.clear();
       if (data.messages && data.messages.length > 0) {
         for (let i = 0; i < data.messages.length; i++) {
-          addMessage(data.messages[i].role, data.messages[i].content, data.messages[i].agent, undefined, data.messages[i].turn_id);
+          const m = data.messages[i];
+          // Hydrate the chevron-footer cache from persisted tokens so
+          // expanding a past bubble doesn't require a server fetch.
+          if (m.turn_id && m.tokens) turnDataByTurnId.set(m.turn_id, m.tokens);
+          addMessage(m.role, m.content, m.agent, undefined, m.turn_id);
         }
       } else {
         messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Send a message to start OpenCode.</div>';
@@ -705,6 +1132,10 @@ ch.onData(function(data) {
       const elapsedLabel = formatDuration(elapsedSec);
       setStatus(`${doneMsg} (${elapsedLabel}, ${stepCount} steps)`, "#3fb950", false);
       addDetailLine(`Completed in ${elapsedLabel} with ${stepCount} steps`);
+      // Cache token + tool data for chevron-footer hover. Server sends
+      // `tokens: { input, output, peak, reasoning, cache_read, cache_write,
+      // ctx, duration_ms, tool_calls, files_changed }` on the assistant event.
+      if (data.turn_id && data.tokens) turnDataByTurnId.set(data.turn_id, data.tokens);
       addMessage("assistant", data.content, data.agent || "OpenCode", undefined, data.turn_id);
       if (data.arcComplete && lastCapacity >= 0.80) {
         addContextSuggestion(
@@ -733,16 +1164,91 @@ ch.onData(function(data) {
 
 ch.onClose(function() {});
 
+// Pending screenshot attachment — set when the user picks a canvas file via
+// the 📷 picker, cleared on send or on 'x'. When set, the send() below
+// includes `attachmentFilename` in the outgoing message; server captures the
+// card and inlines it as a FilePartInput in the opencode prompt.
+let pendingAttachment = null;
+
+function updateAttachChip() {
+  if (pendingAttachment) {
+    attachFilenameEl.textContent = pendingAttachment;
+    attachRow.style.display = "flex";
+  } else {
+    attachRow.style.display = "none";
+  }
+}
+
+function clearAttachment() {
+  pendingAttachment = null;
+  updateAttachChip();
+}
+
+attachClearBtn.addEventListener("click", function(e) {
+  e.stopPropagation();
+  clearAttachment();
+});
+
+function hidePicker() { attachPicker.style.display = "none"; }
+
+function openPicker() {
+  attachOptionsEl.innerHTML = '<div style="color:#6e7681;font-size:11px;padding:6px 8px;">Loading&hellip;</div>';
+  attachPicker.style.display = "block";
+  fetch("/api/files?canvas=true", { headers: projectHeaders() })
+    .then(function(r) { return r.json(); })
+    .then(function(files) {
+      const candidates = (files || []).filter(function(f) { return !f.meta && f.name !== mica.filename; });
+      if (candidates.length === 0) {
+        attachOptionsEl.innerHTML = '<div style="color:#6e7681;font-size:11px;padding:6px 8px;">No other cards on canvas.</div>';
+        return;
+      }
+      attachOptionsEl.innerHTML = "";
+      candidates.forEach(function(f) {
+        const opt = window.document.createElement("div");
+        opt.textContent = f.name;
+        opt.style.cssText = "padding:6px 8px;color:#e6edf3;font-size:12px;cursor:pointer;border-radius:3px;";
+        opt.addEventListener("mouseenter", function() { opt.style.background = "rgba(124,58,237,0.15)"; });
+        opt.addEventListener("mouseleave", function() { opt.style.background = "transparent"; });
+        opt.addEventListener("click", function() {
+          pendingAttachment = f.name;
+          updateAttachChip();
+          hidePicker();
+          inputEl.focus();
+        });
+        attachOptionsEl.appendChild(opt);
+      });
+    })
+    .catch(function(err) {
+      attachOptionsEl.innerHTML = '<div style="color:#f87171;font-size:11px;padding:6px 8px;">Failed to load files: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</div>';
+    });
+}
+
+attachBtn.addEventListener("click", function(e) {
+  e.stopPropagation();
+  if (attachPicker.style.display === "block") hidePicker(); else openPicker();
+});
+
+window.document.addEventListener("click", function(e) {
+  if (attachPicker.style.display !== "block") return;
+  if (attachPicker.contains(e.target) || attachBtn.contains(e.target)) return;
+  hidePicker();
+});
+
 function send() {
   const text = inputEl.value.trim();
-  if (!text) return;
+  if (!text && !pendingAttachment) return;
   inputEl.value = "";
   // Server queues if busy — let the user keep typing while the agent works.
   if (busy) {
     queuedCount++;
     addDetailLine(`Queued: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
   }
-  ch.send({ message: text });
+  const payload = { message: text || "(no prompt)" };
+  if (pendingAttachment) {
+    payload.attachmentFilename = pendingAttachment;
+    clearAttachment();
+  }
+  ch.send(payload);
   updateSendButton();
 }
 

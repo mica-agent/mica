@@ -1,7 +1,7 @@
 <div id="chat-root" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;font-family:inherit;-webkit-font-smoothing:antialiased;">
 
   <div id="chat-topbar" style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid #30363d;flex-shrink:0;font-size:11px;color:#8b949e;min-width:0;">
-    <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">OpenCode</span>
+    <span id="chat-model-label" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="">OpenCode</span>
     <span id="chat-fuel" title="" style="flex-shrink:0;display:none;align-items:center;gap:6px;cursor:help;">
       <span class="fuel-track" style="position:relative;width:44px;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:visible;">
         <span class="fuel-fill" style="position:absolute;left:0;top:0;bottom:0;width:0%;background:#4ade80;border-radius:2px;transition:width 180ms ease,background 180ms ease;"></span>
@@ -14,6 +14,58 @@
     <span id="chat-archive-btn" title="Previous conversations on this card" style="cursor:pointer;color:#8b949e;font-size:13px;padding:0 2px;flex-shrink:0;">&#128336;</span>
     <span id="chat-clear-btn" title="Clear this card (archives the current conversation)" style="cursor:pointer;color:#8b949e;font-size:13px;padding:0 2px;flex-shrink:0;">&#128465;</span>
     <span id="chat-spawn-btn" title="Spawn a new chat card for a new topic" style="cursor:pointer;color:#8b949e;font-size:14px;padding:0 2px;flex-shrink:0;">+</span>
+    <span id="chat-settings-btn" title="Settings" style="cursor:pointer;color:#8b949e;font-size:17px;padding:0 2px;flex-shrink:0;line-height:1;">&#9881;</span>
+  </div>
+
+  <div id="chat-settings-panel" style="display:none;position:absolute;inset:0;background:rgba(13,17,23,0.96);backdrop-filter:blur(2px);z-index:20;padding:16px;overflow-y:auto;color:#e6edf3;font-size:12px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div style="font-weight:600;color:#e6edf3;font-size:13px;">OpenCode settings</div>
+      <span id="chat-settings-close" title="Close" style="cursor:pointer;color:#8b949e;font-size:16px;line-height:1;padding:0 4px;">&times;</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">Provider</div>
+        <label style="display:block;margin-bottom:4px;cursor:pointer;">
+          <input type="radio" name="chat-provider" value="local" style="vertical-align:middle;margin-right:6px;" />
+          <span>Local</span>
+        </label>
+        <label style="display:block;margin-bottom:4px;cursor:pointer;">
+          <input type="radio" name="chat-provider" value="openrouter" style="vertical-align:middle;margin-right:6px;" />
+          <span>OpenRouter</span>
+        </label>
+        <label style="display:block;cursor:pointer;">
+          <input type="radio" name="chat-provider" value="openai-compat" style="vertical-align:middle;margin-right:6px;" />
+          <span>OpenAI-compatible <span style="color:#6e7681;font-size:11px;">(custom endpoint)</span></span>
+        </label>
+      </div>
+
+      <div id="chat-settings-baseurl-row" style="display:none;">
+        <div style="color:#ccc;margin-bottom:6px;">Base URL <span style="color:#6e7681;font-weight:normal;">(saved per project)</span></div>
+        <input id="chat-settings-baseurl" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div id="chat-settings-baseurl-hint" style="color:#6e7681;font-size:11px;margin-top:4px;">e.g., api.openai.com/v1, api.together.xyz/v1, or a self-hosted vLLM URL.</div>
+      </div>
+
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">Model</div>
+        <div id="chat-settings-model-wrap" style="position:relative;">
+          <input id="chat-settings-model" type="text" placeholder="" autocomplete="off" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+          <div id="chat-settings-model-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:2px;max-height:240px;overflow-y:auto;background:#161b22;border:1px solid #30363d;border-radius:4px;z-index:30;box-shadow:0 4px 12px rgba(0,0,0,0.5);"></div>
+        </div>
+        <div id="chat-settings-model-hint" style="color:#6e7681;font-size:11px;margin-top:4px;"></div>
+      </div>
+
+      <div id="chat-settings-key-row" style="display:none;">
+        <div id="chat-settings-key-label" style="color:#ccc;margin-bottom:6px;">OpenRouter API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span></div>
+        <input id="chat-settings-key" type="password" placeholder="sk-or-..." autocomplete="off" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div id="chat-settings-key-status" style="color:#6e7681;font-size:11px;margin-top:4px;"></div>
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button id="chat-settings-cancel" style="background:transparent;color:#ccc;border:1px solid #30363d;border-radius:4px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;">Cancel</button>
+        <button id="chat-settings-save" style="background:#7c3aed;color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Save</button>
+      </div>
+    </div>
   </div>
 
   <div id="chat-archive-panel" style="display:none;position:absolute;top:32px;right:8px;width:280px;max-height:240px;overflow-y:auto;background:#1c2028;border:1px solid #30363d;border-radius:6px;padding:8px 10px;z-index:15;font-size:11px;color:#8b949e;box-shadow:0 4px 16px rgba(0,0,0,0.4);">
@@ -37,7 +89,21 @@
     <div id="chat-status-detail" style="display:none;max-height:150px;overflow-y:auto;padding:4px 12px 8px 28px;font-size:11px;font-family:monospace;color:#6e7681;border-top:1px solid rgba(48,54,61,0.5);"></div>
   </div>
 
-<div style="display:flex;gap:6px;padding:8px 12px;border-top:1px solid #30363d;flex-shrink:0;">
+  <div id="chat-attach-row" style="display:none;align-items:center;gap:6px;padding:4px 12px 0;flex-shrink:0;">
+    <span id="chat-attach-chip" style="background:rgba(124,58,237,0.18);color:#c9aef7;border:1px solid rgba(124,58,237,0.4);border-radius:4px;padding:2px 8px;font-size:11px;display:inline-flex;align-items:center;gap:4px;">
+      <span>&#128247;</span>
+      <span id="chat-attach-filename"></span>
+      <button id="chat-attach-clear" title="Remove attachment" style="background:transparent;border:none;color:#c9aef7;cursor:pointer;font-size:12px;padding:0 2px;line-height:1;">&times;</button>
+    </span>
+  </div>
+
+  <div id="chat-attach-picker" style="display:none;position:absolute;bottom:50px;left:12px;right:12px;max-height:240px;overflow:auto;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px;z-index:10;box-shadow:0 4px 12px rgba(0,0,0,0.4);">
+    <div style="color:#6e7681;font-size:11px;padding:4px 8px;">Attach screenshot of&hellip;</div>
+    <div id="chat-attach-options"></div>
+  </div>
+
+  <div style="display:flex;gap:6px;padding:8px 12px;border-top:1px solid #30363d;flex-shrink:0;position:relative;">
+    <button id="chat-attach-btn" title="Attach a screenshot of a canvas card" style="background:transparent;border:1px solid #30363d;color:#8b949e;border-radius:6px;padding:4px 8px;font-size:14px;cursor:pointer;font-family:inherit;line-height:1;flex-shrink:0;">&#128247;</button>
     <input id="chat-input" type="text" placeholder="Ask OpenCode..." style="flex:1;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;color:#e6edf3;font-size:13px;outline:none;font-family:inherit;" />
     <button id="chat-stop" style="background:#f87171;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;display:none;">Stop</button>
     <button id="chat-send" style="background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">Send</button>

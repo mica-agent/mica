@@ -8,6 +8,7 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT } from "./files.js";
 import { buildSubagentCanvasContext } from "./micaAgent.js";
+import { buildHandlerContractsBaseline } from "./handlerBaselineInjection.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
@@ -25,7 +26,7 @@ import { recordTurn, recordSubagent } from "./metrics.js";
 import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
-import { getFreshPendingValidatorErrors } from "./validatorErrorBuffer.js";
+import { getFreshPendingValidatorErrors, getRecentlyClearedFlaps } from "./validatorErrorBuffer.js";
 import { markProjectActivity } from "./projectActivity.js";
 import { recordUserMessage } from "./userMessageTracker.js";
 
@@ -251,6 +252,26 @@ export async function buildContext(agentFilename: string, project: string | null
         errorLines.join("\n\n"),
       );
     }
+
+    // Flap advisory — errors that briefly cleared but reappeared. The /ok-
+    // then-/error cycle empties the active buffer between turns; the flap
+    // trail survives the clear and surfaces here as the softer "your fix
+    // may have only suppressed the symptom" signal.
+    const pendingNames = new Set(pendingErrors.map((e) => e.filename));
+    const flaps = getRecentlyClearedFlaps(project).filter((f) => !pendingNames.has(f.filename));
+    if (flaps.length > 0) {
+      const flapNames = flaps.map((f) => `${f.filename} (×${f.flapCount})`).join(", ");
+      console.log(`[buildContext:${project}] (claude) flap advisory: ${flapNames}`);
+      const flapLines = flaps.map((f) => {
+        const ageSec = Math.max(1, Math.round((Date.now() - f.firstSeen) / 1000));
+        return `### \`${f.filename}\` (flapped ${f.flapCount}× over the last ${ageSec}s, currently clearing)\n\n${f.error}`;
+      });
+      parts.push(
+        `## Recently flapping errors\n\n` +
+        `The following file(s) errored, briefly stopped erroring after an edit, and errored again — that's the pattern of a fix that suppresses the symptom rather than solving the root cause. Inspect each file and check that your edit addresses the underlying problem (not just the path that throws). If you believe the file is now genuinely fixed, ignore this section.\n\n` +
+        flapLines.join("\n\n"),
+      );
+    }
   }
 
   // 1. Instance-level AI context (per-card behavior instructions)
@@ -318,6 +339,14 @@ export async function buildContext(agentFilename: string, project: string | null
     }
   } catch { /* ignore */ }
 
+  // Channel handler contracts — auto-inject working card.js skeleton for any
+  // handler declared in a canvas spec or card-class metadata. Same shape as
+  // micaAgent's baseline; see handlerBaselineInjection.ts.
+  try {
+    const handlerBlock = await buildHandlerContractsBaseline(project);
+    if (handlerBlock) parts.push(handlerBlock);
+  } catch { /* injection is best-effort */ }
+
   // Available subagents — see micaAgent.ts for rationale. Claude SDK names
   // the delegation tool "Task" (per the AgentInfo type docstring); the
   // input shape is { subagent_type: "<name>", prompt: "..." }.
@@ -366,7 +395,7 @@ export async function buildContext(agentFilename: string, project: string | null
 
   parts.push(`## File Locations
 - The canvas directory is \`${canvasRoot}/\` — this is where everything visible on the canvas lives
-- ALL cards you create (.chat, .todo, .terminal, .mmd, .md, etc.) MUST go in \`${canvasRoot}/\`
+- ALL cards you create (.qwen, .todo, .terminal, .mmd, .md, etc.) MUST go in \`${canvasRoot}/\`
 - ALL planning files (specs, decisions, notes) MUST go in \`${canvasRoot}/\`
 - Files OUTSIDE \`${canvasRoot}/\` are not on the canvas by default — the user can pin them via the filebrowser if they want them visible
 - NEVER write files to .mica/ — that directory is managed by Mica internally
