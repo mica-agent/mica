@@ -10,9 +10,8 @@ Same primitive serves both uses. Files are files; `.mica/` is
 operational metadata only; the canvas is a view. See SPEC.md for
 the full framing.
 
-Mica-Lite is the first app. The long arc is an operating substrate
-for layered work. See `internal/VISION.md` for design intent that
-is not yet built.
+Mica today is a planning and execution canvas. The long arc is an
+operating substrate for layered work.
 
 ## How we build
 
@@ -273,7 +272,6 @@ Read these first:
 - `ARCHITECTURE.md` — present-tense implementation reference,
   authoritative `mica.*` API; includes `## Channel handler details`
   (deep-dive subsystem reference) and `## Decisions` (rationale log)
-- `internal/VISION.md` — design intent for things not yet built
 
 For card class authoring, the canonical reference is the
 `card-class-handbook` skill that ships with each project
@@ -389,7 +387,7 @@ terminal via the mounted `/var/run/docker.sock`. So:
 
 ## Testing
 
-*Mica-Lite has no automated end-to-end test suite today. Verification is manual and happens in two passes: type-check for compilation, then a runtime walkthrough.*
+*Mica has no automated end-to-end test suite today. Verification is manual and happens in two passes: type-check for compilation, then a runtime walkthrough.*
 
 
 ### Type check

@@ -1,12 +1,82 @@
 # ARCHITECTURE
 
-This document describes how the Mica-Lite codebase is organized, how
+This document describes how the Mica codebase is organized, how
 a request flows through it, and what the `mica.*` bridge actually
-exposes. It is the present-tense reference. For design intent that
-lives beyond what is implemented, see `internal/VISION.md`.
+exposes. It is the present-tense reference.
 
 If something in this doc conflicts with the code, the code wins and
 this doc is wrong. Flag it and fix it.
+
+## High-level architecture
+
+```
+                  ┌─────────────────────────────────────────────┐
+                  │  Devices — phone · tablet · laptop · display│
+                  │  (live-synced; optional Tailscale Serve)    │
+                  └─────────────────────┬───────────────────────┘
+                                        │  HTTPS + WS
+                                        ▼
+  ┌───────────────────────────────────────────────────────────────────┐
+  │ HOST  — React + Vite  (port 5173)                                 │
+  │                                                                   │
+  │   CardRuntime + CARD_SHIM                                         │
+  │     scopes DOM · injects card.js · auto-cleans timers/listeners   │
+  │                                │                                  │
+  │                                ▼                                  │
+  │   mica.* bridge                                                   │
+  │     files · openChannel · fetch · speak/listen · on · isSelfEcho  │
+  └───────────────────────────────────┬───────────────────────────────┘
+                                      │  /api/* + WS channels
+                                      │  X-Mica-Project header
+                                      ▼
+  ┌───────────────────────────────────────────────────────────────────┐
+  │ BACKEND  — Express + WebSocket (port 3002)                        │
+  │ single user · per-project tagged                                  │
+  │                                                                   │
+  │  ┌─ File watcher ──────┐   ┌─ Channel manager ────────────────┐   │
+  │  │ per-project inotify │   │ duplex sessions ·                │   │
+  │  │ source-attribution  │   │ transport-agnostic               │   │
+  │  └─────────────────────┘   └──────────┬───────────────────────┘   │
+  │                                       │                           │
+  │                          ┌────────────┴────────────┐              │
+  │                          ▼                         ▼              │
+  │              ┌─ Agent handlers ─────┐   ┌─ Generic plugins ─────┐ │
+  │              │ .qwen · .claude ·    │   │ pty (.terminal) ·     │ │
+  │              │ .opencode · .voice   │   │ llm-chat · micaFetch ·│ │
+  │              └──────────┬───────────┘   │ per-card sidecars     │ │
+  │                         ┊ invokes       └───────────────────────┘ │
+  │              ┌─ Agent-tools MCP ──────────────────────────────┐   │
+  │              │ render_capture · mica_create_class ·           │   │
+  │              │ mica_shell · mica_install_skills · ...         │   │
+  │              └────────────────────────────────────────────────┘   │
+  └─────────────────────┬───────────────────────────────┬─────────────┘
+                        │                               │
+                        ▼                               ▼
+  ┌─ Filesystem ──────────────────────┐  ┌─ Inference & voice ─────────┐
+  │ /workspaces/<project>/            │  │ Local vLLM (port 8012)      │
+  │   canvas/                         │  │ llama-server (legacy)       │
+  │   .mica/  (config, layout,        │  │ OpenRouter · Anthropic API  │
+  │            chats, cards,          │  │ Parakeet STT · Kokoro TTS   │
+  │            card-classes)          │  │ (voice sidecars,            │
+  │   shared/  (pinned host docs)     │  │  auto-spawn on first use)   │
+  └───────────────────────────────────┘  └─────────────────────────────┘
+```
+
+**Three planes.** The **Host** (browser-side, where cards render
+and `mica.*` lives), the **Backend** (where channel sessions live
+and agent handlers dispatch), and the **external surfaces** the
+backend mediates (inference backends, voice sidecars, project
+files). Devices sit above the Host; everything below the Backend
+is reached only through it.
+
+**Solid arrows** are primary data flow paths — every request and
+channel travels them. The **dotted line** between agent handlers
+and the agent-tools MCP surface marks the invocation relationship:
+agents *call* tools, but tools aren't in the hot per-message path.
+
+The rest of this document is the per-subsystem deep-dive in
+roughly the order the diagram presents: pipes → host → channels →
+agents → file watcher → mica.* API → security.
 
 ## Posture
 
@@ -15,7 +85,7 @@ Sixteen engineering convictions shape every decision in this codebase. They are 
 
 ## The pipes
 
-Mica-Lite runs as an Express server (backend, port 3002) and a
+Mica runs as an Express server (backend, port 3002) and a
 Vite frontend (port 5173) on the same host, connected by a
 WebSocket. A single Mica instance serves multiple projects. The
 browser identifies which project a request is for via an
@@ -23,28 +93,100 @@ browser identifies which project a request is for via an
 
 ### Server files
 
-All paths relative to `/workspaces/mica/server/`.
+All paths relative to `/workspaces/mica/server/`. Grouped by role
+rather than listed alphabetically — the goal is "where does X
+live?", not a full inventory.
+
+**Core**
 
 | File | What it does |
 |---|---|
-| `index.ts` | Express app, route wiring, WebSocket adapter, file-watcher listener, startup lifecycle |
+| `index.ts` | Express app, route wiring, WebSocket adapter, file-watcher listener, startup lifecycle, channel-handler registration |
 | `files.ts` | File I/O scoped to project, card-class metadata cache, template management, context assembly for agents |
 | `channelManager.ts` | Unified transport-agnostic session manager for bidirectional channels |
+| `connections.ts` | WebSocket connection registry (per-project subscribers, broadcast routing) |
 | `fileWatcher.ts` | Per-project, ref-counted fs watchers scoped to canvas subtree plus pinned files |
 | `writeSource.ts` | Tracks who initiated a write (windowId, "agent", "external") so the next file-changed broadcast carries that source |
-| `llamaServer.ts` | Singleton llama.cpp subprocess lifecycle (start, health check, graceful shutdown) |
-| `claudeAgent.ts` | Channel handler for `.claude` cards. Spawns the Claude Code CLI via `@anthropic-ai/claude-agent-sdk` |
-| `micaAgent.ts` | Channel handler for `.qwen` cards. Speaks OpenAI-compatible HTTP to llama-server |
-| `micaChat.ts` | Thin wrapper around the Qwen chat path |
-| `subagents.ts` | Subagent concurrency control and task delegation |
+| `handlerManifest.ts` | Describes built-in handlers (`llm-direct`, `llm-agent`, `process`) for the `mica_list_handlers` tool |
+| `handlerBaselineInjection.ts` | Assembles per-turn baseline context for chat handlers (canvas files + shared pins + canvas-back) |
+
+**Agent handlers** (one per agent card class)
+
+| File | What it does |
+|---|---|
+| `micaAgent.ts` | Channel handler for `.qwen` cards. Spawns Qwen Code CLI via `@qwen-code/sdk` |
+| `micaAgentGuards.ts` | Guard rules applied to the Qwen agent's tool calls (path scoping, write tracking) |
+| `micaChat.ts` | Thin OpenAI-compatible HTTP wrapper used by the local model path |
+| `claudeAgent.ts` | Channel handler for `.claude` cards. Spawns Claude Code CLI via `@anthropic-ai/claude-agent-sdk` |
+| `opencodeAgent.ts` | Channel handler for `.opencode` cards. Speaks to `opencode serve` daemon via `@opencode-ai/sdk` |
+| `opencodeServer.ts` | Lifecycle of the shared `opencode serve` daemon (one per backend, multi-session) |
+| `opencodeConfig.ts` | Per-card provider/model configuration for opencode (local vLLM / OpenRouter / OpenAI-compatible) |
+| `voiceAgent.ts` | Channel handler for `.voice` cards. Owns STT/TTS dispatch, tool routing, ambient announcements, settings sidecar |
+| `voiceAgentSdk.ts` | LLM call path for voice replies (model selection, streaming) |
+| `voiceTools.ts`, `voiceTools.sdk.ts` | Tool definitions the voice agent exposes (e.g. `send_to_card`, `read_card`) |
+| `voiceStreaming.ts` | Server-side sentence segmentation for streamed TTS |
+| `voiceServers.ts` | Parakeet STT and Kokoro TTS sidecar lifecycle (auto-spawn on first request) |
+
+**Channel plugins** (`server/plugins/`, one per non-agent handler)
+
+| File | What it does |
+|---|---|
+| `pty.ts` | PTY terminal channel handler for `.terminal` cards |
+| `llmChat.ts` | Direct LLM chat for `.llm-chat` cards (no tool loop) |
+| `llmAgent.ts` | Generic LLM agent handler with tool loop (the `llm-agent` reusable handler) |
+| `llmRestApi.ts` | REST/OpenAI-compatible adapter used by `llm-chat` and `llm-agent` |
+| `processChannel.ts` | Generic long-lived process handler (the `process` reusable handler, used by card-class sidecars) |
+| `skillCompose.ts` | Collaborative SKILL.md authoring for `.skills` cards |
+| `canvasBackCompose.ts` | Collaborative canvas-back.md authoring for `.canvas-back` cards |
+| `cardClassTools.ts` | Card-class CRUD tool surface invoked by agents (typed inputs, schema enforced) |
+| `cliMcp.ts` | Generic MCP bridge for CLI-spawned agent SDKs (qwen-code, opencode) |
+| `git.ts`, `exec.ts` | Channel handlers for `.gitrepo` and `mica.exec` respectively |
+| `micaFetch.ts` | Server-proxied HTTP with SSRF protection, rate limit, size cap (`mica.fetch`) |
+
+**Agent-tools registry** (`server/agentTools/`, surfaced to every chat agent via MCP)
+
+| File | What it does |
+|---|---|
+| `registry.ts` | Master `AGENT_TOOLS` array; 18 tools today |
+| `sdkMcpBuilder.ts` | Wraps the registry into the in-process MCP server each agent SDK consumes |
+| `restRoutes.ts` | REST adapter (`/api/tools/*`) for the opencode out-of-process MCP bridge |
+| `promptPrelude.ts` | Standing tool-usage guidance injected into every chat agent's system prompt |
+| `renderCapture.ts` | `render_capture` — screenshot a card and run vision over it |
+| `cardClass.ts` | `mica_create_class`, `mica_edit_class_file`, `mica_create_card_instance`, `mica_delete_*`, `mica_list_classes` |
+| `installSkills.ts`, `listSkillPackages.ts` | `mica_install_skills`, `mica_list_skill_packages` (curated library-skill packs) |
+| `inspectUrl.ts` | `mica_inspect_url` — verified-CDN URL probe (status, content-type, UMD/ESM detection, methods extraction) |
+| `inspectPythonPackage.ts` | `mica_inspect_python_package` — verify a package is installed, surface top-level API |
+| `listHandlers.ts` | `mica_list_handlers` — enumerate built-in channel handlers (`llm-direct`, `llm-agent`, `process`) |
+| `micaShell.ts` | `mica_shell` — run shell commands |
+| `restartSidecar.ts`, `sidecarLog.ts`, `verifySidecar.ts` | `mica_restart_sidecar`, `mica_sidecar_log`, `mica_verify_sidecar` for card-class sidecars |
+| `sharedDocs.ts` | `mica_list_shared_docs`, `mica_pin_shared_doc` — workspace-shared doc discovery + one-shot pin-and-read |
+
+**Per-project state, validation, telemetry**
+
+| File | What it does |
+|---|---|
+| `specFrontmatter.ts` | Parser for the YAML frontmatter at the top of `canvas/<name>-spec.md` — the structured contract `mica_create_class` reads |
 | `cardValidators.ts` | Card-class preconditions and metadata consistency checks applied to agent-initiated writes |
-| `vllmServer.ts` | vLLM lifecycle for VLM (Gemma 4, separate process from llama-server) |
-| `plugins/exec.ts` | Shell command execution handler (`mica.exec`) |
-| `plugins/pty.ts` | PTY terminal channel handler for `.terminal` cards |
-| `plugins/llmChat.ts` | Direct LLM chat channel handler for `.llm-chat` cards |
-| `plugins/micaFetch.ts` | Server-proxied HTTP with SSRF protection, rate limit, size cap (`mica.fetch`) |
-| `plugins/skillCompose.ts` | Collaborative SKILL.md authoring for `.skills` cards |
-| `plugins/canvasBackCompose.ts` | Collaborative canvas-back.md authoring for `.canvas-back` cards |
+| `validatorErrorBuffer.ts` | Flap-advisory buffer — surfaces validators that error→clear→error so the agent sees the pattern |
+| `cardErrorBuffer.ts` | Per-card error history surfaced via `/api/cards/:filename/errors` |
+| `cardSidecar.ts` | Card-class private sidecar lifecycle (declared in `metadata.json sidecar:`) |
+| `sharedPin.ts` | Workspace-shared-doc pin lifecycle (mirrors `/workspaces/shared/*` into `<project>/shared/`) |
+| `contextWindow.ts` | Provider-aware context-window resolution (OpenRouter catalog, OpenAI-compat probe, local env fallback) |
+| `subagents.ts` | Subagent concurrency control and task delegation |
+| `projectActivity.ts` | Tracks active turn count per project (drives the pulsing green dot in the project list) |
+| `metrics.ts` | Per-project telemetry counters |
+| `renderCaptureCounter.ts` | Per-turn `render_capture` rate limiter |
+| `screenshot.ts` | Vision back-end for `render_capture` |
+| `skillInvocationTracker.ts` | Tracks which skills the agent loaded this turn (skill-tool prerequisite enforcement) |
+| `toolPrerequisites.ts` | "Did the agent invoke skill X before tool Y?" gates |
+| `turnEvents.ts`, `turnSnapshots.ts` | Per-turn event stream + snapshot persistence |
+| `userMessageTracker.ts` | Last-user-message tracking (drives the spec-approval gate: refuses `mica_create_class` until a real user message arrives after spec write) |
+
+**Inference subprocess lifecycle**
+
+| File | What it does |
+|---|---|
+| `llamaServer.ts` | Singleton llama.cpp subprocess lifecycle (rollback inference path; see § Inference backends) |
 
 ### Host files
 
@@ -52,14 +194,17 @@ All paths relative to `/workspaces/mica/src/`.
 
 | File | What it does |
 |---|---|
-| `App.tsx` | Router. Project list or project view |
-| `ProjectList.tsx` | Project management UI (list, create, clone, rename, delete) |
+| `App.tsx` | Router. Project list or project view; pin-added toasts; reconnection banner |
+| `ProjectList.tsx` | Project management UI (list, create from template, clone, rename, delete); pulsing-green-dot active-turn indicator |
 | `whiteboard/CardRuntime.tsx` | Card host. Loads dependencies, injects HTML, wraps `card.js` in CARD_SHIM, provides the `mica` bridge |
 | `whiteboard/CardFrame.tsx` | Card chrome (header, body, footer, flip/back). Lazy-loads content from the API |
 | `whiteboard/CanvasCardRuntime.tsx` | Canvas host. Mounts the canvas card class's HTML and portals child cards into `#canvas-freeform` |
 | `whiteboard/FileEditor.tsx` | Text file editor, fallback for unmapped extensions |
-| `api/canvasFiles.ts` | File CRUD, project management API client |
+| `api/canvasFiles.ts` | File CRUD, project management API client, device-class detection |
+| `api/canvasPaths.ts` | Canvas-relative path helpers (cards see canvas-relative; the wire is project-relative) |
 | `api/micaSocket.ts` | WebSocket bridge, channel registry, session persistence |
+| `api/mica.ts` | Card-side `mica.chat` / `mica.file` helpers (consumed inside CARD_SHIM) |
+| `api/voice.ts` | Card-side `mica.speak` / `mica.listen` helpers |
 
 ## Per-request project scoping
 
@@ -174,16 +319,87 @@ A mismatch silently falls through to the text renderer.
 | `badge` | yes | Short label shown on the card header |
 | `defaultTitle` | no | Display title for new instances |
 | `primaryFile` | no | For classes whose instance is a directory, the file inside that holds the state |
-| `dependencies.scripts` | no | CDN URLs to preload before `card.js` runs |
+| `dependencies.umd_scripts` | no | CDN URLs (UMD bundles only) to preload via `<script>` before `card.js` runs |
 | `dependencies.styles` | no | CDN CSS URLs to preload |
+| `handler` | no | Route the card's channel to a reusable handler (`llm-direct` / `llm-agent` / `process`) instead of needing a class-specific server file |
+| `sidecar` | no | Card-class-private long-lived subprocess (entry, ready_path, ready_timeout_ms, interpreter). Server-side lifecycle in `server/cardSidecar.ts` |
+
+ESM CDN URLs do **not** go in `umd_scripts` (the deps-reachable
+validator refuses them with a prescriptive error). Load ESM
+inside `card.js` via `await import(url)` — the CARD_SHIM wraps
+`card.js` in an async function, so top-level `await` works.
 
 ### Dependency preloading
 
 The first time a card class is rendered in a page, its declared
-`dependencies.scripts` and `.styles` are hoisted to `<head>` and
-loaded once. Subsequent cards of the same class reuse the
+`dependencies.umd_scripts` and `.styles` are hoisted to `<head>`
+and loaded once. Subsequent cards of the same class reuse the
 already-loaded copies — the browser's module cache handles
 deduplication.
+
+### Card-class extensibility patterns
+
+Three patterns let new card classes add behavior without writing
+a class-specific server handler:
+
+- **Reusable channel handlers** — point `metadata.json#handler` at
+  `llm-direct`, `llm-agent`, or `process`. See § Registered
+  channel handlers. The `mica_list_handlers` tool surfaces the
+  catalog to agents so they discover these primitives during card
+  authoring.
+- **Card-class private sidecars** — declare `metadata.json#sidecar`
+  to spawn a per-class subprocess on first card open.
+  `server/cardSidecar.ts` owns the lifecycle (start, health-poll
+  the `ready_path`, restart on file change, tear down on Mica
+  exit). Sidecar HTTP is reachable from `card.js` via
+  `mica.fetch('mica-internal://card-server/...')`, which the
+  bridge routes to the right sidecar.
+- **Workspace-shared docs** — pre-vetted reference docs at
+  `/workspaces/shared/` (CDN library catalogs, design notes) can
+  be pinned into a project via the `mica_pin_shared_doc` tool or
+  the `.shared-library` browse card.
+  `server/sharedPin.ts` mirrors the doc into the project's
+  `shared/` directory; `server/handlerBaselineInjection.ts`
+  includes pinned files in every chat-agent's per-turn baseline.
+
+### Spec frontmatter — the contract for `mica_create_class`
+
+For canvas card classes, the build flow writes
+`canvas/<name>-spec.md` with a YAML frontmatter block at the top:
+
+```yaml
+---
+card-class:
+  name: world-clock                # MUST match the spec filename stem
+  badge: WCK                       # 1–4 chars
+  default_title: World Clock
+  handler: ~                       # null unless using a reusable handler
+  sidecar: ~                       # null unless this card needs a sidecar
+  dependencies:
+    umd_scripts:
+      - {url: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js", format: UMD, version: "1.9.4"}
+    styles:
+      - "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+  subtasks:
+    - {name: "render world map", tier: 1, mechanism: "card.js + Leaflet UMD", verify: "render_capture"}
+  out_of_scope:
+    - "timezone autocomplete (defer to v2)"
+---
+
+# World Clock
+[human-readable intent, tradeoffs, open questions]
+```
+
+`server/specFrontmatter.ts` parses this block; `mica_create_class`
+reads it directly when the agent calls the tool with just
+`{ name }`. The structured part IS the contract — what used to be
+duplicated between a markdown table in the spec and explicit tool
+args now lives in one place. The prose below the frontmatter is
+for human review.
+
+This is what closes the spec-vs-build drift gap: the tool's input
+shape and the spec's structured part are the same bytes, so they
+can't disagree.
 
 ## WebSocket communication
 
@@ -221,33 +437,53 @@ later in this document.
 
 ### Registered channel handlers
 
-Each entry below is a card class that has a server-side channel
-handler registered via `channelManager.registerHandler(<class>, factory)`
-in `server/index.ts`. A card whose extension matches one of these
-classes can call `mica.openChannel(label, args?)` from its `card.js`
-and the channel routes to the matching handler. Cards whose extension
-has NO registered handler will fail with `Error: No handler registered
-for: <class>`.
+Each entry below is a routing key registered via
+`channelManager.registerHandler(<key>, factory[, manifest])` in
+`server/index.ts`. The route key is normally a card's file
+extension (so a `.qwen` card routes to the `"qwen"` handler), but
+**reusable handlers** (`llm-direct`, `llm-agent`, `process`) are
+addressed by their key from a card class's
+`metadata.json#handler` field rather than from the extension —
+this is what lets a custom card class get an LLM or sidecar
+without writing a new server handler.
 
-**Routing rule:** the route key is the card's file extension, NOT the
-`label` argument. The label is decorative (passed to the factory's
-`_args`); cards typically use any string they like.
+Cards whose extension (or `handler:`) has NO registered key fail
+with `Error: No handler registered for: <class>`.
 
-| Card class | Handler factory | Source | Purpose |
+**Routing rule:** the route key is the card's file extension (or
+`metadata.handler` for reusable-handler cards), NOT the `label`
+argument to `openChannel`. The label is decorative (passed to the
+factory's `_args`); cards typically use any string they like.
+
+**Per-card-class handlers** (route key = file extension)
+
+| Key | Handler factory | Source | Purpose |
 |---|---|---|---|
-| `.qwen` | `createAgentHandler` | `server/micaAgent.ts` | Qwen agent SDK loop with subagent dispatch + tools |
-| `.claude` | `createClaudeAgentHandler` | `server/claudeAgent.ts` | Claude Code SDK loop, parallel shape |
-| `.terminal` | `createPtyHandler` | `server/plugins/pty.ts` | Terminal PTY (node-pty) |
-| `.llm-chat` | `createLlmChatHandler` | `server/plugins/llmChat.ts` | OpenAI-compatible streaming chat, switchable models, no tools |
-| `.skills` | `createSkillComposeHandler` | `server/plugins/skillCompose.ts` | Collaborative SKILL.md authoring (propose → apply) |
-| `.canvas-back` | `createCanvasBackComposeHandler` | `server/plugins/canvasBackCompose.ts` | Propose-then-apply edits to canvas-back.md |
+| `qwen` | `createAgentHandler` | `server/micaAgent.ts` | Qwen Code SDK loop with subagent dispatch + tools |
+| `claude` | `createClaudeAgentHandler` | `server/claudeAgent.ts` | Claude Code SDK loop, parallel shape |
+| `opencode` | `createOpencodeAgentHandler` | `server/opencodeAgent.ts` | OpenCode SDK loop, lazy-spawned `opencode serve` daemon |
+| `voice` | `createVoiceAgentHandler` | `server/voiceAgent.ts` | Canvas-aware voice assistant (STT → LLM → TTS, tool routing to chat cards) |
+| `terminal` | `createPtyHandler` | `server/plugins/pty.ts` | Terminal PTY (node-pty) |
+| `llm-chat` | `createLlmChatHandler` | `server/plugins/llmChat.ts` | OpenAI-compatible streaming chat, switchable models, no tools (legacy binding kept for `.llm-chat` extension) |
+| `skills` | `createSkillComposeHandler` | `server/plugins/skillCompose.ts` | Collaborative SKILL.md authoring (propose → apply) |
+| `canvas-back` | `createCanvasBackComposeHandler` | `server/plugins/canvasBackCompose.ts` | Propose-then-apply edits to canvas-back.md |
 
-**For LLM access in a custom card class**, prefer reusing `.llm-chat`
-(if the off-the-shelf streaming-chat UX fits) or `.qwen` / `.claude`
-(if the full agent loop fits). Build a new handler under
-`server/plugins/<name>.ts` only when the LLM contract is genuinely
-domain-specific (custom system prompt managed server-side, structured
-JSON deltas, retrieval, multi-step pipelines).
+**Reusable handlers** (route key referenced from `metadata.json#handler`; surfaced to agents via `mica_list_handlers`)
+
+| Key | Handler factory | Source | Purpose |
+|---|---|---|---|
+| `llm-direct` | `createLlmChatHandler` | `server/plugins/llmChat.ts` | Streaming chat with parameterized system prompt + model. Same handler as `llm-chat` but discoverable to agents as a generic primitive. |
+| `llm-agent` | `createLlmAgentHandler` | `server/plugins/llmAgent.ts` | Generic LLM agent with tool loop. Card classes that want agent-shaped behavior without writing their own handler point `handler: "llm-agent"` |
+| `process` | `createProcessHandler` | `server/plugins/processChannel.ts` | Long-lived subprocess with stdin/stdout duplex. Used by card classes that need a sidecar (declared via `metadata.json sidecar:`). |
+
+**For LLM access in a custom card class**, the priority order is:
+(1) point `metadata.handler` at `llm-direct` or `llm-agent` (no
+server code to write); (2) reuse `.qwen` / `.claude` / `.opencode`
+(if you want a full coding-agent loop); (3) build a new handler
+under `server/plugins/<name>.ts` only when the contract is
+genuinely domain-specific (custom system prompt managed
+server-side, structured JSON deltas, retrieval, multi-step
+pipelines).
 
 **Anti-pattern:** a card-class spec or implementation that has the
 card calling LLM endpoints directly via `fetch()` or `mica.fetch()`.
@@ -275,19 +511,21 @@ streaming responses, abort semantics).
 
 ## Agents
 
-Three agent card classes ship today. All are regular card classes
+Four agent card classes ship today. All are regular card classes
 whose `card.js` opens a `mica.openChannel` to a server handler,
 and the handler wraps a model. Same channel contract; different
-backends.
+backends and tool shapes.
 
 ### Qwen (`.qwen`)
 
 `server/micaAgent.ts` is the channel handler. Uses the qwen-code
-SDK (`@qwen-code/sdk`) talking to llama-server's OpenAI-compatible
-HTTP API at `127.0.0.1:8012`. Tool loop runs through the SDK; tool
-calls are XML-tagged. The SDK's `qwen_code` preset provides the
-base system prompt; Mica appends the canvas baseline + per-turn
-context. Local model, no cloud roundtrip.
+SDK (`@qwen-code/sdk`) talking to an OpenAI-compatible HTTP API
+at `127.0.0.1:8012` (the bundled local vLLM by default; the same
+endpoint llama-server speaks when the rollback path is active).
+Tool loop runs through the SDK; tool calls are XML-tagged. The
+SDK's `qwen_code` preset provides the base system prompt; Mica
+appends the canvas baseline + per-turn context. Local model, no
+cloud roundtrip.
 
 ### Claude (`.claude`)
 
@@ -303,44 +541,90 @@ channel.
 `server/opencodeAgent.ts` is the channel handler. Uses the
 opencode SDK (`@opencode-ai/sdk`) against a long-running
 `opencode-serve` daemon (one per backend lifetime, shared across
-sessions). Communication is `session.promptAsync` plus an SSE
-event stream on `/global/event`; tool calls go through opencode's
-own MCP plumbing. Compatible with the same llama-server backend
-as Qwen, plus optional cloud providers (OpenRouter etc.) when
-configured.
+sessions; `server/opencodeServer.ts` owns the daemon lifecycle).
+Communication is `session.promptAsync` plus an SSE event stream on
+`/global/event`; tool calls go through opencode's own MCP
+plumbing. Per-card provider/model selection
+(`server/opencodeConfig.ts`) routes each session to local vLLM,
+OpenRouter, or any OpenAI-compatible endpoint. Context window is
+resolved per-turn via `server/contextWindow.ts` (OpenRouter
+catalog, OpenAI-compat probe, or local env fallback).
+
+### Voice (`.voice`)
+
+`server/voiceAgent.ts` is the channel handler. Unlike the other
+three agents (which receive typed user messages), the voice agent
+receives **microphone audio frames** from `card.js`, streams them
+through the Parakeet STT sidecar (`server/voiceServers.ts`,
+auto-spawned on first request), runs the transcript through an
+LLM call (`server/voiceAgentSdk.ts`), and streams the reply back
+as TTS audio chunks via the Kokoro sidecar.
+`server/voiceStreaming.ts` segments the streamed reply into
+sentences for low-latency TTS playback.
+
+The voice agent's distinguishing tool is **dispatch to other
+chat cards on the canvas** (`voiceTools.ts`,
+`voiceTools.sdk.ts`): "ask the qwen agent to do X" routes the
+user's intent into the named chat card's channel without the
+voice agent itself performing the coding work. Per-card sidecar
+settings (`/api/cards/settings?path=…`) cover voice selection,
+ambient auto-read, default dispatch target, VAD preset
+(quiet/normal/noisy), and inter-sentence pacing.
 
 ### Unified agent-tools surface (mica-builtins MCP)
 
-Mica exposes a fixed set of internal tools to all three backends
-under the same names and shapes via an MCP server registered as
-`mica-builtins`. Single source of truth in
-`server/agentTools/registry.ts`. Each tool is described once as
-an `AgentToolDef` (name, description, zod schema, REST path,
-handler) and adapted to the three SDKs:
+Mica exposes a fixed set of internal tools to all four agent
+backends under the same names and shapes via an MCP server
+registered as `mica-builtins`. Single source of truth in
+`server/agentTools/registry.ts` (the `AGENT_TOOLS` array). Each
+tool is described once as an `AgentToolDef` (name, description,
+zod schema, REST path, handler) and adapted to whichever SDK the
+agent uses:
 
 - qwen-code SDK → SDK-embedded MCP via `createSdkMcpServer`
+  (`server/agentTools/sdkMcpBuilder.ts`)
 - Claude Agent SDK → same shape (the SDK exports the same helpers)
-- opencode-serve → external stdio MCP child process
-  (`opencodeBridge.mjs`) registered via `Config.mcp`, fetches the
-  same REST endpoints
+- opencode-serve → out-of-process MCP child
+  (`server/agentTools/opencodeBridge.mjs`) registered via
+  `Config.mcp`, fetches the same REST endpoints
+  (`server/agentTools/restRoutes.ts`)
+- voice agent → fetches the same REST endpoints directly (voice
+  agent's tool dispatch lives in `voiceTools.sdk.ts`, but the
+  underlying mica-builtins suite is shared)
 
-Eight tools today:
+**18 tools today**, grouped by purpose:
 
 | Tool | Purpose |
 |---|---|
-| `render_capture` | Capture a card screenshot, run it through llama-server's vision encoder, return a text caption — agent's eyes on the rendered output |
-| `mica_create_class` | Atomic card-class creation with metadata schema enforced; writes a canonical card.js stub when omitted |
-| `mica_edit_class_file` | Edit `card.html`/`card.js`/`card.css` with pre-write lint + partial-edit support (`old_string`+`new_string`); refuses no-op edits where the two strings are identical |
-| `mica_create_card_instance` | Place a card instance under canvas-root, idempotent on existing matching content |
-| `mica_delete_card_instance` | Delete a card instance file |
-| `mica_delete_class` | Delete a card-class directory; refuses if instances exist (force flag overrides) |
-| `mica_list_classes` | List project-scoped + built-in card classes |
-| `mica_install_skills` | Clone a third-party skills package into `.qwen/skills/` and `.claude/skills/`; two-tier trust (curated table + per-project approvals.json) |
+| **Vision** | |
+| `render_capture` | Capture a card screenshot, run it through the vision model, return a caption — agent's eyes on the rendered output. Supports `user_intent` for MATCHES/MISMATCH/UNVERIFIABLE verdicts. |
+| **Card-class authoring** | |
+| `mica_create_class` | Atomic card-class creation; reads `canvas/<name>-spec.md` frontmatter as the contract. |
+| `mica_edit_class_file` | Edit `card.html`/`card.js`/`card.css` with pre-write lint + partial-edit support (`old_string`+`new_string`); refuses no-op edits. |
+| `mica_create_card_instance` | Place a card instance under canvas-root, idempotent on existing matching content. |
+| `mica_delete_card_instance` | Delete a card instance file. |
+| `mica_delete_class` | Delete a card-class directory; refuses if instances exist (force flag overrides). |
+| `mica_list_classes` | List project-scoped + built-in card classes. |
+| `mica_list_handlers` | Enumerate the reusable channel handlers (`llm-direct`, `llm-agent`, `process`) a new card class can plug into without writing server code. |
+| **Library discovery & verification** | |
+| `mica_install_skills` | Install curated third-party skills package into `.qwen/skills/` and `.claude/skills/`; two-tier trust (curated table + per-project approvals). |
+| `mica_list_skill_packages` | List curated skill packs available to `mica_install_skills`. |
+| `mica_inspect_url` | Server-side probe of a candidate dependency URL — status, content-type, size, UMD/ESM detection, extracted method names. Used INSTEAD of `curl` to keep response bytes out of chat history. |
+| `mica_inspect_python_package` | Verify a Python package is installed and surface its top-level API. Pre-flight for sidecar-bearing card classes. |
+| **Workspace-shared docs** | |
+| `mica_list_shared_docs` | List pre-vetted docs in `/workspaces/shared/` available for pinning into the project. |
+| `mica_pin_shared_doc` | One-shot pin + read — copies the doc into the project's `shared/` and returns its body in the same tool result. Toast surfaces "Mica pinned X" to the user. |
+| **System / sidecar control** | |
+| `mica_shell` | Run shell commands (with project-scoped cwd). |
+| `mica_restart_sidecar` | Restart a card-class private sidecar. |
+| `mica_sidecar_log` | Tail the sidecar's stdout/stderr. |
+| `mica_verify_sidecar` | Health-check a sidecar's `ready_path` HTTP endpoint. |
 
-Every backend's prelude (`promptPrelude.ts`) describes the same
-tools in the same prose. Adding a new tool means: write the
-`AgentToolDef`, register it in `AGENT_TOOLS`, document it once in
-the prelude — all three agents pick it up automatically.
+Every agent's prelude (`server/agentTools/promptPrelude.ts`)
+describes the same tools in the same prose. Adding a new tool
+means: write the `AgentToolDef`, register it in `AGENT_TOOLS`,
+document it once in the prelude — all four agents pick it up
+automatically.
 
 ### Validators (pre-write + post-write)
 
@@ -461,25 +745,115 @@ Broadcasts to other card clients are a separate path and are
 unaffected by the idle gate — multi-tab live typing still
 updates instantly. Only the agent gets held back until idle.
 
-## llama-server lifecycle
+## Inference backends
+
+Three local-inference paths and two cloud paths are wired up.
+What runs depends on the active card class and (for opencode) its
+per-card provider setting.
+
+### Primary: vLLM (chat + voice agents, May 2026 → present)
+
+`scripts/start.sh` starts a `vllm/vllm-openai:cu130-nightly`
+container serving `RedHatAI/Qwen3.6-35B-A3B-NVFP4` at
+`127.0.0.1:8012`. The container is reused across Mica restarts
+(`scripts/stop.sh` leaves it warm by default; vLLM cold-boot is
+30–90 s). Continuous batching lets Qwen and voice share the same
+served model with near-zero overhead.
+
+The `served-model-name` list (`qwen-vl`, `qwen-voice`,
+`openai:qwen-vl`, `qwen3-vl-local`, `openai:qwen3-vl-local`)
+covers both the Qwen coding agent and the voice agent's LLM call.
+Speed gain over the previous llama.cpp Q4 path is ~30–40 % on
+long outputs (NVFP4 + MTP-1 spec decode).
+
+Set `MICA_DISABLE_CHAT_VLLM=1` to skip the vLLM container — used
+for frontend-only iteration. Set `MICA_DISABLE_LLAMA=1`
+(default in `scripts/start.sh`) to skip the llama-server fallback.
+
+### Fallback: llama-server
 
 `server/llamaServer.ts` manages a singleton llama.cpp subprocess
-that serves an OpenAI-compatible API at `127.0.0.1:8012`. Qwen
-agent requests go here.
+on the same `127.0.0.1:8012` port. Kept in the tree as a rollback
+path; unset `MICA_DISABLE_LLAMA` and set `MICA_DISABLE_CHAT_VLLM=1`
+to make it primary again.
 
 | Property | Value |
 |---|---|
 | Default model | Qwen3.6-35B-A3B, quantized as `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` from `unsloth/Qwen3.6-35B-A3B-GGUF` |
 | Override | `LLAMA_HF_REPO` + `LLAMA_HF_FILE` env vars, or `MODEL_PATH` for a local file |
-| Context window | 65K per slot |
+| Context window | 128K per slot (bumped from 64K after tool-loop overflow mid-turn; see `server/llamaServer.ts` line 20+) |
 | Parallel slots | 3 |
 | Sampling defaults | `temp=0.6`, `top-p=0.95` (Qwen3.6 "precise coding" recommendations) |
 | GPU offload | `--n-gpu-layers 999` |
-| Health check | 500ms poll until ready (120s timeout) |
-| Shutdown | SIGTERM, 5s grace, then SIGKILL |
+| Health check | 500 ms poll until ready (120 s timeout) |
+| Shutdown | SIGTERM, 5 s grace, then SIGKILL |
 
 The server starts on first agent request, stays running until
 Mica shuts down, and shuts down gracefully on process exit.
+
+### Cloud paths (opencode only)
+
+Per-card provider selection in `server/opencodeConfig.ts` lets a
+`.opencode` card route to:
+
+- **OpenRouter** — any OpenRouter-hosted model. Bring an API key
+  in the card's settings panel.
+- **OpenAI-compatible** — any `/v1`-shaped endpoint (self-hosted
+  vLLM elsewhere, Together, Groq, etc.).
+
+Context window resolution is provider-aware
+(`server/contextWindow.ts`): OpenRouter catalog lookup, OpenAI-compat
+probe, or local env fallback. The Qwen and Voice agents stay local;
+only opencode is provider-switchable today.
+
+### Voice sidecars
+
+`server/voiceServers.ts` owns the Parakeet STT and Kokoro TTS
+sidecar processes. Both are auto-spawned on first voice request
+and stay warm. Hosts are overridable via `VOICE_STT_HOST` /
+`VOICE_TTS_HOST` env vars (default `127.0.0.1`).
+
+## Templates
+
+A template is a directory under `templates/` that gets `cp -r`'d
+verbatim into a new project's filesystem when the user picks it
+from the project-creation flow. There is no transformation step;
+no naming convention magic; no metadata interpolation. **The
+template's filesystem layout is the new project's initial state.**
+
+This is the contract that lets per-project customization work
+(see `.qwen/skills/`, `.mica/canvas-back.md`,
+`.qwen/settings.json` in CLAUDE.md / FEATURES.md): templates seed
+those paths once, and every byte after creation lives in the
+project, not in Mica core. Two consequences:
+
+- A project's builder workflow can diverge from any other
+  project's without touching Mica.
+- Fixing or improving a template doesn't retroactively touch
+  existing projects — they keep the bytes they were created with.
+
+### Shipped templates
+
+| Directory | Seeds onto canvas | Intended workflow |
+|---|---|---|
+| `templates/dgx-spark-local/` | `agent.qwen`, `canvas-back.canvas-back`, `shared.shared-library`, `skills.skills` | Local-first. The `.qwen` agent talks to the bundled vLLM. No API key required. Canvas-back tells the agent it's on a local model and to be lean. |
+| `templates/opencode-builder/` | `agent.opencode`, `canvas-back.canvas-back`, `shared.shared-library`, `skills.skills`, `voice.voice` | Hybrid local-or-cloud. The `.opencode` agent's gear menu picks local vLLM / OpenRouter / OpenAI-compat per card. Voice card seeded by default for hands-free narration. Canvas-back explains routing tradeoffs. |
+| `templates/_card-class-skeleton/` | n/a (not a project template) | Scaffold copied by `mica_create_class` when authoring a new card class. Not picked from the project-creation UI. |
+
+Both shipped templates ship the **same** `.qwen/skills/`
+directory (14 skills + `_conventions.md`). They differ only in
+seeded canvas cards and canvas-back framing. See FEATURES.md §
+Templates & the builder workflow for the user-facing summary.
+
+### Materialization
+
+`createProjectFromTemplate` in `server/files.ts` is the
+implementation: `cp -r templates/<picked>/. <new-project>/`. No
+substitution, no rename, no extra files. If a template needs to
+ship something different (a custom canvas-back, a pre-seeded
+`.gitignore`, an example card), it ships the file at the literal
+path it should land at — the materialization code does not
+change.
 
 ## The mica.* API
 
@@ -604,7 +978,7 @@ export instead. Do not try to call them from `card.js`.
 
 ## Security model
 
-Mica-Lite today runs all of its moving parts on the host. The
+Mica today runs all of its moving parts on the host. The
 trust boundaries are:
 
 | Boundary | What it protects |
@@ -615,13 +989,13 @@ trust boundaries are:
 | Agent subprocess sandbox | Claude Code runs in its own container with its own sandboxing and tool policies. Qwen agent runs inside the Mica server but its tool surface is restricted to the same file I/O boundaries as card code |
 
 No per-project Mica container. No V8 isolate card sandbox. Both
-are design candidates described in `internal/VISION.md`.
+have been considered; neither is built today.
 
 ## What is not here
 
 Topics that earlier drafts of this doc described as present are
-in fact not implemented. They live in `internal/VISION.md` as
-design intent, not in the current system:
+in fact not implemented. Listed here as design candidates, not
+part of the current system:
 
 - Portfolio / workspace-level card.
 - V8 isolate card sandbox (the `isolated-vm` dependency is in
@@ -866,8 +1240,9 @@ onDestroy:   cancel any in-flight turn, close streams
 **Qwen agent** (`server/micaAgent.ts`):
 ```
 onAttach:    load chat history, replay to attaching client
-onData:      { type: "user_message", text } → tool loop against llama-server
-             at 127.0.0.1:8012. XML-fallback tool-call parsing.
+onData:      { type: "user_message", text } → tool loop against the
+             local inference backend at 127.0.0.1:8012 (vLLM primary,
+             llama-server fallback). XML-fallback tool-call parsing.
              Canvas-scope file-watcher integration (reactive turns on user idle).
 onDetach:    no-op — session continues
 onDestroy:   abort in-flight turn
@@ -928,12 +1303,12 @@ The adapter tracks which WebSocket connection owns which client IDs (`Map<WebSoc
 
 ## Decisions
 
-*Working decisions that shaped Mica-Lite. Each entry captures the choice, why it was made, and what it displaces. For design intent that has not yet shipped, see `internal/VISION.md`.*
+*Working decisions that shaped Mica. Each entry captures the choice, why it was made, and what it displaces.*
 
 
 ### Files are files, not directories
 
-Mica-Lite does not use a card-as-directory model. A card is a
+Mica does not use a card-as-directory model. A card is a
 plain file at the project root. The file extension selects the
 card class. The canvas arranges cards by layout, not by
 directory hierarchy.
@@ -979,12 +1354,11 @@ projects interact with different state at every request. No
 context swap to track.
 
 Per-project container isolation as a blast radius is under
-consideration (see `internal/VISION.md`) but is not the current
-reality.
+consideration but is not the current reality.
 
 ### Augmentation-layer boundary: Mica shapes the input, the agent runs the turn
 
-Mica-Lite runs on top of coding agents (Qwen Code, Claude Code,
+Mica runs on top of coding agents (Qwen Code, Claude Code,
 and OpenRouter-routed variants). It augments them. It does not
 replace them. This line is load-bearing: without it, Mica drifts
 toward reimplementing concerns the SDK already owns, and ends up
@@ -1102,11 +1476,17 @@ classes ship with Mica. A workspace tier at
 `~/.mica/card-classes/` is a horizon item (see VISION); it is
 not implemented today.
 
-### Agent architecture — two built-in classes, set will change
+### Agent architecture — four built-in classes, set will change
 
-Today two agent card classes ship. `.qwen` is backed by local
-Qwen through llama-server. `.claude` is backed by the Claude
-Code SDK via a spawned CLI subprocess. Both are regular card
+Today four agent card classes ship. `.qwen` is backed by Qwen
+Code talking to the local vLLM (llama-server is the rollback
+path). `.claude` is backed by the Claude Code SDK via a spawned
+CLI subprocess. `.opencode` runs the OpenCode SDK against a
+shared `opencode serve` daemon, with per-card provider selection
+(local vLLM / OpenRouter / OpenAI-compatible). `.voice` adds a
+canvas-aware voice assistant on top of Parakeet STT + Kokoro TTS
+sidecars; its distinguishing capability is dispatching user
+intent to the other chat-card agents. All four are regular card
 classes whose `card.js` opens a `mica.openChannel` to a server
 handler.
 
@@ -1165,6 +1545,66 @@ class-wrappers, ES-module syntax, and invented base-class APIs
 that CARD_SHIM does not support. Starting from the skeleton
 keeps the generated code on the correct shape. The
 `card-class-handbook` skill leads with this rule.
+
+### Spec frontmatter is the `mica_create_class` contract
+
+For canvas card classes, the structured fields that
+`mica_create_class` needs (name, badge, dependencies, subtask
+decomposition, handler, sidecar) live as YAML frontmatter at the
+top of `canvas/<name>-spec.md`. The tool reads the frontmatter
+directly when invoked with just `{ name }`; explicit args still
+override.
+
+Reason: before frontmatter, the spec described the structured
+contract twice — once as a markdown table for human review, once
+as explicit `mica_create_class` arguments. Drift between the two
+(wrong version pinned, ESM URL in the UMD slot, missing subtask
+tier) was the most common failure mode. Frontmatter collapses it
+to one location whose bytes are both human-readable and
+machine-consumable. See § Spec frontmatter and
+`server/specFrontmatter.ts`.
+
+### Workspace-shared docs as a pin surface
+
+Pre-vetted reference material (CDN library catalogs, verified
+URL patterns, design notes) lives at `/workspaces/shared/` on the
+host. Projects pull it in via a pin operation — either the user
+clicking through the `.shared-library` card, or the agent
+invoking `mica_pin_shared_doc` (which returns the doc's body in
+the same tool result, no second `read_file` call needed).
+`server/sharedPin.ts` mirrors the doc into the project's
+`shared/` directory; `server/handlerBaselineInjection.ts`
+includes pinned files in every chat-agent's per-turn baseline,
+alongside canvas files and canvas-back.
+
+Reason: agents repeatedly burned 30+ tool calls re-discovering
+URLs we already knew were correct (Three.js UMD URL, Leaflet
+ESM URL, Wikimedia API shape). Cataloging the answers once and
+exposing them via a curated, pinnable surface short-circuits
+that loop. Pinning is explicit — pinned docs enter the agent's
+baseline; unpinned ones don't — which keeps the per-turn context
+bounded.
+
+### Voice is a peer agent, not a feature on top of chat
+
+The `.voice` card class has its own channel handler
+(`server/voiceAgent.ts`), its own per-turn LLM call, and its own
+tool surface (`server/voiceTools.sdk.ts`). It is not a thin UI
+on top of an existing chat agent.
+
+Reason: voice's lifecycle differs from chat in ways that don't
+generalize. The input is a continuous audio stream, not a
+discrete message; segmentation happens server-side after STT;
+barge-in interrupts in-flight TTS; ambient announcements
+(another card finishing a turn) get auto-read or gated by the
+per-card `autoReadAmbient` setting. Treating voice as a
+parameter on the chat handler would force every chat handler to
+carry that lifecycle. Instead, voice is a peer — and its
+distinguishing capability is **dispatching** user intent to chat
+cards (`send_to_card`) rather than performing the work itself.
+This is what makes "ask the agent to do X" a useful primitive:
+the voice agent doesn't need to be a coding agent; it needs to
+know which card on the canvas is.
 
 ### Self-describing card classes — metadata.json
 

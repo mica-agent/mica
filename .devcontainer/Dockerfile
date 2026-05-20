@@ -1,6 +1,3 @@
-#FROM nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6
-#FROM nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc10
-#FROM lmsysorg/sglang:spark
 FROM nvcr.io/nvidia/vllm:26.04-py3
 
 # Install sudo and create vscode user with sudo access
@@ -81,11 +78,4 @@ RUN set -eux; \
 # `curl | bash` line documented in QUICKSTART.
 ENV PATH=/home/vscode/.opencode/bin:$PATH
 RUN su -l vscode -c 'curl -fsSL https://opencode.ai/install | bash' || true
-
-# NOTE: keep transformers at vLLM 0.15's pinned 4.57.5. Newer transformers
-# breaks Qwen2VL/Qwen3VL image processor (max_pixels removed). Gemma 4 needs
-# transformers 5.x AND has additional vLLM 0.15 bugs (top_k assertion for
-# 26B-A4B MoE, layer_scalar mismatch for 31B FP8) — wait for vLLM 0.16+ NGC
-# image (likely 26.03) which should ship proper Gemma 4 multimodal support.
-
 
