@@ -39,6 +39,82 @@ PORT_FRONTEND="${MICA_FRONTEND_PORT:-${MICA_PORT_FRONTEND:-5173}}"
 PORT_LLAMA="${MICA_LLAMA_PORT:-${MICA_PORT_LLAMA:-8012}}"
 VOLUME_MODELS="${MICA_MODEL_VOLUME:-mica-models}"
 
+# ── Tavily key gate ──────────────────────────────────────────────
+# Mica's agents rely on Tavily-MCP for web search (qwen-code's
+# built-in web_search was removed in CLI v0.15.2). Without a
+# TAVILY_API_KEY, the `discover-dependency` skill — which the
+# builder-workflow templates lean on — has no search tool, and
+# multi-step builds that need to find a library or verify a URL
+# stall out. So we treat it as a prerequisite, not an option,
+# and prompt at start time if it isn't already set.
+#
+# Resolution order:
+#   1. $MICA_WORKSPACE/.env already has TAVILY_API_KEY=... → done.
+#      start.sh inside the container sources $PROJECT_DIR/.env, so
+#      this is the persistent home for the key.
+#   2. Ambient $TAVILY_API_KEY env var → save it to the .env above
+#      so the next start finds it without re-prompting.
+#   3. MICA_SKIP_TAVILY=1 → loudly warn and continue. For users who
+#      truly can't get a key (org restrictions, offline).
+#   4. Otherwise → prompt the user via /dev/tty (works under
+#      `curl | bash`), validate the rough shape, save to the .env
+#      above.
+#
+# Get a free key (1k searches/month) at https://app.tavily.com.
+ensure_tavily_key() {
+  mkdir -p "$WORKSPACE"
+  local env_file="$WORKSPACE/.env"
+  # Case 1: already in workspace .env.
+  if [ -f "$env_file" ] && grep -qE '^[[:space:]]*TAVILY_API_KEY=tvly-' "$env_file" 2>/dev/null; then
+    ok "TAVILY_API_KEY present in $env_file"
+    return 0
+  fi
+  # Case 2: ambient env. Save and we're done.
+  if [ -n "${TAVILY_API_KEY:-}" ]; then
+    printf 'TAVILY_API_KEY=%s\n' "$TAVILY_API_KEY" >> "$env_file"
+    ok "TAVILY_API_KEY from environment saved to $env_file"
+    return 0
+  fi
+  # Case 3: explicit opt-out.
+  if [ "${MICA_SKIP_TAVILY:-0}" = "1" ]; then
+    warn "MICA_SKIP_TAVILY=1 — continuing without Tavily web search"
+    warn "  Agents will have no web search; multi-step builds that need to find"
+    warn "  libraries or verify URLs may stall. Set TAVILY_API_KEY later in"
+    warn "  $env_file and restart to enable."
+    return 0
+  fi
+  # Case 4: prompt.
+  say ""
+  say "${C_WARN}Tavily API key needed${C_RESET}"
+  say ""
+  say "Mica's agents use Tavily-MCP for web search. Without a key, the"
+  say "agent has no search tool — multi-step builds that need to find"
+  say "a library or verify a URL will stall."
+  say ""
+  say "Get a free key (1k searches/month) at: ${C_DIM}https://app.tavily.com${C_RESET}"
+  say "To skip this prompt: re-run with ${C_DIM}MICA_SKIP_TAVILY=1${C_RESET}"
+  say ""
+  local key=""
+  # Read from the controlling tty so `curl | bash` still gets human
+  # input rather than consuming script bytes from stdin.
+  if [ -r /dev/tty ]; then
+    read -r -p "Paste your Tavily key (tvly-...): " key < /dev/tty
+  else
+    die "no tty available to prompt for TAVILY_API_KEY. Set the env var or use MICA_SKIP_TAVILY=1."
+  fi
+  # Light shape validation. Tavily keys start with `tvly-`. Don't be
+  # strict beyond that — better to accept an unusual one than reject
+  # a valid one with a stricter regex.
+  case "$key" in
+    tvly-*) ;;
+    *)
+      die "that doesn't look like a Tavily key (expected to start with 'tvly-'). Try again, or use MICA_SKIP_TAVILY=1."
+      ;;
+  esac
+  printf 'TAVILY_API_KEY=%s\n' "$key" >> "$env_file"
+  ok "Tavily key saved to $env_file"
+}
+
 # ── Helpers ──────────────────────────────────────────────────────
 # Returns: "running" | "stopped" | "missing"
 container_state() {
@@ -77,6 +153,11 @@ cmd_start() {
       print_urls
       ;;
     stopped)
+      # Make sure the workspace .env has TAVILY_API_KEY before we
+      # bring the container back up. The container's start.sh reads
+      # /project/.env on every boot, so any value saved now lands
+      # in the agent's env without us having to docker-run with -e.
+      ensure_tavily_key
       say "Starting existing container $NAME …"
       docker start "$NAME" >/dev/null
       ok "$NAME started"
@@ -86,8 +167,11 @@ cmd_start() {
       if ! image_present; then
         die "Image '$IMAGE' is not present locally. Run \`bash install.sh\` first to pull and create the container."
       fi
-      say "No container named $NAME exists. Creating fresh from $IMAGE …"
       mkdir -p "$WORKSPACE"
+      # Gate: workspace .env must carry a Tavily key (or user opted
+      # out with MICA_SKIP_TAVILY=1) before we create the container.
+      ensure_tavily_key
+      say "No container named $NAME exists. Creating fresh from $IMAGE …"
       local run_args=(
         --rm -d
         --name "$NAME"
@@ -97,7 +181,7 @@ cmd_start() {
         -p "$PORT_LLAMA:8012"
         -v "$WORKSPACE:/project"
         -v "$VOLUME_MODELS:/home/vscode/.cache/huggingface"
-        # Single-container lean path — match install.sh. Without this,
+        # Single-container llama topology — match install.sh. Without this,
         # start.sh tries to nest a vLLM container via docker socket
         # (which we don't bind-mount here). Backend auto-spawns
         # llama-server in this container instead.

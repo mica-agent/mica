@@ -1,26 +1,40 @@
 #!/usr/bin/env bash
-# mica-compose.sh — release-friendly quickstart wrapper around docker-compose.
+# mica-compose.sh — quickstart wrapper around docker-compose.
 #
 # Front-loads named pre-flight checks so the common failure modes (no GPU
 # passthrough, port conflict, low disk) surface as one-line errors with
 # remedies BEFORE compose starts pulling 30 GB of model weights.
 #
-# This is the COMPOSE path: two sibling containers (mica + mica-vllm) for
-# the release vLLM serving stack. For the single-container llama-cpp
-# alternative, use ./install.sh (first run) + bash scripts/mica.sh start
-# (subsequent lifecycle).
+# TWO topologies, one wrapper:
+#
+#   Default (vLLM, 2-container):  `./scripts/mica-compose.sh up`
+#     mica + mica-vllm sibling. vLLM serves Qwen3.6 NVFP4 with continuous
+#     batching, shared between voice and chat. ~30 GB model download.
+#
+#   llama (1-container):          `./scripts/mica-compose.sh up --llama`
+#     Just mica. llama-server spawns inside the container on first chat.
+#     Smaller footprint, simpler ops, slower. ~22 GB Q4 GGUF on first
+#     chat dispatch.
+#
+# The `--llama` flag switches topology by:
+#   - skipping the `--profile vllm` flag (so mica-vllm is filtered out)
+#   - exporting MICA_DISABLE_LLAMA=0 and LLAMA_URL=http://127.0.0.1:8012
+#     so the `mica` service spawns llama-server in-container
 #
 # Subcommands:
-#   up        Pre-flight, then `docker compose up`. Default.
+#   up        Pre-flight, then `docker compose up`. Default. `--llama` toggles topology.
 #   doctor    Pre-flight only. Print pass/fail per check, exit non-zero on fail.
 #   status    Show service state + URLs.
-#   stop      `docker compose down` (preserves volumes).
+#   stop      `docker compose down` (preserves volumes; stops all profiles).
 #   nuke      `docker compose down -v` (deletes volumes — confirms first).
 #   logs      `docker compose logs -f` (tail all services).
 #   help      Show this text.
 #
 # Env overrides:
 #   MICA_SKIP_PREFLIGHT=1   Skip all checks. Use in CI or when you know.
+#   MICA_SKIP_TAVILY=1      Bypass the Tavily-key preflight (agent web
+#                           search will be disabled). Get a free key
+#                           at https://app.tavily.com.
 #   MICA_AUTO_BUILD=1       If the image is missing or older than tracked
 #                           source files, auto-add --build to 'up'.
 #                           Without this, the script only WARNS — you decide
@@ -34,6 +48,10 @@
 #   MICA_FRONTEND_PORT      Default 5173. Override on port conflict.
 #   MICA_PORT               Default 3002. Override on port conflict.
 #                           (Legacy MICA_BACKEND_PORT honored as fallback.)
+#   MICA_LLAMA_PORT         Default 8012. Bound on the mica container so
+#                           llama-topology users can poke llama-server
+#                           directly. Harmless port-map in vLLM topology
+#                           (nothing listening on the mica side).
 #   USER_UID, USER_GID      Default 1000:1000. Override if host UID differs.
 
 set -euo pipefail
@@ -244,6 +262,33 @@ check_image_built() {
   fi
 }
 
+check_tavily_key() {
+  # Mica's agents rely on Tavily-MCP for web search (qwen-code's built-in
+  # web_search was removed in CLI v0.15.2). Without a TAVILY_API_KEY, the
+  # `discover-dependency` skill has no search tool and multi-step builds
+  # that need to find a library or verify a URL stall. We fail preflight
+  # on missing — preferable to letting users discover the issue at the
+  # first failing build. MICA_SKIP_TAVILY=1 bypasses with a warn.
+  if [ "${MICA_SKIP_TAVILY:-0}" = "1" ]; then
+    warn "MICA_SKIP_TAVILY=1 — continuing without Tavily web search (agent web search disabled)"
+    return
+  fi
+  # Compose stack picks TAVILY_API_KEY up via env_file: .env (repo
+  # root). Ambient env also works (`TAVILY_API_KEY=tvly-... mica-compose.sh up`).
+  if [ -n "${TAVILY_API_KEY:-}" ]; then
+    pass "TAVILY_API_KEY set in environment"
+    return
+  fi
+  if [ -f .env ] && grep -qE '^[[:space:]]*TAVILY_API_KEY=tvly-' .env 2>/dev/null; then
+    pass "TAVILY_API_KEY present in .env"
+    return
+  fi
+  fail "TAVILY_API_KEY not found in .env or environment"
+  hint "get a free key (1k searches/month) at https://app.tavily.com"
+  hint "save it:  echo \"TAVILY_API_KEY=tvly-...\" >> .env"
+  hint "or set MICA_SKIP_TAVILY=1 to bypass (agent web search will be disabled)"
+}
+
 check_hf_token() {
   # vLLM and HF Hub treat HF_TOKEN as the authenticated path: lifts rate
   # limits on anonymous downloads and is required for gated models. The
@@ -292,6 +337,7 @@ run_preflight() {
   check_hf_cache_dir_if_set
   check_workspace_dir
   check_image_built
+  check_tavily_key
   check_hf_token
   check_existing_models_volume
   if [ "$FAILED" -eq 1 ]; then
@@ -304,20 +350,45 @@ run_preflight() {
 
 # ── subcommands ──────────────────────────────────────────────────
 cmd_up() {
+  # Parse our flags out of the arg list before forwarding to docker
+  # compose. We strip --llama; everything else passes through (so
+  # --build, -d, --force-recreate, etc. still work as expected).
+  local topology="vllm"
+  local filtered=()
+  for arg in "$@"; do
+    case "$arg" in
+      --llama)        topology="llama" ;;
+      --vllm)         topology="vllm" ;;   # explicit no-op for symmetry
+      *)              filtered+=("$arg") ;;
+    esac
+  done
+
   run_preflight
+
   title "docker compose up"
+  local compose_args=()
+  if [ "$topology" = "llama" ]; then
+    info "Topology: llama (1-container, llama-server inside mica)"
+    # Override compose-file defaults so the mica container spawns
+    # llama-server in-process and talks to it on localhost.
+    export MICA_DISABLE_LLAMA="0"
+    export LLAMA_URL="http://127.0.0.1:8012"
+  else
+    info "Topology: vllm (2-container, mica + mica-vllm sibling)"
+    compose_args+=(--profile vllm)
+  fi
+
   # If preflight flagged a stale (or missing) image AND MICA_AUTO_BUILD=1,
   # silently inject --build. Otherwise the user already saw the warning
   # and a remediation hint — leave the decision to them. Avoid duplicating
   # --build if they already passed it on the command line.
-  local args=("$@")
   if [ "${NEEDS_BUILD:-0}" = "1" ] \
      && [ "${MICA_AUTO_BUILD:-0}" = "1" ] \
-     && ! printf '%s\n' "${args[@]}" | grep -qx -- '--build'; then
+     && ! printf '%s\n' "${filtered[@]}" | grep -qx -- '--build'; then
     info "MICA_AUTO_BUILD=1 and image is stale — adding --build"
-    args=("--build" "${args[@]}")
+    filtered=("--build" "${filtered[@]}")
   fi
-  exec docker compose up "${args[@]}"
+  exec docker compose "${compose_args[@]}" up "${filtered[@]}"
 }
 
 cmd_doctor() {
@@ -377,21 +448,27 @@ cmd_logs() {
 
 cmd_help() {
   cat <<EOF
-mica-compose.sh — release-friendly wrapper around docker-compose.
+mica-compose.sh — wrapper around docker-compose with preflight checks.
 
 Usage: scripts/mica-compose.sh <subcommand> [args...]
 
 Subcommands:
-  up        Run preflight checks, then 'docker compose up'. Default.
-  doctor    Run preflight checks only. Useful before committing to a model download.
-  status    Show running services + URLs.
-  stop      'docker compose down' — graceful stop, preserves volumes.
-  nuke      'docker compose down -v' — also deletes volumes (with confirmation).
-  logs      'docker compose logs -f' — tail all service logs.
-  help      Show this text.
+  up [--llama]  Run preflight checks, then 'docker compose up'. Default
+                topology is vllm (2-container: mica + mica-vllm sibling).
+                Pass --llama for the 1-container topology (llama-server
+                spawned inside the mica container on first chat).
+  doctor        Run preflight checks only. Useful before committing to a model download.
+  status        Show running services + URLs.
+  stop          'docker compose down' — graceful stop, preserves volumes (all profiles).
+  nuke          'docker compose down -v' — also deletes volumes (with confirmation).
+  logs          'docker compose logs -f' — tail all service logs.
+  help          Show this text.
 
 Environment overrides:
   MICA_SKIP_PREFLIGHT=1     Bypass all checks (CI).
+  MICA_SKIP_TAVILY=1        Bypass the Tavily-key check (agent web search
+                            will be disabled). Get a free key at
+                            https://app.tavily.com.
   MICA_AUTO_BUILD=1         Auto-add --build when the image is stale or missing.
                             Without this, the script only WARNS.
   MICA_WORKSPACE=/path      Where projects live on the host.

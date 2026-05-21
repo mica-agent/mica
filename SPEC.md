@@ -1,5 +1,14 @@
 # Mica — Specification
 
+This document is the **design contract**: what Mica is, the rules a
+card class must honor to participate, and the model agents and the
+canvas operate under. For the elevator pitch and run instructions, see
+[README.md](README.md). For engineering tenets, see
+[CLAUDE.md § How we build](CLAUDE.md). For the implementation
+reference (file inventory, channel handlers, full `mica.*` API
+signatures), see [ARCHITECTURE.md](ARCHITECTURE.md). For the user-
+facing capability catalog, see [FEATURES.md](FEATURES.md).
+
 ## What Mica is
 
 **A canvas where humans and agents compose context together. The
@@ -8,119 +17,36 @@ itself.**
 
 Both halves matter.
 
-Humans and agents compose context together. Together, on the same
-surface, both are able to iteratively create, edit, and refine
-what the other has made.
+Humans and agents compose context together — on the same surface,
+iteratively, each able to read and edit what the other has made.
 
 The canvas serves either use without a mode switch. Either you
-compose a brief for your coding agent (Claude Code, Cline, Cursor)
-and the canvas becomes the briefing, or the canvas itself is the
-product — a financial planner, a research workspace, a campaign
-dashboard built card by card. Same primitive, same cards,
-different posture. Most projects drift between the two over time.
+compose a brief for your coding agent and the canvas becomes the
+briefing, or the canvas itself is the product — a financial planner,
+a research workspace, a campaign dashboard built card by card. Same
+primitive, same cards, different posture. Most projects drift
+between the two over time.
 
-## Why this matters
+## Canvas is memory; threads are working memory
 
-Today the agent is where context lives. The context sits inside
-its conversation buffer, its memory file, and its tool results.
-The user can see what the agent says but cannot see what the
-agent knows. When the next session starts, all of that is gone.
+Today the agent is where context lives. The context sits inside its
+conversation buffer, its memory file, and its tool results. The user
+can see what the agent says but cannot see what the agent knows.
+When the next session starts, all of that is gone.
 
 Mica puts the context on the canvas instead of inside the agent.
-Anything on the canvas can be read by any agent that shows up
-later. The context is no longer private to one agent or to one
-session.
+Anything on the canvas can be read by any agent that shows up later.
+The context is no longer private to one agent or to one session.
 
 This has a concrete implication for how chat threads relate to
-durable memory. A thread is not a record. The canvas is. A live
+durable memory. **A thread is not a record. The canvas is.** A live
 thread is working memory for one arc of work. When that arc ends,
 the findings should be on canvas cards, and the thread can be
-archived (browsable by humans, readable by agents only on
-explicit demand). A thread that has grown too large is a signal
-that findings should be promoted to the canvas and a fresh thread
-started — not a failure to be worked around by summarizing or
-compacting the chat. The canvas is what outlives threads.
-
-## Emacs, not Notion
-
-The lineage is architectural, not aesthetic. Emacs is a small set
-of orthogonal mechanisms (buffers, modes, keymaps, hooks) that
-compose into whatever workflow you need, and the environment
-itself is modifiable from inside the environment. Notion is a
-closed set of predefined block types.
-
-Mica takes the Emacs posture. The `mica.*` API is small and
-orthogonal. Card classes are user-writable, runtime-loadable, and
-promotable from project scope to built-in. The generality of Mica
-is the shape of the system, not a feature on a checklist.
-
-## Designed for AI authorship
-
-Mica's architecture is shaped so that an LLM can generate new
-card classes, briefs, diagrams, and other project content from a
-natural-language request. This is not an afterthought and not a
-nice-to-have. It is a constraint that is applied to every
-architectural decision.
-
-Card classes are `card.html` + `card.js` + `card.css` +
-`metadata.json` because that is a format LLMs produce cleanly in
-one pass. A React component model, a custom DSL, or a bytecode
-format would all fail this test.
-
-The `mica.*` API is small and orthogonal because large surfaces
-confuse generators. Every method that gets added widens the space
-of things an agent can hallucinate wrong.
-
-Plain files over databases, because agents introspect by listing
-and reading files. An `ls .mica/` is a valid way for an agent to
-understand a project. A database schema would not be.
-
-Vanilla JS without a build step, because LLMs produce vanilla JS
-one-shot.
-
-None of these choices are human aesthetic preferences. A design
-that is nicer for humans but harder for agents to generate is
-wrong for Mica, and the choice gets reversed. Architecture serves
-the generator, not the other way around.
-
-## Transparency and low friction
-
-Two more convictions at the same level as the ones above.
-
-**Transparency.** Nothing about Mica is hidden. Any card can be
-flipped to show the class that defines it. The `.mica/` directory
-can be opened and read to see the layout, the chat history, and
-the AI context files. There is no opaque memory and no hidden
-prompt. If Mica knows something, the user can see it.
-
-**Low friction.** Mica adapts to the user, not the other way
-around. You point Mica at a directory and keep whatever file
-structure you already have. If you delete `.mica/`, you are back
-to plain files. Trying Mica costs almost nothing, and leaving
-costs nothing.
-
-## Consequences
-
-The convictions above show up as concrete choices the rest of this
-spec treats as given.
-
-- **Files are files.** Context must be readable by any tool, not
-  just Mica. Work files sit at the project root. `.mica/` holds
-  operational metadata only.
-- **Mica is a lens.** The file is the source of truth. The canvas
-  is a view over it. Remove Mica and the work remains.
-- **`mica.*` is pipes, not policy.** The runtime does not know
-  what any card is. Policy lives in the card class.
-- **AI generates the UI.** A card class is a `card.html`, a
-  `card.js`, and a `card.css` file plus `metadata.json`. Promotion
-  from project scope to built-in is moving a directory.
-- **Two sides of a card.** The front of the card is the instance.
-  The back is the class definition and the AI context.
-- **Local-first, cohabitating.** Mica runs on-device via
-  llama-server. It sits alongside your coding agent rather than
-  replacing it.
-- **Work keeps its shape.** Context compounds across sessions,
-  agents, and people.
+archived (browsable by humans, readable by agents only on explicit
+demand). A thread that has grown too large is a signal that findings
+should be promoted to the canvas and a fresh thread started — not a
+failure to be worked around by summarizing or compacting the chat.
+The canvas is what outlives threads.
 
 ## The card class
 
@@ -131,7 +57,7 @@ up to five files.
 |---|---|---|
 | `card.html` | yes | static markup for the card body |
 | `card.js` | yes | client-side behavior, runs under CARD_SHIM |
-| `metadata.json` | yes | extension, badge, title, CDN dependencies |
+| `metadata.json` | yes | extension, badge, title, dependencies, optional `handler` or `sidecar` |
 | `card.css` | no | scoped styles |
 | `context.md` | no | class-level AI context |
 
@@ -142,8 +68,20 @@ Card classes resolve at two scopes, project first:
 card-classes/<name>/          built-in, ships with Mica
 ```
 
-Promotion between scopes is copying a directory. No package
-manager, no registry, no install step.
+Promotion between scopes is copying a directory. No package manager,
+no registry, no install step.
+
+### Load-bearing invariants
+
+- **Directory name equals extension without the dot.** A class at
+  `.mica/card-classes/kanban/` handles `.kanban` files. A mismatch
+  silently falls through to the text renderer.
+- **The instance is a plain file at the project root**, not inside
+  `.mica/`. A `.counter` file like `score.counter` is rendered by
+  the `counter` class. The file's content is the card's state.
+- **`mica.read`, `mica.write`, `mica.exec` are server-side only** —
+  in the browser they return a structured error pointing at
+  `mica.call()` to invoke a server export instead.
 
 ### metadata.json
 
@@ -153,59 +91,50 @@ manager, no registry, no install step.
   "badge": "CTR",
   "defaultTitle": "Counter",
   "primaryFile": "counter.json",
-  "dependencies": { "scripts": [], "styles": [] }
+  "dependencies": {
+    "umd_scripts": [],
+    "styles": []
+  },
+  "handler": null,
+  "sidecar": null
 }
 ```
 
-One load-bearing rule: the directory name must equal the extension
-without the dot. A class at `.mica/card-classes/kanban/` handles
-`.kanban` files. A mismatch between the directory name and
-`metadata.json`'s extension field silently falls through to the
-text renderer.
+Field-by-field detail is in [ARCHITECTURE.md § Card class loading](ARCHITECTURE.md). The
+two extension hooks worth highlighting here are:
+
+- **`handler`** — points the card's channel at a reusable server-side
+  handler (`llm-direct`, `llm-agent`, `process`) instead of needing
+  a class-specific server file. This is how a new card class gets
+  an LLM or sidecar without writing TypeScript.
+- **`sidecar`** — declares a per-class long-lived subprocess (a
+  Python server, a CLI tool, anything that needs to stay running).
+  The runtime spawns it on first card open and tears it down on
+  Mica shutdown.
+
+`dependencies.umd_scripts` lists CDN URLs that are `<script>`-tag
+loaded — **UMD only**. ESM URLs are loaded inside `card.js` via
+`await import(url)`; the CARD_SHIM wraps `card.js` in an async
+function so top-level `await` works. See ARCHITECTURE for the full
+loading-pattern contract.
 
 ### CARD_SHIM
 
-`card.js` does not run in a plain browser context. It runs inside
-CARD_SHIM, a wrapper that:
+`card.js` runs inside CARD_SHIM, a wrapper that injects `container`
+(the card's DOM element) and `mica` (the bridge object) as globals,
+scopes DOM and timer APIs to the card, and auto-cleans on unmount.
+A card author writes top-level code (no class wrapper, no `export`,
+no registration call) and it just works.
 
-- Injects `container` (the card's own DOM element) and `mica` (the
-  bridge object) as the only two globals the card needs.
-- Scopes `document.querySelector` and `getElementById` to the
-  card's container.
-- Redirects `window.addEventListener('resize')` to a ResizeObserver
-  on the container.
-- Auto-cleans timers, intervals, requestAnimationFrame callbacks,
-  and event listeners on card unmount.
-- Auto-injects the `X-Mica-Project` header on outgoing `/api/*`
-  fetches so the server knows which project's state to operate on.
-- Reports uncaught errors from the card's script to the server.
-
-The practical effect is that a card author writes top-level code
-(no class wrapper, no `export`, no registration call) and it just
-works. The shim handles the framework concerns.
-
-### The primary file
-
-A card's instance is a plain file at the project root, not inside
-`.mica/`. A `.counter` file like `docs/score.counter` is rendered
-by the `counter` class. The file's content is the card's state.
-The `primaryFile` field in `metadata.json` is for classes that
-keep their state in a specific file inside a directory instance
-(rare — most classes use the instance file directly).
+Full shim behavior is in [ARCHITECTURE.md § CardRuntime and CARD_SHIM](ARCHITECTURE.md).
 
 ## The canvas is a card class
 
-The canvas itself is a card class at `card-classes/canvas/`. It
-owns:
-
-- `#canvas-freeform`, the DOM container into which child cards are
-  mounted.
-- Drag and resize, via event delegation on the freeform container.
-- Layout persistence to `.mica/layout.json`, keyed by device class
-  (phone, tablet, desktop, display).
-- The toolbar and the meta sidebar.
-- Cross-window layout sync via `layout-changed` broadcasts filtered
-  by `source`.
+The canvas itself is a card class at `card-classes/canvas/`. It owns
+`#canvas-freeform` (where child cards mount), drag and resize,
+layout persistence to `.mica/layout.json` (keyed by device class:
+phone, tablet, desktop, display), the toolbar, the meta sidebar, and
+cross-window layout sync.
 
 The React host (`CanvasCardRuntime`) is a thin mount point. It
 renders the canvas card class's HTML and portals child cards into
@@ -213,166 +142,159 @@ renders the canvas card class's HTML and portals child cards into
 Different canvas card classes can ship different layouts (kanban,
 timeline, grid) using the same mechanism.
 
+## Two sides of a card
+
+A card has two sides.
+
+- **Front: the instance.** The user's file, its content, the
+  accumulated state. What you see when looking at the card on the
+  canvas.
+- **Back: the class definition plus the per-instance AI context.**
+  The four files that make the class (`card.html`, `card.js`,
+  `card.css`, `metadata.json`), the class's `context.md`, and the
+  instance's `.mica/cards/<card>.context.md`. What an agent reads
+  when reasoning about the card.
+
+The front is the work. The back is the machinery and the meaning.
+Both are inspectable; nothing is hidden.
+
 ## AI context — three levels
 
 Agents working on the canvas read context from three sources.
 
 | Level | File | What it holds |
 |---|---|---|
-| Project | `.mica/canvas-back.md` | Global context for the whole project |
-| Class | `card-classes/<name>/context.md` | How this class of card works and should be used |
-| Instance | `.mica/cards/<card>.context.md` | What this specific card is for |
+| Project | `.mica/canvas-back.md` | Global context for the whole project: agent posture, routing preferences, per-turn rules. Seeded by the template. |
+| Class | `card-classes/<name>/context.md` (or project-scoped) | How this class of card works and should be used. |
+| Instance | `.mica/cards/<card>.context.md` | What this specific card is for. |
 
 The agent reads all three when responding. This is the two-sides
-tenet in operation. The front of a card is its content. The back
-is the class definition plus the instance's AI context. Both are
-inspectable.
+tenet in operation: the front of a card is its content; the back is
+the class definition plus the instance's AI context.
 
-## The mica.* API
+## The `mica.*` API
 
-`mica.*` is the bridge a card's `card.js` uses to talk to the
-server, to other cards, and to the file system. This is the
-overview. For full signatures, arguments, return shapes, and
-failure modes, see [ARCHITECTURE.md](ARCHITECTURE.md).
+`mica.*` is the bridge `card.js` uses to talk to the server, to
+other cards, and to the file system. The API surface is small and
+orthogonal by design: large surfaces confuse LLM generators.
 
-**Identity**
+The authoritative reference — full method signatures, return shapes,
+failure modes — is [ARCHITECTURE.md § The mica.* API](ARCHITECTURE.md).
+Capability shape, at the level of *what kinds of things a card can
+do*:
 
-| | |
-|---|---|
-| `mica.project` | Current project name |
-| `mica.filename` | This card's instance filename |
-| `mica.windowId` | Per-browser-tab ID (stable across renders) |
-| `mica.cardId` | Per-card-instance UUID (stable across reloads) |
+- **File I/O** scoped to the project (`mica.files.*`).
+- **Identity** of this card / this window / this project / this card
+  instance.
+- **Card content** (read this card's own file, request a re-render).
+- **Card-class discovery** (list installed classes, filter
+  self-echoes).
+- **Events** (subscribe to file/layout changes, broadcast to other
+  cards in the same tab).
+- **Server calls** — one-shot (`call`/`send`), bidirectional
+  channels (`openChannel`), proxied HTTP with SSRF guard (`fetch`).
+- **Voice** (`speak` synthesizes audio; `listen` captures and
+  transcribes).
+- **Error reporting** (`reportError` surfaces errors to chat
+  agents).
 
-**Content**
-
-| | |
-|---|---|
-| `mica.getContent()` | Read this card's instance file content |
-| `mica.refresh()` | Re-fetch and re-render this card |
-
-**Files**
-
-| | |
-|---|---|
-| `mica.files.list()` | List project files and directories |
-| `mica.files.read(path)` | Read a text file |
-| `mica.files.readBinary(path)` | Read a binary file |
-| `mica.files.write(path, content)` | Write a text or binary file (source and cardSource auto-injected) |
-| `mica.files.delete(path)` | Delete a file |
-| `mica.files.url(path)` | URL for inline `<img>`, `<embed>`, and download links |
-
-**Cards**
-
-| | |
-|---|---|
-| `mica.cardClasses.list()` | List installed card classes (built-in plus project-scoped) |
-| `mica.isSelfEcho(event)` | True if this event was caused by this card's own write |
-
-**Events**
-
-| | |
-|---|---|
-| `mica.on(event, cb)` | Subscribe to events (`file-changed`, `file-created`, `file-deleted`, `layout-changed`) |
-| `mica.onDestroy(cb)` | Cleanup on card unmount |
-| `mica.broadcast(event, data)` | Browser-side, cross-card ephemeral signal |
-
-**Server**
-
-| | |
-|---|---|
-| `mica.call(fn, args)` | Request/response to a server-side export |
-| `mica.send(fn, args)` | Fire-and-forget |
-| `mica.openChannel(fn, args)` | Bidirectional stream (used by terminal, chat, and agent cards) |
-| `mica.fetch(url, opts)` | Server-proxied HTTP with SSRF guard, rate limit, and size cap |
-
-### Not in the browser
-
-`mica.read`, `mica.write`, and `mica.exec` exist as names but are
-server-side methods used by export handlers. In the browser they
-return a structured error pointing the author at `mica.call()` to
-invoke a server export instead.
+`mica.read` / `mica.write` / `mica.exec` exist as names but are
+server-side methods used by export handlers — see the invariant
+above.
 
 ## Agents as cards
 
 Agents in Mica are card classes, not a framework feature. An agent
 card opens a bidirectional channel to a server handler via
-`mica.openChannel`. The handler wraps a model (the Claude Code
-SDK, the qwen-code SDK against local llama-server, or the
-opencode SDK against opencode-serve) and manages conversation
-state, tool use, and file writes.
+`mica.openChannel`. The handler wraps a model and manages
+conversation state, tool use, and file writes.
 
-Today three agent card classes ship with Mica: `.qwen` (qwen-code
-SDK + local llama-server), `.claude` (Claude Code subprocess),
-and `.opencode` (opencode-serve, supports both local llama-server
-and cloud providers). All three see the same internal tool
-surface (`mica-builtins` MCP — render_capture, card-class CRUD,
-skills installation) so functionality added at the framework
-level is available across backends without per-backend wiring.
-The set will change. What stays constant is the contract: an
-agent is a card that owns a brief, opens a channel, and reads
-the canvas for context.
+**Four agent card classes ship today:**
 
-Reactivity is built in. The agent watches the file watcher and
-triages changes within its canvas scope after a short idle window,
-so editing a brief or a diagram can prompt the agent without an
-explicit message. Agent-initiated writes are tracked and skipped
-so the agent does not react to its own output. Per-session busy
-locks prevent overlapping turns. See ARCHITECTURE.md for the
-implementation.
+- **`.qwen`** — Qwen Code SDK against the bundled local vLLM (or
+  llama-server as a rollback path). Per-card provider selection
+  also covers OpenRouter and OpenAI-compatible endpoints.
+- **`.claude`** — Claude Code subprocess via the Claude Agent SDK.
+- **`.opencode`** — opencode-serve daemon; per-card provider routing
+  to local vLLM, OpenRouter, or any OpenAI-compatible endpoint.
+- **`.voice`** — peer agent (not a feature on top of chat). Local
+  Parakeet STT + Kokoro TTS sidecars; its distinguishing capability
+  is **dispatching** user intent to other chat cards on the canvas
+  via `send_to_card`, rather than performing coding work itself.
+
+All four see the same internal tool surface (`mica-builtins` MCP —
+render_capture, card-class CRUD, skills installation, sidecar
+control, shared-doc pinning, etc.), so capabilities added at the
+framework level are available across backends without per-backend
+wiring. **The set will change.** What stays constant is the contract:
+an agent is a card that owns a brief, opens a channel, and reads the
+canvas for context.
+
+### Session and reactivity contract
+
+- **Sessions are per-card-instance.** Bound to the file on disk.
+  Created on file create, destroyed on file delete. Transport
+  connections attach and detach during the session's life without
+  destroying the session.
+- **Reactivity is built in.** The agent watches the file watcher and
+  triages changes within its canvas scope after a short idle window,
+  so editing a brief or a diagram can prompt the agent without an
+  explicit message.
+- **Agent-initiated writes are tracked and skipped** so the agent
+  does not react to its own output.
+- **Per-session busy locks** prevent overlapping turns; concurrent
+  opencode sessions are kept isolated via a session-id stamped onto
+  each tool call (see [ARCHITECTURE.md § Decisions](ARCHITECTURE.md)).
 
 ## Project layout
 
-```
-myproject/
-  brief.md                      work files at project root, flat, user-named
-  spec.md
-  tasks.todo
-  architecture.mmd
-  agent.claude                  agent cards are just files too
-  .mica/
-    config.json                 project config
-    layout.json                 canvas layout keyed by device class
-    canvas-back.md              project-level AI context
-    chats/                      chat histories per agent card
-    cards/                      per-card state and AI context
-    card-classes/               project-scoped card class definitions
-  .claude/skills/               skills copied from the template
-  .qwen/skills/                 skills copied from the template
-  .git/
-```
+The project's filesystem shape — what's at the root, what `.mica/`
+holds — is enumerated in [FEATURES.md § Project configuration](FEATURES.md). The
+load-bearing contract:
 
-Card files are first-class citizens of the project. They live at
-the root, not hidden in `.mica/`. `.mica/` holds only the
-infrastructure that supports rendering them.
+- **Work files at the project root** (flat, user-named).
+- **`.mica/` holds operational metadata only** — config, layout,
+  chats, per-card state, project-scoped card-class definitions.
+  Delete `.mica/` and the project is back to plain files.
+- **Agent skills live at `.qwen/skills/` and `.claude/skills/`**,
+  not in `.mica/`. They travel with the project in git as the
+  builder workflow's source of truth.
 
 ## Deployment
 
-Today Mica runs as a Node + Vite pair on the host. A single Mica
-instance serves multiple projects, scoped per request by an
-`X-Mica-Project` header that the card runtime threads through
-every `/api/*` fetch. The only Docker presence is the Claude Code
-agent subprocess. Mica itself is not containerized in development.
+Mica ships as a Docker image and runs as a Node + Vite pair (the
+devcontainer path during development). A single Mica instance serves
+multiple projects, scoped per request by an `X-Mica-Project` header
+that the card runtime threads through every `/api/*` fetch.
 
-Packaging Mica as a container, distribution for specific hardware
-targets (NVIDIA DGX Spark being the first), and per-project
-container isolation are on the horizon but not current.
+Two inference topologies share the same image:
+
+- **vLLM** (default) — two containers, `mica` + `mica-vllm` sibling.
+  Continuous batching, NVFP4, voice + chat share the served model.
+- **llama** — one container, `llama-server` spawned inside `mica`
+  on first chat request.
+
+For install instructions, see [QUICKSTART.md](QUICKSTART.md). For
+the runtime topology and inference paths, see [ARCHITECTURE.md §
+Inference backends](ARCHITECTURE.md).
 
 ## Authoring
 
 For building new card classes, the canonical reference is the
-`card-class-handbook` skill that ships with each project template:
+`card-class-handbook` skill that ships with each project template.
+Two templates ship today:
 
-- `templates/dgx-spark-local/.qwen/skills/card-class-handbook/SKILL.md`
-  for local-model projects.
+- `templates/dgx-spark-local/` — local-first workflow centered on
+  the `.qwen` agent.
+- `templates/opencode-builder/` — hybrid local-or-cloud workflow
+  centered on the `.opencode` agent.
 
-The cloud-Claude template was deleted 2026-05-11 and will be
-rebuilt; until then, `dgx-spark-local` is the only template.
+Both ship the same `.qwen/skills/` set, including
+`card-class-handbook`. The skill is written for the agent that will
+generate the card. **This spec covers the contract; the skill covers
+the procedure.**
 
-The skill is written for the agent that will generate the card.
-This spec covers the contract. The skill covers the procedure.
-
-Sibling skills (`grow-canvas`, `decompose-task`, `doc-consistency`,
-and others) cover related authoring tasks. The full set lives in
-the same template directories and is copied into each new project
-on creation.
+Sibling skills (`grow-canvas`, `decompose-task`, `discover-dependency`,
+`doc-consistency`, and others) cover related authoring tasks. See
+[FEATURES.md § Templates & the builder workflow](FEATURES.md) for
+the user-facing summary and how to tweak the workflow per-project.

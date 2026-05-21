@@ -1,217 +1,92 @@
 # Mica
 
-**A canvas where you and your agents build up the context of a
-problem — together, on the same surface.**
+**An agent-first builder.** Mica is a workspace where you work
+with one or more AI agents — to write code, plan a project, build a
+dashboard, research a problem — and everything the agent does (and
+everything you've told it) lives as readable, editable files you
+both see.
 
-Context here means the working materials of a problem: the briefs
-you write, the decisions you reach, the diagrams you sketch, the
-calculators you build, the data you pull, the references you
-collect, the running conversations. Whatever has accumulated as
-you've been figuring something out. The stuff you'd hand off to a
-teammate, or to your future self, to pick the work back up.
+The interaction is the product. Mica is the substrate that makes it
+good: a canvas of cards that holds the briefs, decisions,
+conversations, diagrams, and code that accumulate as you work.
+Cards are plain files. The canvas is a view. Nothing is hidden
+inside agent memory.
 
-Today those materials are scattered. Some live in your head. Some
-are pinned tabs across five tools. Most are inside an AI agent's
-session — visible to you only as what the agent says, and lost to
-the agent when the session ends. You both work blind in different
-ways.
+## What "working with an agent" looks like here
 
-Mica fixes that for both sides at once. The canvas is plain files
-in your project, editable by you, readable by any agent. You can
-see what the agent has been working with. The agent sees what
-you've figured out. Next session, both still see it. No opaque
-memory, no hidden prompts.
+Two postures, same primitives, no mode switch.
 
-## Two ways people use it
+- **The agent does the work, you shape what it knows.** You compose
+  a canvas of briefs, decisions, and diagrams. Your coding agent
+  (the `.qwen`, `.claude`, or `.opencode` card you place on the
+  canvas) reads it, edits files, takes screenshots, comes back with
+  results. The canvas is the briefing.
+- **You and the agent build something together, card by card.** A
+  financial planner, a research workspace, a campaign dashboard, an
+  HP-12C calculator, a world clock — built from a conversation that
+  ships card classes the agent writes as it goes. The canvas is the
+  product.
 
-The same canvas, the same cards, no mode switch.
+Most projects drift between the two over time.
 
-- **As briefing.** You compose a canvas of briefs, decisions, and
-  diagrams. You point your coding agent (Claude Code, Cline,
-  Cursor) at the project, and it executes against what's on the
-  canvas. Mica holds the thinking. Your coding agent does the
-  coding.
-- **As the work itself.** Sometimes the canvas IS the product. A
-  financial planner, a research workspace, a campaign dashboard,
-  an HP-12C calculator emulator, a world clock with a day/night
-  terminator overlay — built card by card, often with the agent
-  writing card classes that didn't exist before. Nothing downstream
-  consumes the canvas. The canvas is the thing.
+Why this matters: today the agent's context lives in its conversation
+buffer and memory file. You can see what it says; you can't see what
+it knows. Next session, it's gone. Mica puts the context on the
+canvas instead. Any agent that shows up later reads the same files.
+The work survives the thread.
 
-Most projects drift between the two. A planning canvas grows into
-a live dashboard. An end-in-itself canvas spawns a brief for
-another agent. The primitive doesn't care which use you're making
-of it.
+## Run it
 
-## How it's built
+The full guide is in [QUICKSTART.md](QUICKSTART.md). Shortest paths:
 
-Mica takes the Emacs posture, not the Notion one. Small orthogonal
-mechanisms compose into whatever workflow you need. The environment
-is modifiable from inside the environment. New card classes are
-user-writable files, promoted from project scope to built-in by
-copying a directory. There is no closed set of block types and no
-registry between you and writing a new card class.
-
-Three convictions shape every design decision.
-
-- **Designed for AI authorship.** When you don't have an
-  abstraction you need, the agent should be able to write it.
-  Card classes are `card.html + card.js + card.css +
-  metadata.json` because LLMs produce that cleanly in one pass.
-  The `mica.*` API stays small because large surfaces confuse
-  generators. Plain files over databases, because agents
-  introspect by listing and reading files. A design that's nicer
-  for humans but harder for agents to generate is wrong for Mica.
-- **Transparency.** Nothing is hidden. Any card can be flipped to
-  show the class that defines it. The `.mica/` directory can be
-  opened and read to see the layout, the chat history, and the
-  AI context files. No opaque memory, no hidden prompts.
-- **Low friction.** Mica adapts to the user, not the other way
-  around. Point Mica at a directory. Keep whatever file structure
-  you already have. Delete `.mica/` and you're back to plain
-  files. Trying Mica costs almost nothing, and leaving costs
-  nothing.
-
-## Run on DGX Spark
-
-Two ways to run Mica on a GPU host. See [QUICKSTART.md](./QUICKSTART.md)
-for the full guide; the shortest summary follows.
-
-### Lean path — single container, llama.cpp inside
-
-The "Open WebUI"-shaped install: one image, one container,
-GPU-accelerated llama-server auto-spawned on first chat.
-
-```bash
-mkdir -p ~/mica-workspace
-docker run --rm -d --name mica --gpus all \
-  -e MICA_DISABLE_CHAT_VLLM=1 \
-  -v ~/mica-workspace:/project \
-  -v mica-models:/home/vscode/.cache/huggingface \
-  -p 3002:3002 -p 5173:5173 -p 8012:8012 \
-  ghcr.io/robchang/mica:latest
-```
-
-Takes 10–15 minutes on a fresh DGX Spark — a few minutes to pull
-the image, ~10 minutes for the first chat to download the default
-model (Qwen3.6-35B Q4 GGUF, ~22 GB). Subsequent launches start in
-seconds. Open `http://<dgx-ip>:5173/` once the container is up.
-
-`docker logs -f mica` tails. `docker stop mica` stops.
-
-### Release path — vLLM sibling container
-
-Recommended for release deployments. Mica runs in one container; vLLM serves
-Qwen3.6-35B-A3B-NVFP4 in a sibling. Continuous batching shared
-between voice and chat, FP4 quantization, MTP-1 speculative decode.
-
-```bash
-git clone https://github.com/<org>/mica.git
-cd mica
-./scripts/mica-compose.sh up
-```
-
-The wrapper runs pre-flight (GPU passthrough, ports free, disk space)
-then `exec`s `docker compose up`. First boot downloads ~30 GB of
-NVFP4 weights. Full guide and lifecycle commands in
-[QUICKSTART.md](./QUICKSTART.md).
+- **Recommended (vLLM, 2 containers)** — Qwen3.6 NVFP4 in a sibling
+  vLLM container, voice + chat share the model with continuous
+  batching.
+  ```
+  git clone https://github.com/<org>/mica.git && cd mica
+  ./scripts/mica-compose.sh up
+  ```
+  First run takes 5–15 minutes — vLLM downloads ~30 GB of weights
+  and then takes ~30–90 s to load the model. The terminal will sit
+  during both stages; `docker compose logs -f mica-vllm` shows
+  progress. Subsequent starts are seconds.
+- **Smaller (llama, 1 container)** — llama-server inside the mica
+  container, Q4 GGUF. Slower but simpler.
+  ```
+  ./scripts/mica-compose.sh up --llama
+  ```
+- **Developing Mica itself** — open the repo in VS Code with the
+  Dev Containers extension, then `bash scripts/start.sh` from the
+  devcontainer terminal.
 
 Prereqs: Docker + [NVIDIA Container
 Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+Open http://localhost:5173 once it's up.
 
-### Tweaks
+## Trust model
 
-Append any of these to the `docker run` line:
-
-```bash
-# OpenRouter-only (skip the local GPU model):
-  -e MICA_DISABLE_LLAMA=1
-
-# Also mount ~/.claude so Claude Code cards find your creds:
-  -v ~/.claude:/home/vscode/.claude
-
-# Different workspace dir (default ~/mica-workspace):
-  -v /data/my-mica:/project
-```
-
-### Build it yourself
-
-```bash
-git clone https://github.com/robchang/mica
-cd mica
-docker build -t mica:local .
-# then the same docker run above, with mica:local instead of the ghcr.io image.
-```
-
-### Trust model
-
-Mica is a **single-user tool**. There is no API authentication. Anyone
-who can reach the Mica port has full read/write to your workspace —
-projects, chat history, stored credentials (the OpenRouter key in
-`.mica/config.json`, anything passed through `mica.fetch`).
-
-The expected deployment is one where the network itself is the
-boundary:
-
-- **Localhost dev checkout** (`scripts/start.sh`) — the boundary is
-  your machine.
-- **Devcontainer** (VS Code, GitHub Codespaces) — the boundary is
-  your VS Code SSH tunnel; ports are forwarded only to you.
-- **Docker on a remote host** (`docker run -p 3002:3002`) — the
-  boundary is whatever network controls front the host port. Use
-  `ssh -L 3002:localhost:3002 <host>` (or equivalent) so the port is
-  reachable only over your SSH session. Don't bind a public IP
-  without a firewall.
+Mica is a **single-user tool**. There is no API authentication.
+Anyone who can reach the Mica port has full read/write to your
+workspace — projects, chat history, stored credentials. Expected
+deployment: localhost, a VS Code SSH tunnel, or a Tailscale
+tailnet. **Do not bind a public IP without a firewall.**
 
 Card classes installed in a project are trusted code: they run
-inline, can spawn subprocesses via `processChannel`, and can read
-process environment variables. Treat installing a card class the way
-you'd treat installing a small Node script in your project. Don't
-share Mica access with anyone you wouldn't hand your project
-directory to.
-
-## Quick start (for Mica development)
-
-```bash
-npm install
-npm run dev:all
-```
-
-Frontend runs on port 5173, backend on port 3002.
-
-`scripts/start.sh`, `scripts/stop.sh`, `scripts/restart.sh`, and
-`scripts/status.sh` manage the two processes together.
-
-## Cohabiting with your coding agent
-
-Mica sits alongside coding agents, not in place of them. Claude
-Code, Cline, and Cursor keep doing what they do. Mica is where the
-thinking that shapes their work lives: the briefs, decisions,
-specs, diagrams, research, constraints. Point your coding agent at
-the project and it sees the canvas in the `.mica/` directory and
-in the project files themselves.
+inline, can spawn subprocesses, and can read process environment
+variables. Treat installing a card class the way you'd treat
+installing a small Node script. Don't share Mica access with
+anyone you wouldn't hand your project directory to.
 
 ## Documentation
 
-- [SPEC.md](SPEC.md) — what Mica is: the card model, the canvas,
-  the `mica.*` overview, the design principles.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — how it is built: server,
-  host, CARD_SHIM, ChannelManager, reactivity, authoritative
-  `mica.*` API reference. Includes the `## Channel handler details`
-  deep-dive and the `## Decisions` log.
-- [CLAUDE.md](CLAUDE.md) — development guide for Claude Code and
-  other agents working on the Mica codebase itself. Includes the
-  `## Testing` runtime walkthrough.
+| Doc | For |
+|---|---|
+| [QUICKSTART.md](QUICKSTART.md) | Installing + running Mica on a GPU host |
+| [FEATURES.md](FEATURES.md) | What you can do with Mica once it's running |
+| [SPEC.md](SPEC.md) | The design contract — how card classes, agents, and the canvas fit together |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | The implementation reference — server files, channel handlers, full `mica.*` API |
+| [CLAUDE.md](CLAUDE.md) | Development guide for Claude Code (and anyone) working on the Mica codebase |
 
 For card-class authoring, the canonical reference is the
-`card-class-handbook` skill that ships with each project template:
-
-- `templates/dgx-spark-local/.qwen/skills/card-class-handbook/SKILL.md`
-  for local-model projects.
-
-The cloud-Claude template was deleted 2026-05-11 and will be
-rebuilt; until then, `dgx-spark-local` is the only template.
-
-Sibling skills in the same directories cover related authoring
-tasks (`grow-canvas`, `decompose-task`, `doc-consistency`, and
-others).
+`card-class-handbook` skill that ships with each project template
+under `templates/<name>/.qwen/skills/card-class-handbook/SKILL.md`.

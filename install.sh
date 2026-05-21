@@ -105,6 +105,57 @@ else
   warn "    sudo chown -R 1000:1000 $WORKSPACE"
 fi
 
+# ── Tavily API key (required) ──
+# Mica's agents rely on Tavily-MCP for web search (qwen-code's
+# built-in web_search was removed in CLI v0.15.2). Without a key,
+# the `discover-dependency` skill has no search tool, and multi-step
+# builds that need to find a library or verify a URL stall. We
+# treat it as a prerequisite. Saved to $WORKSPACE/.env so the
+# container's start.sh reads it on every boot via /project/.env.
+#
+# Resolution: ambient $TAVILY_API_KEY → save to .env; else prompt;
+# else MICA_SKIP_TAVILY=1 to bypass loudly.
+ensure_tavily_key() {
+  mkdir -p "$WORKSPACE"
+  local env_file="$WORKSPACE/.env"
+  if [ -f "$env_file" ] && grep -qE '^[[:space:]]*TAVILY_API_KEY=tvly-' "$env_file" 2>/dev/null; then
+    ok "TAVILY_API_KEY present in $env_file"
+    return 0
+  fi
+  if [ -n "${TAVILY_API_KEY:-}" ]; then
+    printf 'TAVILY_API_KEY=%s\n' "$TAVILY_API_KEY" >> "$env_file"
+    ok "TAVILY_API_KEY from environment saved to $env_file"
+    return 0
+  fi
+  if [ "${MICA_SKIP_TAVILY:-0}" = "1" ]; then
+    warn "MICA_SKIP_TAVILY=1 — continuing without Tavily web search"
+    warn "  Set TAVILY_API_KEY later in $env_file and restart to enable."
+    return 0
+  fi
+  say ""
+  say "${C_WARN}Tavily API key needed${C_RESET}"
+  say ""
+  say "Mica's agents use Tavily-MCP for web search. Without a key, the"
+  say "agent has no search tool — multi-step builds will stall."
+  say ""
+  say "Get a free key (1k searches/month) at: ${C_DIM}https://app.tavily.com${C_RESET}"
+  say "To skip: re-run with ${C_DIM}MICA_SKIP_TAVILY=1${C_RESET}"
+  say ""
+  local key=""
+  if [ -r /dev/tty ]; then
+    read -r -p "Paste your Tavily key (tvly-...): " key < /dev/tty
+  else
+    die "no tty available to prompt for TAVILY_API_KEY. Set the env var or use MICA_SKIP_TAVILY=1."
+  fi
+  case "$key" in
+    tvly-*) ;;
+    *) die "that doesn't look like a Tavily key (expected to start with 'tvly-'). Try again, or use MICA_SKIP_TAVILY=1." ;;
+  esac
+  printf 'TAVILY_API_KEY=%s\n' "$key" >> "$env_file"
+  ok "Tavily key saved to $env_file"
+}
+ensure_tavily_key
+
 # ── HuggingFace token (recommended) ──
 # The first chat dispatch downloads ~22 GB of GGUF weights from HF Hub.
 # Unauthenticated requests hit rate limits; the HF CLI's saved token at
@@ -145,7 +196,7 @@ RUN_ARGS=(
   -p "$PORT_LLAMA:8012"
   -v "$WORKSPACE:/project"
   -v "$VOLUME_MODELS:/home/vscode/.cache/huggingface"
-  # Single-container lean path. start.sh's default chat backend is the
+  # Single-container llama topology. start.sh's default chat backend is the
   # vllm-container.sh helper, which `docker run`s a sibling vLLM image
   # — that requires a Docker socket bind-mount we deliberately don't
   # do here. Tell start.sh to skip that helper; the backend will

@@ -17,9 +17,9 @@
 # uses — proven.
 #
 # In single-container mode (no vLLM sibling), this image's bundled
-# llama-server is used for local LLM serving — the "lean path" in
-# QUICKSTART.md. Install via `./install.sh`, lifecycle via
-# `bash scripts/mica.sh {start|stop|restart}`.
+# llama-server is used for local LLM serving — the "llama topology"
+# in QUICKSTART.md (`mica-compose.sh up --llama`). The legacy
+# `./install.sh` + `bash scripts/mica.sh` path lands the same way.
 #
 # Base: NVIDIA's vLLM 26.04 image (same as .devcontainer/Dockerfile).
 # Provides CUDA toolkit + cuDNN + libcuda runtime libs + Python +
@@ -32,7 +32,7 @@ FROM nvcr.io/nvidia/vllm:26.04-py3
 
 # System deps.
 #   curl/git/ca-certs/sudo/lsof/procps — basics + dev parity + script compat
-#   cmake/build-essential              — to build llama.cpp with CUDA (lean path)
+#   cmake/build-essential              — to build llama.cpp with CUDA (llama topology)
 # The vLLM base already ships python3 + pip + venv + nvcc + cuDNN +
 # libcuda runtime libs; we only top up the few CLI utilities Mica's
 # start/stop/status scripts assume on PATH.
@@ -55,11 +55,11 @@ RUN if id -u 1000 >/dev/null 2>&1; then \
 
 # llama.cpp with CUDA, pinned to DGX Spark's Blackwell target (sm_121).
 #
-# CONDITIONAL: only built when INSTALL_LLAMA=1 (the default for the
-# lean install.sh/mica.sh single-container topology). docker-compose.yml
-# passes INSTALL_LLAMA=0 because the compose path uses vLLM in a
-# sibling container — llama-server isn't reachable or wanted there.
-# Skipping saves ~5-10 min of build time on the compose path.
+# CONDITIONAL: only built when INSTALL_LLAMA=1. docker-compose.yml
+# defaults to INSTALL_LLAMA=1 so the same image supports both
+# topologies (vLLM sibling doesn't INVOKE llama-server, but having
+# it baked in costs nothing at runtime). Override to 0 if you know
+# you'll only use the vLLM topology — saves ~5-10 min of build time.
 #
 # Build details when we DO build:
 #   - Only the llama-server target. llama.cpp's example binaries

@@ -1,30 +1,42 @@
-# Release-recommended Mica stack: two sibling containers.
+# Mica stack — supports two topologies from one compose file.
 #
-#   mica       — frontend (Vite, :5173) + backend (Node, :3002) +
-#                voice sidecars (Parakeet STT, Kokoro TTS, localhost only).
-#                Builds from ./Dockerfile.
+#   vLLM topology (two-container, default via wrapper):
+#     `docker compose --profile vllm up`
+#     mica       — frontend (Vite, :5173) + backend (Node, :3002) +
+#                  voice sidecars. Builds from ./Dockerfile.
+#     mica-vllm  — Qwen3.6-35B-A3B-NVFP4 served by upstream vLLM.
+#                  Profile-gated; only starts in `--profile vllm`.
 #
-#   mica-vllm  — Qwen3.6-35B-A3B-NVFP4 served by upstream vLLM. Lives in
-#                a sibling container (not co-located in `mica`) because
-#                vLLM's bundled cuDNN and the voice sidecars' torch-bundled
-#                cuDNN can't share an image without runtime ABI mismatches
-#                (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH). Separate
-#                containers, separate cuDNN, no conflict.
+#   llama topology (one-container):
+#     `docker compose up`
+#     mica       — same image, plus llama-server spawned inside the
+#                  container on first chat request. No sibling. Smaller
+#                  footprint, simpler ops, slower than the vLLM path.
 #
-# Usage:
-#   docker compose up                                          # default
-#   MICA_WORKSPACE=/data/mica docker compose up                # custom workspace dir
-#   HF_CACHE_DIR=$HOME/.cache/huggingface docker compose up    # reuse host HF cache
-#   ./scripts/mica-compose.sh up                               # with preflight checks
+#   Use the wrapper (`./scripts/mica-compose.sh up [--llama]`) to get the
+#   pre-flight checks. The wrapper sets the vllm profile by default and
+#   overrides MICA_DISABLE_LLAMA / LLAMA_URL when --llama is passed.
+#
+# Why split via profile, not separate compose files: the `mica` service
+# definition is identical in both topologies. Only the SIBLING (and a
+# handful of mica's env vars) differs. Profile-gating mica-vllm
+# eliminates duplication; depends_on uses required:false so the mica
+# service launches even when mica-vllm is filtered out.
+#
+# Why one Docker image for both: we always build with INSTALL_LLAMA=1
+# so the image carries llama-server. Release mode just doesn't INVOKE
+# it (MICA_DISABLE_LLAMA=1 + LLAMA_URL pointed at the sibling). The
+# build cost is paid once; switching topologies needs no rebuild.
+#
+# cuDNN ABI note: vLLM's bundled cuDNN and the voice sidecars'
+# torch-bundled cuDNN can't share an image without runtime mismatches
+# (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH). vLLM topology separates
+# them via the sibling; llama topology avoids the conflict by not
+# running vLLM at all.
 #
 # Default workspace lives at $HOME/mica-workspace (matches install.sh) —
 # deliberately OUTSIDE the cloned repo so user data doesn't mix with code
 # and `git pull` can't accidentally touch your projects.
-#
-# For a single-container alternative (no vLLM sibling, llama-cpp inside
-# the mica container), see ./install.sh and ./scripts/mica.sh start —
-# the existing "Open WebUI-shaped" install path. QUICKSTART.md documents
-# both routes.
 
 services:
   # One-shot init container: chowns the shared volumes to UID 1000 BEFORE
@@ -56,14 +68,13 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Skip llama.cpp build in the release compose path. The stack uses
-        # vLLM in the sibling `mica-vllm` service; llama-server inside
-        # the mica image would never be reached (MICA_DISABLE_LLAMA=1
-        # is set below). Skipping saves ~5-10 min of CUDA compile time
-        # and avoids the libcuda.so.1 stub-linkage dance entirely.
-        # The lean path (install.sh) leaves the default INSTALL_LLAMA=1
-        # so its single-container topology still ships llama-server.
-        INSTALL_LLAMA: "0"
+        # Always build llama-server into the image so the same image
+        # supports both topologies. vLLM topology doesn't INVOKE it
+        # (MICA_DISABLE_LLAMA=1 by default below); llama topology uses
+        # it on first chat dispatch. The ~5-10 min build cost is paid
+        # once; switching topologies after that needs no rebuild.
+        # Override INSTALL_LLAMA=0 if you know you'll ONLY use vLLM.
+        INSTALL_LLAMA: "${INSTALL_LLAMA:-1}"
     image: mica:latest
     # Align with the common Linux host UID so files written into the
     # bind-mounted ./workspace and the shared HF cache end up owned by
@@ -85,10 +96,18 @@ services:
       mica-init:
         condition: service_completed_successfully
       mica-vllm:
+        # required: false (compose 2.20+) lets `mica` start even when
+        # mica-vllm is profile-filtered out (llama topology). When the
+        # vllm profile IS active, we still wait for mica-vllm to be
+        # healthy.
         condition: service_healthy
+        required: false
     ports:
       - "${MICA_FRONTEND_PORT:-5173}:5173"   # Vite frontend
-      - "${MICA_BACKEND_PORT:-3002}:3002"    # Node backend API
+      - "${MICA_PORT:-${MICA_BACKEND_PORT:-3002}}:3002"  # Node backend API
+      # llama-server inside the mica container (llama topology only).
+      # In vllm topology this maps to nothing — harmless, just unused.
+      - "${MICA_LLAMA_PORT:-8012}:8012"
     volumes:
       # Workspace projects — host-visible. Each subdir is a Mica project
       # (one chat, one canvas, optional cards). Default lives at
@@ -110,17 +129,24 @@ services:
       # the same volume here. Overrides each image's default user-home
       # cache so root-vs-non-root container users don't matter.
       HF_HOME: /cache/huggingface
-      # vLLM is the sibling service, not in this container.
-      LLAMA_URL: http://mica-vllm:8000
-      MICA_DISABLE_LLAMA: "1"
+      # LLAMA_URL: vllm topology points at the sibling; llama topology
+      # points at localhost (llama-server inside this container). The
+      # wrapper script sets this when --llama is passed.
+      LLAMA_URL: "${LLAMA_URL:-http://mica-vllm:8000}"
+      # MICA_DISABLE_LLAMA: vllm topology = 1 (don't spawn llama-server,
+      # use the sibling). llama topology = 0 (backend auto-spawns
+      # llama-server in-container on first chat). The wrapper script
+      # sets this when --llama is passed.
+      MICA_DISABLE_LLAMA: "${MICA_DISABLE_LLAMA:-1}"
       # Don't try to spawn a NESTED vLLM container from inside this one
       # (scripts/lib/vllm-container.sh is the devcontainer path; under
-      # compose, the sibling service IS the vLLM, so skip the helper).
+      # compose, the sibling service IS the vLLM in vllm topology, and
+      # llama topology doesn't want vLLM at all).
       MICA_DISABLE_CHAT_VLLM: "1"
       PROJECT_DIR: /project
     env_file:
-      # Optional. Loads TAVILY_API_KEY, OPENROUTER_API_KEY, etc. from
-      # the host .env if present; safe to ship without one.
+      # Optional. Loads TAVILY_API_KEY, OPENROUTER_API_KEY, HF_TOKEN,
+      # etc. from the host .env if present; safe to ship without one.
       - path: .env
         required: false
     deploy:
@@ -132,7 +158,12 @@ services:
               capabilities: [gpu]
 
   mica-vllm:
-    # PRODUCTION: pin a captured digest, not the floating :cu130-nightly tag.
+    # Profile-gated: only starts when --profile vllm is active.
+    # `mica-compose.sh up` sets that profile by default; `--llama` skips
+    # it. With raw `docker compose up`, no profile is active and this
+    # service is filtered out (llama topology).
+    profiles: ["vllm"]
+    # FOR STABLE DEPLOYMENTS: pin a captured digest, not the floating :cu130-nightly tag.
     # Capture via:
     #   docker pull vllm/vllm-openai:cu130-nightly
     #   docker inspect --format '{{index .RepoDigests 0}}' \
@@ -141,7 +172,7 @@ services:
     # intentionally (e.g. quarterly, or when a Mica change wants a newer
     # upstream fix) — after a smoke test. We use the nightly track for the
     # perf characteristics (NVFP4 + MTP-1 spec decode + cu130 Blackwell
-    # readiness); the floating tag drifts, so digest-pin in release.
+    # readiness); the floating tag drifts, so digest-pin for stable deployments.
     #
     # Until a digest is captured for your deployment, the floating tag is
     # used as a fallback. Override via MICA_VLLM_IMAGE in your shell or .env.
