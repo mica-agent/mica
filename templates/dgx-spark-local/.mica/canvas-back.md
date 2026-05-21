@@ -1,10 +1,14 @@
 # Project AI environment
 
-This project routes the chat agent through a local model via llama-server, configurable per-card.
+This project routes work through **Qwen Code** as the primary agent. The .qwen card on the canvas dispatches to whichever provider you pick per-card (gear icon → Provider):
+
+- **Local (default)** — Mica's bundled vLLM (or llama-server as the rollback path) at `localhost:8012`, serving `qwen3-vl-local` / `qwen-vl` / `qwen-voice`. No API key required. Good for routine work, fast turn-around, no per-token cost.
+- **OpenRouter** — any cloud model with an OpenRouter key (Claude Sonnet, GPT-4o, gemini-2.5-pro, deepseek-r1, etc.). Pick this when you need long context (>128K tokens), strong vision, or a reasoning model for a tricky refactor.
+- **OpenAI-compatible** — point at any /v1-shaped endpoint (a self-hosted vLLM elsewhere, Together, Groq, your own deployment). Useful for hybrid setups.
 
 **For authoritative model identity and budgets, read the `## Detected runtime` block at the top of your context** — it names the active model, the context window, and the per-slot I/O budgets the runtime injected for THIS turn. Don't paraphrase model names from this file (it's a static template); read the banner.
 
-General local-model class (whatever specific model is configured for this project's chat card):
+General agent posture (whatever specific model is configured for this project's chat card):
 - Throughput is finite — be lean with prompts and tool output, not exhaustive.
 - Specifics beat vagueness — name files, functions, and behaviors exactly. More pronounced on smaller variants; still true on larger ones.
 - Verify after each implementation step rather than chaining many writes; the runtime banner's per-slot I/O budget is the threshold for "decompose vs inline."
