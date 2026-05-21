@@ -84,128 +84,71 @@ function parsePower(val) {
   return isNaN(n) ? null : n;
 }
 
-// Simple moving average — light pre-smoothing (window=3).
-// Averages each point with its immediate neighbors to suppress 1-second noise
-// before spline fitting. Keeps the curve responsive: a single spike still shows
-// up within 1-2 seconds, just without the jagged edge.
-function smooth(data, windowSize) {
-  if (data.length < 3) return data.slice();
-  windowSize = windowSize || 3;
-  const half = Math.floor(windowSize / 2);
-  const result = [];
-  for (let i = 0; i < data.length; i++) {
-    let sum = 0, count = 0;
-    for (let j = Math.max(0, i - half); j <= Math.min(data.length - 1, i + half); j++) {
-      sum += data[j];
-      count++;
-    }
-    result.push(sum / count);
-  }
-  return result;
-}
-
-// Tangent limiter — clamp the maximum slope at each data point.
-// Prevents the spline from producing sharp spikes by limiting how steep
-// the tangent can be at each point. Uses the data's overall slope range
-// as a reference: if a local slope exceeds 2x the average absolute slope,
-// it gets clamped down.
-function limitTangents(points, maxSlopeFactor) {
-  maxSlopeFactor = maxSlopeFactor || 2.0;
-  if (points.length < 3) return points;
-
-  // Compute average absolute slope across all segments
-  let totalSlope = 0, count = 0;
-  for (let i = 1; i < points.length; i++) {
-    const dx = points[i].x - points[i - 1].x;
-    const dy = points[i].y - points[i - 1].y;
-    if (dx > 0) {
-      totalSlope += Math.abs(dy / dx);
-      count++;
-    }
-  }
-  const avgSlope = count > 0 ? totalSlope / count : 0;
-  const maxSlope = avgSlope * maxSlopeFactor;
-
-  // Compute tangents at each point (central difference for interior, forward/backward for endpoints)
-  const tangents = [];
-  for (let i = 0; i < points.length; i++) {
-    let dx, dy;
-    if (i === 0) {
-      dx = points[1].x - points[0].x;
-      dy = points[1].y - points[0].y;
-    } else if (i === points.length - 1) {
-      dx = points[i].x - points[i - 1].x;
-      dy = points[i].y - points[i - 1].y;
-    } else {
-      dx = points[i + 1].x - points[i - 1].x;
-      dy = points[i + 1].y - points[i - 1].y;
-    }
-    let slope = dx > 0 ? dy / dx : 0;
-
-    // Clamp to max slope
-    if (Math.abs(slope) > maxSlope) {
-      slope = Math.sign(slope) * maxSlope;
-    }
-
-    tangents.push({ x: dx, y: dy, slope: slope });
-  }
-
-  // Return points with clamped tangents baked into the Catmull-Rom control
-  // We'll modify the control point computation in catmullRom to use these
-  return tangents;
-}
-
-// Centripetal Catmull-Rom spline interpolation — C1 continuous, passes through all points.
-// Uses α=1.0 (centripetal) to minimize overshoot on sharp peaks and valleys.
-// Pre-smoothing and tangent limiting are applied in updateUI before calling this.
-function catmullRom(points, numSegments, tangents) {
+// Monotone cubic spline (Fritsch-Carlson / PCHIP).
+//
+// Why this and not Catmull-Rom: Catmull-Rom — even centripetal —
+// overshoots the data envelope around plateaus and direction changes,
+// inventing values that never existed in the underlying samples (a
+// flat 90% → drop to 50% rendered as a 90% → ~40% dip → 50%). For a
+// system monitor the curve must NOT lie about peaks and dips. Monotone
+// cubic is C1-continuous AND monotonicity-preserving: between any two
+// consecutive samples, the interpolated curve stays between their
+// y-values. No overshoot, ever. Same drop-in shape as the old
+// catmullRom (`(points, numSegments?) → {x,y}[]`).
+//
+// References: Fritsch & Carlson, "Monotone Piecewise Cubic
+// Interpolation" (SIAM J. Numer. Anal. 17, 1980). Same algorithm
+// d3-shape's curveMonotoneX uses.
+function monotoneCubic(points, numSegments) {
   numSegments = numSegments || 24;
-  if (points.length < 2) return points.slice();
+  const n = points.length;
+  if (n < 2) return points.slice();
 
-  function dist(p1, p2) {
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    return Math.sqrt(dx * dx + dy * dy);
+  // Per-segment slopes.
+  const dx = new Array(n - 1);
+  const m = new Array(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = points[i + 1].x - points[i].x;
+    const dy = points[i + 1].y - points[i].y;
+    m[i] = dx[i] === 0 ? 0 : dy / dx[i];
   }
 
+  // Per-point tangents. The monotonicity filter: if the two slopes
+  // around an interior point have opposite signs (local extremum),
+  // force tangent to 0. Otherwise use the weighted harmonic mean —
+  // the Fritsch-Carlson formula that guarantees no overshoot.
+  const t = new Array(n);
+  t[0] = m[0];
+  t[n - 1] = m[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    if (m[i - 1] * m[i] <= 0) {
+      t[i] = 0;
+    } else {
+      const w1 = 2 * dx[i] + dx[i - 1];
+      const w2 = dx[i] + 2 * dx[i - 1];
+      t[i] = (w1 + w2) / (w1 / m[i - 1] + w2 / m[i]);
+    }
+  }
+
+  // Cubic Hermite interpolation per segment using those tangents.
   const result = [];
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[Math.max(0, i - 1)];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const p3 = points[Math.min(points.length - 1, i + 2)];
-
-    const dt0 = dist(p0, p1);
-    const dt1 = dist(p1, p2);
-    const dt2 = dist(p2, p3);
-
-    // Centripetal time parameters (alpha=1.0)
-    const t0 = dt0 > 0 ? -dt0 : -dt1;
-    const t1 = 0;
-    const t2 = dt1;
-    const t3 = dt1 + dt2;
-
+  for (let i = 0; i < n - 1; i++) {
     for (let s = 0; s < numSegments; s++) {
-      const t = (s / numSegments) * dt1;
-
-      // Lagrange interpolation with centripetal time values
-      const d0 = (t0 - t1) * (t0 - t2) * (t0 - t3);
-      const d1 = (t1 - t0) * (t1 - t2) * (t1 - t3);
-      const d2 = (t2 - t0) * (t2 - t1) * (t2 - t3);
-      const d3 = (t3 - t0) * (t3 - t1) * (t3 - t2);
-
-      const a0 = ((t - t1) * (t - t2) * (t - t3)) / d0;
-      const a1 = ((t - t0) * (t - t2) * (t - t3)) / d1;
-      const a2 = ((t - t0) * (t - t1) * (t - t3)) / d2;
-      const a3 = ((t - t0) * (t - t1) * (t - t2)) / d3;
-
-      const x = a0 * p0.x + a1 * p1.x + a2 * p2.x + a3 * p3.x;
-      const y = a0 * p0.y + a1 * p1.y + a2 * p2.y + a3 * p3.y;
-
+      const u = s / numSegments;
+      const u2 = u * u;
+      const u3 = u2 * u;
+      // Standard Hermite basis functions.
+      const h00 =  2 * u3 - 3 * u2 + 1;
+      const h10 =      u3 - 2 * u2 + u;
+      const h01 = -2 * u3 + 3 * u2;
+      const h11 =      u3 -     u2;
+      const x = points[i].x + u * dx[i];
+      const y = h00 * points[i].y + h10 * dx[i] * t[i]
+              + h01 * points[i + 1].y + h11 * dx[i] * t[i + 1];
       result.push({ x, y });
     }
   }
-  result.push(points[points.length - 1]);
+  result.push(points[n - 1]);
   return result;
 }
 
@@ -262,19 +205,19 @@ function drawGraph(ctx, canvas, data, color, opts) {
     return;
   }
 
-  // Pre-smooth the raw data (light moving average)
-  const smoothedData = smooth(data);
-
-  // Convert data to {x, y} points
-  const points = smoothedData.map((val, i) => {
-    const x = pad.left + (i / (smoothedData.length - 1)) * graphW;
+  // Convert raw data to {x, y} points. Monotone cubic doesn't need
+  // a pre-smoother — it's already monotonicity-preserving, so any
+  // jitter in the raw samples shows up as small wiggles between
+  // points (honest) rather than as overshoot artifacts (lies).
+  const points = data.map((val, i) => {
+    const x = pad.left + (i / (data.length - 1)) * graphW;
     const clampedVal = Math.max(0, Math.min(val, maxVal));
     const y = pad.top + graphH * (1 - (clampedVal - minVal) / (maxVal - minVal));
     return { x, y };
   });
 
-  // Draw filled area under the Catmull-Rom curve
-  const curvePoints = catmullRom(points, 24);
+  // Filled area under the monotone-cubic curve.
+  const curvePoints = monotoneCubic(points, 24);
   const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + graphH);
   gradient.addColorStop(0, color + '40');
   gradient.addColorStop(1, color + '05');
@@ -289,7 +232,7 @@ function drawGraph(ctx, canvas, data, color, opts) {
   ctx.closePath();
   ctx.fill();
 
-  // Draw the monotone cubic curve
+  // Stroke the monotone-cubic curve.
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.lineJoin = 'round';
@@ -301,10 +244,11 @@ function drawGraph(ctx, canvas, data, color, opts) {
   }
   ctx.stroke();
 
-  // Draw current value dot — use the same smoothed value the line uses,
-  // otherwise the dot sits at the raw value while the curve is smoothed.
-  const lastSmoothedVal = smoothedData[smoothedData.length - 1];
-  const clampedLast = Math.max(0, Math.min(lastSmoothedVal, maxVal));
+  // Current-value dot at the right edge. Use the raw last sample —
+  // monotone cubic passes through every input point, so the dot's
+  // y position lines up exactly with where the curve ends.
+  const lastVal = data[data.length - 1];
+  const clampedLast = Math.max(0, Math.min(lastVal, maxVal));
   const dotX = pad.left + graphW;
   const dotY = pad.top + graphH * (1 - (clampedLast - minVal) / (maxVal - minVal));
 
