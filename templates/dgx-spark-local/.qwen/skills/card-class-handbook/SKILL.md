@@ -248,7 +248,7 @@ A canvas card that ingests a PDF, indexes its text, and lets the user ask questi
 [1–3 paragraphs of intent, key tradeoffs, anything the user should review]
 ```
 
-**The frontmatter is the contract.** When you call `mica_create_class({ name: "pdf-rag" })` — passing only the name — Mica reads the frontmatter and pulls badge, defaultTitle, dependencies, sidecar, handler, primaryFile from there. You only need to pass extra args explicitly when overriding what the spec said. **Write the structured part once in the spec; don't re-derive it for the tool call.** This eliminates the most common build-time bug (spec says `three@0.146 UMD`, tool call ends up passing `three@0.160 module` — the translation step is gone).
+**The frontmatter is the contract.** When you call `mica_create_class({ name: "pdf-rag" })` — passing only the name — Mica reads the frontmatter and pulls badge, defaultTitle, dependencies, sidecar, handler, primaryFile from there. You only need to pass extra args explicitly when overriding what the spec said. **Write the structured part once in the spec; don't re-derive it for the tool call.** This eliminates the most common build-time bug — spec records one version and format, the tool call passes a different version or format, because the translation step is where divergence sneaks in.
 
 **The `subtasks` array is the decomposition forcing function.** Each entry asks for `{ name, tier, mechanism, verify? }` — the same thinking the older Markdown table forced, in the schema. **Don't skip it on Tier-1-only cards** (just write one row; that's still the discipline working). Skipping is the failure mode where every card silently grows a sidecar.
 
@@ -269,30 +269,30 @@ through this tool.
 
 ```
 mica_create_class({
-  name: "world-clock",
-  card_html: "<div class=\"card-world-clock\">...</div>",
+  name: "<class-name>",
+  card_html: "<div class=\"card-<class-name>\">...</div>",
   card_js:   "/* see CANONICAL CARD.JS pattern below */",
-  card_css:  ".card-world-clock { ... }",  // optional
+  card_css:  ".card-<class-name> { ... }",  // optional
 })
-// metadata.json fields read from canvas/world-clock-spec.md frontmatter
+// metadata.json fields read from canvas/<class-name>-spec.md frontmatter
 ```
 
 **Without spec frontmatter (legacy / overrides):** any explicit arg wins over the spec. Pass badge, defaultTitle, scripts, styles, handler, sidecar, primaryFile inline when you need to override the spec OR when the spec has no frontmatter block. Pull verified `scripts` / `styles` URLs from the canvas decision that `discover-dependency` wrote — don't write CDN URLs from memory.
 
 ```
 mica_create_class({
-  name: "world-clock",                  // dir name; lowercase + dashes only, no dots
-  badge: "WCK",                         // 1-4 char abbreviation
-  defaultTitle: "World Clock",
-  scripts: ["https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"],
-  styles:  ["https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"],
-  card_html: "<div class=\"card-world-clock\">...</div>",
+  name: "<class-name>",                 // dir name; lowercase + dashes only, no dots
+  badge: "<1-4 chars>",
+  defaultTitle: "<Display Name>",
+  scripts: ["https://cdn.jsdelivr.net/npm/<pkg>@<version>/<umd-path>.js"],
+  styles:  ["https://cdn.jsdelivr.net/npm/<pkg>@<version>/<css-path>.css"],
+  card_html: "<div class=\"card-<class-name>\">...</div>",
   card_js:   "/* see CANONICAL CARD.JS pattern below */",
-  card_css:  ".card-world-clock { ... }",  // optional
+  card_css:  ".card-<class-name> { ... }",  // optional
 })
 ```
 
-Returns `{ ok: true, dir: ".mica/card-classes/world-clock/", paths: { ... } }`.
+Returns `{ ok: true, dir: ".mica/card-classes/<class-name>/", paths: { ... } }`.
 
 If you omit `card_js` entirely, the tool writes a working stub in the
 canonical shape (below) — edit the body via `mica_edit_class_file`,
@@ -352,17 +352,12 @@ mica.onDestroy(() => clearInterval(id));
 render();
 ```
 
-**Every card.js you write keeps this shape.** Counter, world clock, Three.js
-scene, Leaflet map — only the body of `render()` and the contents of step 5
-change. The skeleton is the same. When the body grows, split `render()` into
-smaller functions; the six-step skeleton still wraps them.
+**Every card.js you write keeps this shape.** Whatever the card class does — counter, viewer, editor, visualization — only the body of `render()` and the contents of step 5 change. The skeleton is the same. When the body grows, split `render()` into smaller functions; the six-step skeleton still wraps them.
 
-Cards that load a library (Three.js, Leaflet) layer two extra patterns inside
-the same skeleton:
+Cards that load a library layer two extra patterns inside the same skeleton:
 
-- **Library init goes BETWEEN steps 1 and 2** — once-only setup like
-  `const renderer = new THREE.WebGLRenderer();` `container.appendChild(renderer.domElement);`. Then your script-scoped state in step 2 references it.
-- **Library teardown goes IN step 5** — `mica.onDestroy(() => { renderer.dispose(); /* dispose textures, geometries, controls */ });`. Without this, the canvas leaks GPU memory across remounts.
+- **Library init goes BETWEEN steps 1 and 2** — once-only setup like creating a renderer instance and appending its element to `container`. Then your script-scoped state in step 2 references it.
+- **Library teardown goes IN step 5** — `mica.onDestroy(() => { /* dispose renderer + any textures, geometries, controls */ });`. Without this, the canvas leaks GPU/CPU memory across remounts.
 
 When `discover-dependency` selects a third-party library, run
 `mica_install_skills` for it (see `discover-dependency/SKILL.md` step 4). The
@@ -392,7 +387,7 @@ and rewrite the section to match.
 in `card.html`. External libraries go in
 `metadata.json.dependencies.scripts`/`.styles`.
 
-**Dependencies — invoke `discover-dependency` FIRST.** If your card needs ANY external library (Three.js, Chart.js, Leaflet, D3, anything), your next action is to invoke the `discover-dependency` skill BEFORE writing card.js or metadata.json. The skill does the curl-verification, picks a working CDN URL, and records the decision on canvas. Don't write CDN URLs from memory — it's how stale versions, ESM-only URLs that don't load in card.js's classic-script context, and hallucinated paths sneak in. One curl-verified UMD URL beats three rounds of "Failed to load dependency" debugging.
+**Dependencies — invoke `discover-dependency` FIRST.** If your card needs ANY external library, your next action is to invoke the `discover-dependency` skill BEFORE writing card.js or metadata.json. The skill does the curl-verification, picks a working CDN URL, and records the decision on canvas. CDN URLs written from memory is how stale versions, ESM-only URLs that don't load in card.js's classic-script context, and hallucinated paths sneak in. One curl-verified UMD URL beats several rounds of "Failed to load dependency" debugging.
 
 #### UMD vs ESM — two loading patterns
 
@@ -402,12 +397,12 @@ Mica cards support two CDN-loading patterns. **Always run `mica_inspect_url` fir
 
 ```json
 // metadata.json
-{ "dependencies": { "scripts": ["https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.min.js"], "styles": [] } }
+{ "dependencies": { "scripts": ["https://cdn.jsdelivr.net/npm/<pkg>@<version>/<umd-path>.js"], "styles": [] } }
 ```
 
 ```js
 // card.js
-const scene = new THREE.Scene();  // THREE is the global from the UMD bundle
+const obj = new <Global>.Thing();  // <Global> is the namespace the UMD bundle exposes on window
 ```
 
 Use Pattern A whenever `mica_inspect_url` reports `format: 'UMD'`. This is most older libraries and stable versions of modern ones.
@@ -421,35 +416,30 @@ Use Pattern A whenever `mica_inspect_url` reports `format: 'UMD'`. This is most 
 
 ```js
 // card.js — top of file
-const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.min.js");
-const scene = new THREE.Scene();
+const NS = await import("https://cdn.jsdelivr.net/npm/<pkg>@<version>/<esm-path>");
+const obj = new NS.Thing();
 ```
 
-Use Pattern B whenever `mica_inspect_url` reports `format: 'ESM'`. The dynamic-import URL is the SAME ESM URL — you just load it inside card.js instead of via metadata.scripts. The library is accessed via the namespace object returned from `await import(...)`, not via a global.
+Use Pattern B whenever `mica_inspect_url` reports `format: 'ESM'`. The dynamic-import URL is the same ESM URL — you just load it inside card.js instead of via metadata.scripts. The library is accessed via the namespace object returned from `await import(...)`, not via a global.
 
-**Pattern B — addons / sub-modules.** Many modern ESM libraries split their surface across multiple sub-paths. The main namespace import gives you the core; addons live at sibling URLs under the same version. **Each addon is its own dynamic import.** Examples:
+**Pattern B — addons / sub-modules.** Many modern ESM libraries split their surface across multiple sub-paths. The main namespace import gives you the core; addons live at sibling URLs under the same version. **Each addon is its own dynamic import.**
 
 ```js
-// Three.js — core + commonly-used addons
-const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js");
-const { OrbitControls }  = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js");
-const { GLTFLoader }     = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js");
-const { RGBELoader }     = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/RGBELoader.js");
-const { EffectComposer } = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/postprocessing/EffectComposer.js");
+// core + addon pattern
+const NS = await import("https://cdn.jsdelivr.net/npm/<pkg>@<version>/<core-esm-path>");
+const { Addon } = await import("https://cdn.jsdelivr.net/npm/<pkg>@<version>/<addon-esm-path>");
 
-// Now use them as if they were on THREE
-const controls = new OrbitControls(camera, renderer.domElement);
+// Now use them alongside the core namespace
+const a = new Addon(...);
 ```
 
-**URL convention for Three.js addons:** `https://cdn.jsdelivr.net/npm/three@<ver>/examples/jsm/<category>/<Name>.js` — where `<category>` is `controls` / `loaders` / `postprocessing` / `helpers` / `lines` / `effects` / `objects` / `misc` / `nodes` etc., and `<Name>` is the exact class name. The destructured key in `const { Name } = await import(...)` IS the class name.
+**General principle for ESM libraries with sub-paths:** if a library's docs show `import { X } from "<pkg>/addons/<sub>/<path>.js"`, translate to `const { X } = await import("https://cdn.jsdelivr.net/npm/<pkg>@<version>/<corresponding-path>")`. The CDN path mirrors the package's internal layout — find it via `https://www.jsdelivr.com/package/npm/<pkg>` or `mica_inspect_url` on a candidate path.
 
-**General principle for ESM libraries with sub-paths:** if the threejs-skills (or any other skill pack) shows `import { X } from "package/addons/sub/path.js"` in its examples, translate to `const { X } = await import("https://cdn.jsdelivr.net/npm/package@<ver>/<corresponding-path>")`. The CDN path mirrors the package's internal layout — find it via `https://www.jsdelivr.com/package/npm/<package>` or `mica_inspect_url` on a guessed path.
-
-**Anti-pattern: reimplementing addons inline.** When OrbitControls or similar isn't on the main namespace, DO NOT write your own `function OrbitControls(...) { ... }` in card.js. That's a 200-line reimplementation of debugged library code that will be subtly wrong. The correct fix is always a second `await import(...)` for the addon's URL.
+**Reimplementing an addon inline is the wrong fix.** When a needed addon isn't on the main namespace, the answer is always a second `await import(...)` for the addon's URL — not a hand-rolled reimplementation in card.js. Library addon code has been debugged over many versions; an inline rewrite ships subtle bugs the library doesn't have.
 
 **Wrong combinations fail loudly.** The `deps-reachable` validator at metadata-write time refuses ESM URLs in `dependencies.scripts` with a prescriptive error naming both fixes. If you see `\`dependencies.scripts\`: <url> — detected ES module`, switch to Pattern B (or pin to a UMD-compatible version of the library).
 
-**Library-specific notes.** Three.js dropped UMD after r147 — pin to `three@0.146.0` for Pattern A, or use Pattern B for any later version. transformers.js / @xenova/* / lit / preact-signals are ESM-only — Pattern B mandatory.
+**Library family notes.** Some libraries drop their UMD bundles in major-version transitions — verify each candidate's format via `mica_inspect_url` and pin to a UMD-compatible version for Pattern A, or use Pattern B for any later release. Some library families are ESM-only by design; Pattern B is mandatory for those.
 
 ### `metadata.json`
 
@@ -680,19 +670,20 @@ handlers wired to fixed extensions (no work to use them):
 | `.skills` | SKILL.md authoring | Propose / apply |
 | `.canvas-back` | canvas-back.md | Propose / apply |
 
-### Reusable handlers — **do NOT write a server plugin**
+### Reusable handlers — use these first
 
 Mica ships **reusable parameterized handlers** that any card class
 can opt into via `metadata.json`. Adding a new card class that
 needs server-side capability requires zero server code in most
-common cases.
+common cases — pick a reusable handler before considering a new
+server plugin (which is a human-only decision).
 
 **Two reusable handlers are most relevant for new card classes:**
 
 | Handler | What it gives you | When to pick |
 |---|---|---|
 | `llm-direct` | Streaming chat against an LLM with a fixed system prompt + per-turn user message. Handler manages the streaming round-trip. | LLM-driven cards: single-purpose assistant, summarizer, persona-style chat. |
-| `process` | Spawn a long-lived subprocess; bidirectional stdin/stdout/stderr; lifecycle-driven start/stop. | Wrapping CLI tools (nvidia-smi, ffmpeg, autoresearch), language servers, daemons, polling tasks. |
+| `process` | Spawn a long-lived subprocess; bidirectional stdin/stdout/stderr; lifecycle-driven start/stop. | Wrapping a CLI tool, a language server, a daemon, or a polling task. |
 
 **The pattern (same for both):**
 
@@ -779,14 +770,10 @@ replays scrollback (`stdout` data) + a fresh `started` event if
 one is. Card UI just appends — no special-case "scrollback"
 handling needed.
 
-**Don't:**
-- Don't spawn at openChannel time. The handler doesn't accept
-  command/args/cwd in openChannel args. Use `start` messages.
-- Don't send another `start` while the subprocess is running.
-  Send `signal`, wait for `exit`, then `start` again. Two-stage
-  restart.
-- Don't use this for stateless tool calls the agent should
-  invoke directly. Those go in `<project>/.mica/tools.json` for
+**Common shape rules:**
+- Spawn via a `start` message after the channel is open — the handler doesn't accept command/args/cwd in openChannel args.
+- One subprocess per channel at a time. Send `signal`, wait for `exit`, then `start` again. Two-stage restart.
+- For stateless tool calls the agent should invoke directly, use `<project>/.mica/tools.json` instead — those go in
   the cli-mcp adapter (see `add-third-party-tool` skill). The
   process handler is for stateful, persistent subprocesses
   driven by card UI.
@@ -1151,7 +1138,7 @@ The runtime injects your card's class name into the request so Mica routes to th
 - **Heavy first import.** Loading a 100MB embedding model takes 3-5s. Put it at module scope (loaded once on spawn), NOT inside the request handler (would load per-request).
 - **Print to stdout for logs.** Anything your sidecar `print`s goes to the backend log prefixed `[card-sidecar:<name>]`. Use `flush=True` (Python) for real-time visibility.
 - **Tracebacks must reach stdout, not just the response body.** A 500 returned by `mica.fetch` surfaces only the short error message to the caller (and to the agent debugging the card). The full traceback — file path, line number, call stack — is what tells you what's actually wrong. Without an exception handler that calls `print(traceback.format_exc(), flush=True)`, that information is gone forever. The FastAPI template above includes one; copy it verbatim into every new sidecar.
-- **Don't `import` external libs without verifying they're available.** System Python has sentence-transformers, numpy, FastAPI, httpx. TS/Node has whatever Mica's node_modules ships. Beyond that, you'd need to vendor or install (not supported in the prototype).
+- **Verify each external import via `mica_inspect_python_package` before committing it to server.py.** System Python ships a small set of pre-installed packages; voice-venv adds the speech-sidecar dependencies. TS/Node has whatever Mica's node_modules ships. Beyond those, the package needs to be vendored or installed (not supported in the prototype) — discover this at spec time, not at sidecar-spawn time.
 
 ### Debugging a 500 from your sidecar — workflow
 
@@ -1553,9 +1540,9 @@ Stay in the develop / iterate loop on layout, sizing, or content
 issues; pivot to `fix-bug` for runtime API errors. The fix-bug skill
 has the discovery procedure: `mica_inspect_url` on the library's CDN
 URL → read the `methods` array → use the real public method name.
-Guessing alternate method names is the failure mode that compounds
-(world23: `marker.setOpacity` → guess `bindPopup` → `terminator.update`
-→ delete-and-recreate spiral).
+Guessing alternate method names is a compounding failure mode —
+each guessed-and-failed method name burns an iteration, and the
+end of the spiral is usually a delete-and-recreate.
 
 ### After render_capture: follow the verdict tag
 
@@ -1567,7 +1554,7 @@ The tool's result starts with one of eight verdict tags. Each maps to a single n
 - `[render_capture: UNVERIFIABLE]` — user's request is about behavior, state, or interaction a still image can't show (animations, post-click state, dynamic updates). Three valid moves: (1) trigger the state change and re-capture, (2) end the turn with a clear summary describing expected behavior so the user can verify on their screen, (3) re-read the request — if it was actually about visible appearance, re-call without `UNVERIFIABLE`-friendly framing.
 - `[render_capture: INTENT-UNPARSED]` — captioner didn't follow the VERDICT/EVIDENCE format. Read the caption manually, decide if the user's request is satisfied, and proceed accordingly.
 - `[render_capture: ERRORS — N buffered]` — fix each listed error (`mica_edit_class_file`), then re-call render_capture once. ERRORS means the build is NOT complete regardless of how the screenshot looks.
-- `[render_capture: WEBGL-OPAQUE]` — captioner sees black; apply the `mica.onCapture` hook or `preserveDrawingBuffer: true` (handbook § "render_capture screenshot is black for WebGL / Three.js cards"). Then re-capture once. Don't iterate on CSS/dependencies/scene composition — that's the phantom-chase failure mode.
+- `[render_capture: WEBGL-OPAQUE]` — captioner sees black; apply the `mica.onCapture` hook or `preserveDrawingBuffer: true` (handbook § "render_capture screenshot is black for WebGL cards"). Then re-capture once. Iterating on CSS / dependencies / scene composition before the hook is wired is the phantom-chase failure mode.
 - `[render_capture: CAP-REACHED]` — end the turn with a plain-text summary; the cap resets on the user's next message.
 
 CLEAN and MATCHES are terminal states: the next thing the agent emits should be the user-visible summary, not another tool call. Don't relitigate "is this really done?" — the tag is the signal.
@@ -1594,11 +1581,11 @@ right move; it should be a last resort, not a debugging step.
 
 ### Partial edit followed by full-file rewrite eats your own fix
 
-The single most common iteration-cost amplifier across observed builds (rag2–rag6, hotdog, orbit2, orbit3). The shape:
+A common iteration-cost amplifier. The shape:
 
-1. **Turn N**: agent makes a small targeted edit via `mica_edit_class_file({ old_string, new_string })`. The fix is precise — replaces one line, e.g. `const clock = THREE.Clock;` → `const clock = new THREE.Clock();`.
+1. **Turn N**: agent makes a small targeted edit via `mica_edit_class_file({ old_string, new_string })`. The fix is precise — replaces one line (e.g. fixing a misuse of a library API).
 
-2. **Turn N+1 or later**: agent reads the file, decides to "improve" something unrelated, and calls `mica_edit_class_file({ content: "<entire new card.js>" })` — full-file rewrite. The rewrite re-types card.js from scratch based on the agent's mental model, which may still reflect the PRE-fix state of the file (the agent's training-memory pattern is `const clock = THREE.Clock`, not the post-fix `new THREE.Clock()`).
+2. **Turn N+1 or later**: agent reads the file, decides to "improve" something unrelated, and calls `mica_edit_class_file({ content: "<entire new card.js>" })` — full-file rewrite. The rewrite re-types card.js from scratch based on the agent's mental model, which may still reflect the PRE-fix state of the file (the training-memory pattern is the original wrong line, not the post-fix corrected one).
 
 3. **Result**: the previous turn's fix is silently reverted. The original bug is back. The card errors again. The agent doesn't notice because nothing tells it "you just undid your last fix."
 
@@ -1612,12 +1599,13 @@ The single most common iteration-cost amplifier across observed builds (rag2–r
 
 3. **After a full rewrite, re-verify with `render_capture`** (with `user_intent`) so a re-introduced bug surfaces in the same turn. If the captioner reports MISMATCH on a request you thought was already satisfied, that's the eat-your-own-fix signal.
 
-4. **Multiple turns of `clock.getElapsedTime is not a function` across consecutive edits** is the canonical observable symptom — same error after each edit means the edit isn't actually changing the broken line. Stop editing; re-read the file; verify the broken line is what you think it is.
+4. **Same runtime error across consecutive edits** is the canonical observable symptom — the error message stays identical because the edit isn't actually changing the broken line. Stop editing; re-read the file; verify the broken line is what you think it is.
 
-### Card class not appearing? Never restart.
+### Card class not appearing? Trust the file watcher
 
 The file watcher hot-reloads card-class directories on disk
-change. The fix is never a server restart.
+change. The fix is a re-fetch or a no-op edit, not a server
+restart.
 
 | Symptom | Real cause |
 |---|---|
@@ -1633,10 +1621,9 @@ ask the user inline — don't run `scripts/restart.sh` yourself
 ### "Failed to load dependency: <url>" loop
 
 When the chat surfaces this card-error, the URL itself is the
-prime suspect. **Do not** re-read `metadata.json` looking for
-clarity — the file contains exactly the URL that's failing.
-Re-reading produces no new information; the loop runs until the
-SDK kills it.
+prime suspect. The file contains exactly the URL that's failing
+— re-reading `metadata.json` produces no new information. Go
+straight to verifying and replacing the URL.
 
 1. Verify with `curl -sI -L "<url>" | head -1`. If 404, the URL
    is hallucinated.
@@ -1650,11 +1637,10 @@ SDK kills it.
 Time budget: ONE round of curl + one metadata edit. If the
 second URL also 404s, stop and ask the user.
 
-### `render_capture` screenshot is black for WebGL / Three.js cards
+### `render_capture` screenshot is black for WebGL cards
 
 `render_capture` defaults to `html2canvas`, which reads `<canvas>`
-content via `canvas.toDataURL()`. WebGL contexts (Three.js, regl,
-PixiJS in WebGL mode, Babylon, raw WebGL) return blank from
+content via `canvas.toDataURL()`. WebGL contexts return blank from
 `toDataURL` because the GPU discards the back buffer after compositing
 unless preserved. Result: captures come back transparent / black
 even when the user sees the scene rendering correctly on screen.
@@ -1687,18 +1673,20 @@ This keeps the back buffer readable so html2canvas's toDataURL
 returns the last frame.
 
 ```js
-const renderer = new THREE.WebGLRenderer({
+// when constructing your WebGL renderer
+const renderer = new <Renderer>({
   canvas: canvasEl,
-  antialias: true,
+  // ... your usual options
   preserveDrawingBuffer: true,  // fallback for non-hook capture
 });
 ```
 
 Symptom that points here: `render_capture` describes the canvas
 as "completely black" / "blank" / "transparent" while the user
-confirms they see content on screen. Don't add debug cubes /
-backgrounds / wrappers chasing a phantom — register the hook (or
-flip the flag) and re-capture.
+confirms they see content on screen. The fix is to register the
+hook (or flip the flag) and re-capture — debug cubes, background
+shims, or wrapper elements chase a phantom and never address the
+real cause.
 
 ## References
 

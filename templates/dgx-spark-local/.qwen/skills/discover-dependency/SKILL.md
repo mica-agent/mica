@@ -1,23 +1,23 @@
 ---
 name: discover-dependency
-description: Invoke before designing or writing any component that pulls from external resources — libraries (JS code), assets (images, video, audio, fonts, 3D model files, data files), OR services (live APIs). Most non-trivial cards need MULTIPLE kinds in one build (e.g. Three.js library + planet textures + maybe a weather API). This skill is the single entry point: enumerate subproblems, classify each as library/asset/service, walk through them in order with the matching procedure. Recall-first throughout: for things you know (Three.js, Leaflet, NASA imagery, Google Fonts), write down what you know and verify with `curl`; reach for `mcp__tavily__tavily_search` only when recall genuinely fails. Produces a documented decisions table on canvas. Library / asset is the default for any non-trivial subproblem; bespoke implementation is the exception that requires a documented "nothing fits because Z" decision.
+description: Invoke before designing or writing any component that pulls from external resources — libraries (JS code), assets (images, video, audio, fonts, 3D model files, data files), OR services (live APIs). Most non-trivial cards need MULTIPLE kinds in one build (e.g. a rendering library plus textures plus a public API). This skill is the single entry point: enumerate subproblems, classify each as library/asset/service, walk through them in order with the matching procedure. Recall-first throughout: write down what you already know for each subproblem and verify with `curl`; reach for `mcp__tavily__tavily_search` only when recall genuinely fails. Produces a documented decisions table on canvas. Library / asset is the default for any non-trivial subproblem; bespoke implementation is the exception that requires a documented "nothing fits because Z" decision.
 ---
 
 # Discover external dependencies — libraries, assets, services
 
 Most non-trivial cards pull from three kinds of external resources:
 
-- **Library** — executable JS code, loaded as a script tag (Three.js, Leaflet, Chart.js, D3, Sortable, CodeMirror, Marked, …)
-- **Asset** — bytes loaded as a file (planet texture image, sample audio, custom font, 3D model `.gltf`, CSV/JSON data file, …)
-- **Service** — a live endpoint hit at runtime (weather API, stock API, NASA Earthdata API, tile server, …)
+- **Library** — executable JS code, loaded as a script tag.
+- **Asset** — bytes loaded as a file (image, audio, video, font, 3D model, data file).
+- **Service** — a live endpoint hit at runtime (data API, tile server, etc.).
 
-A single card commonly needs more than one kind. The moon-orbit card is *library + asset* (Three.js + textures). A weather card is *library + asset + service* (Chart.js + icons + OpenWeather). A photo gallery is *asset only*. Don't treat the kinds as a one-of-N choice for the whole card — **each subproblem is one kind, and a card has multiple subproblems.**
+A single card commonly needs more than one kind: a rendering library plus its textures, a chart library plus a data service, a gallery built from assets alone. Each subproblem is one kind; a card has multiple subproblems. Classify each separately.
 
-The most expensive failure modes in agent-built code are:
+Three failure modes to plan against:
 
-1. Silently writing 80 lines of from-scratch geometry / parsing / protocol code when a 1-line library call would suffice.
-2. Shipping image URLs that 200 in `curl` but fail in WebGL because the host doesn't send CORS.
-3. Wiring up an API endpoint whose response shape you guessed instead of verified.
+1. Writing many lines of from-scratch geometry / parsing / protocol code when a one-line library call would suffice.
+2. Shipping image URLs that resolve in `curl` but fail in WebGL because the host doesn't send CORS.
+3. Wiring up an API endpoint whose response shape was guessed instead of verified.
 
 **Recall, then verify. Search only when recall fails.**
 
@@ -44,26 +44,26 @@ Three tool calls cover the inventory:
 
 | Subproblem | Likely Mica-provided path |
 |---|---|
-| Classify / describe / extract from an image | `llm-direct` + a vision-capable model (`qwen3-vl-local`) — NOT TFJS/MobileNet/transformers.js |
-| Stream LLM completions for chat / summarization / rewriting | `llm-direct` (text-only model like `coder`) |
+| Classify / describe / extract from an image | `llm-direct` + a vision-capable model |
+| Stream LLM completions for chat / summarization / rewriting | `llm-direct` + a text model |
 | Tool-using agent inside a card | `llm-agent` (lighter than the project-wide chat card) |
-| Wrap a CLI tool (ffmpeg, pdftotext, whisper.cpp, jq) | `process` handler — Tier 3, zero server code |
-| Voice STT / TTS | already-running sidecars (8013 Parakeet, 8014 Kokoro) — see `voice` built-in card class |
+| Wrap a CLI tool | `process` handler — Tier 3, zero server code |
+| Voice STT / TTS | already-running sidecars — see the `voice` built-in card class |
 
 If a Mica path fits → spec records *"uses handler X / card class Y; verified via mica_list_handlers"* and you skip web search for that subproblem. If nothing fits → continue to the open-web flow below.
 
-**The failure mode this catches**: agent reaches for `@tensorflow/tfjs` + MobileNet (in-browser ML, 30 MB+ of CDN payload, slow cold start) when `mica.openChannel('turn', { model: 'qwen3-vl-local', history: 'stateless' })` does the same classification with one line. Same anti-pattern for: chat (don't bundle ollama-js when llm-direct is right there), subprocess wraps (don't write a Node `child_process.exec` shim from card.js — that doesn't work), speech (don't ship vosk.js when the voice sidecars exist).
+**The failure mode this catches**: agent reaches for a heavyweight in-browser ML bundle when `mica.openChannel('turn', { model: '<vision-model>', history: 'stateless' })` does the same job in one line. Same anti-pattern for chat (use `llm-direct` instead of a self-hosted JS client), subprocess wraps (use the `process` handler — `child_process` from card.js doesn't work), speech (use the voice sidecars instead of bundling a speech library).
 
 ## Step 0a — What do you already know? (recall before search)
 
 **Before any `tavily_search` or `web_fetch`, state out loud what you already know about each subproblem.** You are a coding model trained on a vast corpus of public code, READMEs, and API documentation. For common needs — well-known CDN libraries, asset hosts, public APIs — your training prior is the cheapest source: zero tokens, zero wall clock, zero round trips. Tavily costs ~600-1500 tokens per result × N results, permanently in context. Recall is free.
 
-Write a short recall paragraph in your thinking, one per subproblem. Examples:
+Write a short recall paragraph in your thinking, one per subproblem. The shape of a good recall paragraph:
 
-- **Library**: "Three.js: v0.160 is the stable line I've seen most often, UMD bundle is at `cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js`, exposes global `THREE`. OrbitControls is ESM-only in distributed versions — handle separately."
-- **Asset**: "Earth/Moon textures for Three.js: the project's `examples/textures/planets/` directory at `raw.githubusercontent.com/mrdoob/three.js/<tag>/examples/textures/planets/` ships canonical, CORS-enabled assets. Pin tag like `r160`."
-- **Asset (hard host)**: "Wikimedia files: direct URLs use unguessable content-addressed hashes. Use the API at `commons.wikimedia.org/w/api.php?action=query&titles=File:<NAME>&prop=imageinfo&iiprop=url&format=json` for canonical URLs."
-- **Service**: "Weather: Open-Meteo at `api.open-meteo.com/v1/forecast?...` is free, no auth, CORS-enabled. NWS at `api.weather.gov` is US-only but also free."
+- **Library**: name the package, the version line you trust, the canonical CDN URL pattern (`cdn.jsdelivr.net/npm/<pkg>@<version>/<dist-path>`), the global it exposes, and whether addons are UMD or ESM-only.
+- **Asset**: name a CORS-enabled host that serves the file kind you need (a GitHub-served mirror via jsdelivr, a project's `examples/` directory, a known CDN), and the URL pattern.
+- **Asset (hard host)**: if the host uses unguessable paths (content-addressed hashes, signed URLs), name its lookup API instead of guessing the file URL.
+- **Service**: name the canonical endpoint, the auth requirement, and whether browser CORS is supported.
 
 **The decision tree**, per subproblem:
 
@@ -74,7 +74,7 @@ Write a short recall paragraph in your thinking, one per subproblem. Examples:
 
 **For asset hosts especially: prefer the host's API over generic web search.** Wikimedia, jsdelivr, GitHub, npm, and most CDN/registry hosts have APIs that return canonical URLs in a single structured call. Searching the open web for "find me the URL of file X on host Y" is the wrong shape — the host already exposes that exact query.
 
-The agent failure shape this prevents: 30 tavily searches for a moon texture URL because each search returns wiki pages (`commons.wikimedia.org/wiki/File:...`) instead of the direct file URL (`upload.wikimedia.org/wikipedia/commons/<hash>/...`), and the agent keeps refining the search query instead of recalling that the MediaWiki API returns the canonical URL in one call.
+The agent failure shape this prevents: many tavily searches against a host whose direct file URLs use unguessable paths (content-addressed hashes, signed paths), when the host already exposes a lookup API that returns the canonical URL in one structured call.
 
 ## Search budget per subproblem
 
@@ -82,11 +82,11 @@ The agent failure shape this prevents: 30 tavily searches for a moon texture URL
 
 If your 3rd search hasn't yielded a working URL or endpoint, **STOP searching** and escalate in this order:
 
-1. **Reflect on host APIs.** Did your searches return pages on a specific host (Wikimedia, GitHub, npm)? That host almost certainly has an API that returns canonical URLs directly. One API call beats N searches.
-2. **Drop the resource.** If 3 searches haven't surfaced a working URL, the resource may not be CORS-friendly, may not have a direct URL, or may not exist as a free public resource. Pick a fallback (colored sphere instead of texture, stub data instead of live API) and document the substitution in the spec.
+1. **Reflect on host APIs.** Did your searches return pages on a specific host (a wiki, a code-host, an npm registry)? That host almost certainly has an API that returns canonical URLs directly. One API call beats N searches.
+2. **Drop the resource.** If 3 searches haven't surfaced a working URL, the resource may not be CORS-friendly, may not have a direct URL, or may not exist as a free public resource. Pick a fallback (a simpler placeholder, stub data instead of a live API) and document the substitution in the spec.
 3. **Ask the user.** "I can't find a working URL for X. Do you have a preferred source?" One round-trip is cheaper than 10 more searches AND surfaces user-side knowledge Mica can't access (an internal mirror, a known CDN, a license-already-paid asset library).
 
-**Anti-pattern: iterating query phrasing past the cap.** Adding quotes, swapping "4k" for "2k", appending `site:upload.wikimedia.org`, dropping a word — these are not new searches, they're the same search with cosmetic variation. If recall + verify + 3 searches haven't surfaced the URL, the next 10 won't either. Escalate.
+**Anti-pattern: iterating query phrasing past the cap.** Adding quotes, swapping resolution or size keywords, appending `site:<host>`, dropping a word — these are not new searches, they're the same search with cosmetic variation. If recall + verify + 3 searches haven't surfaced the URL, the next 10 won't either. Escalate.
 
 ## Tool choice — pick by content shape
 
@@ -134,10 +134,10 @@ If `mica_inspect_url` returns `ok: false`, that URL does not ship. Use the `reas
 
 In your thinking / scratch space, list every recognizable subproblem this build has. Be specific:
 
-- ❌ Vague: "render the moon orbit"
-- ✅ Specific: "3D scene rendering", "orbital animation math", "planet surface texture", "moon surface texture", "starfield background"
+- Vague: "render the visualization"
+- Specific: name each distinct visual primitive, animation type, asset, and computation as its own subproblem.
 
-Subproblems that involve plain DOM-glue or trivial JS (a counter button, a 9-city static array, simple state) are NOT subproblems for this skill — skip them. Subproblems that compute, format, transform, render, animate, parse, talk to a service, or load bytes ARE subproblems.
+Subproblems that involve plain DOM-glue or trivial JS (a single button, a small static array, simple state) are NOT subproblems for this skill — skip them. Subproblems that compute, format, transform, render, animate, parse, talk to a service, or load bytes ARE subproblems.
 
 ### Step 2 — Classify each subproblem
 
@@ -192,19 +192,19 @@ For each one, tag it:
 
 #### 3a — LIBRARY subproblems
 
-Recall-first. You're a coding model with a large training corpus. For libraries that appear in public code thousands of times — Three.js, Leaflet, D3, Chart.js, FullCalendar, Sortable.js, CodeMirror, Marked, Mermaid, Plotly, Tone.js, Pixi.js, Day.js, Luxon, Big.js, Fuse.js — **you already know**: canonical package name, known-stable version range, CDN URL shape, whether addons are UMD or ESM-only, the one-line "hello world" call. Don't pretend you don't.
+Recall-first. You're a coding model with a large training corpus. For any library that appears in public code thousands of times, **you already know**: canonical package name, known-stable version range, CDN URL shape, whether addons are UMD or ESM-only, the one-line "hello world" call. Surface that recall before reaching for search.
 
 For each library subproblem:
 
 1. **Recall**: library name, known-stable version, CDN URL `https://cdn.jsdelivr.net/npm/<pkg>@<version>/<dist-path>`, addon ESM/UMD status, one-line API call.
-2. **Install library-specific skill if curated**: `mica_install_skills source="<library>-skills"`. Mica's curated table maps well-known names (e.g. `threejs-skills`, `three`, `threejs`) to vetted repos. Installs instantly with no gate. Library-specific skills carry knowledge the base model misses — disposer patterns, init-order quirks, version-specific gotchas. Do this BEFORE writing any code that uses the library.
+2. **Install library-specific skill if curated**: `mica_install_skills source="<library>-skills"`. Mica's curated table maps well-known library names to vetted repos. Installs instantly with no gate. Library-specific skills carry knowledge the base model misses — disposer patterns, init-order quirks, version-specific gotchas. Do this BEFORE writing any code that uses the library.
 3. **Verify** with `mica_inspect_url <CDN URL>`. The tool returns `{ ok, status, contentType, format, methods }` in ~500 bytes — saves chat-history context over raw `curl -s | head`. Read the `format` field:
    - `"UMD"` — browser-loadable as `<script>`. Mark verified.
    - `"ESM"` or `"CommonJS"` — won't load as a classic script in card.js. Mark unverified for browser use; pick a different version or library.
    - `"data"` — JSON/CSS/text. Fine for asset rows.
    - `ok: false` (non-200) — `reason` includes a pivot suggestion. **404 pivot rule**: your next call is `curl -s https://data.jsdelivr.com/v1/package/npm/<pkg>` for the package's file listing — find the real path. Do NOT guess more URL variants.
 
-   For libraries that produce visible UI (maps, charts, image viewers), ALSO fetch the README to find ancillary CSS / font / data dependencies: `curl -s https://cdn.jsdelivr.net/npm/<pkg>@<version>/README.md | head -c 8000` and scan the first quickstart HTML example for `<link rel="stylesheet">` tags. Add each ancillary URL as a separate verified row (run `mica_inspect_url` on it too). Missing the CSS is the silent failure that broke a Leaflet build: the map renders blank because layout styles never load.
+   For libraries that produce visible UI (maps, charts, image viewers), ALSO fetch the README to find ancillary CSS / font / data dependencies: `curl -s https://cdn.jsdelivr.net/npm/<pkg>@<version>/README.md | head -c 8000` and scan the first quickstart HTML example for `<link rel="stylesheet">` tags. Add each ancillary URL as a separate verified row (run `mica_inspect_url` on it too). Missing an ancillary CSS file is a silent-failure mode — the library loads, the API is defined, but the visible output renders blank because layout styles never load.
 
    Raw `curl -sI -L | head -1` is fine when you just want a status code; `mica_inspect_url` is the default for any dependency you're about to commit to `metadata.json`.
 4. **Search only if recall fails**: `mcp__tavily__tavily_search "<problem> javascript library"` (max_results: 5) — for genuinely niche libraries you don't recognize.
@@ -219,7 +219,7 @@ curl -s "https://registry.npmjs.org/<pkg>" | head -c 4000
 curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 2000
 ```
 
-**ESM vs UMD — check for EACH addon, not just the core.** card.js runs as a **classic script**, not a module — it cannot `import`. So every script tag in `metadata.json.dependencies.scripts` must be a **UMD** (or IIFE) bundle that exposes its API as a window global. ESM-only files load, parse, and silently fail: the global never appears, your card throws `<Symbol> is not defined` at first call. Libraries with addons/plugins (Three.js, Leaflet, D3) often ship core as UMD but addons as ESM-only — Tier-1 reachability passes; runtime use throws.
+**ESM vs UMD — check for EACH addon, not just the core.** card.js runs as a **classic script**, not a module — it cannot `import`. So every script tag in `metadata.json.dependencies.scripts` must be a **UMD** (or IIFE) bundle that exposes its API as a window global. ESM-only files load, parse, and silently fail: the global never appears, your card throws `<Symbol> is not defined` at first call. Libraries with addons/plugins often ship core as UMD but addons as ESM-only — Tier-1 reachability passes; runtime use throws.
 
 **ESM-only candidate? Try four fallbacks before going bespoke.** The first failed CDN path on an addon/plugin is not the end of discovery — many plugins publish ESM as the "modern" entry but ship a UMD bundle the package's `package.json` doesn't advertise. In order:
 
@@ -228,28 +228,23 @@ curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 2000
 3. **Community wrappers / alternative plugins**: `mcp__tavily__tavily_search "<plugin-name> script tag CDN"` or `"<feature> <ecosystem> plugin"`. One ESM-only repo doesn't mean the feature is unavailable in the ecosystem — there is usually more than one plugin per feature, and at least one of them ships a UMD bundle.
 4. **Bespoke as last resort, with documented rationale**. Going bespoke before steps 1–3 silently commits the user to N lines of custom code they didn't ask for. If you go bespoke anyway, the spec MUST list which alternatives were tried and why each was rejected — so the user can override with a known-working alternative they recognize.
 
-Use `curl` for README / file-listing scans — READMEs are dense markdown that scans directly in ~200ms with no LLM round-trip. (`web_fetch` is the right tool for HTML-heavy docs sites with structural cruft, NOT for plain markdown READMEs — see § Tool choice.)
+Use `curl` for README / file-listing scans — READMEs are dense markdown that scans directly in ~200ms with no LLM round-trip. (`web_fetch` is the right tool for HTML-heavy docs sites with structural cruft, not for plain markdown READMEs — see § Tool choice.)
 
-Concrete recurring failure — **Three.js OrbitControls**: The Three.js npm package on cdn.jsdelivr.net **does not ship a UMD OrbitControls at any currently-distributed version** — `examples/jsm/controls/OrbitControls.js` (ESM) is the only published copy. The classic `examples/js/controls/OrbitControls.js` path was never published in the npm tarball, so jsdelivr/unpkg return 404 across the board. **Don't probe a grid of versions hoping to find UMD OrbitControls — you won't.** Three options: (a) build without it (manual camera math, often 10-15 lines), (b) use a community UMD wrapper like `@vladkrutenyuk/three-umd`, (c) inline the ESM source — brittle last resort.
+**Grid-probing addon versions is wasted effort.** If a library's addon doesn't ship as UMD at one version, it almost certainly doesn't at any version — packages don't reintroduce dropped distribution formats across minor releases. After one 404 on the addon at a known-good version, switch tracks: read the README for the documented script-tag path, scan the jsdelivr file listing for `.umd.js` / `.iife.js`, search for a community UMD wrapper, or fall back to manual inline code with a documented rationale.
 
 #### 3b — ASSET subproblems
 
-Recall-first, the same way. For well-known asset categories, **you already know** canonical hosts and URL shapes:
+Recall-first, the same way. The canonical CORS-friendly host shapes:
 
-| Asset category | Canonical CORS-friendly source | Notes |
+| Asset category | URL shape | Notes |
 |---|---|---|
-| Three.js example textures (planets, moon, stars) | `https://raw.githubusercontent.com/mrdoob/three.js/<tag>/examples/textures/<subpath>` | CORS `*`; pin a tag like `r160` for stability. Includes `planets/earth_atmos_2048.jpg`, `planets/earth_normal_2048.jpg`, `planets/earth_specular_2048.jpg`, `planets/earth_clouds_1024.png`, `planets/moon_1024.jpg`. |
-| Any GitHub-hosted asset (jsdelivr-served) | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>` | CORS `*`, edge-cached, fast. **The `@<ref>` is required** — `cdn.jsdelivr.net/gh/<owner>/<repo>/<branch>/<path>` (no `@`) returns 403. Pin a commit, tag, or branch with `@`. |
+| Any GitHub-hosted asset (jsdelivr-served) | `https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>` | CORS `*`, edge-cached, fast. **The `@<ref>` is required** — the no-`@` form returns 403. Pin a commit, tag, or branch with `@`. |
 | Any GitHub-hosted asset (direct) | `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` | CORS `*`; slower than jsdelivr (no edge cache) but simpler URL. |
 | Any npm-hosted asset | `https://cdn.jsdelivr.net/npm/<pkg>@<version>/<path>` | CORS `*`; works for any file in an npm tarball. |
-| Google Fonts | `https://fonts.googleapis.com/css2?family=<name>&display=swap` | CORS-friendly; standard `@import` or `<link rel="stylesheet">`. |
-| Unsplash photos (programmatic) | `https://images.unsplash.com/<id>?w=<width>&q=80` | Sends CORS; free tier; no auth for static URLs. |
+| Library's own examples directory | look for `examples/` on the library's GitHub repo; serve via jsdelivr-gh or raw.githubusercontent | Pin to a release tag for stability. |
+| Public CDN-hosted font service | check the service's documented CSS URL pattern | Usually CORS-friendly and works with standard `@import` or `<link rel="stylesheet">`. |
 
-**Hosts that look reachable but FAIL CORS — do NOT use for WebGL textures or canvas use:**
-
-- ❌ `www.solarsystemscope.com/textures/download/...` — returns 200 with JPEG bytes but sends **no** `Access-Control-Allow-Origin` header. Sphere renders as solid color when used in Three.js. (Empirically verified.) If you want Solar System Scope textures, find a GitHub mirror and serve via jsdelivr.
-- ❌ `upload.wikimedia.org/wikipedia/commons/...` — no CORS for direct image URLs. Also uses content-addressed hash directories (`upload.wikimedia.org/wikipedia/commons/<x>/<xy>/<filename>`) you cannot guess from the filename. Probing hash variants always 404s. Don't bother — find a CORS-enabled mirror.
-- ❌ Most "free texture site" hosts — assume CORS is off unless proven on.
+**Many hosts that serve image bytes do NOT send CORS headers, so the asset 200s in `curl` but fails as a WebGL texture / canvas drawImage source.** The failure shape: the sphere or surface renders as solid color, no console error. Mitigation: for any asset used in WebGL / canvas / SubresourceIntegrity, verify CORS in Step 3b's curl pair below. If a needed asset's source doesn't send CORS, find a GitHub mirror and serve it through jsdelivr.
 
 For each asset subproblem:
 
@@ -272,26 +267,22 @@ For each asset subproblem:
 
 For each service (live API endpoint) subproblem:
 
-1. **Recall** known canonical APIs for the domain:
-   - Weather: OpenWeather (`api.openweathermap.org`), Open-Meteo (`api.open-meteo.com`, free no-auth), NWS (`api.weather.gov`, free no-auth, US-only).
-   - Geo: Nominatim (`nominatim.openstreetmap.org`, free with usage policy), MapBox.
-   - Map tiles: OSM (`tile.openstreetmap.org/{z}/{x}/{y}.png`), CartoDB Positron (`{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png`), MapBox.
-   - Generic data: data.gov, NASA Earthdata, USGS.
+1. **Recall** canonical APIs for the domain — for common categories (weather, geo, map tiles, generic open data), state the host you trust, the URL pattern, and what auth it needs.
 2. **Verify** endpoint shape:
    ```bash
    curl -s "<endpoint-with-sample-params>" | head -c 2000
    ```
-   Confirm: it returns JSON in the shape you expect; auth requirement is what you thought (no auth, API key in query, bearer token); rate limit is documented (Open-Meteo: 10k/day free; OpenWeather: 60/min free).
+   Confirm: it returns JSON in the shape you expect; auth requirement is what you thought (no auth, API key in query, bearer token); rate limit is documented.
 3. **CORS** for client-side use: `curl -sIL "<endpoint>" -H "Origin: http://localhost:5173" | grep -i "access-control-allow-origin"`. Many APIs don't support browser CORS and require a server-side proxy. Mica's `mica.fetch` proxies through the server, bypassing CORS — use it for any third-party API call from card.js.
 4. **Search only if recall fails**: `mcp__tavily__tavily_search "<domain> free API CORS"` (max_results: 5).
 
 #### 3d — BESPOKE subproblems
 
-If the subproblem is genuinely small (8 lines of math, a hardcoded 9-element array, simple state), record it as "no dependency — N lines bespoke" and move on. The "no dependency" decision still goes in the spec so reviewers can audit.
+If the subproblem is genuinely small (minimal math, a small static array, simple state), record it as "no dependency — N lines bespoke" and move on. The "no dependency" decision still goes in the spec so reviewers can audit.
 
 ### Step 4 — Record decisions on canvas
 
-The decisions MUST land in a canvas file before any code that depends on them ships. Otherwise the next agent (or your next session) has no record of WHY this version / URL / endpoint was chosen and re-derives from scratch — possibly choosing differently. Three observed sessions on the same task ("3D animation of moon around earth") chose three different Three.js versions because none of them recorded the decision. The curl-verification work was real but ephemeral.
+The decisions MUST land in a canvas file before any code that depends on them ships. Otherwise the next agent (or your next session) has no record of WHY this version / URL / endpoint was chosen and re-derives from scratch — possibly choosing differently. Without a recorded decision, the curl-verification work is real but ephemeral, and the next session may pick a different version of the same library for the same task.
 
 **Where to record** — pick the most appropriate existing file, in this priority order:
 
@@ -302,7 +293,7 @@ The decisions MUST land in a canvas file before any code that depends on them sh
 
 **Pick ONE location and stay consistent within a project.**
 
-**Optional but recommended for non-trivial builds (3+ subproblems): also write `canvas/<class>-research.md`** — a canvas-visible artifact enumerating ALL candidates considered (not just the chosen picks), with verified URLs. This is for the *user* to read on canvas BEFORE approving the build, so they can redirect (*"use Leaflet, not D3"*) before any code is written. The artifact is not validated by Mica — its format is a suggestion, not a contract — but the canvas-visibility makes the candidate space available for user review. Suggested shape:
+**Optional but recommended for non-trivial builds (3+ subproblems): also write `canvas/<class>-research.md`** — a canvas-visible artifact enumerating ALL candidates considered (not just the chosen picks), with verified URLs. This is for the *user* to read on canvas BEFORE approving the build, so they can redirect to a different candidate before any code is written. The artifact is not validated by Mica — its format is a suggestion, not a contract — but the canvas-visibility makes the candidate space available for user review. Suggested shape:
 
 ```markdown
 # Research: <class name>
@@ -337,14 +328,14 @@ The spec (location 1 above) THEN copies URLs verbatim from research's URL column
 
 | Subproblem | Kind | Decision | Reason |
 |---|---|---|---|
-| 3D scene rendering | library | Use `three@0.160.0` via `https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js` (curl 200) | Industry standard; UMD bundle exposes `THREE.*` globals; `cloudai-x/threejs-skills` installed. |
-| Camera interaction | bespoke | Manual fixed camera (10 lines) | OrbitControls is ESM-only in all distributed Three.js versions; manual camera math suffices for fixed orbit. |
-| Earth daymap texture | asset | `https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/earth_atmos_2048.jpg` (curl 200, CORS `*`) | Three.js examples mirror; CORS-enabled for WebGL use. |
-| Moon surface texture | asset | `https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/moon_1024.jpg` (curl 200, CORS `*`) | Same source as Earth; consistent pinning. |
-| Body list (fixed roster of planets) | bespoke | Static array | Just data, not a dependency. |
+| <core visual primitive> | library | Use `<pkg>@<version>` via `<verified CDN URL>` (curl 200) | <why this candidate won; what plugins/skills are loaded> |
+| <sub-feature on top of core> | library | Use `<plugin>@<version>` via `<verified CDN URL>` (curl 200) | <one-line justification; alternatives rejected> |
+| <one-shot interaction> | bespoke | <N> lines | <why no library — alternatives considered and rejected> |
+| <asset> | asset | `<verified CORS-enabled URL>` (curl 200, CORS `*`) | <host choice rationale> |
+| <static config> | bespoke | Static array | Just data, not a dependency. |
 ```
 
-When recording in `decisions.md` instead of spec.md, prefix the section with the build it informs (e.g. `## Dependency decisions — moon-orbit card`).
+When recording in `decisions.md` instead of spec.md, prefix the section with the build it informs (e.g. `## Dependency decisions — <class name>`).
 
 ## Output shape — what counts as "done" with this skill
 
@@ -352,12 +343,12 @@ A row for **every** recognizable subproblem the spec covers, in whichever file y
 
 ## When NOT to use this skill
 
-Don't burn the budget on subproblems that are genuinely tiny:
+Skip when the build is genuinely tiny:
 
-- 3-input form with a sum at the bottom — not a "library subproblem"
+- A small form with arithmetic at the bottom — not a "library subproblem"
 - A counter card with a + button
-- A static label, a list of 5 items, a JSON viewer with 10 lines of formatting
-- Pure data structures (cities array, color palette, timezone list)
+- A static label, a short list of items, a small data viewer with a few lines of formatting
+- Pure data structures (a small static array, a color palette, a fixed config list)
 
 The threshold: **if you'd write more than ~30 lines of bespoke code AND the problem matches a recognizable category**, run this skill. Otherwise, skip.
 
@@ -365,35 +356,32 @@ The threshold: **if you'd write more than ~30 lines of bespoke code AND the prob
 
 If the user says *"no external libraries"* or *"keep it pure JS"* — respect that. Record the constraint in spec.md and skip future library/asset/service discovery. But ALWAYS confirm: *"You said no external libraries — that's a hard constraint, right? Some subproblems would need 100+ lines of custom code."* The user might mean "no charting library" but be fine with a map library; ambiguous "no external dependencies" shouldn't be assumed without checking.
 
-## Anti-patterns
+## Common drift modes
 
-- ❌ **Treating subproblems as a single kind.** A moon-orbit card has *library + asset* subproblems. A weather card has *library + service + asset*. Walk through each subproblem by its kind; don't fold textures into the library section or vice versa.
-- ❌ **Skipping recall.** Probing 18 Three.js versions when you already know the canonical URL shape is wasted curls. Recall first, verify once.
-- ❌ **Verifying reachability without CORS for WebGL/canvas assets.** `curl -sI` returns 200 doesn't mean the asset will work as a WebGL texture. Always add `-H "Origin: ..."` and check `access-control-allow-origin` for assets used in WebGL / canvas / SubresourceIntegrity contexts.
-- ❌ **Finding a library/asset/service and not recording the decision.** Reviewers (and the next session) can't tell what was tried and why. Always commit the table row.
-- ❌ **Recording "no dependency fits" without showing what was considered.** "Considered Three.js — drop because the canvas only needs 2D, not 3D" is a real reason; just writing "no library" hides the work.
-- ❌ **Probing texture URLs by guessing Wikimedia hash paths.** They use content-addressed hashes you can't guess. Either curl the wiki page and grep the URL, or (better) use a CORS-enabled CDN mirror instead.
+- **Treating subproblems as a single kind.** A non-trivial card typically has multiple subproblems of mixed kinds (library + asset, library + service + asset, etc.). Walk through each subproblem by its own kind; classify the textures separately from the renderer, the API separately from the chart library.
+- **Skipping recall.** Probing many versions of a library you already know is wasted curls. Recall first, verify once.
+- **Verifying reachability without CORS for WebGL/canvas assets.** `curl -sI` returns 200 doesn't mean the asset works as a WebGL texture. Add `-H "Origin: ..."` and check `access-control-allow-origin` for assets used in WebGL / canvas / SubresourceIntegrity contexts.
+- **Finding a library/asset/service and not recording the decision.** Reviewers (and the next session) can't tell what was tried and why. Commit the table row.
+- **Recording "no dependency fits" without showing what was considered.** A real reason names alternatives and explains why each was rejected. Just writing "no library" hides the work.
+- **Guessing content-addressed hash paths.** Hosts that use unguessable directory hashes always 404 on guessed variants. Use the host's lookup API or switch to a CORS-enabled mirror.
 
 ## Worked example — what good looks like
 
-User asks for a 3D moon-orbit card with realistic textures.
+Imagine a 3D card showing one celestial body orbiting another, with realistic textures.
 
 ```markdown
 ## Subproblems and their solutions
 
 | Subproblem | Kind | Decision | Reason |
 |---|---|---|---|
-| 3D scene rendering | library | `three@0.160.0` via `https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js` (curl 200) | THREE.WebGLRenderer / Scene / SphereGeometry / MeshStandardMaterial all on core UMD. `cloudai-x/threejs-skills` installed. |
-| Camera | bespoke | Manual fixed camera (10 lines) | OrbitControls is ESM-only across all distributed Three.js npm tarballs; manual camera suffices for orbit visualization. |
-| Earth daymap | asset | `https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/earth_atmos_2048.jpg` (curl 200, CORS `*`) | Three.js examples mirror via raw.githubusercontent — CORS-enabled, stable. |
-| Earth normal map | asset | `https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/earth_normal_2048.jpg` (curl 200, CORS `*`) | Same source; gives surface relief. |
-| Earth specular | asset | `https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/earth_specular_2048.jpg` (curl 200, CORS `*`) | Same source; ocean highlights. |
-| Moon surface | asset | `https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/moon_1024.jpg` (curl 200, CORS `*`) | Same source. |
-| Starfield background | bespoke | Inline `THREE.Points` from random sphere | Cheaper than a texture sphere for backdrop. |
-| Orbital animation | bespoke | Sine/cosine on `clock.elapsedTime` (5 lines) | Simple uniform circular orbit; no library needed. |
+| 3D scene rendering | library | `<3d-lib>@<version>` via verified CDN URL | Industry-standard renderer; UMD bundle exposes a global; library-specific skill installed. |
+| Camera | bespoke | Manual fixed camera (a few lines) | Common camera-control addons in this ecosystem are ESM-only across all distributed npm tarballs; manual camera suffices for a fixed orbit visualization. |
+| Body surface textures | asset | Verified GitHub-served URLs with CORS `*` | Library's own examples directory mirror; CORS-enabled for WebGL use. |
+| Starfield background | bespoke | Inline points geometry from a random sphere | Cheaper than a texture sphere for backdrop. |
+| Orbital animation | bespoke | Trigonometric position on elapsed time | Simple uniform circular orbit; no library needed. |
 ```
 
-Total tool calls expected for this discovery: ~6 curls (one per asset URL + one for Three.js UMD verification). No `web_fetch`. Zero searches. ~30 seconds wall clock.
+Total tool calls expected for this discovery: one curl per asset URL plus one for the 3D library UMD verification. No `web_fetch`. Zero searches. ~30 seconds wall clock.
 
 ## Cross-references
 

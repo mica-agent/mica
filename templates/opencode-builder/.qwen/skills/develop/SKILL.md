@@ -1,6 +1,6 @@
 ---
 name: develop
-description: FIRST tool call for any build-shaped request — for any artifact type (card class, standalone program, doc set). Triggers on EITHER (a) verb-led build phrasing — "build / create / implement / make / write / design / ship / develop / construct" — OR (b) **noun-led artifact naming**: when the user names a new artifact (card, dashboard, page, clock, monitor, viewer, calculator, planner, tracker, board, panel, widget, table, chart, map, timer, …) without an explicit build verb. "world time clock" / "burndown chart" / "task tracker" / "Y card that does Z" / "a Y for X" are all build requests even though they're noun-only. The lack of a verb doesn't change the intent — enter this skill ANY TIME a new artifact gets named. Owns plan-before-build, canvas-update, and doc-consistency invariants. Dispatches to artifact-specific skills (`card-class-handbook`, `decompose-task`) at the appropriate step. Invoke this BEFORE `decompose-task` or `card-class-handbook` — those are downstream specifics; develop is the universal gate. Skip ONLY for bug fixes (use `fix-bug`), pure Q&A about an existing artifact, or when the user explicitly overrides ("just do it directly", "skip the plan").
+description: FIRST tool call for any build-shaped request — for any artifact type (card class, standalone program, doc set). Triggers on EITHER (a) verb-led build phrasing — "build / create / implement / make / write / design / ship / develop / construct" — OR (b) **noun-led artifact naming**: when the user names a new artifact (card, dashboard, page, monitor, viewer, calculator, planner, tracker, board, panel, widget, table, chart, map, timer, …) without an explicit build verb. A noun phrase that names a new artifact has the same intent as the verb-led form; enter this skill any time a new artifact gets named. Owns plan-before-build, canvas-update, and doc-consistency invariants. Dispatches to artifact-specific skills (`card-class-handbook`, `decompose-task`) at the appropriate step. Invoke this BEFORE `decompose-task` or `card-class-handbook` — those are downstream specifics; develop is the universal gate. Skip ONLY for bug fixes (use `fix-bug`), pure Q&A about an existing artifact, or when the user explicitly overrides ("just do it directly", "skip the plan").
 ---
 
 # develop — top-level build flow
@@ -72,21 +72,20 @@ prerequisite for the spec write. Verify the libraries are reachable
 `<lib>-skills` package exists, install via `mica_install_skills`
 so the library's patterns are in your context for step 4+.
 
-**Why this is mandatory.** Skipping `discover-dependency` is the
-single most common failure mode of this flow. The agent recognizes
-the artifact, enters `develop`, drafts a spec from training prior —
-and the spec ends up specifying a bespoke implementation of a
-problem that has a well-known library or browser built-in solution.
-Caught after the approval gate, this forces a spec rewrite and
-loses the user's confidence in the planning step. The discover step
-takes ≤30 seconds per subproblem and produces a documented decision
-either way (library, asset, service, or "bespoke because Z").
+**Why this is the contract.** `discover-dependency`'s output IS
+the source of truth for which subproblems route to a library, an
+asset, a service, or bespoke code. With it loaded, the spec
+records verified options. Without it, the spec records the agent's
+training prior, which leans toward "compute it myself" even when
+a one-line library call exists. Run it per subproblem; the skill
+takes ≤30 seconds per item and produces a documented decision row
+either way (library / asset / service / "bespoke because Z").
 
-For subproblems that don't need external libs (string formatting,
-simple state, trivial DOM) — `discover-dependency` still runs but
-returns quickly with the "bespoke" tag. Don't pre-judge which
-subproblems "obviously don't need" the skill; that's the
-training-prior trap.
+Run it on every subproblem, including the ones that look trivial.
+String formatting, simple state, and DOM glue still go through the
+skill — the output is just a quick "bespoke" row. Pre-judging a
+subproblem as "obviously no library needed" is the training-prior
+shortcut the skill exists to interrupt.
 
 ### 2. Spec on canvas
 
@@ -108,32 +107,32 @@ Write `canvas/<name>-spec.md`. **For canvas card classes**, the spec uses a stru
 ```markdown
 ---
 card-class:
-  name: world-clock                      # MUST match the spec filename stem
-  badge: WCK                             # 1–4 chars
-  default_title: World Clock
+  name: <class-name>                     # MUST match the spec filename stem (lowercase + dashes only, no dots)
+  badge: <1-4 chars>                     # short uppercase tag shown in the card chrome
+  default_title: <Display Name>
   handler: ~                             # null unless using a built-in handler (llm-direct, llm-agent, process)
   sidecar: ~                             # null unless this card needs a server.py / server.ts
   dependencies:
     umd_scripts:                         # <script>-tag-loaded UMD URLs ONLY
-      - {url: "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js", format: UMD, version: "1.9.4"}
+      - {url: "https://cdn.jsdelivr.net/npm/<pkg>@<version>/<umd-path>.js", format: UMD, version: "<version>"}
     styles:
-      - "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      - "https://cdn.jsdelivr.net/npm/<pkg>@<version>/<css-path>.css"
     # ESM URLs do NOT go in umd_scripts. Load them inside card.js via:
     #   const NS = await import("https://cdn.jsdelivr.net/npm/<pkg>@<ver>/<esm-path>");
     # The CARD_SHIM wraps card.js in an async function — top-level await works.
     # Document ESM deps in the prose body below for human review.
   subtasks:
-    - {name: "render world map", tier: 1, mechanism: "card.js + Leaflet UMD", verify: "render_capture"}
-    - {name: "show 4 clock times", tier: 1, mechanism: "card.js + Date()", verify: "render_capture"}
+    - {name: "<subtask description>", tier: 1, mechanism: "card.js + <library> UMD", verify: "render_capture"}
+    - {name: "<subtask description>", tier: 1, mechanism: "card.js + <browser-API>", verify: "render_capture"}
   out_of_scope:
-    - "timezone autocomplete (defer to v2)"
-    - "DST history (Intl.DateTimeFormat is enough)"
+    - "<feature deferred to a later version>"
+    - "<feature ruled out as unnecessary>"
 ---
 
-# World Clock
+# <Class Name>
 
 ## Overview
-A canvas card that shows a Leaflet world map with 4 city clocks overlaid …
+A canvas card that <does X by mechanism Y>.
 [1–3 paragraphs of human-readable intent, tradeoffs, and any open questions]
 ```
 
@@ -230,10 +229,10 @@ dispatch.
 #### 4b. Standalone program / tool
 
 Use `write_file` per file. Project layout follows the spec +
-framework conventions. **Don't** impose Mica-specific structure
-on standalone work (no `.mica/card-classes/`, no `canvas/`
-artifact directory for the code itself — though spec/plan still
-live on canvas).
+framework conventions. Standalone work uses its own framework's
+layout — Mica-specific paths (`.mica/card-classes/`, `canvas/` for
+code) apply only to canvas card classes. Spec and plan still live
+on canvas for any artifact type.
 
 #### 4c. Doc-only artifact
 
@@ -249,14 +248,13 @@ the canvas in the same turn:
 - `canvas/decisions.md` gains an entry for non-obvious choices.
 - `canvas/<class>-spec.md` updates if: (a) implementation revealed
   a needed spec change, OR (b) **the user requested a change
-  mid-build** ("12 cities not 20", "1Hz update not 1 minute",
-  "remove the UTC display"). Edit the spec to reflect the new
-  state BEFORE making the code change. The spec is the contract —
-  when it gets out of sync with what's built, the next session
-  reads a stale design and makes wrong decisions. The same applies
-  to research artifacts: if the user redirects a candidate
-  ("use Leaflet, not D3"), update the research's chosen-stack
-  before re-running the build.
+  mid-build** (a different count, a different rate, a removed
+  feature). Edit the spec to reflect the new state BEFORE making
+  the code change. The spec is the contract — when it gets out of
+  sync with what's built, the next session reads a stale design
+  and makes wrong decisions. The same applies to research
+  artifacts: if the user redirects a candidate, update the
+  research's chosen-stack before re-running the build.
 
 This applies to **every** working turn, not just here. Standalone
 code can live anywhere (`src/`, `scripts/`) — the canvas log of
@@ -271,7 +269,7 @@ what was built still lives on canvas.
   endpoint, exec the script. Report what passed and what didn't.
 - **Doc-only**: review in chat; ask user to confirm.
 
-Untested code is unfinished code. Don't skip verify.
+Verify is mandatory — untested code is unfinished code.
 
 ### 7. Doc-consistency reconcile
 
@@ -280,21 +278,21 @@ a doc gets the doc updated in the same turn. Bug fixes and
 refactors are not exceptions. Trigger: "would a reader of the
 doc be misled by the new code?"
 
-## Anti-patterns
+## Step ordering — the moves that keep the flow on rails
 
-- **Writing the spec before researching libraries.** Pre-commits
-  architecture to from-scratch and forces a spec rewrite when
-  research reveals a library does the job. Lead with research.
-- **Skipping the spec gate** because the request "seems small."
-  One-line request → one-line spec. The gate stays.
-- **Moving past plan-or-inline without recording the decision**
-  (in spec or decomposition.md).
-- **Invoking `card-class-handbook` or `decompose-task` directly,
-  skipping this skill.** Those are downstream specifics; this
-  skill owns the universal invariants they rely on.
-- **Writing code without invoking the appropriate sub-skill** —
-  your training prior is "write code"; the skill registry exists
-  to override that prior.
-- **Ending a turn that wrote code without updating the canvas.**
-  The canvas IS the project's memory; uncommitted changes there
-  drift the project's truth.
+- **Research first, spec second.** `discover-dependency` runs
+  before the spec is written; the spec records its verified output.
+- **Spec, then gate.** Any artifact that produces code goes through
+  the approval gate. One-line request → one-line spec → same gate.
+- **Plan-or-inline decision goes in the spec.** Record which path
+  you took and why, in either `spec.md` or `decomposition.md`.
+- **Enter through `develop`.** `card-class-handbook` and
+  `decompose-task` assume the universal invariants this skill owns;
+  invoking them directly skips the gates.
+- **Match every code-writing turn with a sub-skill invocation.**
+  Card-class work routes through `card-class-handbook`; decomposed
+  work routes through `decompose-task`. The skill registry is what
+  overrides the training-prior "just write code" reflex.
+- **Update the canvas in the same turn as the code change.** Canvas
+  is the project's memory; trailing updates drift the project's
+  truth and the next session reads stale state.
