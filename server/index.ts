@@ -2848,6 +2848,9 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
           });
           recordValidatorError(event.project, event.filename, reason);
         },
+        onAdvisory: (reason) => {
+          console.log(`[deps-reachable:${event.project}] advisory: ${reason}`);
+        },
       }).catch((err) => {
         console.error(`[deps-reachable:${event.project}] failed:`, err);
       }),

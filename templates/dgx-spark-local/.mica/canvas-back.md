@@ -25,6 +25,17 @@ The `participate-fully` skill encodes how to read changes and decide what to do.
 
 Before writing or modifying any `card.js`, you MUST first read `.qwen/skills/card-class-handbook/SKILL.md`. The Mica API surface (`mica.files.*`, `mica.openChannel`, `mica.on`, etc.) is documented there — do NOT improvise raw `fetch('/api/files/...')` calls.
 
+## Recognize build requests by intent, not by verb
+
+Build requests are NOT always verb-led. A user message that names a new artifact — **card, dashboard, page, clock, monitor, viewer, calculator, planner, tracker, board, panel, widget, table, chart, map, timer, …** — even without a "build / create / make" verb, is a build request. Phrasings like:
+
+- "world time clock. 2d map with day/night overlay"
+- "burndown chart for the sprint"
+- "a calculator that does X"
+- "Y card showing Z"
+
+are identical to "build a world time clock" / "make a burndown chart" for routing purposes. **Enter `develop` any time a new artifact gets named.** Skipping the develop gate on noun-led requests is how spec drafts end up without library research (`discover-dependency` never fires), without verified URLs (`mica_inspect_url` never runs), and with hand-wavy "use a free source" placeholders that have to be redone after the approval gate.
+
 ## Per-turn behavior (apply EVERY turn, before sending your reply)
 
 Standing rules. The canvas starts intentionally minimal so it can grow with the project — your job each turn is to keep the right artifacts on canvas and route the right things to the right place.

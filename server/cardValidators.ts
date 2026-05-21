@@ -641,6 +641,7 @@ export async function enforceDependenciesReachable(
   absolutePath: string,
   opts: {
     onError?: (reason: string) => void;
+    onAdvisory?: (reason: string) => void;
   } = {},
 ): Promise<void> {
   const m = absolutePath.match(/\.mica\/card-classes\/([^/]+)\/metadata\.json$/);
@@ -691,12 +692,15 @@ export async function enforceDependenciesReachable(
 
   // For every reachable `scripts` URL, also check the format + deprecation.
   // A 200 OK with ESM contents is a silent failure mode — fetches fine but
-  // the library's namespace is undefined at runtime. Deprecation strings
-  // (Three.js r150+ UMD builds emit `console.warn('...deprecated...')` in
-  // their head) are a soft advisory — the URL works today but the agent
-  // should pivot before the next minor version drops UMD entirely. Both
-  // get caught at metadata-write time, saving 5–30 turns of "card renders
-  // blank with no clear error, why?" debugging.
+  // the library's namespace is undefined at runtime. That's a blocker and
+  // goes through onError.
+  //
+  // Deprecation strings (some UMD bundles emit `console.warn('...deprecated
+  // ...')` in their head) are different: the URL works today, the global
+  // is defined, the card renders. Surfacing it as a card-error puts the
+  // agent into an investigation/iteration loop on a non-blocker. Routed
+  // through onAdvisory (server-log only) so it stays observable without
+  // pulling the agent off a working state.
   const reachableScripts = results.filter((r) => r.ok && r.field === "scripts");
   const formatChecks = await Promise.all(
     reachableScripts.map((r) => checkScriptFormat(r.url).then((info) => ({ ...r, ...info }))),
@@ -707,6 +711,7 @@ export async function enforceDependenciesReachable(
   if (failures.length === 0 && esmInScripts.length === 0 && deprecatedScripts.length === 0) return;
 
   const sections: string[] = [];
+  const advisorySections: string[] = [];
 
   if (failures.length > 0) {
     const failureLines = failures
@@ -746,16 +751,16 @@ export async function enforceDependenciesReachable(
     const depLines = deprecatedScripts
       .map((f) => `  • \`dependencies.scripts\`: ${f.url}\n    Deprecation notice from the bundle: "${(f.deprecation ?? "").slice(0, 240)}"`)
       .join("\n");
-    sections.push(
-      `\`${dirName}/metadata.json\` declares URL(s) that work TODAY but the bundle itself emits a deprecation warning. The URL still loads as UMD and the library global gets defined — but the upstream library is signaling it will REMOVE this build in a future minor version. When that happens the URL will start returning 404 or non-UMD content, and this card will silently break.\n${depLines}\n\n` +
-      `Recommended fixes (pick one, in order of how aggressively to address):\n` +
-      `  1. PIN to an older, safer version. For Three.js, the last build with permanent UMD is \`three@0.146.0\`. Other libraries: check their release notes for the version where UMD was deprecated, pin to the prior release.\n` +
-      `  2. SWITCH to Pattern B (dynamic import inside card.js) so the card uses the library's recommended modern shape and isn't on the deprecation timeline at all. Empty \`metadata.scripts\`, then \`const NS = await import("<esm-url>");\` at the top of card.js.\n\n` +
-      `This is an ADVISORY — the card builds and runs. But the upstream warning is the canonical "this is going away" signal; addressing it now is cheaper than discovering the breakage in production later.`,
+    advisorySections.push(
+      `INFORMATIONAL — bundle deprecation notice on a working dependency. NOT a blocker; do NOT iterate if the card already renders.\n${depLines}\n\n` +
+      `The URL resolves, the bundle loads as UMD, and the global is defined. The maintainers have flagged this specific build for future removal — at some later date the URL may stop serving UMD. Until that happens the card works.\n\n` +
+      `If your most recent \`render_capture\` returned CLEAN or MATCHES, you are done — log this for awareness and stop. Don't switch versions or rewrite to Pattern B just to silence the warning.\n\n` +
+      `When you DO address it (a separate task, not this one): pin to an earlier release of the same library that doesn't emit the warning, OR move to ESM via \`await import("<esm-url>")\` inside card.js with empty \`metadata.scripts\`.`,
     );
   }
 
-  opts.onError?.(sections.join("\n\n"));
+  if (sections.length > 0) opts.onError?.(sections.join("\n\n"));
+  if (advisorySections.length > 0) opts.onAdvisory?.(advisorySections.join("\n\n"));
 }
 
 // (former enforceCardClassPath retired. The regex-based wrong-path detector

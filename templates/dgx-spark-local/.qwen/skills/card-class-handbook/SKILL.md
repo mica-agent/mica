@@ -1572,6 +1572,8 @@ The tool's result starts with one of eight verdict tags. Each maps to a single n
 
 CLEAN and MATCHES are terminal states: the next thing the agent emits should be the user-visible summary, not another tool call. Don't relitigate "is this really done?" — the tag is the signal.
 
+**Advisory findings do NOT reopen a terminal state.** A validator finding that is explicitly labeled `INFORMATIONAL` or `ADVISORY` (e.g. an upstream deprecation notice on a dependency that loaded successfully) is logged for awareness — not a build failure. If render_capture returned CLEAN or MATCHES and the only outstanding finding is an advisory on a dependency the card already uses successfully, you are done. Do not switch library versions, do not rewrite to a different load pattern, do not investigate alternatives. Write the summary and end. Treating advisories as required-to-fix turns a working card into a verify-loop on a non-problem.
+
 **MISMATCH is the most common new failure mode to attend to.** Before MATCHES existed, the agent's habit on a UX-correction turn was: edit → render_capture → CLEAN → "done!" → user re-reports the bug. With MISMATCH, the agent learns mid-turn that the edit didn't actually fix the visible problem and can iterate before the user is involved. **Always pass `user_intent` on UX-correction follow-up turns** so the loop short-circuits at agent-time instead of user-time.
 
 ### Card-error buffer can lag the file

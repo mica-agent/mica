@@ -29,6 +29,17 @@ Before writing or editing any card class:
 - Read the `card-class-handbook` skill (`.qwen/skills/card-class-handbook/SKILL.md`) — it's the canonical reference.
 - The skill ships dependency patterns, the canonical card.js skeleton, and pitfalls. Card authoring without reading it is the most common cause of broken builds.
 
+## Recognize build requests by intent, not by verb
+
+Build requests are NOT always verb-led. A user message that names a new artifact — **card, dashboard, page, clock, monitor, viewer, calculator, planner, tracker, board, panel, widget, table, chart, map, timer, …** — even without a "build / create / make" verb, is a build request. Phrasings like:
+
+- "world time clock. 2d map with day/night overlay"
+- "burndown chart for the sprint"
+- "a calculator that does X"
+- "Y card showing Z"
+
+are identical to "build a world time clock" / "make a burndown chart" for routing purposes. **Enter `develop` any time a new artifact gets named.** Skipping the develop gate on noun-led requests is how spec drafts end up without library research (`discover-dependency` never fires), without verified URLs (`mica_inspect_url` never runs), and with hand-wavy "use a free source" placeholders that have to be redone after the approval gate.
+
 ## Per-turn behavior
 
 - One arc per turn — write, verify, declare done OR describe what's pending. Don't chain unrelated work without re-asking.

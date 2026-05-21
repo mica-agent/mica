@@ -1,6 +1,6 @@
 ---
 name: develop
-description: FIRST tool call for any build-shaped request — "build / create / implement / make / write / design / ship / develop / construct" — for any artifact type (card class, standalone program, doc set). Owns plan-before-build, canvas-update, and doc-consistency invariants. Dispatches to artifact-specific skills (`card-class-handbook`, `decompose-task`) at the appropriate step. Invoke this BEFORE `decompose-task` or `card-class-handbook` — those are downstream specifics; develop is the universal gate. Skip ONLY for bug fixes (use `fix-bug`), pure Q&A, or when the user explicitly overrides ("just do it directly").
+description: FIRST tool call for any build-shaped request — for any artifact type (card class, standalone program, doc set). Triggers on EITHER (a) verb-led build phrasing — "build / create / implement / make / write / design / ship / develop / construct" — OR (b) **noun-led artifact naming**: when the user names a new artifact (card, dashboard, page, clock, monitor, viewer, calculator, planner, tracker, board, panel, widget, table, chart, map, timer, …) without an explicit build verb. "world time clock" / "burndown chart" / "task tracker" / "Y card that does Z" / "a Y for X" are all build requests even though they're noun-only. The lack of a verb doesn't change the intent — enter this skill ANY TIME a new artifact gets named. Owns plan-before-build, canvas-update, and doc-consistency invariants. Dispatches to artifact-specific skills (`card-class-handbook`, `decompose-task`) at the appropriate step. Invoke this BEFORE `decompose-task` or `card-class-handbook` — those are downstream specifics; develop is the universal gate. Skip ONLY for bug fixes (use `fix-bug`), pure Q&A about an existing artifact, or when the user explicitly overrides ("just do it directly", "skip the plan").
 ---
 
 # develop — top-level build flow
@@ -65,24 +65,28 @@ If you already advanced past the spec in your current turn (you noticed mid-stre
 First, identify the subproblems. For each subproblem that involves
 non-trivial domain work — rendering, time zones, sun/moon position,
 geo math, drag-and-drop, charts, parsing, audio, file diffing, etc.
-— invoke `skill('discover-dependency')`. Verify the libraries are
-reachable (CDN URLs return 200) before committing them to the
-spec. If a `<lib>-skills` package exists, install via
-`mica_install_skills` so the library's patterns are in your
-context for step 4+.
+— **you MUST invoke `skill('discover-dependency')` before writing
+the spec.** This is not a "should" or "when in doubt"; it is a
+prerequisite for the spec write. Verify the libraries are reachable
+(CDN URLs return 200) before committing them to the spec. If a
+`<lib>-skills` package exists, install via `mica_install_skills`
+so the library's patterns are in your context for step 4+.
 
-**Why research first.** Writing a spec before research presupposes
-you'll build everything from scratch, then forces a spec rewrite
-when research reveals a library does it for you. Library decisions
-shape architecture — surface them up front so the spec describes
-how to *compose* the libraries, not how to *reinvent* them. Mica
-should not be reluctant to take on a dependency; the discover step
-is cheap (≤30 seconds per subproblem) and produces a documented
-decision either way.
+**Why this is mandatory.** Skipping `discover-dependency` is the
+single most common failure mode of this flow. The agent recognizes
+the artifact, enters `develop`, drafts a spec from training prior —
+and the spec ends up specifying a bespoke implementation of a
+problem that has a well-known library or browser built-in solution.
+Caught after the approval gate, this forces a spec rewrite and
+loses the user's confidence in the planning step. The discover step
+takes ≤30 seconds per subproblem and produces a documented decision
+either way (library, asset, service, or "bespoke because Z").
 
 For subproblems that don't need external libs (string formatting,
-simple state, trivial DOM) — skip research; first-principles is
-right.
+simple state, trivial DOM) — `discover-dependency` still runs but
+returns quickly with the "bespoke" tag. Don't pre-judge which
+subproblems "obviously don't need" the skill; that's the
+training-prior trap.
 
 ### 2. Spec on canvas
 

@@ -28,7 +28,7 @@ Whenever you're about to design or implement a subproblem that pulls from outsid
 - **During spec drafting** (card-class builds via `card-class-handbook`): each entry in `## Subproblems and their solutions` goes through this skill.
 - **During plan writing** (decomposed builds via `task-decomposer`): each subcomponent with implementation logic goes through this skill; the chosen dependencies land in `interfaces.md § Dependency versions`.
 - **During bug fixes** (via `fix-bug`): if your fix would need >30 lines of new bespoke code, or pulls in a new external resource, run this skill first.
-- **Recursively, per subproblem.** Picking Leaflet for the map does NOT discharge discovery for sub-features built on top: a day/night terminator overlay is its own library subproblem (`leaflet.terminator`); the tile server is its own asset/service subproblem; the marker icons are their own asset subproblem.
+- **Recursively, per subproblem.** Picking one library to cover the main visual does NOT discharge discovery for sub-features built on top. Every named overlay, plugin-shaped behavior, or distinct visual element is its OWN subproblem — most popular UI libraries have a plugin ecosystem, and "library X with plugin Y" almost always beats "library X plus bespoke math reimplementing Y" on both correctness and lines-of-code. Tile servers, marker icons, and other ancillary resources are their own asset/service subproblems too.
 
 ## Step 0 — does Mica already provide this capability?
 
@@ -145,10 +145,10 @@ For each one, tag it:
 
 | Tag | What | Examples |
 |---|---|---|
-| **library** | Need executable JS code | 3D rendering → Three.js. Day/night terminator → leaflet.terminator. Markdown → Marked. |
-| **asset** | Need a file (image/audio/video/font/model/data) | Planet textures → JPG/PNG. Hero image → JPG. Avatar → PNG. Background music → MP3. Custom font → WOFF2. |
-| **service** | Need a live endpoint | Weather data → OpenWeather API. Stock price → Finnhub API. Map tiles → CartoDB/OSM tile server. |
-| **bespoke** | None of the above; write custom code (small math, static data, or a one-line wrapper around a browser built-in) | Solar elevation math (8 lines reusing existing values), small static data array, `Intl.DateTimeFormat`-based time formatting. |
+| **library** | Need executable JS code | Core visual primitives (rendering engines, chart libraries, map libraries, markdown renderers), AND plugins on top of those for distinct sub-features — overlays, controls, layout modes — that ship as their own package. |
+| **asset** | Need a file (image/audio/video/font/model/data) | Textures, hero images, avatars, background music, custom fonts, data files. |
+| **service** | Need a live endpoint | Weather, stock, map tile servers, geocoding, currency rates. |
+| **bespoke** | None of the above; write custom code | Trivial DOM glue, small static data arrays, one-line wrappers around browser built-ins. **Math or geometry that has an established library on the open ecosystem is NOT bespoke — it's a library subproblem you haven't searched yet.** |
 
 **Before classifying as `library`: check for a browser built-in.** A class of common needs has native browser APIs that are typically a one-liner. Preferring them avoids the entire library hunt and the bundle/version/loading complexity that follows:
 
@@ -166,6 +166,14 @@ For each one, tag it:
 | Clipboard | `navigator.clipboard.writeText/readText` | clipboard.js |
 
 **The rule**: if a need has a 5-line native solution, tag it `bespoke` ("uses built-in browser API"), not `library`. A 100-300KB external library wrapping a one-liner is a tax in download size, version pinning, bundle-variant selection, and script-loading order — for no functional gain. Card.js runs in a real browser; modern APIs are available.
+
+**Symmetric rule for the opposite mistake — bespoke gate.** Before tagging any subproblem as `bespoke` *for any reason other than "5-line browser-native solution exists"*, you MUST have completed a recall + at-least-one-search pass for a library that solves it. The shape to watch for is the thought "*this could be a library, or I could compute it myself*" — that's the exact moment to STOP and search, not the moment to default to "compute it myself." Reasons this is the dominant failure mode:
+
+- The agent's training corpus contains many examples of "here is the math formula for X," which makes a from-scratch implementation feel reachable.
+- A specialized library that solves X often has a smaller training footprint than the math formula, so the formula path feels MORE familiar than the library does — recall is biased toward bespoke even when a library would be far cleaner.
+- "I can do it in N lines" is a recall claim, not a verified one. Until you've actually typed the N lines AND debugged them, the real cost is unknown. The library you haven't searched for might be 1 line.
+
+**Gate**: if your draft classification table has any `bespoke` row whose subproblem is NOT in the browser-native table above (Intl, crypto.subtle, requestAnimationFrame, etc.), go run `mcp__tavily__tavily_search "<feature> <ecosystem-or-host-library> plugin"` or equivalent recall+verify for the library candidate BEFORE finalizing the classification. The spec/decisions table can land on `bespoke` legitimately — but only after a search rejected the library option, and the rejection reason is recorded.
 
 ### Step 3 — Walk each tagged subproblem through the matching procedure
 
@@ -308,16 +316,16 @@ The decisions MUST land in a canvas file before any code that depends on them sh
 ### 1. <subproblem>
 | Option | Type | URL | Verified | Notes |
 |---|---|---|---|---|
-| Leaflet@1.9.4 | library | https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js | 200, UMD | full-featured 2D map |
-| Leaflet CSS | asset | https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css | 200, data | required for layout |
-| D3.js + topojson | library | https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js | 200, UMD | more bespoke, finer control |
-| Bespoke Canvas 2D | — | — | ~200 lines | hand-roll projection + interactivity |
+| <library-A>@<version> | library | https://cdn.jsdelivr.net/npm/<pkg>@<version>/<path> | 200, UMD | full-featured option |
+| <library-A> CSS | asset | https://cdn.jsdelivr.net/npm/<pkg>@<version>/<css-path> | 200, data | required for layout |
+| <library-B> | library | https://cdn.jsdelivr.net/npm/<pkg>@<version>/<path> | 200, UMD | alternative; different trade-offs |
+| Bespoke | — | — | ~N lines | hand-roll; only after the candidates above are rejected |
 
 ## Suggested stacks
 | Stack | Picks |
 |---|---|
-| Leaflet | (1) Leaflet + CSS, (2) Leaflet.terminator, (3) Leaflet markers |
-| D3 | (1) D3 + topojson + world-atlas, (2) bespoke terminator math, (3) D3 SVG markers |
+| <library-A> | (1) core + CSS, (2) plugin for sub-feature X, (3) plugin for sub-feature Y |
+| <library-B> | (1) core, (2) alternate plugin for X, (3) alternate plugin for Y |
 ```
 
 The spec (location 1 above) THEN copies URLs verbatim from research's URL column — never introduce an unverified URL in the spec. Build phase consumes the spec; research is for user review.
@@ -333,8 +341,7 @@ The spec (location 1 above) THEN copies URLs verbatim from research's URL column
 | Camera interaction | bespoke | Manual fixed camera (10 lines) | OrbitControls is ESM-only in all distributed Three.js versions; manual camera math suffices for fixed orbit. |
 | Earth daymap texture | asset | `https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/earth_atmos_2048.jpg` (curl 200, CORS `*`) | Three.js examples mirror; CORS-enabled for WebGL use. |
 | Moon surface texture | asset | `https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/moon_1024.jpg` (curl 200, CORS `*`) | Same source as Earth; consistent pinning. |
-| Solar elevation math | bespoke | 8 lines | Reuses subsolar lat/lng we already compute; library overhead unjustified. |
-| City list (9 fixed cities) | bespoke | Static array | Just data, not a dependency. |
+| Body list (fixed roster of planets) | bespoke | Static array | Just data, not a dependency. |
 ```
 
 When recording in `decisions.md` instead of spec.md, prefix the section with the build it informs (e.g. `## Dependency decisions — moon-orbit card`).
@@ -356,7 +363,7 @@ The threshold: **if you'd write more than ~30 lines of bespoke code AND the prob
 
 ## When the user explicitly opts out
 
-If the user says *"no external libraries"* or *"keep it pure JS"* — respect that. Record the constraint in spec.md and skip future library/asset/service discovery. But ALWAYS confirm: *"You said no external libraries — that's a hard constraint, right? Some subproblems would need 100+ lines of custom code (e.g. day/night terminator)."* The user might mean "no charting library" but be fine with `leaflet`; ambiguous "no external dependencies" shouldn't be assumed without checking.
+If the user says *"no external libraries"* or *"keep it pure JS"* — respect that. Record the constraint in spec.md and skip future library/asset/service discovery. But ALWAYS confirm: *"You said no external libraries — that's a hard constraint, right? Some subproblems would need 100+ lines of custom code."* The user might mean "no charting library" but be fine with a map library; ambiguous "no external dependencies" shouldn't be assumed without checking.
 
 ## Anti-patterns
 
