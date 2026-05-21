@@ -20,6 +20,10 @@
 #
 # Env overrides:
 #   MICA_SKIP_PREFLIGHT=1   Skip all checks. Use in CI or when you know.
+#   MICA_AUTO_BUILD=1       If the image is missing or older than tracked
+#                           source files, auto-add --build to 'up'.
+#                           Without this, the script only WARNS — you decide
+#                           whether to re-invoke with --build.
 #   MICA_WORKSPACE=/path    Where projects live on the host. Default
 #                           \$HOME/mica-workspace. Deliberately NOT inside
 #                           the cloned repo.
@@ -192,9 +196,72 @@ check_workspace_dir() {
 check_image_built() {
   if ! docker image inspect mica:latest >/dev/null 2>&1; then
     warn "mica:latest not built locally — first 'up' will run 'docker compose build' (~5-10 min)"
-  else
-    pass "mica:latest image present locally"
+    NEEDS_BUILD=1
+    return
   fi
+
+  # Image is present. Check whether tracked source has moved since it was
+  # built. Watched paths cover everything `COPY . .` bakes into the runtime
+  # image; staleness here = the running container won't have your latest
+  # frontend bundle, server code, templates, or built artifacts. We compare
+  # the image's Created timestamp against the most-recent commit that
+  # touched any watched path.
+  local image_iso image_ts src_ts
+  local watched=(
+    Dockerfile
+    package.json
+    package-lock.json
+    server/
+    src/
+    templates/
+    scripts/
+    card-classes/
+  )
+  image_iso="$(docker image inspect mica:latest --format '{{.Created}}' 2>/dev/null || true)"
+  image_ts=$(date -d "$image_iso" +%s 2>/dev/null || echo 0)
+  src_ts=$(git log -1 --format=%ct -- "${watched[@]}" 2>/dev/null || echo 0)
+
+  if [ "$image_ts" -eq 0 ] || [ "$src_ts" -eq 0 ]; then
+    pass "mica:latest image present (freshness check skipped — no git or no timestamp)"
+    return
+  fi
+
+  if [ "$src_ts" -gt "$image_ts" ]; then
+    local stale_commit image_date
+    stale_commit=$(git log -1 --format='%h %s' -- "${watched[@]}" 2>/dev/null || echo "(unknown)")
+    image_date=$(date -d "$image_iso" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?")
+    warn "mica:latest is older than tracked source (image built $image_date)"
+    hint "rebuild: scripts/mica-compose.sh up --build   (or 'docker compose build mica' first)"
+    hint "last source touch: $stale_commit"
+    NEEDS_BUILD=1
+  else
+    pass "mica:latest present and current with tracked source"
+  fi
+}
+
+check_hf_token() {
+  # vLLM and HF Hub treat HF_TOKEN as the authenticated path: lifts rate
+  # limits on anonymous downloads and is required for gated models. The
+  # compose file's env_file directive picks it up from .env if present.
+  # The HF CLI ('huggingface-cli login') writes its token to
+  # ~/.cache/huggingface/token; we surface that path so a user who already
+  # logged in there doesn't have to be told twice.
+  if [ -f .env ] && grep -qE '^[[:space:]]*HF_TOKEN=.+' .env 2>/dev/null; then
+    pass "HF_TOKEN set in .env"
+    return
+  fi
+
+  local cli_token_path="$HOME/.cache/huggingface/token"
+  if [ -f "$cli_token_path" ] && [ -s "$cli_token_path" ]; then
+    warn "HF_TOKEN not in .env, but a token exists at ~/.cache/huggingface/token"
+    hint "use it:  echo \"HF_TOKEN=\$(cat $cli_token_path)\" >> .env"
+    hint "(public models still work without — first downloads will be throttled)"
+    return
+  fi
+
+  info "no HF token found (.env or $cli_token_path) — downloads will be unauthenticated"
+  hint "authenticate:  huggingface-cli login    then add HF_TOKEN=... to .env"
+  hint "(safe to skip — RedHatAI/Qwen3.6-35B-A3B-NVFP4 is public, just rate-limited)"
 }
 
 check_existing_models_volume() {
@@ -209,6 +276,7 @@ run_preflight() {
     info "MICA_SKIP_PREFLIGHT=1 — skipping all checks"
     return 0
   fi
+  NEEDS_BUILD=0
   check_docker_daemon
   check_docker_compose_v2
   check_gpu_visible_to_host
@@ -219,6 +287,7 @@ run_preflight() {
   check_hf_cache_dir_if_set
   check_workspace_dir
   check_image_built
+  check_hf_token
   check_existing_models_volume
   if [ "$FAILED" -eq 1 ]; then
     printf '\n%spreflight failed%s — fix the issues above, or set MICA_SKIP_PREFLIGHT=1 to bypass.\n' \
@@ -232,7 +301,18 @@ run_preflight() {
 cmd_up() {
   run_preflight
   title "docker compose up"
-  exec docker compose up "$@"
+  # If preflight flagged a stale (or missing) image AND MICA_AUTO_BUILD=1,
+  # silently inject --build. Otherwise the user already saw the warning
+  # and a remediation hint — leave the decision to them. Avoid duplicating
+  # --build if they already passed it on the command line.
+  local args=("$@")
+  if [ "${NEEDS_BUILD:-0}" = "1" ] \
+     && [ "${MICA_AUTO_BUILD:-0}" = "1" ] \
+     && ! printf '%s\n' "${args[@]}" | grep -qx -- '--build'; then
+    info "MICA_AUTO_BUILD=1 and image is stale — adding --build"
+    args=("--build" "${args[@]}")
+  fi
+  exec docker compose up "${args[@]}"
 }
 
 cmd_doctor() {
@@ -271,6 +351,8 @@ Subcommands:
 
 Environment overrides:
   MICA_SKIP_PREFLIGHT=1     Bypass all checks (CI).
+  MICA_AUTO_BUILD=1         Auto-add --build when the image is stale or missing.
+                            Without this, the script only WARNS.
   MICA_WORKSPACE=/path      Where projects live on the host.
                             Default: \$HOME/mica-workspace (matches install.sh).
                             NOT inside the cloned repo.
