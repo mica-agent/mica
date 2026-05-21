@@ -63,6 +63,13 @@ Prereqs: Docker + [NVIDIA Container
 Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 Open http://localhost:5173 once it's up.
 
+**For voice from another device** (laptop, phone) you need HTTPS —
+the browser blocks microphone access on plain HTTP except on
+`localhost`. The shipped `scripts/https-on.sh` fronts Mica with
+Tailscale Serve (tailnet-internal, not public). See
+[QUICKSTART § Remote access + audio](QUICKSTART.md). On the
+DGX Spark host itself, `http://localhost:5173` works as-is.
+
 ## Trust model
 
 Mica is a **single-user tool**. There is no API authentication.

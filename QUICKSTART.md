@@ -112,6 +112,40 @@ the host docker socket (docker-outside-of-docker, configured in
 Lifecycle: `scripts/start.sh`, `scripts/stop.sh`, `scripts/restart.sh`,
 `scripts/status.sh`. See `CLAUDE.md` for the development guide.
 
+## Remote access + audio (Tailscale)
+
+**Required if you want voice from a different device.** Browser
+microphones (`getUserMedia` / `MediaRecorder`) only work over HTTPS
+— with one exception: `localhost`. So the `.voice` card works
+out of the box when you're on the DGX Spark itself
+(`http://localhost:5173`), but **does not work** when you open
+Mica from another machine over `http://<host-ip>:5173`. You need an
+HTTPS URL.
+
+The simplest setup is **Tailscale Serve**, which terminates HTTPS
+for you without exposing Mica to the public internet (the URL is
+reachable only from devices signed into your tailnet). From the
+**host shell** (NOT the devcontainer):
+
+    bash scripts/https-on.sh
+
+The script confirms `tailscale` is installed and authenticated,
+runs `tailscale serve --bg 5173`, and prints the tailnet URL —
+something like `https://your-host.your-tailnet.ts.net/`. Open
+that on any device signed into your tailnet (laptop, phone, iPad);
+audio works.
+
+Stop with:
+
+    bash scripts/https-off.sh
+
+Prereqs: install Tailscale (`curl -fsSL https://tailscale.com/install.sh | sh`),
+`sudo tailscale up`, sign into your tailnet. The script will point
+you at the installer if Tailscale isn't on the host.
+
+If you're local on the DGX Spark, you don't need any of this — open
+`http://localhost:5173` and audio works.
+
 ## Lifecycle (Paths 1 & 2)
 
     ./scripts/mica-compose.sh status   # services + URLs
