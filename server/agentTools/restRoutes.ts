@@ -11,7 +11,10 @@ import {
   AGENT_TOOL_PROJECT_HEADER,
   AGENT_TOOL_CHAT_FILENAME_HEADER,
   getLastActiveOpencodeProject,
+  getOpencodeSessionProject,
 } from "./registry.js";
+
+const AGENT_TOOL_OPENCODE_SESSION_HEADER = "x-mica-opencode-session-id";
 
 export function registerAgentToolRoutes(app: Express): void {
   // Discovery endpoint — the opencode stdio MCP bridge fetches this at
@@ -50,12 +53,21 @@ export function registerAgentToolRoutes(app: Express): void {
         return;
       }
 
-      // Project context — header takes priority. If absent, fall back to
-      // the last-active opencode session's project (the bridge can't easily
-      // pass session-scoped headers; see registry.ts comment).
+      // Project context, in priority order:
+      //   1. X-Mica-Project header — explicit, used by qwen/Claude SDKs.
+      //   2. X-Mica-Opencode-Session-Id header — stamped on by the
+      //      opencode bridge from the per-call session ID injected by
+      //      opencodePlugin.mjs. Maps back to project via the per-session
+      //      map in registry.ts. This is what gives concurrent opencode
+      //      sessions correct, race-free routing.
+      //   3. Last-active opencode project — legacy fallback for when the
+      //      plugin failed to load (or this is somehow a pre-plugin
+      //      caller). Single-active-session case still works.
       const headerProject = req.header(AGENT_TOOL_PROJECT_HEADER);
+      const headerOcSession = req.header(AGENT_TOOL_OPENCODE_SESSION_HEADER);
       const project: string | null =
         (typeof headerProject === "string" && headerProject.trim()) ? headerProject.trim() :
+        getOpencodeSessionProject(typeof headerOcSession === "string" ? headerOcSession.trim() : null) ??
         getLastActiveOpencodeProject();
 
       // Chat-card filename of the originating agent session, used by

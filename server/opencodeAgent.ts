@@ -55,7 +55,11 @@ import { getFreshPendingValidatorErrors, getRecentlyClearedFlaps } from "./valid
 import { flushProjectPendingErrors } from "./cardErrorBuffer.js";
 import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
 import { markProjectActivity } from "./projectActivity.js";
-import { setLastActiveOpencodeProject } from "./agentTools/registry.js";
+import {
+  setLastActiveOpencodeProject,
+  registerOpencodeSession,
+  unregisterOpencodeSession,
+} from "./agentTools/registry.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { getOpencodeServer } from "./opencodeServer.js";
@@ -557,7 +561,12 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
     let ocSessionId: string | null = null;
 
     async function ensureOpencodeSession(): Promise<string> {
-      if (ocSessionId) return ocSessionId;
+      if (ocSessionId) {
+        // Already resolved this turn; ensure the map mirrors current state
+        // in case sessionProject changed (it shouldn't, but cheap insurance).
+        registerOpencodeSession(ocSessionId, sessionProject);
+        return ocSessionId;
+      }
       const sidecar = await loadSidecar(chatId, sessionProject);
       const { client } = await getOpencodeServer();
       if (sidecar) {
@@ -568,6 +577,9 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
           const got = await client.session.get({ path: { id: sidecar.sessionID } });
           if (got && (got.data || got.error === undefined)) {
             ocSessionId = sidecar.sessionID;
+            // Map this session ID to its project so per-tool-call routing
+            // works as soon as the bridge sends the first call.
+            registerOpencodeSession(ocSessionId, sessionProject);
             return ocSessionId;
           }
         } catch {
@@ -584,6 +596,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         throw new Error(`opencode session.create returned no id: ${errBody}`);
       }
       ocSessionId = newId;
+      registerOpencodeSession(ocSessionId, sessionProject);
       await saveSidecar(chatId, sessionProject, { sessionID: newId });
       console.log(`[opencode-agent] created session ${newId.slice(0, 8)} for ${ctx.filename}`);
       return newId;
@@ -1506,6 +1519,11 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         if (tuiAbort) {
           try { tuiAbort.abort(); } catch { /* ignore */ }
         }
+        // Drop this session's project mapping so the per-session map in
+        // registry.ts doesn't accumulate entries for destroyed cards. The
+        // opencode session itself stays on disk (reload via sidecar
+        // re-registers), so this is just for the in-memory map.
+        if (ocSessionId) unregisterOpencodeSession(ocSessionId);
         // Best-effort: abort any in-flight prompt. The session itself stays
         // on the opencode server (so reload reuses it via sidecar); we only
         // tear down OUR subscription + active turn.

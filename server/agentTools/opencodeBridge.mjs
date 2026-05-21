@@ -19,11 +19,15 @@
 // model still gets full param guidance from the description text,
 // which the registry writes generously for exactly this reason.
 //
-// Project resolution: the bridge omits the X-Mica-Project header —
-// one bridge serves all sessions, so it can't know which session is
-// calling. Mica falls back to the last-active opencode project (set
-// via setLastActiveOpencodeProject from opencodeAgent.ts on each
-// turn start). See registry.ts for the full rationale.
+// Project resolution: opencodePlugin.mjs (loaded into opencode-serve
+// at startup via config.plugin) stamps the calling session's ID onto
+// each mica-builtins tool call's args under `_mica_session_id`. The
+// bridge reads that off, removes it, and sends it as the
+// `x-mica-opencode-session-id` header. Mica's REST handler maps the
+// ID back to a project via a per-session map kept in registry.ts.
+// Concurrent sessions route correctly with no global state to race on.
+// Falls back to the legacy last-active-project global when the stamp
+// is missing (plugin failed to load, non-opencode caller, etc.).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -104,16 +108,26 @@ for (const t of tools) {
       inputSchema: buildInputSchema(t.params),
     },
     async (args) => {
-      // args arrives as the parsed top-level object the model produced.
-      // No unwrapping needed — fields match the registry's input shape.
-      const payload = args ?? {};
+      // args arrives as the parsed top-level object the model produced,
+      // possibly with `_mica_session_id` stamped on by opencodePlugin.mjs
+      // (see the project-resolution note at the top of this file).
+      const payload = { ...(args ?? {}) };
+      const ocSessionId = typeof payload._mica_session_id === "string"
+        ? payload._mica_session_id
+        : null;
+      // Strip the synthetic field before forwarding — Mica's REST handler
+      // validates the body against the tool's zod schema, which doesn't
+      // know about `_mica_session_id`.
+      delete payload._mica_session_id;
+      const headers = {
+        "Content-Type": "application/json",
+        "x-mica-agent-auth": AUTH,
+      };
+      if (ocSessionId) headers["x-mica-opencode-session-id"] = ocSessionId;
       try {
         const res = await fetch(`${MICA_BASE}${t.restPath}`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-mica-agent-auth": AUTH,
-          },
+          headers,
           body: JSON.stringify(payload),
         });
         if (!res.ok) {

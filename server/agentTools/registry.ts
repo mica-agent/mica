@@ -118,23 +118,49 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
 // ── Project resolution for opencode bridge ───────────────────────────
 //
 // opencode-serve is a single daemon shared across all .opencode card
-// sessions in a backend's lifetime. The opencode MCP bridge spawns once
-// (per opencode-serve, not per session) and forwards tool calls into
-// /api/tools/* — but the bridge itself doesn't naturally know which
-// project a particular tool call is "for" (MCP tool calls don't carry
-// session context).
+// sessions in a backend's lifetime, and the mica-builtins MCP bridge
+// (opencodeBridge.mjs) is one child process serving all of them.
+// Naïvely the bridge can't tell which session originated a tool call —
+// opencode 1.15.5 doesn't propagate session context through MCP _meta
+// (verified empirically; see upstream issue #15117).
 //
-// Workaround for v1: opencodeAgent.ts publishes the project of each
-// session as that session takes a turn (its `processMessage` fires).
-// Mica's REST endpoints fall back to this published project when the
-// X-Mica-Project header isn't on the incoming request. For typical
-// 1-2 active sessions, this resolves correctly — the active session
-// is the one calling the tool.
+// Fix: server/agentTools/opencodePlugin.mjs is loaded into opencode-
+// serve at startup via config.plugin. Its `tool.execute.before` hook
+// fires per tool call WITH the calling sessionID, and stamps it onto
+// the tool's args. The bridge reads that stamp off, removes it, and
+// forwards it as the `x-mica-opencode-session-id` header. This
+// `opencodeSessionProjects` map (populated by opencodeAgent.ts as
+// sessions attach) lets the REST handler map that ID back to a
+// project — per-call, no race, full concurrency.
 //
-// For multi-session pathologies (two opencode sessions running tool
-// calls concurrently), this can race and pick the wrong project. Real
-// fix: propagate session ID through MCP request metadata. Defer — the
-// 99% case is single-session-active.
+// The legacy `lastActiveOpencodeProject` global is kept as a fallback
+// for: (a) the plugin failing to load, (b) non-opencode callers, and
+// (c) graceful migration. resolveOpencodeProject() prefers the per-
+// session map and only falls back to the global when no mapping exists.
+
+const opencodeSessionProjects = new Map<string, string>();
+
+/** Map an opencode session ID to the Mica project it belongs to.
+ *  Idempotent. Called by opencodeAgent.ts on session attach. */
+export function registerOpencodeSession(sessionId: string, project: string | null): void {
+  if (!sessionId || !project) return;
+  opencodeSessionProjects.set(sessionId, project);
+}
+
+/** Remove a session's mapping. Called by opencodeAgent.ts in onDestroy
+ *  to keep the map bounded across long-lived backends. */
+export function unregisterOpencodeSession(sessionId: string): void {
+  if (!sessionId) return;
+  opencodeSessionProjects.delete(sessionId);
+}
+
+/** Look up the project for an opencode session ID. Returns null when
+ *  the session isn't registered (e.g. the session was created before
+ *  this backend started, or the agent hasn't attached yet). */
+export function getOpencodeSessionProject(sessionId: string | null | undefined): string | null {
+  if (!sessionId) return null;
+  return opencodeSessionProjects.get(sessionId) ?? null;
+}
 
 let lastActiveOpencodeProject: string | null = null;
 

@@ -141,6 +141,16 @@ export async function buildOpencodeConfig(): Promise<Config> {
 
   if (Object.keys(mcp).length > 0) config.mcp = mcp;
 
+  // Mica's opencode plugin — stamps the calling session's ID onto every
+  // mica-builtins tool call's args. The bridge reads it off, sends it as
+  // a header, and Mica's REST handler maps the ID back to a project.
+  // Without this, two concurrent .opencode sessions racing tool calls
+  // would route through a single global "last active project" that one
+  // of them just overwrote. See server/agentTools/opencodePlugin.mjs
+  // for the full rationale and upstream issue #15117.
+  const pluginPath = join(dirname(fileURLToPath(import.meta.url)), "agentTools", "opencodePlugin.mjs");
+  config.plugin = [pluginPath];
+
   return config;
 }
 
