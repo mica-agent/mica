@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# mica-compose.sh — production quickstart wrapper around docker-compose.
+# mica-compose.sh — release-friendly quickstart wrapper around docker-compose.
 #
 # Front-loads named pre-flight checks so the common failure modes (no GPU
 # passthrough, port conflict, low disk) surface as one-line errors with
 # remedies BEFORE compose starts pulling 30 GB of model weights.
 #
 # This is the COMPOSE path: two sibling containers (mica + mica-vllm) for
-# the production vLLM serving stack. For the single-container llama-cpp
+# the release vLLM serving stack. For the single-container llama-cpp
 # alternative, use ./install.sh (first run) + bash scripts/mica.sh start
 # (subsequent lifecycle).
 #
 # Subcommands:
 #   up        Pre-flight, then `docker compose up`. Default.
 #   doctor    Pre-flight only. Print pass/fail per check, exit non-zero on fail.
+#   status    Show service state + URLs.
 #   stop      `docker compose down` (preserves volumes).
 #   nuke      `docker compose down -v` (deletes volumes — confirms first).
 #   logs      `docker compose logs -f` (tail all services).
@@ -31,7 +32,8 @@
 #                           instead of using the named volume.
 #   MICA_VLLM_IMAGE=...     Override the vLLM image (e.g. a digest pin).
 #   MICA_FRONTEND_PORT      Default 5173. Override on port conflict.
-#   MICA_BACKEND_PORT       Default 3002. Override on port conflict.
+#   MICA_PORT               Default 3002. Override on port conflict.
+#                           (Legacy MICA_BACKEND_PORT honored as fallback.)
 #   USER_UID, USER_GID      Default 1000:1000. Override if host UID differs.
 
 set -euo pipefail
@@ -42,7 +44,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 FRONTEND_PORT="${MICA_FRONTEND_PORT:-5173}"
-BACKEND_PORT="${MICA_BACKEND_PORT:-3002}"
+# Backend port name standardized on MICA_PORT (matches what server/index.ts
+# reads). Legacy MICA_BACKEND_PORT is honored as a fallback so older
+# `.env` files and CI configs keep working.
+BACKEND_PORT="${MICA_PORT:-${MICA_BACKEND_PORT:-3002}}"
 MIN_DISK_GB=40
 
 # Default workspace lives at $HOME/mica-workspace (matches install.sh's
@@ -282,7 +287,7 @@ run_preflight() {
   check_gpu_visible_to_host
   check_gpu_passthrough
   check_port_free "$FRONTEND_PORT" "MICA_FRONTEND_PORT"
-  check_port_free "$BACKEND_PORT"  "MICA_BACKEND_PORT"
+  check_port_free "$BACKEND_PORT"  "MICA_PORT"
   check_disk_space
   check_hf_cache_dir_if_set
   check_workspace_dir
@@ -319,6 +324,41 @@ cmd_doctor() {
   run_preflight
 }
 
+cmd_status() {
+  # Show compose-stack state + URLs. Lighter-weight than docker compose ps
+  # because we don't want to require the user to remember which file is
+  # the compose project root. `--format json` keeps the parse stable
+  # across docker compose versions.
+  title "Mica compose status"
+  if ! command -v docker >/dev/null 2>&1; then
+    fail "docker not on PATH"
+    return 1
+  fi
+  if ! docker compose ps --format '{{.Service}}|{{.State}}|{{.Status}}' >/tmp/mica-compose-ps.$$ 2>/dev/null; then
+    fail "docker compose ps failed — is the compose stack initialized in this directory?"
+    rm -f /tmp/mica-compose-ps.$$
+    return 1
+  fi
+  if [ ! -s /tmp/mica-compose-ps.$$ ]; then
+    info "no services running"
+    info "(run 'scripts/mica-compose.sh up' to start)"
+    rm -f /tmp/mica-compose-ps.$$
+    return 0
+  fi
+  printf '\n  %-12s  %-10s  %s\n' "SERVICE" "STATE" "STATUS"
+  printf '  %-12s  %-10s  %s\n'   "-------" "-----" "------"
+  while IFS='|' read -r svc state status; do
+    printf '  %-12s  %-10s  %s\n' "$svc" "$state" "$status"
+  done < /tmp/mica-compose-ps.$$
+  rm -f /tmp/mica-compose-ps.$$
+  echo
+  echo "  UI:  http://localhost:$FRONTEND_PORT/"
+  echo "  API: http://localhost:$BACKEND_PORT/api"
+  echo
+  echo "  ${C_DIM}logs:  scripts/mica-compose.sh logs${C_RESET}"
+  echo "  ${C_DIM}stop:  scripts/mica-compose.sh stop${C_RESET}"
+}
+
 cmd_stop() {
   exec docker compose down "$@"
 }
@@ -337,13 +377,14 @@ cmd_logs() {
 
 cmd_help() {
   cat <<EOF
-mica-compose.sh — production-friendly wrapper around docker-compose.
+mica-compose.sh — release-friendly wrapper around docker-compose.
 
 Usage: scripts/mica-compose.sh <subcommand> [args...]
 
 Subcommands:
   up        Run preflight checks, then 'docker compose up'. Default.
   doctor    Run preflight checks only. Useful before committing to a model download.
+  status    Show running services + URLs.
   stop      'docker compose down' — graceful stop, preserves volumes.
   nuke      'docker compose down -v' — also deletes volumes (with confirmation).
   logs      'docker compose logs -f' — tail all service logs.
@@ -359,7 +400,8 @@ Environment overrides:
   HF_CACHE_DIR=/path        Bind-mount a host HF cache instead of the named volume.
   MICA_VLLM_IMAGE=...       Override the vLLM image (e.g. a digest pin).
   MICA_FRONTEND_PORT        Default 5173.
-  MICA_BACKEND_PORT         Default 3002.
+  MICA_PORT                 Default 3002 (backend; matches what server reads).
+                            Legacy MICA_BACKEND_PORT honored as fallback.
   USER_UID, USER_GID        Default 1000:1000.
 
 For the single-container llama-cpp path (no vLLM sibling), see:
@@ -374,6 +416,7 @@ shift || true
 case "$sub" in
   up)              cmd_up "$@" ;;
   doctor)          cmd_doctor ;;
+  status|ps)       cmd_status ;;
   stop|down)       cmd_stop "$@" ;;
   nuke)            cmd_nuke "$@" ;;
   logs)            cmd_logs "$@" ;;

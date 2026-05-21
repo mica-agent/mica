@@ -18,7 +18,7 @@ scripts themselves live at `scripts/sidecars/voice-{stt,tts}-server.py`.
 ## When to run install.sh
 
 - **Devcontainer first boot** — run once per fresh workspace.
-- **Dockerfile build** — the production image runs it automatically at build time so the venv is baked into the container; `Dockerfile` references `bash scripts/voice/install.sh`.
+- **Dockerfile build** — the release image runs it automatically at build time so the venv is baked into the container; `Dockerfile` references `bash scripts/voice/install.sh`.
 
 ```bash
 bash scripts/voice/install.sh

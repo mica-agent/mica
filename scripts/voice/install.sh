@@ -60,7 +60,7 @@ fi
 # expose the sidecar HTTP surface. silero-vad gates the voice card's
 # capture pipeline (start-of-speech / end-of-speech detection).
 #
-# Pinned versions are intentional — production sidecars need
+# Pinned versions are intentional — release sidecars need
 # reproducible behavior. Bump as needed but verify both sidecars still
 # start cleanly after the change.
 say "Upgrading pip + installing deps (this may take 2–5 min on first run) ..."

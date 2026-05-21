@@ -11,7 +11,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # different concern from the local PROJECT_DIR on line ~32, which is
 # repurposed as the repo-root location for cd / PID files. Without
 # preserving this, containers that set ENV PROJECT_DIR=/project (the
-# production Dockerfile + docker-compose) would have it stomped by the
+# release Dockerfile + docker-compose) would have it stomped by the
 # /workspaces/testproj dev fallback at line ~94.
 _INHERITED_PROJECT_DIR="${PROJECT_DIR:-}"
 
@@ -52,7 +52,7 @@ kill_port() {
     # Only kill mica-related processes — never VSCode's port forwarder
     # (killing that tears down the SSH session). REPO_ROOT matches the
     # repo path regardless of where it's checked out (/workspaces/mica
-    # in the devcontainer; /opt/mica in the production image; etc.).
+    # in the devcontainer; /opt/mica in the release image; etc.).
     if [[ "$args" == *"$REPO_ROOT/"* ]] || [[ "$args" == *"vite"* ]] || [[ "$args" == *"tsx"* && "$args" == *"server/index.ts"* ]]; then
       echo "Port $port held by PID $pid ($(echo "$args" | head -c 80))"
       echo "  Killing..."
@@ -104,7 +104,7 @@ cd "$PROJECT_DIR"
 
 # Set workspace directory for the server. Priority:
 #   1. PROJECT_DIR_OVERRIDE (explicit caller override)
-#   2. Inherited PROJECT_DIR from env (production Dockerfile / compose
+#   2. Inherited PROJECT_DIR from env (release Dockerfile / compose
 #      set ENV PROJECT_DIR=/project; this honors that)
 #   3. Dev default /workspaces/testproj (only fires outside containers)
 export PROJECT_DIR="${PROJECT_DIR_OVERRIDE:-${_INHERITED_PROJECT_DIR:-/workspaces/testproj}}"

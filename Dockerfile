@@ -1,4 +1,4 @@
-# Mica production runtime image (for VS Code development, use
+# Mica release runtime image (for VS Code development, use
 # .devcontainer/Dockerfile — which shares this base, so the cuDNN /
 # Python posture is identical across both).
 #

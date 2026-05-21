@@ -1,19 +1,11 @@
 #!/usr/bin/env bash
 # Mica — one-line install for DGX Spark.
 #
-# STATUS: not yet the documented install path. Until the repo is
-# public, raw.githubusercontent.com URLs aren't accessible to
-# strangers without a PAT, so this script can't be the primary
-# entrypoint. The README currently leads with a raw `docker run`
-# one-liner (Pattern A: "the docker image is the install", same
-# as Open WebUI, Gitea, etc.). This file is ready to be the
-# documented fastpath once the repo flips public — the install
-# line will be:
+# Released form (curl|bash):
 #
 #   curl -fsSL https://raw.githubusercontent.com/robchang/mica/mica-lite/install.sh | bash
 #
-# Until then it's still directly invocable for local/private
-# testing: `bash ./install.sh`.
+# Also directly invocable from a local checkout: `bash ./install.sh`.
 #
 # This script:
 #   1. Preflight-checks the host (docker + NVIDIA Container Toolkit + arm64).
@@ -27,9 +19,11 @@
 #   MICA_IMAGE=ghcr.io/...:0.1.0   pin to a specific image tag
 #   MICA_DISABLE_LLAMA=1           skip llama-server (OpenRouter-only)
 #   MICA_MOUNT_CLAUDE=1            bind-mount ~/.claude for Claude Code cards
-#   MICA_PORT_BACKEND=3002         override port mappings
-#   MICA_PORT_FRONTEND=5173
-#   MICA_PORT_LLAMA=8012
+#   MICA_PORT=3002                 override backend port mapping
+#   MICA_FRONTEND_PORT=5173        override frontend port mapping
+#   MICA_LLAMA_PORT=8012           override llama-server port mapping
+# (The legacy MICA_PORT_BACKEND / MICA_PORT_FRONTEND / MICA_PORT_LLAMA
+# names are still honored as fallbacks for older docs.)
 
 set -euo pipefail
 
@@ -46,12 +40,18 @@ warn() { printf '%s!%s %s\n' "$C_WARN" "$C_RESET" "$*" >&2; }
 die()  { printf '%sError:%s %s\n' "$C_ERR" "$C_RESET" "$*" >&2; exit 1; }
 
 # ── Tweakable defaults (env-var overrides above). ──
+# Port env vars: MICA_PORT (backend), MICA_FRONTEND_PORT (frontend),
+# MICA_LLAMA_PORT (llama-server inside the container). These names match
+# what server/index.ts and vite.config.ts read at runtime, so .env files
+# and shell exports work the same across install.sh / mica.sh / start.sh.
+# Legacy MICA_PORT_BACKEND / MICA_PORT_FRONTEND / MICA_PORT_LLAMA are
+# honored as fallbacks for older docs.
 WORKSPACE="${MICA_WORKSPACE:-$HOME/mica-workspace}"
 IMAGE="${MICA_IMAGE:-ghcr.io/robchang/mica:latest}"
 NAME="${MICA_CONTAINER:-mica}"
-PORT_BACKEND="${MICA_PORT_BACKEND:-3002}"
-PORT_FRONTEND="${MICA_PORT_FRONTEND:-5173}"
-PORT_LLAMA="${MICA_PORT_LLAMA:-8012}"
+PORT_BACKEND="${MICA_PORT:-${MICA_PORT_BACKEND:-3002}}"
+PORT_FRONTEND="${MICA_FRONTEND_PORT:-${MICA_PORT_FRONTEND:-5173}}"
+PORT_LLAMA="${MICA_LLAMA_PORT:-${MICA_PORT_LLAMA:-8012}}"
 VOLUME_MODELS="${MICA_MODEL_VOLUME:-mica-models}"
 
 # ── Preflight: docker + NVIDIA Container Toolkit + arch ──
@@ -105,6 +105,25 @@ else
   warn "    sudo chown -R 1000:1000 $WORKSPACE"
 fi
 
+# ── HuggingFace token (recommended) ──
+# The first chat dispatch downloads ~22 GB of GGUF weights from HF Hub.
+# Unauthenticated requests hit rate limits; the HF CLI's saved token at
+# ~/.cache/huggingface/token (from `huggingface-cli login`) is the
+# easiest source. If neither is set, downloads still work — just
+# slower.
+HF_TOKEN_RESOLVED=""
+if [ -n "${HF_TOKEN:-}" ]; then
+  HF_TOKEN_RESOLVED="$HF_TOKEN"
+  ok "HF_TOKEN set in environment"
+elif [ -f "$HOME/.cache/huggingface/token" ] && [ -s "$HOME/.cache/huggingface/token" ]; then
+  HF_TOKEN_RESOLVED="$(cat "$HOME/.cache/huggingface/token")"
+  ok "HF_TOKEN read from ~/.cache/huggingface/token"
+else
+  warn "HF_TOKEN not set (rate limits apply for the first ~22 GB download)"
+  warn "  authenticate with: huggingface-cli login   then re-run this script"
+  warn "  (public models still work without — just throttled)"
+fi
+
 # ── Image pull (explicit so user sees progress) ──
 say ""
 say "Pulling $IMAGE (first run downloads ~10 GB) …"
@@ -137,6 +156,10 @@ RUN_ARGS=(
 if [ "${MICA_DISABLE_LLAMA:-0}" = "1" ]; then
   RUN_ARGS+=( -e MICA_DISABLE_LLAMA=1 )
   ok "llama-server disabled (OpenRouter-only mode)"
+fi
+
+if [ -n "$HF_TOKEN_RESOLVED" ]; then
+  RUN_ARGS+=( -e "HF_TOKEN=$HF_TOKEN_RESOLVED" )
 fi
 
 if [ "${MICA_MOUNT_CLAUDE:-0}" = "1" ]; then

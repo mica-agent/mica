@@ -28,12 +28,15 @@ warn() { printf '%s!%s %s\n' "$C_WARN" "$C_RESET" "$*" >&2; }
 die()  { printf '%sError:%s %s\n' "$C_ERR" "$C_RESET" "$*" >&2; exit 1; }
 
 # ── Defaults (mirror install.sh) ─────────────────────────────────
+# Port env vars match what server/index.ts and vite.config.ts read at
+# runtime (MICA_PORT / MICA_FRONTEND_PORT). Legacy MICA_PORT_BACKEND /
+# MICA_PORT_FRONTEND / MICA_PORT_LLAMA are honored as fallbacks.
 WORKSPACE="${MICA_WORKSPACE:-$HOME/mica-workspace}"
 IMAGE="${MICA_IMAGE:-ghcr.io/robchang/mica:latest}"
 NAME="${MICA_CONTAINER:-mica}"
-PORT_BACKEND="${MICA_PORT_BACKEND:-3002}"
-PORT_FRONTEND="${MICA_PORT_FRONTEND:-5173}"
-PORT_LLAMA="${MICA_PORT_LLAMA:-8012}"
+PORT_BACKEND="${MICA_PORT:-${MICA_PORT_BACKEND:-3002}}"
+PORT_FRONTEND="${MICA_FRONTEND_PORT:-${MICA_PORT_FRONTEND:-5173}}"
+PORT_LLAMA="${MICA_LLAMA_PORT:-${MICA_PORT_LLAMA:-8012}}"
 VOLUME_MODELS="${MICA_MODEL_VOLUME:-mica-models}"
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -103,6 +106,18 @@ cmd_start() {
       if [ "${MICA_DISABLE_LLAMA:-0}" = "1" ]; then
         run_args+=( -e MICA_DISABLE_LLAMA=1 )
         ok "llama-server disabled (OpenRouter-only mode)"
+      fi
+      # HF_TOKEN: same resolution as install.sh — env wins, otherwise
+      # source the huggingface-cli token file if present. Skipped if
+      # neither is set (downloads work, just rate-limited).
+      local hf_token=""
+      if [ -n "${HF_TOKEN:-}" ]; then
+        hf_token="$HF_TOKEN"
+      elif [ -f "$HOME/.cache/huggingface/token" ] && [ -s "$HOME/.cache/huggingface/token" ]; then
+        hf_token="$(cat "$HOME/.cache/huggingface/token")"
+      fi
+      if [ -n "$hf_token" ]; then
+        run_args+=( -e "HF_TOKEN=$hf_token" )
       fi
       if [ "${MICA_MOUNT_CLAUDE:-0}" = "1" ]; then
         local claude_dir="${MICA_CLAUDE_DIR:-$HOME/.claude}"
@@ -209,12 +224,14 @@ Env-var overrides (mirror install.sh):
   MICA_WORKSPACE      host workspace dir   (default: \$HOME/mica-workspace)
   MICA_IMAGE          docker image         (default: ghcr.io/robchang/mica:latest)
   MICA_CONTAINER      container name       (default: mica)
-  MICA_PORT_BACKEND   backend host port    (default: 3002)
-  MICA_PORT_FRONTEND  frontend host port   (default: 5173)
-  MICA_PORT_LLAMA     llama-server port    (default: 8012)
+  MICA_PORT           backend host port    (default: 3002)
+  MICA_FRONTEND_PORT  frontend host port   (default: 5173)
+  MICA_LLAMA_PORT     llama-server port    (default: 8012)
   MICA_DISABLE_LLAMA  set to 1 to skip the local GPU model
   MICA_MOUNT_CLAUDE   set to 1 to bind-mount ~/.claude
   MICA_CLAUDE_DIR     override claude dir  (default: \$HOME/.claude)
+  (Legacy MICA_PORT_BACKEND / MICA_PORT_FRONTEND / MICA_PORT_LLAMA names
+   still work as fallbacks.)
 
 For the first-time install (image pull + preflight + create), use:
   bash install.sh

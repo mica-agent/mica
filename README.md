@@ -99,9 +99,9 @@ seconds. Open `http://<dgx-ip>:5173/` once the container is up.
 
 `docker logs -f mica` tails. `docker stop mica` stops.
 
-### Production path — vLLM sibling container
+### Release path — vLLM sibling container
 
-Recommended for production. Mica runs in one container; vLLM serves
+Recommended for release deployments. Mica runs in one container; vLLM serves
 Qwen3.6-35B-A3B-NVFP4 in a sibling. Continuous batching shared
 between voice and chat, FP4 quantization, MTP-1 speculative decode.
 

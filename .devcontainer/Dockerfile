@@ -29,7 +29,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 RUN mkdir -p /home/vscode/.cache && chown vscode:vscode /home/vscode/.cache
 
 # Build llama.cpp with CUDA support (lets us run llama-server alongside vLLM
-# in dev). Aligned with the production Dockerfile so dev and prod hit the
+# in dev). Aligned with the release Dockerfile so dev and release hit the
 # same compile/link surface:
 #   - CMAKE_CUDA_ARCHITECTURES=121 pins Blackwell DGX Spark (GB10, sm_121).
 #     Without the pin, llama.cpp's CMake autodetects via `native`, which
