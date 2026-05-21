@@ -83,7 +83,7 @@ no registry, no install step.
   in the browser they return a structured error pointing at
   `mica.call()` to invoke a server export instead.
 
-### metadata.json
+### metadata.json (runtime)
 
 ```json
 {
@@ -92,7 +92,7 @@ no registry, no install step.
   "defaultTitle": "Counter",
   "primaryFile": "counter.json",
   "dependencies": {
-    "umd_scripts": [],
+    "scripts": [],
     "styles": []
   },
   "handler": null,
@@ -112,11 +112,24 @@ two extension hooks worth highlighting here are:
   The runtime spawns it on first card open and tears it down on
   Mica shutdown.
 
-`dependencies.umd_scripts` lists CDN URLs that are `<script>`-tag
+`dependencies.scripts` lists CDN URLs that are `<script>`-tag
 loaded — **UMD only**. ESM URLs are loaded inside `card.js` via
 `await import(url)`; the CARD_SHIM wraps `card.js` in an async
-function so top-level `await` works. See ARCHITECTURE for the full
-loading-pattern contract.
+function so top-level `await` works.
+
+### Spec frontmatter vs metadata.json
+
+There's a deliberate name asymmetry. The **runtime** `metadata.json`
+field is `scripts` (read by the React host at card-render time).
+The **spec frontmatter** field — the YAML block at the top of
+`canvas/<name>-spec.md` that `mica_create_class` reads — is
+`umd_scripts`, named for the format constraint it enforces. The
+tool translates `umd_scripts` from frontmatter → `scripts` in
+metadata.json. Agents write `umd_scripts:` in the spec; the runtime
+sees `scripts:` in the file. ESM URLs have no frontmatter slot at
+all (rejected in commit `6efbdb1` as silent-failure-prone); they're
+inlined in `card.js`. See ARCHITECTURE for the full loading-pattern
+contract.
 
 ### CARD_SHIM
 

@@ -1,0 +1,10 @@
+{
+  "extension": ".gpu-monitor",
+  "badge": "GPU",
+  "defaultTitle": "GPU Monitor",
+  "dependencies": {
+    "scripts": [],
+    "styles": []
+  },
+  "handler": "process"
+}
