@@ -29,7 +29,7 @@ import {
 } from "./subagents.js";
 import { markProjectActivity } from "./projectActivity.js";
 import { resolveCtxWindow } from "./contextWindow.js";
-import { recordTurn, recordSubagent } from "./metrics.js";
+import { recordTurn, recordSubagent, countTavilyCalls } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { analyzeTurnArtifacts, appendTurnEvent, readTurnEvents } from "./turnEvents.js";
 import { getFreshPendingValidatorErrors, getRecentlyClearedFlaps } from "./validatorErrorBuffer.js";
@@ -1624,6 +1624,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // Names of skills explicitly invoked via the SDK's `skill` tool. The
       // chat card's per-turn footer surfaces these by name (not just count).
       const skillsInvoked: string[] = [];
+      // Per-turn tracking: tavily tool_use_id → query. Used to warn-log when
+      // a tavily MCP tool_result arrives with is_error so silent throttle /
+      // quota / network failures stop looking identical to "agent chose not
+      // to search" in the logs.
+      const tavilyInFlight = new Map<string, string>();
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -2431,6 +2436,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     input: block.input || {},
                   });
                   toolCallCounts[block.name] = (toolCallCounts[block.name] || 0) + 1;
+                  // Capture tavily call so a later is_error result can be
+                  // logged with the originating query. See tavilyInFlight
+                  // declaration for rationale.
+                  if (block.name.startsWith("mcp__tavily__") && (block as { id?: string }).id) {
+                    const query = String((block.input as Record<string, unknown>)?.query || "");
+                    tavilyInFlight.set((block as { id: string }).id, query);
+                  }
                   // Skill-invocation observer — records which skills the agent
                   // has invoked in this chat session so predicate gates in
                   // toolPrerequisites.ts can ask "has the agent read the
@@ -2572,10 +2584,27 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           // a `tool_use_id` pointing to the originating tool_use. When a
           // tracked task's result arrives, drain the concurrency counter.
           if (evtType === "user" && evt.message) {
-            const msg = evt.message as { content?: Array<{ type: string; tool_use_id?: string }> };
+            const msg = evt.message as { content?: Array<{ type: string; tool_use_id?: string; is_error?: boolean; content?: unknown }> };
             if (msg.content) {
               for (const block of msg.content) {
                 if (block.type === "tool_result" && block.tool_use_id) {
+                  // Warn on tavily MCP non-success so silent throttle/quota
+                  // failures stop looking identical to skipped searches in
+                  // the logs.
+                  const tavilyQuery = tavilyInFlight.get(block.tool_use_id);
+                  if (tavilyQuery !== undefined) {
+                    tavilyInFlight.delete(block.tool_use_id);
+                    if (block.is_error) {
+                      let reason = "(no detail)";
+                      const c = block.content;
+                      if (typeof c === "string") reason = c.slice(0, 200);
+                      else if (Array.isArray(c)) {
+                        const first = c.find((x) => (x as { type?: string }).type === "text") as { text?: string } | undefined;
+                        reason = (first?.text || "(no detail)").slice(0, 200);
+                      }
+                      console.warn(`[tavily:${sessionProject ?? "-"}:${chatId}] non-success result for query="${tavilyQuery.slice(0, 80)}" — ${reason}`);
+                    }
+                  }
                   if (outstandingSubagentTasks.delete(block.tool_use_id) && sessionProject) {
                     endSubagentTask(sessionProject);
                   }
@@ -2953,6 +2982,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             capacity,
             subagent_count: subagentCount,
             tool_calls: toolCallCounts,
+            tavily_calls: countTavilyCalls(toolCallCounts),
             skills_invoked: skillsInvoked,
             files_changed: filesChanged ? 1 : 0,
             cursor_advanced: false,
@@ -3010,6 +3040,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           capacity,
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
+          tavily_calls: countTavilyCalls(toolCallCounts),
           skills_invoked: skillsInvoked,
           files_changed: filesChanged ? 1 : 0,
           cursor_advanced: cursorAdvanced,
@@ -3056,6 +3087,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           capacity: 0,
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
+          tavily_calls: countTavilyCalls(toolCallCounts),
           skills_invoked: skillsInvoked,
           files_changed: 0,
           cursor_advanced: false,
@@ -3228,6 +3260,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           capacity: 0,
           subagent_count: 0,
           tool_calls: { attach_image: 1 },
+          tavily_calls: 0,
           skills_invoked: [],
           files_changed: 0,
           cursor_advanced: false,
@@ -3258,48 +3291,58 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     let initialScanDone = false;
 
     return {
-      onAttach(clientId, _args) {
-        // Send history (plus cursor) to newly attached client.
-        Promise.all([
-          loadHistory(chatId, sessionProject),
-          readChatCursor(chatId, sessionProject),
-        ]).then(([messages, cursor]) => {
-          ctx.sendTo(clientId, { type: "history", messages, cursor });
-
-          // Send the current queue snapshot so a screen joining mid-queue
-          // sees pending items immediately. Without this, late-joiners
-          // wait for the next push/cancel/clear before the panel renders.
-          ctx.sendTo(clientId, {
-            type: "queue",
-            items: queue.map((q) => ({
-              id: q.id,
-              text: q.text.length > 160 ? q.text.slice(0, 160) + "…" : q.text,
-              source: q.source,
-              queuedAt: q.queuedAt,
-              attach: q.attach || undefined,
-            })),
+      async onAttach(clientId, _args) {
+        // Send history (plus cursor) to newly attached client. Awaited
+        // so disk-read errors surface in logs instead of being swallowed
+        // by a fire-and-forget .then() chain.
+        let messages: ChatMessage[];
+        let cursor: number;
+        try {
+          [messages, cursor] = await Promise.all([
+            loadHistory(chatId, sessionProject),
+            readChatCursor(chatId, sessionProject),
+          ]);
+        } catch (err) {
+          console.warn(`[micaAgent:onAttach] history-load failed`, {
+            chatId, sessionProject, error: (err as Error)?.message || err,
           });
+          return;
+        }
+        ctx.sendTo(clientId, { type: "history", messages, cursor });
 
-          // Replay current-turn ephemeral events if a turn is in flight.
-          // The chat card's existing case handlers process replayed events
-          // identically to live ones — late-joiner transitions from "Ready"
-          // through "Thinking..." / progress / etc. to current state, then
-          // continues receiving live events as the turn proceeds.
-          for (const event of currentTurnEvents) {
-            ctx.sendTo(clientId, event);
-          }
-
-          // On first attach with no history, trigger initial project scan
-          if (!initialScanDone && messages.length === 0) {
-            initialScanDone = true;
-            const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
-            // Delay slightly to let the UI settle
-            setTimeout(() => {
-              if (!busy) processMessage(scanMessage);
-              else enqueueMessage(scanMessage, "user");
-            }, 2000);
-          }
+        // Send the current queue snapshot so a screen joining mid-queue
+        // sees pending items immediately. Without this, late-joiners
+        // wait for the next push/cancel/clear before the panel renders.
+        ctx.sendTo(clientId, {
+          type: "queue",
+          items: queue.map((q) => ({
+            id: q.id,
+            text: q.text.length > 160 ? q.text.slice(0, 160) + "…" : q.text,
+            source: q.source,
+            queuedAt: q.queuedAt,
+            attach: q.attach || undefined,
+          })),
         });
+
+        // Replay current-turn ephemeral events if a turn is in flight.
+        // The chat card's existing case handlers process replayed events
+        // identically to live ones — late-joiner transitions from "Ready"
+        // through "Thinking..." / progress / etc. to current state, then
+        // continues receiving live events as the turn proceeds.
+        for (const event of currentTurnEvents) {
+          ctx.sendTo(clientId, event);
+        }
+
+        // On first attach with no history, trigger initial project scan
+        if (!initialScanDone && messages.length === 0) {
+          initialScanDone = true;
+          const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+          // Delay slightly to let the UI settle
+          setTimeout(() => {
+            if (!busy) processMessage(scanMessage);
+            else enqueueMessage(scanMessage, "user");
+          }, 2000);
+        }
       },
 
       onData(clientId, data) {

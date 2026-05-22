@@ -26,6 +26,13 @@ export interface TurnRecord {
   capacity: number;
   subagent_count: number;
   tool_calls: Record<string, number>;
+  /** Convenience surface for web-search activity this turn. Equal to the
+   *  sum of `tool_calls["mcp__tavily__tavily_search"]` and
+   *  `tool_calls["mcp__tavily__tavily_extract"]`. Exposed at the top level
+   *  so `grep -c '"tavily_calls": 0'` on a turns.jsonl directly reveals
+   *  build turns that skipped web search — the wtc4 / Crunch2 failure
+   *  shape. */
+  tavily_calls: number;
   /** Names of skills explicitly invoked via the SDK's `skill` tool this turn.
    *  Distinct from `tool_calls.skill` (which only counts invocations) — this
    *  preserves WHICH skills fired so the chat card's per-turn footer can
@@ -43,6 +50,14 @@ export interface SubagentRecord {
   ts_start: number;
   ts_end: number;
   duration_ms: number;
+}
+
+/** Sum tavily MCP tool calls (search + extract) from a `tool_calls` map.
+ *  Call sites pass the same map they record into `TurnRecord.tool_calls`.
+ *  Centralized so every harness uses the same key set. */
+export function countTavilyCalls(toolCalls: Record<string, number>): number {
+  return (toolCalls["mcp__tavily__tavily_search"] || 0)
+    + (toolCalls["mcp__tavily__tavily_extract"] || 0);
 }
 
 export async function recordTurn(project: string | null, rec: TurnRecord): Promise<void> {

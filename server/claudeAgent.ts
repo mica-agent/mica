@@ -22,7 +22,7 @@ import {
   getConcurrencyStatus,
   type ParsedSubagent,
 } from "./subagents.js";
-import { recordTurn, recordSubagent } from "./metrics.js";
+import { recordTurn, recordSubagent, countTavilyCalls } from "./metrics.js";
 import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
@@ -747,6 +747,11 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
       // Names of skills explicitly invoked via the SDK's `Skill` tool. The
       // chat card's per-turn footer surfaces these by name.
       const skillsInvoked: string[] = [];
+      // Per-turn tracking: tavily tool_use_id → query. Used to warn-log when
+      // a tavily MCP tool_result arrives with is_error so silent throttle /
+      // quota / network failures stop looking identical to "agent chose not
+      // to search" in the logs.
+      const tavilyInFlight = new Map<string, string>();
 
       // Send user message to browser
       ctx.broadcast({ type: "user", content: message });
@@ -1057,6 +1062,13 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
                 if (block.type === "tool_use" && block.name) {
                   console.log(`[claude-agent] tool_use: ${block.name} input=${JSON.stringify(block.input || {}).slice(0, 200)}`);
                   toolCallCounts[block.name] = (toolCallCounts[block.name] || 0) + 1;
+                  // Capture tavily call so a later is_error result can be
+                  // logged with the originating query. See tavilyInFlight
+                  // declaration for rationale.
+                  if (block.name.startsWith("mcp__tavily__") && block.id) {
+                    const query = String((block.input as Record<string, unknown>)?.query || "");
+                    tavilyInFlight.set(block.id, query);
+                  }
                   if ((block.name === "Task" || block.name === "Agent") && block.id) {
                     outstandingSubagentTasks.add(block.id);
                     subagentCount++;
@@ -1114,10 +1126,27 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           // Detect completed subagent (Agent-tool) invocations — tool_result
           // blocks arrive as user messages; drain the concurrency counter.
           if (evtType === "user" && evt.message) {
-            const msg = evt.message as { content?: Array<{ type: string; tool_use_id?: string }> };
+            const msg = evt.message as { content?: Array<{ type: string; tool_use_id?: string; is_error?: boolean; content?: unknown }> };
             if (msg.content) {
               for (const block of msg.content) {
                 if (block.type === "tool_result" && block.tool_use_id) {
+                  // Warn on tavily MCP non-success so silent throttle/quota
+                  // failures stop looking identical to skipped searches in
+                  // the logs.
+                  const tavilyQuery = tavilyInFlight.get(block.tool_use_id);
+                  if (tavilyQuery !== undefined) {
+                    tavilyInFlight.delete(block.tool_use_id);
+                    if (block.is_error) {
+                      let reason = "(no detail)";
+                      const c = block.content;
+                      if (typeof c === "string") reason = c.slice(0, 200);
+                      else if (Array.isArray(c)) {
+                        const first = c.find((x) => (x as { type?: string }).type === "text") as { text?: string } | undefined;
+                        reason = (first?.text || "(no detail)").slice(0, 200);
+                      }
+                      console.warn(`[tavily:${sessionProject ?? "-"}:${chatId}] non-success result for query="${tavilyQuery.slice(0, 80)}" — ${reason}`);
+                    }
+                  }
                   if (outstandingSubagentTasks.delete(block.tool_use_id) && sessionProject) {
                     endSubagentTask(sessionProject);
                   }
@@ -1257,6 +1286,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           capacity,
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
+          tavily_calls: countTavilyCalls(toolCallCounts),
           skills_invoked: skillsInvoked,
           files_changed: filesChanged ? 1 : 0,
           cursor_advanced: cursorAdvanced,
@@ -1298,6 +1328,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           capacity: 0,
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
+          tavily_calls: countTavilyCalls(toolCallCounts),
           skills_invoked: skillsInvoked,
           files_changed: 0,
           cursor_advanced: false,
@@ -1333,31 +1364,44 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
     let initialScanDone = false;
 
     return {
-      onAttach(clientId, _args) {
+      async onAttach(clientId, _args) {
         // Send history (plus cursor) to newly attached client.
-        Promise.all([
-          loadHistory(chatId, sessionProject),
-          readChatCursor(chatId, sessionProject),
-        ]).then(([messages, cursor]) => {
-          ctx.sendTo(clientId, { type: "history", messages, cursor });
+        // Awaited (not fire-and-forget): if loadHistory throws, the catch
+        // logs it instead of being silently swallowed. The disk read still
+        // runs concurrently with the channel-open ack from channelManager's
+        // perspective (it doesn't await onAttach), but the function reads
+        // as sequential and errors surface.
+        let messages: ChatMessage[];
+        let cursor: number;
+        try {
+          [messages, cursor] = await Promise.all([
+            loadHistory(chatId, sessionProject),
+            readChatCursor(chatId, sessionProject),
+          ]);
+        } catch (err) {
+          console.warn(`[claudeAgent:onAttach] history-load failed`, {
+            chatId, sessionProject, error: (err as Error)?.message || err,
+          });
+          return;
+        }
+        ctx.sendTo(clientId, { type: "history", messages, cursor });
 
-          // Replay current-turn ephemeral events if a turn is in flight.
-          // Same pattern as micaAgent.ts onAttach.
-          for (const event of currentTurnEvents) {
-            ctx.sendTo(clientId, event);
-          }
+        // Replay current-turn ephemeral events if a turn is in flight.
+        // Same pattern as micaAgent.ts onAttach.
+        for (const event of currentTurnEvents) {
+          ctx.sendTo(clientId, event);
+        }
 
-          // On first attach with no history, trigger initial project scan
-          if (!initialScanDone && messages.length === 0) {
-            initialScanDone = true;
-            const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
-            // Delay slightly to let the UI settle
-            setTimeout(() => {
-              if (!busy) processMessage(scanMessage, "user");
-              else queue.push({ text: scanMessage, source: "user" });
-            }, 2000);
-          }
-        });
+        // On first attach with no history, trigger initial project scan
+        if (!initialScanDone && messages.length === 0) {
+          initialScanDone = true;
+          const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+          // Delay slightly to let the UI settle
+          setTimeout(() => {
+            if (!busy) processMessage(scanMessage, "user");
+            else queue.push({ text: scanMessage, source: "user" });
+          }, 2000);
+        }
       },
 
       onData(clientId, data) {

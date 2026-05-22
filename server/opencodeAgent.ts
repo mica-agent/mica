@@ -802,6 +802,15 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         const part = (ev.properties as { part: Part }).part;
         if (part.type === "tool") {
           const tp = part as Extract<Part, { type: "tool" }>;
+          // Warn-log tavily MCP failures so silent throttle/quota failures
+          // stop looking identical to skipped searches. Fires on the error
+          // state transition; callID dedupes inside broadcastedToolCalls
+          // are for `running`, so we observe the error path independently.
+          if (tp.state.status === "error" && tp.tool.startsWith("mcp__tavily__")) {
+            const query = String((tp.state.input as Record<string, unknown>)?.query || "");
+            const reason = (tp.state.error || "(no detail)").slice(0, 200);
+            console.warn(`[tavily:${sessionProject ?? "-"}:${chatId}] non-success result for query="${query.slice(0, 80)}" — ${reason}`);
+          }
           // Dedupe by callID: opencode re-emits message.part.updated multiple
           // times for the same tool as state transitions and metadata fill in.
           // Once we've broadcast progress for a callID, ignore further updates
@@ -1427,23 +1436,34 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
     let initialScanDone = false;
 
     return {
-      onAttach(clientId, _args) {
-        Promise.all([
-          loadHistory(chatId, sessionProject),
-          readChatCursor(chatId, sessionProject),
-        ]).then(([messages, cursor]) => {
-          ctx.sendTo(clientId, { type: "history", messages, cursor });
-          for (const event of currentTurnEvents) ctx.sendTo(clientId, event);
+      async onAttach(clientId, _args) {
+        // Send history (plus cursor) to newly attached client. Awaited
+        // so disk-read errors surface in logs instead of being swallowed
+        // by a fire-and-forget .then() chain.
+        let messages: ChatMessage[];
+        let cursor: number;
+        try {
+          [messages, cursor] = await Promise.all([
+            loadHistory(chatId, sessionProject),
+            readChatCursor(chatId, sessionProject),
+          ]);
+        } catch (err) {
+          console.warn(`[opencodeAgent:onAttach] history-load failed`, {
+            chatId, sessionProject, error: (err as Error)?.message || err,
+          });
+          return;
+        }
+        ctx.sendTo(clientId, { type: "history", messages, cursor });
+        for (const event of currentTurnEvents) ctx.sendTo(clientId, event);
 
-          if (!initialScanDone && messages.length === 0) {
-            initialScanDone = true;
-            const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
-            setTimeout(() => {
-              if (!busy) processMessage(scanMessage, "user");
-              else queue.push({ text: scanMessage, source: "user" });
-            }, 2000);
-          }
-        });
+        if (!initialScanDone && messages.length === 0) {
+          initialScanDone = true;
+          const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+          setTimeout(() => {
+            if (!busy) processMessage(scanMessage, "user");
+            else queue.push({ text: scanMessage, source: "user" });
+          }, 2000);
+        }
       },
 
       onData(clientId, data) {
