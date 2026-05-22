@@ -30,6 +30,25 @@ interface CardDependencies {
 const CARD_SHIM = `
 var container=_c;
 var _cleanups=[];
+// Auto-enable preserveDrawingBuffer on any WebGL context created in card
+// scope. render_capture's html2canvas fallback calls canvas.toDataURL(),
+// which returns blank for WebGL contexts unless the back buffer is
+// preserved. Patching the prototype once (idempotent across re-mounts and
+// cards on the same page) means WebGL cards capture out of the box —
+// authors don't need to learn about onCapture or preserveDrawingBuffer
+// for the common case. mica.onCapture remains the escape valve for cases
+// this patch misses (OffscreenCanvas, WebGPU, pre-created contexts passed
+// in via library config).
+if(!HTMLCanvasElement.prototype._micaPreserveBufferPatched){
+  var _origGetContext=HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext=function(type,options){
+    if(type==='webgl'||type==='webgl2'||type==='experimental-webgl'){
+      options=Object.assign({},options||{},{preserveDrawingBuffer:true});
+    }
+    return _origGetContext.call(this,type,options);
+  };
+  Object.defineProperty(HTMLCanvasElement.prototype,'_micaPreserveBufferPatched',{value:true,writable:false,enumerable:false,configurable:false});
+}
 var _origFetch=window.fetch.bind(window);
 var fetch=function(input,init){
   init=init||{};

@@ -539,7 +539,7 @@ read → concat → write.
 
 If `render_capture` returns `MISMATCH` and shows text like the instance filename instead of the rendered card, the cause is NOT the empty instance file. Common real causes, in order of frequency:
 
-- `WEBGL-OPAQUE` (Three.js / WebGL cards): the capture pipeline can't read the WebGL backbuffer. Apply `mica.onCapture(cb)` or `preserveDrawingBuffer: true` per the "render_capture screenshot is black for WebGL cards" section below.
+- `WEBGL-OPAQUE` (WebGL cards): the capture pipeline can't read the back buffer. CARD_SHIM auto-preserves this for the common case; if the verdict still fires, see the "render_capture and WebGL — usually just works" section below.
 - `card-error` broadcast in the chat: card.js threw at init. Read the broadcast for the syntax error or CARD_SHIM redeclaration; fix and re-render.
 - Race: the canvas opened the file before the class was registered. A subsequent edit to card.js (or any no-op) triggers re-render via the file-watcher.
 
@@ -1598,7 +1598,7 @@ The tool's result starts with one of eight verdict tags. Each maps to a single n
 - `[render_capture: UNVERIFIABLE]` — user's request is about behavior, state, or interaction a still image can't show (animations, post-click state, dynamic updates). Three valid moves: (1) trigger the state change and re-capture, (2) end the turn with a clear summary describing expected behavior so the user can verify on their screen, (3) re-read the request — if it was actually about visible appearance, re-call without `UNVERIFIABLE`-friendly framing.
 - `[render_capture: INTENT-UNPARSED]` — captioner didn't follow the VERDICT/EVIDENCE format. Read the caption manually, decide if the user's request is satisfied, and proceed accordingly.
 - `[render_capture: ERRORS — N buffered]` — fix each listed error (`mica_edit_class_file`), then re-call render_capture once. ERRORS means the build is NOT complete regardless of how the screenshot looks.
-- `[render_capture: WEBGL-OPAQUE]` — captioner sees black; apply the `mica.onCapture` hook or `preserveDrawingBuffer: true` (handbook § "render_capture screenshot is black for WebGL cards"). Then re-capture once. Iterating on CSS / dependencies / scene composition before the hook is wired is the phantom-chase failure mode.
+- `[render_capture: WEBGL-OPAQUE]` — captioner sees black. CARD_SHIM normally auto-preserves WebGL back buffers, so this verdict is rare. When it fires: the card uses OffscreenCanvas / WebGPU / a pre-created context (register `mica.onCapture(cb)`), or the library loaded before card.js executed, or the scene is genuinely blank. See handbook § "render_capture and WebGL — usually just works" for the decision tree. Iterating on CSS / dependencies before checking these causes is the phantom-chase failure mode.
 - `[render_capture: CAP-REACHED]` — end the turn with a plain-text summary; the cap resets on the user's next message.
 
 CLEAN and MATCHES are terminal states: the next thing the agent emits should be the user-visible summary, not another tool call. Don't relitigate "is this really done?" — the tag is the signal.
@@ -1681,56 +1681,34 @@ straight to verifying and replacing the URL.
 Time budget: ONE round of curl + one metadata edit. If the
 second URL also 404s, stop and ask the user.
 
-### `render_capture` screenshot is black for WebGL cards
+### `render_capture` and WebGL — usually just works
 
-`render_capture` defaults to `html2canvas`, which reads `<canvas>`
-content via `canvas.toDataURL()`. WebGL contexts return blank from
-`toDataURL` because the GPU discards the back buffer after compositing
-unless preserved. Result: captures come back transparent / black
-even when the user sees the scene rendering correctly on screen.
+CARD_SHIM auto-enables `preserveDrawingBuffer: true` on any WebGL context created within card scope. So when the capture pipeline's `html2canvas` fallback calls `canvas.toDataURL()`, the WebGL back buffer is readable and the screenshot returns the actual frame. **You don't need to do anything special** for WebGL cards — the common case (Three.js, regl, PixiJS, Babylon, raw WebGL) captures cleanly out of the box.
 
-**Preferred fix — register `mica.onCapture(cb)`.** The shim
-exposes a snapshot hook that the screenshot pipeline calls *before*
-falling back to `html2canvas`. Inside the callback, render
-on-demand and return a dataURL. No `preserveDrawingBuffer` flag
-needed; the pipeline accepts whatever you produce.
+**When you DO need `mica.onCapture(cb)`** — the patch can't reach a few cases:
+
+- **OffscreenCanvas** — separate prototype; the patch doesn't apply.
+- **WebGPU** (`canvas.getContext('webgpu')`) — different mechanics; the patch only covers WebGL/WebGL2.
+- **Pre-created contexts** passed via library config — if your library accepts an externally-created WebGL context, the patch missed the creation site.
+- **Custom capture semantics** — you want to render at a different resolution for capture, or composite multiple sources into one image.
+
+For those cases, register the hook:
 
 ```js
 mica.onCapture(() => {
-  // Render once at capture time so the back buffer is current.
+  // Render at capture time and return any dataURL.
   renderer.render(scene, camera);
   return canvasEl.toDataURL("image/png");
 });
 ```
 
-The hook is per-card, automatically cleaned up on unmount, and
-applies a 5-second timeout. If the callback throws or times out
-the pipeline falls back to `html2canvas` and you get the blank-
-canvas symptom anyway, so make the body fast and synchronous
-(or at least quick to resolve). Works for any rendering tech —
-OffscreenCanvas, regl, Babylon, video elements, anything that
-can produce a dataURL.
+The hook fires BEFORE the html2canvas fallback. It's per-card, auto-cleaned on unmount, with a 5-second timeout. Works for any rendering tech that can produce a dataURL.
 
-**Fallback fix (if for some reason you don't register `onCapture`):**
-construct the WebGL renderer with `preserveDrawingBuffer: true`.
-This keeps the back buffer readable so html2canvas's toDataURL
-returns the last frame.
+**If `[render_capture: WEBGL-OPAQUE]` still fires** — the patch should make this rare. When it does happen, common real causes:
 
-```js
-// when constructing your WebGL renderer
-const renderer = new <Renderer>({
-  canvas: canvasEl,
-  // ... your usual options
-  preserveDrawingBuffer: true,  // fallback for non-hook capture
-});
-```
-
-Symptom that points here: `render_capture` describes the canvas
-as "completely black" / "blank" / "transparent" while the user
-confirms they see content on screen. The fix is to register the
-hook (or flip the flag) and re-capture — debug cubes, background
-shims, or wrapper elements chase a phantom and never address the
-real cause.
+- The card uses OffscreenCanvas or WebGPU (see above — register `onCapture`).
+- The library was loaded BEFORE card.js executed (e.g., via a `<script>` tag that fires during HTML parse). In that case the prototype patch wasn't yet in place. Move library init into card.js.
+- The captioner is genuinely seeing a blank scene (clear color, nothing drawn, camera pointing the wrong way). Investigate the scene composition.
 
 ## References
 
