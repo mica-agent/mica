@@ -258,7 +258,14 @@ curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 2000
 
 **ESM vs UMD — check for EACH addon, not just the core.** card.js runs as a **classic script**, not a module — it cannot `import`. So every script tag in `metadata.json.dependencies.scripts` must be a **UMD** (or IIFE) bundle that exposes its API as a window global. ESM-only files load, parse, and silently fail: the global never appears, your card throws `<Symbol> is not defined` at first call. Libraries with addons/plugins often ship core as UMD but addons as ESM-only — Tier-1 reachability passes; runtime use throws.
 
-**ESM-only candidate? Try four fallbacks before going bespoke.** The first failed CDN path on an addon/plugin is not the end of discovery — many plugins publish ESM as the "modern" entry but ship a UMD bundle the package's `package.json` doesn't advertise. In order:
+**Core UMD + addons ESM is normal — use the mixed pattern.** Most modern library families with addon ecosystems (3D rendering engines, mapping libraries with plugins, charting libraries with plugin packs) ship **core UMD + addons ESM-only** at every currently-distributed version. That's the normal shape, not an edge case. The integration is documented in `card-class-handbook § "Mixed-format cards are normal"`:
+
+- Pattern A for the core (UMD URL in `metadata.scripts`)
+- Pattern B for each addon (`await import(...)` inline in card.js)
+
+**Commit the mixed-format decision after 2-3 `mica_inspect_url` confirmations** (core UMD + the first addon ESM). Do NOT walk back through 3+ older versions hoping to find a single one where both are UMD — that combination was discontinued years ago for most popular library families, and the version-walk burns 5-10 tool calls confirming what the first two verifications already told you. The four-fallback list below is for the rarer case where the addon is genuinely unavailable as ESM either; don't reach for it just because the addon was ESM at the latest version.
+
+**ESM-only candidate (core OR addon, with no Pattern B path)? Try four fallbacks before going bespoke.** The first failed CDN path on an addon/plugin is not the end of discovery — many plugins publish ESM as the "modern" entry but ship a UMD bundle the package's `package.json` doesn't advertise. In order:
 
 1. **README**: `curl -sL https://raw.githubusercontent.com/<owner>/<repo>/<branch>/README.md | head -c 8000`. Search for `<script` tags in the quickstart example — that's the canonical script-tag path the author documents. UMD/IIFE distributions are almost always mentioned here when they exist.
 2. **Full file listing on jsdelivr**: `curl -s https://data.jsdelivr.com/v1/package/npm/<pkg>` and look for `.umd.js`, `.iife.js`, or `dist/<name>.js` paths that the npm package's main entry doesn't point at.
@@ -267,7 +274,7 @@ curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 2000
 
 Use `curl` for README / file-listing scans — READMEs are dense markdown that scans directly in ~200ms with no LLM round-trip. (`web_fetch` is the right tool for HTML-heavy docs sites with structural cruft, not for plain markdown READMEs — see § Tool choice.)
 
-**Grid-probing addon versions is wasted effort.** If a library's addon doesn't ship as UMD at one version, it almost certainly doesn't at any version — packages don't reintroduce dropped distribution formats across minor releases. After one 404 on the addon at a known-good version, switch tracks: read the README for the documented script-tag path, scan the jsdelivr file listing for `.umd.js` / `.iife.js`, search for a community UMD wrapper, or fall back to manual inline code with a documented rationale.
+**Grid-probing addon versions is wasted effort.** If a library's addon ships as ESM (not UMD) at one currently-distributed version, it almost certainly does at every version — packages don't reintroduce dropped distribution formats across minor releases. After ONE `mica_inspect_url` confirming the addon is ESM at a known-good version, STOP walking. The mixed pattern (see above) is the answer; commit it and move to the next subproblem. Reach for the four-fallback list only when the addon also isn't viable via Pattern B (genuinely abandoned, no published ESM either) — that's rare for active library families.
 
 #### 3b — ASSET subproblems
 
