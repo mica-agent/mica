@@ -100,20 +100,22 @@ Two real costs on each external call: **wall clock** (how long the tool takes) a
 | Plain markdown (README.md, CHANGELOG.md, docs/*.md) | `curl -sL ... \| head -c 8000` | Dense; low cruft; scan directly with no LLM round-trip. |
 | Single-fact URL verification (format, status, methods) | `mica_inspect_url` | ~500B structured JSON regardless of source size; the body bytes never enter chat history. |
 | Finding a thing you don't know (plugin name, free-tier API) | `mcp__tavily__tavily_search` (max_results: 5) | Returns title + snippet + URL per result; cap to 5 for context budget. |
-| HTML page with structural cruft (docs sites, blog posts, multi-answer SO threads) | `web_fetch` with a SPECIFIC prompt | ~4 min wall clock but **only the extracted answer enters context** — saves 50KB+ of nav/sidebar/footer from permanent history. |
+| HTML page with structure (docs sites, blog posts, READMEs, plugins pages, multi-answer SO threads) | `web_fetch` with a SPECIFIC prompt | 30-90 sec for a README or plugins page; few minutes for a long blog post. **Only the extracted answer enters context** — saves 50KB+ of nav/sidebar/footer from permanent history. |
 
-**`web_fetch` is not banned — it's specialized.** It downloads a page AND routes it through an LLM with your `prompt:` field, which makes it ~4 min wall clock on local-model projects but **compact** in context cost: only the LLM's extracted answer enters history, regardless of whether the source was 5KB or 200KB. That's a net win when:
+**`web_fetch` is the right tool for documentation pages with structure.** It downloads a page AND routes it through an LLM with your `prompt:` field, returning only the extracted answer — typically ~200 chars regardless of whether the source was 5KB or 200KB. Wallclock scales with page size: a README or plugins page is 30-90 sec; a long blog post or multi-answer thread is a few minutes. Still cheaper than 10 tavily iterations on the same question — both on wallclock and on context cost (each tavily result drops ~600-1500 tokens into history permanently).
 
+That's a net win when:
+
+- The page is a library README or plugins index and you want the install snippet or a curated list of candidates (this is the most common build-time case — see step 3a below).
 - The page is HTML with lots of cruft (nav, sidebar, footer, embedded scripts) and your question targets one paragraph.
 - The page is long-form prose (RFC, multi-answer SO thread, lengthy changelog) and curl would dump it all into permanent context.
 
 It's a net loss when:
 
 - The response is small JSON (npm/jsdelivr — use curl).
-- The response is dense markdown (README — use curl).
-- You need bytes verification (URL format/status — use mica_inspect_url).
+- You need bytes verification of one URL's format/status — use `mica_inspect_url`.
 
-**The rule of thumb**: estimate the response size BEFORE picking. If you'd expect ≤ 5KB of dense content, curl. If you'd expect 30KB+ of HTML/markup, web_fetch with a specific prompt. The wall-clock difference (200ms vs 4 min) is one variable; the permanent context bloat across the rest of the session is the other.
+**The rule of thumb**: if you have a library name and want its canonical CDN URL OR a list of plugins, `web_fetch` is almost always the right call. The wall-clock cost (30 sec to a few minutes) reliably beats the context cost of multiple tavily iterations on the same question.
 
 ## The one universal rule
 
@@ -193,6 +195,41 @@ For each one, tag it:
 #### 3a — LIBRARY subproblems
 
 Recall-first. You're a coding model with a large training corpus. For any library that appears in public code thousands of times, **you already know**: canonical package name, known-stable version range, CDN URL shape, whether addons are UMD or ESM-only, the one-line "hello world" call. Surface that recall before reaching for search.
+
+**Two canonical first moves when recall alone doesn't give you the URL.** These compress what's otherwise 10+ tavily iterations into 1-2 web_fetch calls. Reach for them before tavily.
+
+**Move 1 — you have a library name but not the canonical CDN URL.** The README is the source of truth: the maintainer documents the recommended `<script>` tag URL there. One call:
+
+```
+web_fetch({
+  url: "https://cdn.jsdelivr.net/npm/<pkg>@<version>/README.md",
+  // or the GitHub repo URL if the README is mostly elsewhere
+  prompt: "What's the recommended CDN URL for using this library via a <script> tag? Include the exact URL, version, and any required CSS."
+})
+```
+
+Returns the install snippet directly. Pair with one `mica_inspect_url` on the returned URL to verify, then commit it to the spec. Two calls total, not ten search iterations.
+
+**Move 2 — you need a plugin or addon for a known library.** Most popular UI libraries maintain a canonical ecosystem page that lists vetted community plugins, categorized by feature. Examples of where to look:
+
+- The library's official docs site, under "Plugins" / "Ecosystem" / "Addons" (`<library>.org/plugins.html` or similar).
+- The library's GitHub wiki (`github.com/<owner>/<repo>/wiki/Plugins`).
+- An "awesome-<library>" curated list on GitHub.
+
+One call:
+
+```
+web_fetch({
+  url: "<plugins index URL>",
+  prompt: "List plugins related to <sub-feature>, with their GitHub URLs and short descriptions."
+})
+```
+
+The maintainer has already filtered out dead/broken/obscure options — you get a curated shortlist. Pick one, `mica_inspect_url` the chosen plugin's CDN URL to verify, commit.
+
+**Why these two moves first.** They mirror how a human developer actually finds libraries — piggy-backing on someone else's curation (the README install snippet, the plugins index) rather than reconstructing the universe via raw web search. Raw tavily search of URL variants is the slow path. README and plugins-page are the fast paths.
+
+Tavily is still the right primitive for genuinely novel discovery — *what category of solution exists for an unfamiliar problem*. Once you have a library NAME, switch to web_fetch on the README; once you have a parent library and want one of its plugins, switch to web_fetch on its plugins page.
 
 For each library subproblem:
 

@@ -433,6 +433,40 @@ const { Addon } = await import("https://cdn.jsdelivr.net/npm/<pkg>@<version>/<ad
 const a = new Addon(...);
 ```
 
+**Mixed-format cards are normal — Pattern A core + Pattern B addons is the common shape.** When a library's core ships UMD and its addons ship ESM-only (a frequent pattern for popular UI libraries with addon ecosystems), use BOTH patterns in the same card. There is no "one pattern per card" rule.
+
+A complete mixed-format integration:
+
+`metadata.json` — only the core's UMD URL goes here. The addon URLs do NOT:
+
+```json
+{
+  "dependencies": {
+    "scripts": ["https://cdn.jsdelivr.net/npm/<pkg>@<version>/<umd-core-path>.js"],
+    "styles": []
+  }
+}
+```
+
+`card.js` — the core's UMD `<script>` tag fires before card.js runs, so the core's global is already on `window`. Addons load inline via `await import()`:
+
+```js
+// card.js — core is already on window (loaded via metadata.scripts above)
+const { Addon1 } = await import("https://cdn.jsdelivr.net/npm/<pkg>@<version>/<addon1-esm-path>");
+const { Addon2 } = await import("https://cdn.jsdelivr.net/npm/<pkg>@<version>/<addon2-esm-path>");
+
+// Use the core's global alongside the dynamically-imported addons
+const obj = new <Core>.Thing();
+const a = new Addon1(...);
+```
+
+**During discovery: inspect each URL separately.** Run `mica_inspect_url` against the core URL AND each addon URL you plan to use. The core may report UMD while addons report ESM — that's not a problem, it's the cue for the mixed-pattern integration above. The agent's natural reflex of "the core was UMD, the addons must be too" is wrong; verify per-URL.
+
+**Two drift modes the mixed-pattern guidance prevents:**
+
+- Putting an ESM addon URL into `metadata.scripts` because the core landed there. The `deps-reachable` validator catches this with a prescriptive error, but the right move is to leave the addon out of metadata.scripts entirely and load it via `await import()` inside card.js.
+- Pinning the integration to an older UMD-only version of the library because one needed addon won't load as UMD. The newer version + mixed-pattern is almost always cleaner than the version-pin workaround.
+
 **General principle for ESM libraries with sub-paths:** if a library's docs show `import { X } from "<pkg>/addons/<sub>/<path>.js"`, translate to `const { X } = await import("https://cdn.jsdelivr.net/npm/<pkg>@<version>/<corresponding-path>")`. The CDN path mirrors the package's internal layout — find it via `https://www.jsdelivr.com/package/npm/<pkg>` or `mica_inspect_url` on a candidate path.
 
 **Reimplementing an addon inline is the wrong fix.** When a needed addon isn't on the main namespace, the answer is always a second `await import(...)` for the addon's URL — not a hand-rolled reimplementation in card.js. Library addon code has been debugged over many versions; an inline rewrite ships subtle bugs the library doesn't have.
@@ -500,6 +534,16 @@ The `mica.files.*` and `mica.cardClasses.*` namespaces are
 Proxy-guarded — calling a method that doesn't exist throws
 `TypeError: mica.files has no method 'X'. Known: ...`. To append:
 read → concat → write.
+
+**Instance files are normally empty.** Every card on the canvas is a file at the canvas root — e.g. `canvas/my-card.viewer`. Its extension routes to the card class; its body is most often empty (0 bytes) or a small JSON blob. **For ALL card classes (built-in or custom), an empty instance file is the normal default state.** It means "this card is placed on the canvas; no per-instance content has been authored" — not "the card is broken" or "the build failed."
+
+If `render_capture` returns `MISMATCH` and shows text like the instance filename instead of the rendered card, the cause is NOT the empty instance file. Common real causes, in order of frequency:
+
+- `WEBGL-OPAQUE` (Three.js / WebGL cards): the capture pipeline can't read the WebGL backbuffer. Apply `mica.onCapture(cb)` or `preserveDrawingBuffer: true` per the "render_capture screenshot is black for WebGL cards" section below.
+- `card-error` broadcast in the chat: card.js threw at init. Read the broadcast for the syntax error or CARD_SHIM redeclaration; fix and re-render.
+- Race: the canvas opened the file before the class was registered. A subsequent edit to card.js (or any no-op) triggers re-render via the file-watcher.
+
+**Don't read the instance file to diagnose a rendering failure.** The file body is irrelevant to whether the class renders — the class definition is what's rendered. If you find yourself adding content to the instance file to "fix" a render issue, stop: the file content doesn't drive the render.
 
 ### Path addressing
 
