@@ -3084,10 +3084,66 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
         }
         const errMsg = (err as Error).message || String(err);
+
+        // Diagnostic mirror of the post-loop turn-end log (commit dd88ab1).
+        // Fires when the SDK throws out of the for-await loop — the path
+        // that bypasses the normal exit log. Tagged ":catch" so grep can
+        // tell which path the turn took.
+        const _totalToolCalls = Object.values(toolCallCounts).reduce((s, n) => s + n, 0);
+        console.log(
+          `[mica-agent:turn-end:catch] turnId=${turnId.slice(0, 8)} ` +
+          `events=${_evtSeq} tool_calls=${_totalToolCalls} ` +
+          `sawResultEvent=${_sawResultEvent} lastEvtType=${_lastEvtType} ` +
+          `resultTextLen=${resultText.length} ` +
+          `errType=${(err as Error)?.name || "Error"} ` +
+          `errMsg="${errMsg.slice(0, 160).replace(/"/g, '\\"')}"`,
+        );
+
         // Empty response = model had nothing to say (common for reactive events)
         if (errMsg.includes("empty response")) {
           console.log(`[mica-agent] broadcasting assistant (empty-response path) for: ${message.slice(0, 60)}`);
           ctx.broadcast({ type: "assistant", content: "No action needed.", agent: "Qwen", filesChanged: false });
+        } else if (/exited with code 53|FatalTurnLimited|CLI process exited/i.test(errMsg) && source !== "recovery" && sessionProject) {
+          // Exit-53 thrown by the qwen-code CLI subprocess hitting its
+          // internal turn-limit. Distinct from the graceful path at line
+          // 2945+ where the SDK reports the limit via a `result` event
+          // with is_error=true. Both paths use the same
+          // analyzeTurnArtifacts verdict + recovery prompt — we just
+          // need to re-enter that logic from the throw site here.
+          const events = await readTurnEvents(sessionProject, chatId, turnId);
+          const verdict = analyzeTurnArtifacts(events);
+          console.log(
+            `[mica-agent] exit-53 analysis (catch path): ${verdict.verdict} — ${verdict.summary} | ` +
+            `signals=${JSON.stringify(verdict.signals)}`,
+          );
+          if (verdict.verdict === "converging") {
+            ctx.broadcast({
+              type: "progress",
+              tool: "max-turns-recovery",
+              description: `⟳ Hit step cap mid-work (${verdict.summary}) — auto-continuing.`,
+            });
+            enqueueMessage(
+              "Your previous turn hit the per-message step cap before completing. " +
+                "Full chat history above shows the work in progress — pick up from " +
+                "exactly where you left off, do NOT restart the task. If you were " +
+                "deep in research, commit to a candidate and write the spec. If you " +
+                "were mid-build, continue the next concrete tool call. Do not " +
+                "re-read files you already read this thread; the prior turn's " +
+                "tool_result contents are still visible above.",
+              "recovery",
+            );
+            // No user-facing error broadcast — the recovery message itself
+            // is the visible signal.
+          } else {
+            // Stuck → surface an enriched error naming the loop signature.
+            ctx.broadcast({
+              type: "error",
+              error:
+                `Agent appears stuck (${verdict.summary}). Step cap fired before completing. ` +
+                `Send a redirecting message to break the loop, or check the agent's recent ` +
+                `tool calls for the source of the repetition.`,
+            });
+          }
         } else {
           console.error(`[mica-agent] Error during ${message.slice(0, 40)}:`, errMsg);
           ctx.broadcast({ type: "error", error: errMsg });
