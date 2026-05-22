@@ -269,25 +269,32 @@ curl -s "https://registry.npmjs.org/<pkg>" | head -c 4000
 curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 2000
 ```
 
-**ESM vs UMD — check for EACH addon, not just the core.** card.js runs as a **classic script**, not a module — it cannot `import`. So every script tag in `metadata.json.dependencies.scripts` must be a **UMD** (or IIFE) bundle that exposes its API as a window global. ESM-only files load, parse, and silently fail: the global never appears, your card throws `<Symbol> is not defined` at first call. Libraries with addons/plugins often ship core as UMD but addons as ESM-only — Tier-1 reachability passes; runtime use throws.
+### Pick latest, inspect, apply the matching pattern
 
-**Core UMD + addons ESM is normal — use the mixed pattern.** Most modern library families with addon ecosystems (3D rendering engines, mapping libraries with plugins, charting libraries with plugin packs) ship **core UMD + addons ESM-only** at every currently-distributed version. That's the normal shape, not an edge case. The integration is documented in `card-class-handbook § "Mixed-format cards are normal"`:
+The version-and-format decision is a three-step rule. Don't make it more complicated than this:
 
-- Pattern A for the core (UMD URL in `metadata.scripts`)
-- Pattern B for each addon (`await import(...)` inline in card.js)
+1. **Pick the latest stable version.** Don't walk back to find a version with a particular format.
+2. **`mica_inspect_url` the core URL.** The `format` field IS your answer. If the library has addons you'll use, inspect each addon URL at the same version too.
+3. **Apply the matching load pattern** (mechanics documented in `card-class-handbook § "Pattern A — UMD"` and `§ "Pattern B — Dynamic ES module import"`):
 
-**Commit the mixed-format decision after 2-3 `mica_inspect_url` confirmations** (core UMD + the first addon ESM). Do NOT walk back through 3+ older versions hoping to find a single one where both are UMD — that combination was discontinued years ago for most popular library families, and the version-walk burns 5-10 tool calls confirming what the first two verifications already told you. The four-fallback list below is for the rarer case where the addon is genuinely unavailable as ESM either; don't reach for it just because the addon was ESM at the latest version.
+   - **Core ships UMD** → Pattern A (UMD URL in `metadata.scripts`, library exposed as a global)
+   - **Core ships ESM** → Pattern B (`metadata.scripts: []`, `await import(url)` inline in card.js)
+   - **Core UMD + addons ESM** (the common Three.js / Leaflet-plugins / D3-addons shape) → Pattern A for core + Pattern B for each addon, same card. Mixed-format integration is normal, not an edge case.
 
-**ESM-only candidate (core OR addon, with no Pattern B path)? Try four fallbacks before going bespoke.** The first failed CDN path on an addon/plugin is not the end of discovery — many plugins publish ESM as the "modern" entry but ship a UMD bundle the package's `package.json` doesn't advertise. In order:
+card.js runs as a classic script (the runtime wrapper does not make it a module), so a static `import` keyword throws. Use `await import(url)` (dynamic import) for Pattern B — works inside the wrapper's async function.
 
-1. **README**: `curl -sL https://raw.githubusercontent.com/<owner>/<repo>/<branch>/README.md | head -c 8000`. Search for `<script` tags in the quickstart example — that's the canonical script-tag path the author documents. UMD/IIFE distributions are almost always mentioned here when they exist.
-2. **Full file listing on jsdelivr**: `curl -s https://data.jsdelivr.com/v1/package/npm/<pkg>` and look for `.umd.js`, `.iife.js`, or `dist/<name>.js` paths that the npm package's main entry doesn't point at.
-3. **Community wrappers / alternative plugins**: `mcp__tavily__tavily_search "<plugin-name> script tag CDN"` or `"<feature> <ecosystem> plugin"`. One ESM-only repo doesn't mean the feature is unavailable in the ecosystem — there is usually more than one plugin per feature, and at least one of them ships a UMD bundle.
-4. **Bespoke as last resort, with documented rationale**. Going bespoke before steps 1–3 silently commits the user to N lines of custom code they didn't ask for. If you go bespoke anyway, the spec MUST list which alternatives were tried and why each was rejected — so the user can override with a known-working alternative they recognize.
+**Don't reach for these as defaults:**
 
-Use `curl` for README / file-listing scans — READMEs are dense markdown that scans directly in ~200ms with no LLM round-trip. (`web_fetch` is the right tool for HTML-heavy docs sites with structural cruft, not for plain markdown READMEs — see § Tool choice.)
+- **Walking back versions** to find a single version where everything is UMD. That combination was discontinued years ago for most popular library families; the walk burns 5-10 tool calls confirming what the first two `mica_inspect_url` calls already told you.
+- **Community UMD wrappers** (e.g. `<lib>-umd`, often sub-1.0 versioned, often one-maintainer) — they bundle a frozen library version, add a supply-chain hop, and lag upstream releases. Pattern B is the supported ESM path; use the wrapper only when Pattern B has a specific blocker.
 
-**Grid-probing addon versions is wasted effort.** If a library's addon ships as ESM (not UMD) at one currently-distributed version, it almost certainly does at every version — packages don't reintroduce dropped distribution formats across minor releases. After ONE `mica_inspect_url` confirming the addon is ESM at a known-good version, STOP walking. The mixed pattern (see above) is the answer; commit it and move to the next subproblem. Reach for the four-fallback list only when the addon also isn't viable via Pattern B (genuinely abandoned, no published ESM either) — that's rare for active library families.
+**Escape valves** (rare — for libraries that genuinely can't load either UMD or ESM cleanly):
+
+- Read the library's README for an alternative CDN path the npm registry doesn't advertise.
+- Check the jsdelivr file listing (`curl -s https://data.jsdelivr.com/v1/package/npm/<pkg>`) for `.umd.js` / `.iife.js` paths.
+- Go bespoke with documented rationale (spec must list which alternatives were tried).
+
+See `_conventions.md § "Latest stable + bridge gaps"` for the cross-skill version of this rule.
 
 #### 3b — ASSET subproblems
 

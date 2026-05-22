@@ -53,35 +53,14 @@ Before writing custom code, walk the decision tree in order:
 
 ## Latest stable + bridge gaps (not walk back)
 
-When picking a version of any library:
+Pick the latest stable version of any library. `mica_inspect_url`
+it to learn what format it ships. Apply the matching load pattern.
+That's the rule.
 
-1. **Default to the latest stable version.** Verify it via
-   `mica_inspect_url` to learn what format the latest version
-   ships (UMD / ESM / CommonJS / mixed). Don't pick a version
-   from a tavily snippet without inspecting it.
-2. **If the latest doesn't fit your context, bridge — don't walk
-   back.** Walking back through older versions is the LAST
-   resort, not the first move.
-
-Common bridges in order of preference:
-
-- **Pattern A core + Pattern B addons** (mixed-format
-  integration, documented in `card-class-handbook`) — when the
-  library's core ships UMD and its addons ship ESM-only at every
-  current version. The mixed pattern is the normal answer for
-  most modern UI libraries with addon ecosystems.
-- **Pattern B for everything** (`await import(...)` inline in
-  card.js) — when the latest core itself is ESM-only. Works
-  directly with the CARD_SHIM async wrapper; no version-pin
-  needed. `metadata.scripts` stays empty; the import is in
-  card.js.
-- **Polyfill or adapter** — when the latest changed an API you
-  depend on, write a small adapter in card.js instead of
-  pinning to the old major.
-- **Alternative library** — when the latest genuinely no longer
-  fits, switch libraries. Pinning to an old version of a library
-  the ecosystem has moved past locks the card to a frozen
-  surface.
+When the latest doesn't fit your context, **bridge** — write a small
+adapter, use Pattern B (`await import()`) for ESM, mix Pattern A core
++ Pattern B addons. Don't walk back through older versions hoping to
+find one where everything matches a single format.
 
 Walking back to an older version is acceptable only when:
 
@@ -90,14 +69,13 @@ Walking back to an older version is acceptable only when:
 - An explicit user constraint requires an older version (legacy
   ecosystem, must-match-server, etc.).
 
-In every other case, walking back signals you haven't found the
-bridge yet. Bridge first; pin as last resort.
+Otherwise walking back signals you haven't found the bridge yet.
 
-The skills that route through this tenet: `discover-dependency`
-for version selection, `card-class-handbook` for the Pattern
-A/B + mixed-format mechanics, `fix-bug` when a build fails
-because of a version mismatch (look for the bridge instead of
-repinning).
+For the mechanics of Pattern A vs B and mixed-format integration,
+see `card-class-handbook § "Pattern A — UMD"` and `§ "Pattern B —
+Dynamic ES module import"`. For the version-selection rule applied
+step-by-step, see `discover-dependency § "Pick latest, inspect,
+apply the matching pattern"`.
 
 ## API discipline (tenet 16)
 
