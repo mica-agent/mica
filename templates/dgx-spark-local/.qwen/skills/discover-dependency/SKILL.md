@@ -117,18 +117,31 @@ It's a net loss when:
 
 **The rule of thumb**: if you have a library name and want its canonical CDN URL OR a list of plugins, `web_fetch` is almost always the right call. The wall-clock cost (30 sec to a few minutes) reliably beats the context cost of multiple tavily iterations on the same question.
 
-## The one universal rule
+## The one universal rule (with self-check)
 
-**Any URL you write into a spec, a card's `metadata.json`, or `card.html` / `card.js` MUST have been verified with `mica_inspect_url` first.** No exceptions. This includes:
+**Any URL you write into a spec, a card's `metadata.json`, or `card.html` / `card.js` MUST have been verified with `mica_inspect_url` THIS TURN first.** Not last turn. Not from memory. Not from a tavily snippet. Not from a README quote. THIS TURN. No exceptions. This includes:
 
 - URLs you recalled from training and feel confident about.
 - URLs you derived from a jsdelivr file listing (the listing tells you what files *exist* in the package; only `mica_inspect_url` confirms the exact path renders 200, has the right format, and exposes the methods you'll call).
-- URLs you got from a tavily search result.
-- URLs you modified (changed version, swapped `/dist/`, added `.min`, removed `.min`). A modified URL is a NEW URL — inspect_url it again before commit.
+- URLs you got from a tavily search result or web_fetch'd page.
+- URLs you modified (changed version, swapped `/dist/`, added `.min`, removed `.min`). A modified URL is a NEW URL — `mica_inspect_url` it again before commit.
 
-The rule exists because URL construction is where hallucination compounds silently. The agent recalls `cdn.jsdelivr.net/npm/<pkg>@<ver>/<path>` correctly in shape but guesses the path component, writes it into the spec, and the build phase commits a 404. The cost of one `mica_inspect_url` call (~500 bytes, ~200ms) is trivial against the cost of a wrong URL surfacing as a runtime failure during render-verify.
+### Self-check before `write_file` on the spec
 
-If `mica_inspect_url` returns `ok: false`, that URL does not ship. Use the `reason` field's pivot suggestion (usually the jsdelivr listing) to find a real path, then `mica_inspect_url` the real one before writing it anywhere.
+Before calling `write_file` on `canvas/<class>-spec.md`, list each URL that will appear in the frontmatter's `dependencies.umd_scripts` and `dependencies.styles` arrays, alongside its `mica_inspect_url` result this turn:
+
+```
+URL                                                              Verified this turn?
+https://cdn.jsdelivr.net/npm/<pkg>@<version>/<path>              ✓ UMD, 200
+https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>          ✓ data, 200, CORS *
+https://cdn.jsdelivr.net/npm/<pkg>@<version>/<addon-path>        ✗ NOT inspect_url'd this turn
+```
+
+If ANY row shows ✗, the spec is incomplete. Either inspect the URL now (one call, ~500 bytes, ~200ms) or remove it from the spec. Tavily snippets, README text, and your training prior are NOT verification — they might describe a URL that 404s, ships ESM instead of UMD, or serves the wrong content type. Only a same-turn `mica_inspect_url` confirms the URL works in card.js's classic-script context.
+
+This rule exists because URL construction is where hallucination compounds silently. The agent recalls `cdn.jsdelivr.net/npm/<pkg>@<ver>/<path>` correctly in shape but guesses the path component, writes it into the spec, and the build phase commits a 404. **The cost of one `mica_inspect_url` call (~500 bytes, ~200ms) is trivial against the cost of a wrong URL surfacing as a runtime failure during build.** Observed failure shape: spec lands with unverified URL → `mica_create_class`'s `enforceDependenciesReachable` validator catches it OR the build fails at first render → agent re-researches from scratch in the build turn → ~10+ extra tool calls + several minutes of wallclock that one inspect_url call in the planning turn would have prevented.
+
+If `mica_inspect_url` returns `ok: false`, that URL does not ship. Use the `reason` field's pivot suggestion (usually the jsdelivr listing) to find a real path, then `mica_inspect_url` the real one before writing it anywhere. If the inspect returns `format: 'ESM'` when you wanted UMD, see `_conventions.md § "Latest stable + bridge gaps"` — the bridge is Pattern B for that URL, not a walk-back to an older version.
 
 ## Procedure — enumerate, classify, walk
 
