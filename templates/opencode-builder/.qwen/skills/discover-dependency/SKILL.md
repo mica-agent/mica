@@ -281,24 +281,34 @@ Recall-first, the same way. The canonical CORS-friendly host shapes:
 | Library's own examples directory | look for `examples/` on the library's GitHub repo; serve via jsdelivr-gh or raw.githubusercontent | Pin to a release tag for stability. |
 | Public CDN-hosted font service | check the service's documented CSS URL pattern | Usually CORS-friendly and works with standard `@import` or `<link rel="stylesheet">`. |
 
-**Many hosts that serve image bytes do NOT send CORS headers, so the asset 200s in `curl` but fails as a WebGL texture / canvas drawImage source.** The failure shape: the sphere or surface renders as solid color, no console error. Mitigation: for any asset used in WebGL / canvas / SubresourceIntegrity, verify CORS in Step 3b's curl pair below. If a needed asset's source doesn't send CORS, find a GitHub mirror and serve it through jsdelivr.
+**Many hosts that serve image bytes do NOT send CORS headers, so the asset 200s in a fetch but fails as a WebGL texture / canvas drawImage source.** The failure shape: the sphere or surface renders as solid color, no console error. Mitigation: for any asset used in WebGL / canvas / SubresourceIntegrity, verify CORS during step 2 below. If a needed asset's source doesn't send CORS, find a GitHub mirror and serve it through jsdelivr-gh.
 
-For each asset subproblem:
+**Canonical first moves for asset hunting** — these compress what's otherwise dozens of tavily searches into a few inspect_url calls. Reach for them in order; only fall through to tavily when recall genuinely produces no candidate.
 
-1. **Recall** canonical CORS-friendly host + URL shape from the table above (or beyond, if you know more).
-2. **Identify** the use case — `<img>` tag display (no CORS needed), WebGL texture / canvas `drawImage` (CORS REQUIRED), CSS background (CORS sometimes needed for `mask-image` or `font-display`).
-3. **Verify** — TWO curl calls, not one:
-   ```bash
-   # (a) Reachability
-   curl -sI -L "<url>" | head -1
-   # → expect HTTP/2 200
+**Move 1 — you know the host but not the exact path.** Construct a candidate URL from one of the host shapes above and `mica_inspect_url` it. The tool returns `{ok, status, contentType, format}` in ~500 bytes. If `ok: true`, commit. If `ok: false` (404), the next call is the host's listing API for the FILE LIST:
 
-   # (b) CORS (only if used in WebGL / canvas / SubresourceIntegrity)
-   curl -sIL "<url>" -H "Origin: http://localhost:5173" 2>&1 | grep -i "access-control-allow-origin"
-   # → empty output = NO CORS = will fail in WebGL
-   # → `*` or echoed origin = CORS allowed = works
-   ```
-4. **Search only if recall fails**: `mcp__tavily__tavily_search "<asset> CORS github mirror"` (max_results: 5), or `"<asset> CDN"`.
+```bash
+# Every file in a GitHub repo at a given ref:
+curl -s "https://data.jsdelivr.com/v1/package/gh/<owner>/<repo>?branch=<ref>" | head -c 4000
+
+# Every file in an npm package at a given version:
+curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>@<version>" | head -c 4000
+```
+
+One listing response shows you every file. Pick the right path, `mica_inspect_url` it, commit. Total budget: 2-4 calls per asset, not 20.
+
+**Move 2 — you know the asset category but not the host.** Recall first. Most popular libraries with visual output ship their example assets in their own GitHub repos at `examples/` — try the library's repo first (`cdn.jsdelivr.net/gh/<owner>/<repo>@<tag>/examples/<subpath>`). Many art / texture / font assets live in well-known curated repos; if you can name a candidate repo, try it as Move 1.
+
+**Move 3 — genuine no-prior.** `mcp__tavily__tavily_search` with a sharp query naming the category PLUS a host hint (e.g. `"<asset> github jsdelivr cors"` or `"<asset> npm package"`). Cap at the 3-search rule from § Search budget. If 3 searches don't surface a candidate URL, escalate per the budget rule (drop the resource OR ask the user).
+
+**`mica_inspect_url` verifies URLs; tavily does not.** Once you have a candidate URL — even a low-confidence guess like a jsdelivr-gh path you're not certain exists — `mica_inspect_url` it directly. **Do NOT tavily-search to verify a URL.** Tavily describes pages on the open web; it cannot tell you whether `cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>` returns 200 with CORS. inspect_url can — the answer is unambiguous in 200ms. The agent's natural reflex of "let me search to see if this URL is real before committing the inspect_url" wastes the search budget — commit the inspect_url. If it 404s, that's a CHEAPER signal than a tavily snippet ("this page seems to exist"), and the next move (file listing) is deterministic.
+
+For each asset subproblem, the procedure:
+
+1. **Recall** a candidate URL using a host shape from the table above, OR a host you remember by name.
+2. **`mica_inspect_url` the candidate.** If 200, check `contentType` matches what you need (image/* for textures, font/* for fonts, etc.). If 404, fetch the file listing per Move 1 and pick the real path.
+3. **CORS check (only for WebGL / canvas / SubresourceIntegrity use cases)**: `curl -sIL "<url>" -H "Origin: http://localhost:5173" 2>&1 | grep -i "access-control-allow-origin"`. Empty output = no CORS; switch to a jsdelivr-gh mirror of the same file.
+4. **Search only if recall + listing fail**: `mcp__tavily__tavily_search` per Move 3, capped at 3.
 
 #### 3c — SERVICE subproblems
 
