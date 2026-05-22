@@ -40,6 +40,22 @@ Build requests are NOT always verb-led. A user message that names a new artifact
 
 are identical to "build a world time clock" / "make a burndown chart" for routing purposes. **Enter `develop` any time a new artifact gets named.** Skipping the develop gate on noun-led requests is how spec drafts end up without library research (`discover-dependency` never fires), without verified URLs (`mica_inspect_url` never runs), and with hand-wavy "use a free source" placeholders that have to be redone after the approval gate.
 
+## Build → debug transition
+
+After a build lands (the agent shipped `mica_create_class` + at least one `render_capture` for the new card), the next user message reporting that the artifact looks/behaves wrong is a **debug-phase signal**, NOT a continuation of the build dialogue. Symptom-shaped phrases to watch for:
+
+- "card is black", "blank", "empty", "doesn't render"
+- "still broken", "still black", "still wrong"
+- "missing X", "X is gone"
+- "not what I asked for", "doesn't look right", "wrong colors", "wrong layout"
+- Any noun-led report on a built artifact that names a visible defect
+
+**When you see one, your next move is `skill('fix-bug')` BEFORE any `read_file` or `edit`.** Do not iterate CSS/DOM theories from base training prior. Do not "let me check" and edit blindly. Load the bug-fix discipline first; it tells you how to reproduce, find root cause vs symptom, make a minimal change, and verify.
+
+This applies regardless of which skills were loaded earlier — context decays across turns, and debug is its own phase. **Reload `fix-bug` at the START of any turn where the user is reporting a symptom on a previously-built artifact**, even if you think you remember the discipline. The point of the skill machinery is that the rules live in the skill, not in your turn-to-turn working memory.
+
+If the symptom repeats across multiple user messages ("still broken" → "still broken"), `fix-bug` is **mandatory** — your theories aren't testing out, and the discipline is the unblock.
+
 ## Per-turn behavior
 
 - One arc per turn — write, verify, declare done OR describe what's pending. Don't chain unrelated work without re-asking.

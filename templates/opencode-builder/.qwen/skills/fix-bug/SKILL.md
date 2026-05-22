@@ -1,6 +1,6 @@
 ---
 name: fix-bug
-description: Bug-shaped requests — "fix X", "Y is broken", "Z doesn't work", "wrong …", "regression in …", "investigate why …". Reproduce → root cause (not symptom) → minimal change → verify → update docs only if user-visible behavior changed.
+description: Bug-shaped requests, including noun-led UX-symptom reports on a built artifact. Verb-led triggers — "fix X", "Y is broken", "Z doesn't work", "wrong …", "regression in …", "investigate why …". Noun-led / symptom-led triggers — "card is black", "still black", "still broken", "looks wrong", "missing X", "doesn't render", "not what I asked for", any repeated "still <symptom>" message. When the same symptom repeats across user messages, this skill is mandatory before any edit. Reproduce → root cause (not symptom) → minimal change → verify → update docs only if user-visible behavior changed.
 ---
 
 # Fix the bug — discipline before code

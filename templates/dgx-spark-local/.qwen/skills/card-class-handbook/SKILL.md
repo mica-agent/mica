@@ -1607,6 +1607,8 @@ CLEAN and MATCHES are terminal states: the next thing the agent emits should be 
 
 **MISMATCH is the most common new failure mode to attend to.** Before MATCHES existed, the agent's habit on a UX-correction turn was: edit → render_capture → CLEAN → "done!" → user re-reports the bug. With MISMATCH, the agent learns mid-turn that the edit didn't actually fix the visible problem and can iterate before the user is involved. **Always pass `user_intent` on UX-correction follow-up turns** so the loop short-circuits at agent-time instead of user-time.
 
+**When the user reports a symptom on a previously-built card, you're in the debug phase — not the build phase.** Your next move is `skill('fix-bug')`, BEFORE any `read_file` or `edit_class_file`. The build phase ended at the prior approval gate; debug has its own discipline (reproduce, root cause, minimal change, verify). Iterating CSS/DOM theories from training prior is the failure mode that traps the build — the discipline lives in the skill, not in your turn-to-turn memory.
+
 ### Card-error buffer can lag the file
 
 The `card-error` event is emitted by the BROWSER when the card.js
