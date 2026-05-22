@@ -2358,12 +2358,23 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
         let _evtSeq = 0;
         let _lastEvtAt = Date.now();
+        // Instrumentation: track whether the SDK emitted a `result` event
+        // before the for-await loop exited. Loop exit without a result event
+        // means the SDK terminated by some path we don't have explicit
+        // handling for (suspected: hitting our configured maxSessionTurns
+        // exits cleanly without throwing FatalTurnLimitedError → wasMaxTurns
+        // never gets set → exit-53 recovery never fires). Log per-turn so the
+        // next orbit16-shaped failure surfaces the empirical signature.
+        let _sawResultEvent = false;
+        let _lastEvtType: string | null = null;
         for await (const evt of q) {
           const evtType = evt.type as string;
           _evtSeq++;
           const now = Date.now();
           const gap = now - _lastEvtAt;
           _lastEvtAt = now;
+          _lastEvtType = evtType;
+          if (evtType === "result") _sawResultEvent = true;
           // Compact event trace: type, parent_tool_use_id (so we can see when
           // a subagent is the source), gap from previous event. Helps narrow
           // down where the SDK loop stalls when nothing reaches us for a long
@@ -2702,6 +2713,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             }
           }
         }
+
+        // Post-loop diagnostic. Hunting for the orbit16-shaped failure:
+        // SDK for-await exits without emitting a `result` event, no
+        // wasMaxTurnsError gets set, no recovery fires, user sees the
+        // agent go silent for the turn. Surface the loop-end signature
+        // every turn so the failure shape is greppable next time.
+        const _totalToolCalls = Object.values(toolCallCounts).reduce((s, n) => s + n, 0);
+        console.log(
+          `[mica-agent:turn-end] turnId=${turnId.slice(0, 8)} ` +
+          `events=${_evtSeq} tool_calls=${_totalToolCalls} ` +
+          `sawResultEvent=${_sawResultEvent} lastEvtType=${_lastEvtType} ` +
+          `resultTextLen=${resultText.length} lastActionWasAssistantOutput=${lastAssistantHadAction} ` +
+          `wasMaxTurnsError=${wasMaxTurnsError} sdkResultError=${sdkResultError ? "set" : "null"}`,
+        );
 
         activeAbort = null;
         // Tear down the SDK transport explicitly. The for-await drain
