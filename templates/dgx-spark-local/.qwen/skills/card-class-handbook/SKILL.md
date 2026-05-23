@@ -1011,6 +1011,43 @@ straight to verifying and replacing the URL.
 Time budget: ONE round of curl + one metadata edit. If the
 second URL also 404s, stop and ask the user.
 
+### Error overlays render `err.message`, not a hardcoded label
+
+When card.js wraps init in `init().catch((err) => { ... })`, the catch handler is the **only** place that knows what actually broke. The error overlay must surface `err.message` — not a static string baked into card.html.
+
+**Anti-pattern (do NOT ship):**
+
+```html
+<div id="error-overlay" style="display:none;">
+  <span class="error-text">Failed to load textures</span>
+</div>
+```
+
+When ANYTHING throws — a dependency import that hits the bare-specifier trap, a typo in renderer setup, a missing DOM id — `init().catch` fires, sets the overlay visible, and the user (and any later debug-phase agent reading the screenshot caption) sees "Failed to load textures." That text is **a lie about what broke** — the original problem may have nothing to do with textures. Debug turns then spiral chasing the wrong cause.
+
+**Correct shape:**
+
+```html
+<div id="error-overlay" style="display:none;">
+  <span class="error-text"></span>  <!-- empty; populated by card.js -->
+</div>
+```
+
+```js
+init().catch((err) => {
+  console.error('[<card-name>] init failed:', err);
+  if (errorOverlay) {
+    errorOverlay.style.display = 'flex';
+    errorOverlay.querySelector('.error-text').textContent =
+      'Error: ' + (err && err.message ? err.message : String(err));
+  }
+});
+```
+
+**Why this matters in the debug phase**: the captioner's read of the screenshot becomes ground truth for the next agent turn. If the overlay text describes the *real* error, the next debug turn lands on the right hypothesis. If it lies, the next debug turn iterates on a phantom.
+
+The same rule applies to async error paths (texture-load `onError`, fetch failures, channel events): record the actual error message; don't substitute a domain-specific label that has to be right to be useful.
+
 ### `render_capture` and WebGL — usually just works
 
 CARD_SHIM auto-enables `preserveDrawingBuffer: true` on any WebGL context created within card scope. So when the capture pipeline's `html2canvas` fallback calls `canvas.toDataURL()`, the WebGL back buffer is readable and the screenshot returns the actual frame. **You don't need to do anything special** for WebGL cards — the common case (Three.js, regl, PixiJS, Babylon, raw WebGL) captures cleanly out of the box.

@@ -44,13 +44,18 @@ After a build lands (the agent shipped `mica_create_class` + at least one `rende
 - "still broken", "still black", "still wrong"
 - "missing X", "X is gone"
 - "not what I asked for", "doesn't look right", "wrong colors", "wrong layout"
+- **"error", "see error", "I see error", "still error", "error on the card"** — bare error reports count, even without naming what's broken
 - Any noun-led report on a built artifact that names a visible defect
 
-**When you see one, your next move is `skill('fix-bug')` BEFORE any `read_file` or `edit`.** Do not iterate CSS/DOM theories from base training prior. Do not "let me check" and edit blindly. Load the bug-fix discipline first; it tells you how to reproduce, find root cause vs symptom, make a minimal change, and verify.
+**`skill('fix-bug')` is the FIRST action of the debug turn — before `render_capture`, before `read_file`, before any edit.** This applies to the FIRST symptom message, not after repeats. "Let me check" / "let me capture / let me read the code first" is the failure mode: by the time you have a theory, you've skipped the discipline that prevents bad theories. Load it first, then it tells you what to capture and what to read.
 
 This applies regardless of which skills were loaded earlier — context decays across turns, and debug is its own phase. **Reload `fix-bug` at the START of any turn where the user is reporting a symptom on a previously-built artifact**, even if you think you remember the discipline. The point of the skill machinery is that the rules live in the skill, not in your turn-to-turn working memory.
 
-If the symptom repeats across multiple user messages ("still broken" → "still broken"), `fix-bug` is **mandatory** — your theories aren't testing out, and the discipline is the unblock.
+**If your next planned action is `render_capture` or `read_file` and the user just sent a symptom message, that's the signal you've skipped the gate.** Stop, invoke `skill('fix-bug')`, then proceed.
+
+If the symptom repeats across multiple user messages ("See error" → "Still error"), and you still haven't invoked `fix-bug`, you are out of compliance with the rule above — invoke it now.
+
+**Don't trust visible overlay text as the error.** Cards often ship static fallback text in error overlays (e.g. `<span class="error-text">Failed to load textures</span>`). When `init()` throws ANYTHING, that text becomes visible — and it lies about what actually broke. Read the actual `err.message` from the console, or ask the user to paste it. Treating overlay text as the diagnosis is how debug turns spiral.
 
 ## Per-turn behavior (apply EVERY turn, before sending your reply)
 
