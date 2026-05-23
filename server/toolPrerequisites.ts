@@ -42,6 +42,7 @@ import { join } from "node:path";
 import { WORKSPACE_DIR } from "./files.js";
 import { hasSkillBeenInvoked } from "./skillInvocationTracker.js";
 import { getLastUserMessageAt } from "./userMessageTracker.js";
+import { readSpecForClass } from "./specFrontmatter.js";
 
 export interface PredicateContext {
   /** Project name (e.g. "map2"). Never null at predicate time —
@@ -201,6 +202,68 @@ const requiredLibrarySkillsInstalled: Predicate = {
   },
 };
 
+// spec-has-canonical-frontmatter: the spec must include the
+// `card-class:` YAML frontmatter block. mica_create_class reads
+// structured fields (name, badge, default_title, dependencies,
+// subtasks, out_of_scope) from that block. Without it, the tool can't
+// auto-populate metadata, and the agent has to pass everything inline
+// at call time. That's where wrong-version / wrong-URL / wrong-format
+// drift creeps in: the spec body says one thing in markdown prose, the
+// inline create_class call passes another, and the spec ↔
+// implementation diverge silently. Observed failure shape: spec uses a
+// "lite" frontmatter (just name/description/tags), agent improvises
+// dependencies inline, version walk-back lands in metadata.json that
+// doesn't match the spec body's stated version.
+const specHasCanonicalFrontmatter: Predicate = {
+  name: "spec-has-canonical-frontmatter",
+  check: async ({ projectDir, toolArgs }) => {
+    const rawName = toolArgs.name;
+    if (typeof rawName !== "string" || !rawName.trim()) return { ok: true };
+    const className = rawName.trim();
+    const parsed = await readSpecForClass(projectDir, className);
+    // canvasHasSpecForClass handles missing-spec; we only run after that
+    // predicate has already confirmed the spec exists.
+    if (parsed === null) return { ok: true };
+    if (parsed.parseError) {
+      return {
+        ok: false,
+        reason: `canvas/${className}-spec.md has a frontmatter block but it failed to parse: ${parsed.parseError}`,
+        nextMove:
+          `Fix the YAML in the spec's frontmatter block (likely an indentation or quoting issue), then retry. ` +
+          `See card-class-handbook §"The decomposition belongs in the spec frontmatter" for the schema.`,
+      };
+    }
+    if (parsed.cardClass === null) {
+      return {
+        ok: false,
+        reason:
+          `canvas/${className}-spec.md is missing the canonical \`card-class:\` frontmatter block. ` +
+          `mica_create_class reads structured fields (name, badge, default_title, dependencies, subtasks, out_of_scope) from that block — ` +
+          `without it, the tool can't auto-populate metadata.json, and inline args drift from what the spec body claims.`,
+        nextMove:
+          `Rewrite the spec's frontmatter to use the canonical \`card-class:\` schema. The minimum shape:\n\n` +
+          `---\n` +
+          `card-class:\n` +
+          `  name: ${className}\n` +
+          `  badge: <2-4 chars>\n` +
+          `  default_title: <Pretty Title>\n` +
+          `  handler: ~\n` +
+          `  sidecar: ~\n` +
+          `  dependencies:\n` +
+          `    umd_scripts: [{url: "https://...", format: UMD, version: "..."}]\n` +
+          `    styles: []\n` +
+          `  subtasks:\n` +
+          `    - {name: <subtask>, tier: 1, mechanism: <how>, verify: <verification>}\n` +
+          `  out_of_scope: []\n` +
+          `---\n\n` +
+          `See card-class-handbook §"The decomposition belongs in the spec frontmatter" for the full schema. ` +
+          `Rewrite the spec's frontmatter (the body prose stays as-is), then retry this tool.`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
 // spec-approval-gate: after the spec is written, mica_create_class
 // must wait for a REAL user message before firing. Structural
 // enforcement of the human-in-the-loop checkpoint that orbit4
@@ -302,6 +365,7 @@ const sessionHasCardClassHandbook: Predicate = {
 export const TOOL_PREREQUISITES: Record<string, Predicate[]> = {
   mica_create_class: [
     canvasHasSpecForClass,
+    specHasCanonicalFrontmatter,
     specApprovalGate,
     requiredLibrarySkillsInstalled,
     sessionHasCardClassHandbook,
