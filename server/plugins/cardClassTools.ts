@@ -8,6 +8,7 @@
 
 import { join } from "path";
 import { mkdir, writeFile, readFile, rm, readdir, stat, access } from "fs/promises";
+import { runVerifiers, formatVerifyFailure } from "../verifiers/index.js";
 import { existsSync } from "fs";
 import { z } from "zod";
 import { WORKSPACE_DIR, micaDir, readCanvasConfig, clearCardClassMetaCache, findCardClassInLibraries } from "../files.js";
@@ -712,6 +713,22 @@ export async function editClassFileImpl(
         }],
       };
     }
+  }
+
+  // Run the extensible verifier framework on the would-be content. Each
+  // registered verifier matches on filepath shape (card.js, card.html,
+  // *.py, *.sh, ...) and validates a different invariant. Any gate-mode
+  // failure refuses the write with an aggregated structured report; the
+  // agent reads it and retries.
+  const verifyResult = await runVerifiers(filePath, finalContent, project, "gate");
+  if (!verifyResult.ok) {
+    return {
+      isError: true,
+      content: [{
+        type: "text",
+        text: `${formatVerifyFailure(verifyResult)}\nThe file was NOT written. Fix the problems above and call mica_edit_class_file again.`,
+      }],
+    };
   }
 
   await writeFile(filePath, finalContent, "utf-8");

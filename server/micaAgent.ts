@@ -7,6 +7,7 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
+import { runVerifiers, formatVerifyFailure } from "./verifiers/index.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
@@ -1927,6 +1928,30 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           if (protectedCheck) {
             console.log(`[protected-path] ${toolName} blocked: ${(input.file_path as string) || (input.path as string) || ""}`);
             return protectedCheck;
+          }
+
+          // Extensible verifier framework — for non-card-class file writes
+          // (Python scripts, bash scripts, etc.), run any matching verifiers
+          // before allowing the write. Card-class paths are already routed
+          // to mica_edit_class_file via the protected-path check above,
+          // which runs the same verifier framework for card.{js,html,css}.
+          if (toolName === "write_file" || toolName === "Write" || toolName === "edit" || toolName === "Edit") {
+            const writePath = (input.file_path as string) || (input.path as string) || "";
+            const writeContent = contentFromWriteInput(input);
+            if (writePath && typeof writeContent === "string" && sessionProject) {
+              try {
+                const verifyResult = await runVerifiers(writePath, writeContent, sessionProject, "gate");
+                if (!verifyResult.ok) {
+                  console.log(`[verifier] ${toolName} blocked: ${verifyResult.verifier} on ${writePath}`);
+                  return {
+                    behavior: "deny",
+                    message: formatVerifyFailure(verifyResult) + "\nThe file was NOT written. Fix the problems above and retry.",
+                  };
+                }
+              } catch (err) {
+                console.warn(`[verifier] dispatch failed (allowing write):`, (err as Error).message);
+              }
+            }
           }
 
           // Track which files the agent has read this turn (for precondition checks).
