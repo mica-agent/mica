@@ -5,6 +5,7 @@
 // path serves the legacy `.llm-chat` registration AND the new `llm-direct`
 // built-in (registered with a manifest in server/index.ts).
 
+import sharp from "sharp";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 import type { HandlerManifest } from "../handlerManifest.js";
 
@@ -45,6 +46,73 @@ interface DirectArgs {
    *  query is independent — prevents the "history accumulates images and
    *  hits the model's per-turn cap" failure mode that bit stt7. */
   history?: "persist" | "stateless";
+}
+
+// Parse a `data:image/<fmt>;base64,<payload>` URL into its parts. Returns
+// null if the URL isn't a data: URL we can decode (blob:, https:, etc.) —
+// the caller passes those through untouched.
+function parseDataUrl(url: string): { mime: string; format: string; buffer: Buffer } | null {
+  const m = url.match(/^data:image\/([a-z]+);base64,(.+)$/i);
+  if (!m) return null;
+  const format = m[1].toLowerCase();
+  const buffer = Buffer.from(m[2], "base64");
+  return { mime: `image/${format}`, format, buffer };
+}
+
+// Encode a Buffer back into a data: URL with the given mime.
+function encodeDataUrl(buffer: Buffer, mime: string): string {
+  return `data:${mime};base64,${buffer.toString("base64")}`;
+}
+
+/** Walk every user message's content blocks; for any image_url block whose
+ *  URL is a base64 data: URL exceeding `maxDim` on its longest edge, resize
+ *  it with sharp (preserve aspect ratio, preserve source format) and
+ *  replace the URL in-place. Non-data: URLs and non-image blocks pass
+ *  through untouched. Errors during decode/resize are logged and the
+ *  original block is passed through so vLLM surfaces its own error.
+ *
+ *  This is the server-side equivalent of "client-side resize before send"
+ *  — the agent doesn't have to remember to do it in card.js because the
+ *  framework owns the precondition. */
+async function resizeImagesInMessages(messages: ChatMessage[], maxDim: number): Promise<ChatMessage[]> {
+  return Promise.all(messages.map(async (msg) => {
+    if (typeof msg.content === "string") return msg;
+    if (!Array.isArray(msg.content)) return msg;
+    const newContent = await Promise.all(msg.content.map(async (block) => {
+      if (block.type !== "image_url") return block;
+      const url = block.image_url?.url;
+      if (typeof url !== "string") return block;
+      const parsed = parseDataUrl(url);
+      if (!parsed) return block; // blob:/http(s): URL — pass through; vLLM will error if unsupported
+      try {
+        const image = sharp(parsed.buffer);
+        const metadata = await image.metadata();
+        const w = metadata.width ?? 0;
+        const h = metadata.height ?? 0;
+        if (!w || !h) return block; // can't read dimensions — pass through
+        const longEdge = Math.max(w, h);
+        if (longEdge <= maxDim) return block; // already within limit
+        // Resize: fit:'inside' clamps the bounding box, preserving aspect ratio.
+        // toFormat with the source format preserves jpeg/png/webp encoding.
+        const resized = await image
+          .resize({ width: maxDim, height: maxDim, fit: "inside", withoutEnlargement: true })
+          .toFormat(parsed.format as keyof sharp.FormatEnum)
+          .toBuffer();
+        const newMetadata = await sharp(resized).metadata();
+        const newW = newMetadata.width ?? w;
+        const newH = newMetadata.height ?? h;
+        console.log(`[llmChat] resized image ${w}x${h} → ${newW}x${newH} (long edge ${maxDim}px)`);
+        return {
+          type: "image_url" as const,
+          image_url: { url: encodeDataUrl(resized, parsed.mime) },
+        };
+      } catch (err) {
+        console.warn(`[llmChat] resize failed, passing through original:`, (err as Error).message);
+        return block;
+      }
+    }));
+    return { ...msg, content: newContent };
+  }));
 }
 
 export function createLlmChatHandler() {
@@ -159,13 +227,22 @@ export function createLlmChatHandler() {
 
         activeAbort = new AbortController();
 
+        // Server-side image resize: enforce the model's maxImageDimensionPx
+        // before forwarding. Eliminates the failure class where a card.js
+        // forgets to resize and vLLM rejects with 400. History storage stays
+        // unchanged — resize is a forwarding-time transformation.
+        const maxDim = manifest.modelConstraints?.[modelKey]?.maxImageDimensionPx;
+        const messagesToSend = maxDim
+          ? await resizeImagesInMessages(messagesForLlm, maxDim)
+          : messagesForLlm;
+
         try {
           const resp = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               model: modelKey,
-              messages: messagesForLlm,
+              messages: messagesToSend,
               max_tokens: cfg.maxTokens,
               temperature: cfg.temperature,
               stream: true,
@@ -316,8 +393,8 @@ export const manifest: HandlerManifest = {
     "//      The LLM server runs in a DIFFERENT process and cannot fetch\n" +
     "//      blob: URLs. Use FileReader.readAsDataURL to inline the bytes.\n" +
     "//   `message` stays REQUIRED — the text turn. `content` is ADDITIONAL.\n" +
-    "//   Resize images that exceed modelConstraints.maxImageDimensionPx BEFORE\n" +
-    "//   sending (HTMLCanvasElement.toDataURL is the canonical browser path).\n" +
+    "//   Mica resizes images >maxImageDimensionPx server-side automatically;\n" +
+    "//   no client-side resize needed.\n" +
     "const classifyChannel = mica.openChannel('turn', {\n" +
     "  systemPrompt: 'You classify images. Reply concisely.',\n" +
     "  model: 'qwen3-vl-local',\n" +
@@ -344,7 +421,7 @@ export const manifest: HandlerManifest = {
       maxImageDimensionPx: 1568,
       supportedImageFormats: ["jpeg", "png", "webp"],
       maxOutputTokens: 8192,
-      notes: "Vision input must be a data: URL (NOT blob:) — the LLM server cannot fetch browser-process blob URLs. Resize images >1568px (long edge) BEFORE sending, otherwise vLLM rejects with a 400. For classification/generation cards that send multiple images across calls, use `history: 'stateless'` at openChannel — otherwise accumulated images hit the maxImagesPerTurn cap on the 5th call.",
+      notes: "Vision input must be a data: URL (NOT blob:) — the LLM server cannot fetch browser-process blob URLs. Mica resizes images >1568px (long edge) server-side automatically before forwarding to vLLM; no client-side resize needed. For classification/generation cards that send multiple images across calls, use `history: 'stateless'` at openChannel — otherwise accumulated images hit the maxImagesPerTurn cap on the 5th call.",
     },
     "qwen-vl": {
       maxImagesPerTurn: 4,
