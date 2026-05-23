@@ -8,6 +8,7 @@ import { readFile as fsReadFile } from "fs/promises";
 import { captureCard } from "../screenshot.js";
 import { bumpRenderCaptureCount, RENDER_CAPTURE_CAP } from "../renderCaptureCounter.js";
 import { getPendingValidatorErrors } from "../validatorErrorBuffer.js";
+import { canonicalizeCardPath, readCanvasConfig } from "../files.js";
 import type { AgentToolDef, AgentToolResult } from "./registry.js";
 
 // Settle delay before reading the error buffer. Runtime errors in card.js
@@ -91,8 +92,26 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
           `The cap resets on the user's next message.`,
       };
     }
+    // Canonicalize the filename. The agent commonly passes either the bare
+    // class-instance form ("moon-orbit.moon-orbit") or the canvas-relative
+    // form ("canvas/moon-orbit.moon-orbit"). The frontend's card lookup
+    // expects the canvas-relative form. Without normalization, the
+    // bare-form call returns "card not found on page" and the agent
+    // burns 1-3 turns guessing the right shape before landing on the
+    // form the frontend wants. canonicalizeCardPath is idempotent on
+    // already-canonical paths, so this is safe for both inputs.
+    let canonicalFilename: string;
     try {
-      const result = await captureCard(ctx.project, input.filename);
+      const { canvasRoot } = await readCanvasConfig(ctx.project);
+      canonicalFilename = canonicalizeCardPath(input.filename, canvasRoot);
+    } catch {
+      // Fall back to the raw input if canonicalization throws (e.g. path
+      // escapes project root). Let captureCard surface the real error.
+      canonicalFilename = input.filename;
+    }
+
+    try {
+      const result = await captureCard(ctx.project, canonicalFilename);
       const png = await fsReadFile(result.path);
       const base64 = png.toString("base64");
 
@@ -191,10 +210,10 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
       // Both validatorErrorBuffer entries (validator) and the runtime
       // /api/cards/:filename/error path record into the same buffer, so a
       // single query covers both code paths.
-      const className = classNameFromInstance(input.filename);
+      const className = classNameFromInstance(canonicalFilename);
       const allErrors = ctx.project ? getPendingValidatorErrors(ctx.project) : [];
       const relevantErrors = allErrors.filter((e) => {
-        if (e.filename === input.filename) return true;
+        if (e.filename === canonicalFilename) return true;
         if (className && e.filename.includes(`/card-classes/${className}/`)) return true;
         if (className && e.filename.includes(`/card-classes/${className}.`)) return true;
         return false;
