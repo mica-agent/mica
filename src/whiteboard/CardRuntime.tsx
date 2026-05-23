@@ -271,6 +271,24 @@ function waitForStyleApplication(): Promise<void> {
 type Reporter = (msg: string) => void;
 const cardErrorReporters = new Map<string, Reporter>();
 
+// Fallback attribution for unhandled rejections whose stack doesn't match
+// any registered `mica-card://<filename>/` sourceURL. Common case: an
+// `await import(cdnUrl)` whose imported module throws at module-load time
+// (e.g. bare-specifier failures like `import * as THREE from 'three'`).
+// The rejection's stack frames point at the CDN URL, not at card.js — so
+// stack-match attribution fails and the error never reaches the card's
+// error reporter (→ never broadcasts → render_capture's error buffer
+// stays empty → verdict bypasses ERRORS → agent misdiagnoses).
+//
+// We track the most recently registered card; if a rejection lands within
+// FALLBACK_WINDOW_MS of that registration and no stack match found, we
+// attribute to it. False positives are possible (rare: card A and B both
+// just loaded, A throws, gets attributed to whichever was registered last),
+// but every miss currently goes to console.warn — better to attribute to
+// one card than to drop entirely.
+let lastInjectedCard: { filename: string; ts: number } | null = null;
+const FALLBACK_WINDOW_MS = 60_000;
+
 function sourceUrlForCard(filename: string): string {
   // URL-safe slug that includes the filename for stack-trace attribution.
   // Browsers display `//# sourceURL=` text verbatim in stack frames.
@@ -361,6 +379,19 @@ function ensureUnhandledRejectionHandler(): void {
         break;  // attribute to one card; an error genuinely in shared code
                 // would match the FIRST registered card, which is acceptable
                 // (rare) noise vs missing the error entirely.
+      }
+    }
+    // Fallback: if stack-match found nothing AND a card was registered recently,
+    // attribute to it. Catches the common case of `await import(cdnUrl)` whose
+    // imported module throws at load time — the rejection's stack frames are
+    // all inside the CDN module file and never mention the card's sourceURL,
+    // so stack-match misses. The most recently injected card is the likely
+    // owner since these rejections fire during init.
+    if (!matched && lastInjectedCard && Date.now() - lastInjectedCard.ts < FALLBACK_WINDOW_MS) {
+      const reporter = cardErrorReporters.get(lastInjectedCard.filename);
+      if (reporter) {
+        try { reporter(`Uncaught (in promise, attributed by recency): ${full}`); } catch { /* swallow */ }
+        matched = true;
       }
     }
     if (!matched) {
@@ -611,6 +642,11 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
       ensureUnhandledRejectionHandler();
       ensureScriptErrorHandler();
       cardErrorReporters.set(filename, reportError);
+      // Update lastInjectedCard so the unhandledrejection handler can fall
+      // back to this card if a rejection's stack doesn't match any registered
+      // mica-card:// sourceURL (e.g. await import(cdnUrl) failures whose
+      // stack frames are all inside the imported module).
+      lastInjectedCard = { filename, ts: Date.now() };
 
       // Wrap a namespace object so unknown method access returns a helpful
       // shadow function that (when called) reports the hallucination to the
