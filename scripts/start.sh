@@ -137,6 +137,18 @@ if [ "${MICA_DISABLE_CHAT_VLLM:-0}" != "1" ]; then
   CHAT_HOST="${CHAT_VLLM_HOST:-172.17.0.1}"
   HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
   CHAT_HEALTH_TIMEOUT="${CHAT_VLLM_HEALTH_TIMEOUT:-1500}"
+  # Spec-decoding config passed to `vllm serve --speculative-config`.
+  # Default keeps the historical MTP-1 setting verbatim. Override with
+  # CHAT_VLLM_SPEC_CONFIG to A/B different MTP settings — e.g.
+  #   CHAT_VLLM_SPEC_CONFIG='{"method":"qwen3_next_mtp","num_speculative_tokens":3}'
+  # Use a plain if/else rather than `${VAR:-{...}}` parameter expansion:
+  # bash's parameter expansion eats one of the closing `}`s when the
+  # default value itself contains balanced braces, which corrupts overrides.
+  if [ -n "${CHAT_VLLM_SPEC_CONFIG:-}" ]; then
+    CHAT_SPEC_CONFIG="$CHAT_VLLM_SPEC_CONFIG"
+  else
+    CHAT_SPEC_CONFIG='{"method":"mtp","num_speculative_tokens":1}'
+  fi
 
   if vllm_container_running "$CHAT_NAME"; then
     echo "Chat vLLM ($CHAT_NAME) already running on :$CHAT_PORT"
@@ -183,7 +195,7 @@ vllm serve $CHAT_MODEL \
   --quantization compressed-tensors \
   --moe-backend flashinfer_cutlass \
   --kv-cache-dtype fp8_e4m3 \
-  --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
+  --speculative-config '$CHAT_SPEC_CONFIG' \
   --gpu-memory-utilization 0.55 \
   --max-model-len 131072 \
   --max-num-batched-tokens 8192 \
