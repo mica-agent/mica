@@ -52,6 +52,15 @@ Three tool calls cover the inventory:
 
 If a Mica path fits → spec records *"uses handler X / card class Y; verified via mica_list_handlers"* and you skip web search for that subproblem. If nothing fits → continue to the open-web flow below.
 
+**When the chosen handler ships `modelConstraints`, copy each constraint into the spec body as a concrete requirement.** Reading them from the manifest at planning time and then "remembering" them at card.js-write time is not enough — by then the manifest detail has rolled out of attention. The constraints have to live in the spec, durably. Specifically:
+
+- `maxImageDimensionPx: 1568` → **handled server-side by Mica automatically** — do NOT add a client-side resize step in card.js. The spec can note this for human reviewers: *"Image resize is enforced server-side by the llm-direct handler; oversized images are downscaled before forwarding to the model."*
+- `maxImagesPerTurn: 4` → spec body: *"Max 4 images per turn. Cards that accumulate images across calls must use `history: 'stateless'` at openChannel."*
+- `supportedImageFormats: [jpeg, png, webp]` → spec body: *"Accepted formats: JPEG / PNG / WebP. Reject other formats with a clear error."*
+- `notes: "<text>"` → copy the notes verbatim into the spec's "Channel handling" or "Image handling" section.
+
+**Why constraints are spec material, not implementation detail**: the spec is what the user reviews and approves. If a resize requirement (or token cap, or format restriction) isn't in the spec, (a) the user can't catch the omission at the approval gate, and (b) the card.js implementation may silently violate the constraint, producing runtime errors the user only sees after the build is shipped.
+
 **The failure mode this catches**: agent reaches for a heavyweight in-browser ML bundle when `mica.openChannel('turn', { model: '<vision-model>', history: 'stateless' })` does the same job in one line. Same anti-pattern for chat (use `llm-direct` instead of a self-hosted JS client), subprocess wraps (use the `process` handler — `child_process` from card.js doesn't work), speech (use the voice sidecars instead of bundling a speech library).
 
 ## Step 0a — What do you already know? (recall before search)
