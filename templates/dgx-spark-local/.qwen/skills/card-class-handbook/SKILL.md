@@ -1048,6 +1048,16 @@ init().catch((err) => {
 
 The same rule applies to async error paths (texture-load `onError`, fetch failures, channel events): record the actual error message; don't substitute a domain-specific label that has to be right to be useful.
 
+### Defined-but-uncalled functions = the bug
+
+After authoring card.js, scan your file for every function name and confirm each is invoked from at least one call path. A common failure mode in async-heavy cards is to define helpers like `createScene()`, `hideLoading()`, `tryStart()`, etc. — but the load-completion callbacks never invoke them. The render loop ticks forever; the canvas stays empty; `render_capture` may even return MATCHES if the visible state looks "loading-ish."
+
+**The check is one mental pass before declaring done**: list every `function foo(...)` and `const foo = (...) =>` definition in card.js, then search for `foo(` call sites. Every definition should have at least one call site somewhere in the file.
+
+**If you find a function defined but not invoked anywhere**, that's almost certainly the bug. Wire it into the right callback — typically the loader's `onSuccess`, or `LoadingManager.onLoad` for Three.js batch-loaded textures, or whatever async-completion event the architecture uses. Re-author the call site, then re-verify with `render_capture`.
+
+This pattern is library-agnostic — it applies to any card.js with multiple functions and async resources. It's the negative-counterpart to the positive "load N → create dependent objects → start render loop" pattern documented in library-specific skill packs (`threejs-loaders/SKILL.md` for Three.js, equivalent for other libraries).
+
 ### `render_capture` and WebGL — usually just works
 
 CARD_SHIM auto-enables `preserveDrawingBuffer: true` on any WebGL context created within card scope. So when the capture pipeline's `html2canvas` fallback calls `canvas.toDataURL()`, the WebGL back buffer is readable and the screenshot returns the actual frame. **You don't need to do anything special** for WebGL cards — the common case (Three.js, regl, PixiJS, Babylon, raw WebGL) captures cleanly out of the box.
