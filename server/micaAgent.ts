@@ -1642,6 +1642,18 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // Show thinking state
       ctx.broadcast({ type: "thinking" });
 
+      // Hoisted so the catch block at the end of this try can read them in
+      // diagnostic logging. The for-await loop below mutates them. Without
+      // hoisting they're block-scoped to the try and the catch's
+      // `[mica-agent:turn-end:catch]` log throws ReferenceError, which
+      // bypasses the exit-53 recovery path at the bottom of the catch and
+      // leaves the agent silent after a qwen CLI FatalTurnLimited exit.
+      // Observed twice in the orbit300 session before this fix landed.
+      let _evtSeq = 0;
+      let _lastEvtAt = Date.now();
+      let _sawResultEvent = false;
+      let _lastEvtType: string | null = null;
+
       try {
         // Per-card provider routing. Read fresh each turn so settings changes
         // take effect on the next message without restarting the session.
@@ -2381,17 +2393,15 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // turns.
         const outstandingSubagentTasks = new Set<string>();
 
-        let _evtSeq = 0;
-        let _lastEvtAt = Date.now();
-        // Instrumentation: track whether the SDK emitted a `result` event
-        // before the for-await loop exited. Loop exit without a result event
-        // means the SDK terminated by some path we don't have explicit
-        // handling for (suspected: hitting our configured maxSessionTurns
-        // exits cleanly without throwing FatalTurnLimitedError → wasMaxTurns
-        // never gets set → exit-53 recovery never fires). Log per-turn so the
-        // next orbit16-shaped failure surfaces the empirical signature.
-        let _sawResultEvent = false;
-        let _lastEvtType: string | null = null;
+        // Instrumentation: _evtSeq / _lastEvtAt / _sawResultEvent /
+        // _lastEvtType are declared in the enclosing scope (above the try)
+        // so the catch can read them for its diagnostic log. The for-await
+        // loop below mutates them per event. Tracking _sawResultEvent
+        // matters: loop exit without a `result` event means the SDK
+        // terminated by some path we don't have explicit handling for
+        // (suspected: hitting our configured maxSessionTurns exits cleanly
+        // without throwing FatalTurnLimitedError → wasMaxTurns never gets
+        // set → exit-53 recovery never fires).
         for await (const evt of q) {
           const evtType = evt.type as string;
           _evtSeq++;

@@ -5,10 +5,13 @@
 
 import { z } from "zod";
 import { readFile as fsReadFile } from "fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { captureCard } from "../screenshot.js";
 import { bumpRenderCaptureCount, RENDER_CAPTURE_CAP } from "../renderCaptureCounter.js";
 import { getPendingValidatorErrors } from "../validatorErrorBuffer.js";
-import { canonicalizeCardPath, readCanvasConfig } from "../files.js";
+import { canonicalizeCardPath, readCanvasConfig, micaDir, findCardClassInLibraries } from "../files.js";
+import { runLiveMount } from "../verifiers/cardLiveMount.js";
 import type { AgentToolDef, AgentToolResult } from "./registry.js";
 
 // Settle delay before reading the error buffer. Runtime errors in card.js
@@ -32,6 +35,24 @@ function classNameFromInstance(filename: string): string | null {
   if (dot === -1) return null;
   const ext = filename.slice(dot + 1);  // "bar-baz"
   return ext || null;
+}
+
+// Resolve a card-class directory: project-scoped first, then library
+// projects, then the built-in `card-classes/` folder shipped with mica.
+// Mirrors `resolveCardClassDir` in server/index.ts (which is not exported);
+// duplicating the four-line resolver here is lighter than restructuring
+// imports across the boundary. Returns null if the class doesn't have a
+// card.html anywhere — caller treats null as "skip live mount."
+function resolveLocalClassDir(className: string, project: string | null): string | null {
+  if (project) {
+    const projectScoped = join(micaDir(project), "card-classes", className);
+    if (existsSync(join(projectScoped, "card.html"))) return projectScoped;
+  }
+  const lib = findCardClassInLibraries(className);
+  if (lib) return lib.dir;
+  const builtIn = join(process.cwd(), "card-classes", className);
+  if (existsSync(join(builtIn, "card.html"))) return builtIn;
+  return null;
 }
 
 // Captioner describes the canvas as blank/black → almost always the WebGL
@@ -108,6 +129,36 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
       // Fall back to the raw input if canonicalization throws (e.g. path
       // escapes project root). Let captureCard surface the real error.
       canonicalFilename = input.filename;
+    }
+
+    // Live-mount check (Verifier #2): before paying for the screenshot +
+    // vision-model captioning, mount the card in headless Chromium and
+    // watch for runtime errors. Catches the failure class render_capture's
+    // existing buffer-read step misses — namely, when card.js wraps init
+    // in defensive try/catch that logs to console but doesn't rethrow
+    // (orbit200's `init failed:` swallow). The static verifiers don't
+    // reach this either (the card.js parses cleanly; the failure is at
+    // dynamic-import resolution time). If it fails, we return early with
+    // a LIVE-MOUNT-FAILED verdict so the agent iterates without burning
+    // a screenshot turn on a card we already know is broken.
+    const className = classNameFromInstance(canonicalFilename);
+    if (className) {
+      const classDir = resolveLocalClassDir(className, ctx.project);
+      if (classDir) {
+        const mountResult = await runLiveMount(classDir);
+        if (!mountResult.ok) {
+          const lines = mountResult.problems
+            .map((p, i) => `  ${i + 1}. ${p.problem}\n     Fix: ${p.fix_hint}`)
+            .join("\n");
+          return {
+            isError: true,
+            text:
+              `[render_capture: LIVE-MOUNT-FAILED] Build is NOT complete. The card threw runtime errors when mounted in headless Chromium. ` +
+              `Fix each error below (use mica_edit_class_file), then re-call render_capture. The screenshot pipeline is skipped on live-mount ` +
+              `failure — there's no point captioning a card we already know is broken.\n\nErrors:\n${lines}`,
+          };
+        }
+      }
     }
 
     try {
@@ -210,7 +261,8 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
       // Both validatorErrorBuffer entries (validator) and the runtime
       // /api/cards/:filename/error path record into the same buffer, so a
       // single query covers both code paths.
-      const className = classNameFromInstance(canonicalFilename);
+      // `className` was already computed up-top for the live-mount gate;
+      // reuse it here for the validator-error filter.
       const allErrors = ctx.project ? getPendingValidatorErrors(ctx.project) : [];
       const relevantErrors = allErrors.filter((e) => {
         if (e.filename === canonicalFilename) return true;

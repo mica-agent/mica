@@ -5,31 +5,8 @@
 // opencode3 today). Defense-in-depth on top of the `\n` fix shipped in
 // CardRuntime.tsx.
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { registerVerifier, type FileVerifier, type VerifyResult } from "./registry.js";
-
-// CARD_SHIM is extracted from CardRuntime.tsx at first use and cached.
-// If CardRuntime is edited, server restart re-extracts.
-let CARD_SHIM: string | null = null;
-
-async function getCardShim(): Promise<string> {
-  if (CARD_SHIM !== null) return CARD_SHIM;
-  try {
-    const src = await readFile(
-      join(process.cwd(), "src", "whiteboard", "CardRuntime.tsx"),
-      "utf-8",
-    );
-    const m = src.match(/const CARD_SHIM = `([\s\S]*?)\n`;/);
-    CARD_SHIM = m ? m[1] : "";
-  } catch {
-    // CardRuntime.tsx unreadable (test env, etc.) — empty shim degrades
-    // the check to "does the raw card.js parse as a function body."
-    // Still catches gross errors, just not wrap-interaction ones.
-    CARD_SHIM = "";
-  }
-  return CARD_SHIM;
-}
+import { getCardShim } from "./cardShim.js";
 
 const verifier: FileVerifier = {
   name: "card-js-wrapper-parse",

@@ -79,3 +79,19 @@ RUN set -eux; \
 ENV PATH=/home/vscode/.opencode/bin:$PATH
 RUN su -l vscode -c 'curl -fsSL https://opencode.ai/install | bash' || true
 
+# Playwright system dependencies for headless Chromium. Used by the live-
+# mount verifier (server/verifiers/cardLiveMount.ts) to actually run the
+# card in a real browser at write time and catch runtime errors that
+# defensive try/catch in card.js would otherwise swallow. The Chromium
+# binary itself is downloaded by `npx playwright install chromium` after
+# the npm install in postCreate; this RUN just gets the apt-level libs
+# (libnss3, libatspi, etc.) so the binary can launch. Listed verbatim
+# from `playwright install-deps` so future Playwright updates don't
+# silently regress the set.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+      libxkbcommon0 libatspi2.0-0t64 libxcomposite1 libxdamage1 libxfixes3 \
+      libxrandr2 libgbm1 libcairo2 libpango-1.0-0 libasound2t64 fonts-liberation \
+      fonts-noto-color-emoji fonts-wqy-zenhei xfonts-cyrillic xfonts-scalable \
+ && rm -rf /var/lib/apt/lists/*
+
