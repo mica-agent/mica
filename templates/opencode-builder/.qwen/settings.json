@@ -30,6 +30,10 @@
     "tavily": {
       "command": "npx",
       "args": ["-y", "tavily-mcp"]
+    },
+    "exa": {
+      "command": "npx",
+      "args": ["-y", "exa-mcp-server"]
     }
   }
 }

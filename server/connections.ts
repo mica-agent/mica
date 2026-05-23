@@ -35,7 +35,7 @@ import { WORKSPACE_DIR, micaDir } from "./files.js";
 // ── Service registry ────────────────────────────────────────────────
 
 /** Pattern A — services where Mica stores an API key the user pastes. */
-export type PasteKeyService = "openrouter" | "anthropic" | "tavily";
+export type PasteKeyService = "openrouter" | "anthropic" | "tavily" | "exa";
 
 /** Pattern B — services where Mica only checks whether an external CLI
  *  has logged in. Mica never sees the token. */
@@ -129,6 +129,28 @@ async function validateTavily(key: string): Promise<{ ok: boolean; error?: strin
   }
 }
 
+async function validateExa(key: string): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  try {
+    // Trivial search via /search — auth-gated, returns 200 for valid keys,
+    // 401 for invalid. Cheaper than /answer (which costs ~$0.005); /search
+    // results count against the plan's monthly cap but a single
+    // validation call is negligible.
+    const res = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: { "x-api-key": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "test", numResults: 1 }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) return { ok: true };
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "Exa rejected the key. Double-check that you copied it correctly." };
+    }
+    return { ok: false, error: `Exa returned ${res.status}. Try again.` };
+  } catch {
+    return { ok: true, warning: "Couldn't reach api.exa.ai to verify — saved unverified. Mica will use it on next search call." };
+  }
+}
+
 // ── Pattern B status checks ─────────────────────────────────────────
 
 function claudeConnected(): boolean {
@@ -200,6 +222,15 @@ export const SERVICES: ServiceDef[] = [
     inputHint: "Starts with tvly-",
     signupUrl: "https://app.tavily.com",
     validate: validateTavily,
+  },
+  {
+    id: "exa",
+    pattern: "paste-key",
+    displayName: "Exa",
+    description: "Semantic search + synthesized `answer` endpoint — surfaced as exa-mcp tools. Preferred over Tavily for specific URL lookups and asset discovery (see discover-dependency skill).",
+    inputHint: "UUID-shaped key",
+    signupUrl: "https://dashboard.exa.ai",
+    validate: validateExa,
   },
   {
     id: "claude",
@@ -288,6 +319,7 @@ const ENV_VAR_FOR: Record<PasteKeyService, string> = {
   openrouter: "OPENROUTER_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
   tavily: "TAVILY_API_KEY",
+  exa: "EXA_API_KEY",
 };
 
 /** Write a paste-key service's API key to credentials.json. */
