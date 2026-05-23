@@ -342,6 +342,29 @@ function ensureScriptErrorHandler(): void {
   window.addEventListener("error", (event) => {
     const errFilename = event.filename || "";
     if (!errFilename) return; // "Script error." (CORS-redacted); no info to route
+
+    // Card-script parse / runtime errors come with sourceURL of shape
+    // `mica-card://<urlencoded-filename>/card.js`. Route directly to that
+    // card's reporter. This catches script-parse errors that the try/catch
+    // around appendChild misses (Chrome doesn't always throw synchronously
+    // from appendChild for inline-script SyntaxErrors — it can fire as a
+    // window 'error' event instead).
+    if (errFilename.startsWith("mica-card://")) {
+      const match = errFilename.match(/^mica-card:\/\/([^/]+)\//);
+      if (match) {
+        const cardFilename = decodeURIComponent(match[1]);
+        const reporter = cardErrorReporters.get(cardFilename);
+        if (reporter) {
+          const where = event.lineno
+            ? ` (line ${event.lineno}${event.colno ? ":" + event.colno : ""})`
+            : "";
+          const msg = `Script error in ${cardFilename}${where}: ${event.message || "<no message>"}`;
+          try { reporter(msg); } catch { /* swallow */ }
+          return;
+        }
+      }
+    }
+
     const cards = scriptUrlToCards.get(errFilename);
     if (!cards || cards.size === 0) return; // not one of our CDN scripts
     const where = event.lineno
@@ -560,7 +583,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             newScript.textContent =
               `(function(){` +
               `const _m=document.currentScript.__mica;` +
-              `(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
+              `(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}\n})(` +
               `_m,document.currentScript.parentElement)` +
               `.catch(function(e){` +
               `console.error("[card-runtime] Script error in ${filename}:",e);` +
@@ -1061,7 +1084,7 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             `(function(){` +
             `const _m=document.currentScript.__mica;` +
             `const _ph={'X-Mica-Project':_m.project||''};` +
-            `(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}})(` +
+            `(async function(mica,_c){${CARD_SHIM}${oldScript.textContent}\n})(` +
             `_m,document.currentScript.parentElement)` +
             `.then(function(){` +
             `fetch(${okUrlLit},{method:'POST',headers:_ph}).catch(function(){});` +
