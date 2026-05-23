@@ -7,7 +7,7 @@
 // don't need temp files. ~100ms.
 
 import { spawn } from "node:child_process";
-import { registerVerifier, type FileVerifier, type VerifyResult } from "./index.js";
+import { registerVerifier, type FileVerifier, type VerifyResult } from "./registry.js";
 
 async function parseCheckBash(content: string): Promise<{ ok: true } | { ok: false; error: string }> {
   return new Promise((resolve) => {

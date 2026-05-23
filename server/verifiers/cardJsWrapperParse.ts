@@ -7,7 +7,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { registerVerifier, type FileVerifier, type VerifyResult } from "./index.js";
+import { registerVerifier, type FileVerifier, type VerifyResult } from "./registry.js";
 
 // CARD_SHIM is extracted from CardRuntime.tsx at first use and cached.
 // If CardRuntime is edited, server restart re-extracts.

@@ -11,7 +11,7 @@
 // passed via stdin so we don't need a temp file.
 
 import { spawn } from "node:child_process";
-import { registerVerifier, type FileVerifier, type VerifyResult } from "./index.js";
+import { registerVerifier, type FileVerifier, type VerifyResult } from "./registry.js";
 
 async function parseCheckPython(content: string): Promise<{ ok: true } | { ok: false; error: string }> {
   return new Promise((resolve) => {

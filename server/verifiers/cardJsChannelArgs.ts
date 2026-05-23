@@ -15,7 +15,7 @@ import { parse } from "@babel/parser";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { registerVerifier, type FileVerifier, type VerifyResult, type VerifyProblem } from "./index.js";
+import { registerVerifier, type FileVerifier, type VerifyResult, type VerifyProblem } from "./registry.js";
 import { getManifest, validateArgs } from "../handlerManifest.js";
 
 interface ChannelCall {

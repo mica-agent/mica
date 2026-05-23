@@ -13,7 +13,7 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { load as cheerioLoad } from "cheerio";
-import { registerVerifier, type FileVerifier, type VerifyResult, type VerifyProblem } from "./index.js";
+import { registerVerifier, type FileVerifier, type VerifyResult, type VerifyProblem } from "./registry.js";
 
 interface SelectorUsage {
   selector: string;       // exactly what was passed to querySelector

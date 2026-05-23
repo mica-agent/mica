@@ -21,7 +21,7 @@
 // false positives — e.g. functions held in a registry for later dispatch).
 
 import { parse } from "@babel/parser";
-import { registerVerifier, type FileVerifier, type VerifyResult, type VerifyProblem } from "./index.js";
+import { registerVerifier, type FileVerifier, type VerifyResult, type VerifyProblem } from "./registry.js";
 
 const SKIP_COMMENT = /\/\/\s*mica-skip-verifier:\s*uncalled-functions/;
 
