@@ -143,6 +143,10 @@ This rule exists because URL construction is where hallucination compounds silen
 
 If `mica_inspect_url` returns `ok: false`, that URL does not ship. Use the `reason` field's pivot suggestion (usually the jsdelivr listing) to find a real path, then `mica_inspect_url` the real one before writing it anywhere. If the inspect returns `format: 'ESM'` when you wanted UMD, see `_conventions.md § "Latest stable + bridge gaps"` — the bridge is Pattern B for that URL, not a walk-back to an older version.
 
+### Pick and proceed; ask when stuck
+
+The user reviews specs before the build runs. If a choice is wrong, they redirect — changing a draft spec is cheap. **One verification is enough; one plausible choice is enough.** When you find yourself re-inspecting or re-searching the same thing, take one of two exits: **(1) commit** the spec with your best choice, or **(2) ask** the user a specific question. Looping, bailing out, or claiming the user's input is incomplete are wrong exits.
+
 ## Procedure — enumerate, classify, walk
 
 ### Step 1 — Enumerate subproblems
@@ -269,19 +273,74 @@ curl -s "https://registry.npmjs.org/<pkg>" | head -c 4000
 curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 2000
 ```
 
-### Pick latest, inspect, apply the matching pattern
+### Library → read → use (lookup-first, not recall-first)
 
-The version-and-format decision is a three-step rule. Don't make it more complicated than this:
+You don't remember CDN URLs. You remember **library names**. The flow mirrors what a human does: name the library, read its current state, then use what you read. Training memorizes URL *shapes* well (`cdn.jsdelivr.net/npm/<pkg>@<v>/...` doesn't change) but not specific *paths* or *versions* — paths get renamed across releases, and versions advance faster than the training corpus. Lookup-first is two deterministic curls (~400ms) that eliminate both stale axes at once.
 
-1. **Pick the latest stable version.** Don't walk back to find a version with a particular format.
-2. **`mica_inspect_url` the core URL.** The `format` field IS your answer. If the library has addons you'll use, inspect each addon URL at the same version too.
-3. **Apply the matching load pattern** (mechanics documented in `card-class-handbook § "Pattern A — UMD"` and `§ "Pattern B — Dynamic ES module import"`):
+**Step 0 — Resolve the npm package name.** For popular libraries with unambiguous names (`three`, `leaflet`, `d3`, `react`, `chart.js`, `mermaid`), recall is reliable — skip this step. For scoped, modular, renamed, or unfamiliar packages (BabylonJS → `@babylonjs/core`; D3 modular → `d3-selection` etc.), one npm search returns the canonical name:
 
-   - **Core ships UMD** → Pattern A (UMD URL in `metadata.scripts`, library exposed as a global)
-   - **Core ships ESM** → Pattern B (`metadata.scripts: []`, `await import(url)` inline in card.js)
-   - **Core UMD + addons ESM** (the common Three.js / Leaflet-plugins / D3-addons shape) → Pattern A for core + Pattern B for each addon, same card. Mixed-format integration is normal, not an edge case.
+```bash
+curl -s "https://registry.npmjs.org/-/v1/search?text=<common-name>&size=5" | head -c 4000
+```
+
+Self-check: if Step 1's package lookup returns 404 or an obviously-wrong package, your recall was wrong — go back and run Step 0.
+
+**Step 1 — Look up the package.** One call gives you the latest version AND every file the package ships. *(Do NOT use Exa `answer` for this — it confabulates the filename. Probed: it answered "ESM" with the historical UMD filename `three.min.js`. The jsdelivr listing below is deterministic — structured JSON cannot hallucinate.)*
+
+```bash
+curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 4000
+# → tags.latest, versions[]
+
+curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>@<latest>" | head -c 4000
+# → file tree at that version
+```
+
+The file-tree names tell you the shipping format upfront — no guessing:
+
+| File you see | Format |
+|---|---|
+| `build/*.umd.js`, `dist/*.min.js` (no `.module`) | UMD ships |
+| `build/*.module.js`, `index.mjs`, `*.esm.js` | ESM ships |
+| Both kinds present | Library ships both (transitional; either pattern works — pick UMD if simpler) |
+| Only `*.module.js` / `*.mjs` | **ESM-only.** Architecture is Pattern B. No walk-back. |
+
+**Step 2 — Read the README quickstart** (for libraries with visible output: UI, charts, maps, 3D, etc.):
+
+```bash
+curl -s "https://cdn.jsdelivr.net/npm/<pkg>@<latest>/README.md" | head -c 8000
+```
+
+The first quickstart block has the URL the library's *own docs* recommend, plus the canonical usage call (`new THREE.Scene()`, `L.map(...)`, etc.). Use that URL — it's what the maintainers ship today. The README also surfaces ancillary deps (CSS, fonts) the file-tree alone wouldn't reveal.
+
+**Step 3 — `mica_inspect_url` the URL you found** to confirm 200 + format. The URL came from the package's own listing or README, not training memory — the inspect is a sanity check, not the source of truth. If the library has addons you'll use, inspect each addon URL at the same version too.
+
+**Step 4 — Apply the matching load pattern** (mechanics documented in `card-class-handbook § "Pattern A — UMD"` and `§ "Pattern B — Dynamic ES module import"`):
+
+- **Core ships UMD** → Pattern A (UMD URL in `metadata.scripts`, library exposed as a global)
+- **Core ships ESM** → Pattern B (`metadata.scripts: []`, `await import(url)` inline; prefer the `/+esm` variant per § The bare-specifier trap below)
+- **Core UMD + addons ESM** (common Three.js / Leaflet-plugins / D3-addons shape) → Pattern A for core + Pattern B for each addon, same card. Mixed-format integration is normal, not an edge case — but see § The bare-specifier trap.
 
 card.js runs as a classic script (the runtime wrapper does not make it a module), so a static `import` keyword throws. Use `await import(url)` (dynamic import) for Pattern B — works inside the wrapper's async function.
+
+**Walk-back is never the next move.** If you find yourself typing a different version number for the same library after a 404 or after seeing ESM format, you're guessing instead of looking up. Stop and run Step 1 — the listing tells you the version *and* the actual paths in one response. Version walk-back is what produced the bare-specifier trap that bit prior builds.
+
+#### The bare-specifier trap (mixed-format gotcha)
+
+`mica_inspect_url` verifies the URL responds 200 and the file is the format it claims to be. It does **not** parse the file's import graph. The most common runtime failure with mixed-format integration:
+
+> An ESM addon (e.g. `OrbitControls.js`) contains `import * as THREE from 'three';` — a bare specifier. The browser cannot resolve `'three'` without an import map. `await import(addonUrl)` throws `Failed to resolve module specifier 'three'` at runtime, even though `inspect_url` showed `200, ESM, OrbitControls export`.
+
+**Before you ship mixed format**, do one of the following:
+
+1. **Use the auto-bundling ESM variant** — jsdelivr serves `/+esm` URLs that rewrite bare specifiers to full URLs:
+   ```
+   https://cdn.jsdelivr.net/npm/three@<v>/examples/jsm/controls/OrbitControls.js/+esm
+   ```
+   Inspect this URL; if format is ESM and the response doesn't contain a bare `import ... from 'three'`, you're safe.
+2. **Go full ESM** — drop the UMD core, load both the core and the addon as ESM via `await import()`. Resolves the same bare specifier because the same `+esm` rewriter applies.
+3. **Inline import map** — write a `<script type="importmap">` block in card.html mapping `'three'` to the full Three.js ESM CDN URL. Card-author overhead is real; prefer option 1.
+
+**To detect the trap before the build**, after `mica_inspect_url` confirms the addon URL is ESM, `web_fetch` the same URL with `prompt:"does this file contain any bare-specifier imports — lines like 'import ... from \"<package-name>\"' where the package name has no scheme or path?"` (or `mica_shell` with `curl -s <url> | grep -E "^import.*from '[a-z]"`). If the answer is yes and the URL is not a `/+esm` variant, you have the trap — pick option 1, 2, or 3 above and document the choice in the spec's verified-dependencies table.
 
 **Don't reach for these as defaults:**
 
@@ -312,17 +371,38 @@ Recall-first, the same way. The canonical CORS-friendly host shapes:
 
 **Canonical first moves for asset hunting** — these compress what's otherwise dozens of tavily searches into a few inspect_url calls. Reach for them in order; only fall through to tavily when recall genuinely produces no candidate.
 
-**Move 1 — you know the host but not the exact path.** Construct a candidate URL from one of the host shapes above and `mica_inspect_url` it. The tool returns `{ok, status, contentType, format}` in ~500 bytes. If `ok: true`, commit. If `ok: false` (404), the next call is the host's listing API for the FILE LIST:
+**Move 0 — Exa `answer` for specific URL lookup or asset discovery** (when `EXA_API_KEY` is configured). For *"what's the direct upload.wikimedia.org URL for file X"* or *"CORS-friendly URLs for asset category Y"* — one synthesized response with citations replaces what's otherwise a multi-search + page-fetch loop. Empirically: 1 Exa call (~2-3s, ~$0.005) for a Wikimedia direct-URL lookup vs ~13 tavily+fetch calls.
+
+```bash
+curl -s -X POST "https://api.exa.ai/answer" \
+  -H "x-api-key: $EXA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"<specific URL lookup or asset-discovery query>"}'
+```
+
+`mcp__exa__*` MCP tools are also registered when the key is set — same backing API.
+
+**Trust citations more than the `answer` field.** Exa's synthesized answer is empirically right ~70% of the time and confabulates the rest (e.g. mixing "ESM" with a UMD filename, or describing a plausible-but-wrong path). The citations are the truth — read them. Treat the `answer` URL as a candidate and verify with `mica_inspect_url`.
+
+Fall through to Move 1 if Exa isn't configured, returns nothing usable, or you're looking for the *latest version + file structure* of a library (use the deterministic `data.jsdelivr.com/v1/package/npm/<pkg>` listing per §3a instead — Exa hallucinates library URLs but is reliable for asset lookup).
+
+**Move 1 — you know the host but not the exact path.** Construct a candidate URL from one of the host shapes above and `mica_inspect_url` it. The tool returns `{ok, status, contentType, format}` in ~500 bytes. If `ok: true`, commit.
+
+**On the FIRST 404 for an asset, your next call is the listing API. Not another filename guess. Not a tavily search.** If you find yourself typing a second filename variant for the same logical asset (e.g. `moon_1k_color.jpg` → `moon_1k.jpg` → `moon.jpg`), you've already broken this rule — stop and list the directory.
 
 ```bash
 # Every file in a GitHub repo at a given ref:
 curl -s "https://data.jsdelivr.com/v1/package/gh/<owner>/<repo>?branch=<ref>" | head -c 4000
+# OR (faster when you know the specific subdirectory):
+curl -s "https://api.github.com/repos/<owner>/<repo>/contents/<subdir>?ref=<ref>" | head -c 4000
 
 # Every file in an npm package at a given version:
 curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>@<version>" | head -c 4000
 ```
 
 One listing response shows you every file. Pick the right path, `mica_inspect_url` it, commit. Total budget: 2-4 calls per asset, not 20.
+
+**Why the trigger is the FIRST 404, not the third**: recall is often *partially* accurate — sibling assets share most of their name, so the first few candidate URLs hit and reinforce the pattern. When the (N+1)th sibling 404s, the reflex is "the pattern is right; try a variant." But filename renames don't follow patterns. The variant loop burns 5-10 calls before recovery; the listing call ends it in one.
 
 **Move 2 — you know the asset category but not the host.** Recall first. Most popular libraries with visual output ship their example assets in their own GitHub repos at `examples/` — try the library's repo first (`cdn.jsdelivr.net/gh/<owner>/<repo>@<tag>/examples/<subpath>`). Many art / texture / font assets live in well-known curated repos; if you can name a candidate repo, try it as Move 1.
 
