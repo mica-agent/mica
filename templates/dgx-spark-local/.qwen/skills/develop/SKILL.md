@@ -154,14 +154,49 @@ ENDS**. Do NOT advance to step 3 or 4 in this turn — no
 handbook may already be in context from earlier in this same turn
 for canvas builds — that's fine; the gate is about advancing the
 flow, not about which skills have been loaded.) Your chat
-reply is: *"Drafted spec.md — review and OK to build?"* If the
-request had vague areas the spec couldn't pin down (color choices,
-exact edge behavior, library tradeoffs you couldn't pick between,
-missing constraints), surface those as bullet questions in the
-same chat reply — don't guess defaults silently. Wait for the
-user's next message before proceeding to step 3. Doc-only edits
-don't need approval; anything that produces code does. See
-`_conventions.md` § Approval flow.
+reply is: *"Drafted spec.md — review and OK to build?"*
+
+**Commit to canonical defaults — don't ask.** The spec must be
+complete and concrete. For details the user didn't specify, pick
+the canonical default and write it in:
+
+- **Library version** → latest stable on the registry, verified by
+  `discover-dependency`.
+- **Asset source** → canonical for the library (NASA textures via
+  Three.js examples for celestial bodies; OSM tiles for Leaflet;
+  the library's own docs/example assets when present).
+- **Animation / physics constants** → realistic defaults (60fps,
+  frame-rate-independent updates, true astronomical scale ratios
+  where applicable, smooth interpolation).
+- **Aesthetic** → one sensible choice (dark theme, sans-serif,
+  8px grid, fixed cinematic camera). Don't enumerate alternatives.
+- **Layout** → standard for the artifact type (full-width canvas
+  for visualizations, sidebar+main for dashboards, single-column
+  for forms).
+- **Content** → reasonable representative set (12 cities for a
+  world clock, 2000 stars for a starfield, ~10 sample items for a
+  list). Round, recognizable numbers.
+
+**Only ask a question when a choice fundamentally changes the
+OUTPUT CATEGORY** — desktop vs. mobile-first, real-time vs.
+static, single-user vs. multi-user, persistent vs. session state,
+client-only vs. server-required. These flip what gets built.
+
+**Do not ask about**: aesthetic preferences, library minor versions,
+animation speeds, color palettes, exact city/item counts, font
+choices, default zoom levels, sample content. Pick one, write it
+in, move on. One redirect turn from the user — *"actually make it
+mobile-first"* — is far cheaper than five rounds of clarification
+before any code exists.
+
+The spec is the user's chance to redirect the *whole plan* in one
+message, not to fill in blanks you left for them. A complete,
+opinionated spec respects the user's time; a spec with bullet
+questions doesn't.
+
+Wait for the user's next message before proceeding to step 3.
+Doc-only edits don't need approval; anything that produces code
+does. See `_conventions.md` § Approval flow.
 
 **The gate fires on tool-return, not on user reply.** "Approval" is
 the user's NEXT MESSAGE — nothing else. Do not interpret continued

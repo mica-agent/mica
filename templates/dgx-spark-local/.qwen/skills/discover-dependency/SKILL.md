@@ -1,6 +1,6 @@
 ---
 name: discover-dependency
-description: Invoke before designing or writing any component that pulls from external resources — libraries (JS code), assets (images, video, audio, fonts, 3D model files, data files), OR services (live APIs). Most non-trivial cards need MULTIPLE kinds in one build (e.g. a rendering library plus textures plus a public API). This skill is the single entry point: enumerate subproblems, classify each as library/asset/service, walk through them in order with the matching procedure. Recall-first throughout: write down what you already know for each subproblem and verify with `curl`; reach for `mcp__tavily__tavily_search` only when recall genuinely fails. Produces a documented decisions table on canvas. Library / asset is the default for any non-trivial subproblem; bespoke implementation is the exception that requires a documented "nothing fits because Z" decision.
+description: Invoke before designing or writing any component that pulls from external resources — libraries (JS code), assets (images, video, audio, fonts, 3D model files, data files), OR services (live APIs). Most non-trivial cards need MULTIPLE kinds in one build (e.g. a rendering library plus textures plus a public API). This skill is the single entry point: enumerate subproblems, classify each as library/asset/service, walk through them in order with the matching procedure. Lookup discipline is calibrated by model class via the runtime banner's `recallProfile`: high/medium/low confidence categories recall + verify, very-low confidence categories skip recall and go directly to Search craft + Asset URL Extract Pattern (`tavily_extract` with include_images, or `mcp__exa__web_search_advanced_exa` with includeDomains). Produces a documented decisions table on canvas. Library / asset is the default for any non-trivial subproblem; bespoke implementation is the exception that requires a documented "nothing fits because Z" decision.
 ---
 
 # Discover external dependencies — libraries, assets, services
@@ -126,6 +126,98 @@ It's a net loss when:
 
 **The rule of thumb**: if you have a library name and want its canonical CDN URL OR a list of plugins, `web_fetch` is almost always the right call. The wall-clock cost (30 sec to a few minutes) reliably beats the context cost of multiple tavily iterations on the same question.
 
+## Search craft — query construction, pivots, and escalation
+
+The Search budget caps you at 3 queries per subproblem. Each query should
+drive a different intent dimension. The shape that works across categories:
+
+**One intent per query.** Asset / library / service discovery has three
+intent dimensions:
+
+- **SOURCE** — *who/where* the resource lives (Wikimedia? npm? GitHub topic?)
+- **FILE / ARTIFACT** — *what* specific resource within the source
+- **VERIFICATION** — *whether* the URL works for the runtime use case
+
+Run them sequentially. Each query targets one dimension.
+
+### Query templates
+
+**Library by capability** (one query, often enough):
+
+```
+<capability> <ecosystem> plugin
+day night terminator leaflet plugin
+spatial index 2d points javascript library
+```
+
+**Asset, source unknown** (two queries):
+
+```
+# 1. source identification — what + likely host
+earth texture equirectangular wikimedia commons
+
+# 2. file location — site-restricted
+site:commons.wikimedia.org earth daymap equirectangular 8k
+```
+
+**Service / free API** (one query):
+
+```
+<service-type> public free API CORS no-auth
+weather forecast public free API CORS no-auth
+geocoding public free API CORS no-auth
+```
+
+**Documentation lookup for a known library** — use `web_fetch` against the
+library's docs URL with a `prompt:` field instead of tavily. Wallclock
+30-90s; one return chunk replaces 5+ tavily iterations.
+
+### Pivot strategies — apply after two queries return generic results
+
+Each strategy yields a candidate URL that flows back into `mica_inspect_url`
+for verification.
+
+- **Category / topic page** — Wikimedia `Category:`, GitHub `topic:`. One
+  fetch returns a curated list of candidates.
+- **Library examples folder** — When the work uses a library, read its own
+  `examples/` directory. The library knows which assets it ships with and
+  where they live.
+- **Tutorial copy** — A working tutorial that uses the same asset class has
+  verified URLs in its source. Read the source, take the URL, verify, commit.
+- **Host's listing API** — `data.jsdelivr.com/v1/package/...`,
+  `api.github.com/repos/.../contents/...`. The host already knows every
+  file; the listing returns them all in one call.
+
+### Escalation when the budget is exhausted
+
+After three queries without a canonical candidate, surface the state to the
+user with `user_question`. Give them:
+
+1. The candidates you found and rejected, with the rejection reason for each.
+2. A specific question naming the resource gap.
+
+Example escalation:
+
+```
+I searched for {asset}. Found three candidates:
+- {url-1}: rejected because {reason}
+- {url-2}: rejected because {reason}
+- {url-3}: rejected because {reason}
+
+What I need: {specific shape — content type, CORS, license, host
+constraint}. Do you have a preferred source, or should I proceed with
+{fallback option}?
+```
+
+The user redirects from a position of seeing the agent's work.
+
+### How this relates to the Search budget
+
+Search budget is the WHEN (cap at 3); search craft is the HOW. Each of the
+three queries should be a different shape — one for source, one for file,
+one for verification or pivot input. Three queries with the same shape
+indicate the agent reformulating instead of advancing.
+
 ## The one universal rule (with self-check)
 
 **Any URL you write into a spec, a card's `metadata.json`, or `card.html` / `card.js` MUST have been verified with `mica_inspect_url` THIS TURN first.** Not last turn. Not from memory. Not from a tavily snippet. Not from a README quote. THIS TURN. No exceptions. This includes:
@@ -202,6 +294,90 @@ For each one, tag it:
 - "I can do it in N lines" is a recall claim, not a verified one. Until you've actually typed the N lines AND debugged them, the real cost is unknown. The library you haven't searched for might be 1 line.
 
 **Gate**: if your draft classification table has any `bespoke` row whose subproblem is NOT in the browser-native table above (Intl, crypto.subtle, requestAnimationFrame, etc.), go run `mcp__tavily__tavily_search "<feature> <ecosystem-or-host-library> plugin"` or equivalent recall+verify for the library candidate BEFORE finalizing the classification. The spec/decisions table can land on `bespoke` legitimately — but only after a search rejected the library option, and the rejection reason is recorded.
+
+### Step 2a — Library inclusion test (two gates)
+
+Step 0 and the Step 2 bespoke-gate prevent the "compute it myself" failure
+mode by forcing a library search before tagging as bespoke. They do not
+prevent the symmetric failure: pulling in a library — or a submodule of a
+library you've already included — that the spec doesn't actually need.
+Loading-pattern complexity (UMD vs ESM submodules, bare-specifier resolution,
+metadata.scripts coherence) is real cost; every avoided library is one less
+loop the build can get stuck in.
+
+Before finalizing a `LIBRARY` tag (or adding a submodule to a library
+already included), apply two gates in order:
+
+**Gate 1 — User-intent gate.** Include only features the user's prompt
+explicitly names. For every feature in the spec, you should be able to quote
+the word or phrase in the prompt that requires it. Features the prompt does
+not name belong in SKIP rows of the decision table, with the literal-prompt
+audit annotation. The user redirects via their next message if a SKIP'd
+feature should be included — one redirect costs less than five turns of
+metadata reconciliation.
+
+**Training-prior fills these tend to surface on similar prompts. Run the
+literal-scan to keep them filtered:**
+
+| Prompt mentions… | Training prior fills in… | Gate 1 verdict (literal-scan) |
+|---|---|---|
+| 3D scene, 3D animation, 3D visualization | OrbitControls (mouse-drag camera) | SKIP — the prompt names passive viewing; interaction needs an explicit word like "explorable" or "interactive" |
+| Chart, graph, plot | Pan/zoom controls | SKIP — chart prompts default to static |
+| Form, input | Progress indicator, autosave indicator | SKIP — explicit "save automatically" triggers inclusion |
+| Editor, canvas | Undo/redo, history panel | SKIP — history needs an explicit named behavior |
+| List, table, grid | Sort/filter UI | SKIP — sortable/filterable is explicit |
+| Map | Layer controls, search bar, zoom UI | SKIP — bare "map" means tiles + markers |
+
+When in doubt, write a SKIP row and let the user pull features in. SKIP rows
+are visible in the spec; the user can redirect any of them by name.
+
+**Gate 2 — Verifiability gate.** For a subproblem that IS in scope, ask:
+*Can the correctness of its output be judged from the rendered screenshot
+alone, using the Playwright live-mount loop (`render_capture`)?*
+
+- **YES** → INLINE is viable. The verification loop self-corrects: if the
+  inline implementation is wrong, the screenshot shows it, and iteration
+  repairs it. Inline cost (small code addition) is less than library cost
+  (loading pattern, version compat, metadata coherence).
+- **NO** → LIBRARY is justified. The library encodes domain knowledge
+  (astronomical geometry, geographic projection, layout algorithms,
+  cryptographic operations) the verification loop cannot see. Without it,
+  the agent would have to recreate the same domain code to grade its own
+  output — defeating the purpose.
+
+**Worked examples:**
+
+| Subproblem | Verifiable from screenshot? | Decision |
+|---|---|---|
+| Mouse-drag-to-rotate camera | YES (drags or doesn't) | INLINE — or SKIP if not in prompt |
+| Orbital animation around a center | YES (object moves in a circle) | INLINE — `requestAnimationFrame` + trig |
+| Procedural starfield | YES (stars visible, count plausible) | INLINE — `Points` + `BufferGeometry` |
+| Texture loading onto a sphere | YES (sphere shows texture or not) | Core library only — no submodule needed |
+| Day/night terminator on a 2D map | NO (curve looks plausible at every wrong position) | LIBRARY — `leaflet-terminator` |
+| Mercator/Web-Mercator tile projection | NO (a few pixels off is invisible) | LIBRARY — `leaflet` |
+| Time-zone abbreviation lookup | YES (label says "EST" correctly or not) | INLINE — `Intl.DateTimeFormat` |
+| Drag-and-drop with grid snapping | YES (snaps to grid or doesn't) | INLINE if simple; LIBRARY if elastic |
+| GLTF / GLB model loading | NO (model loads correctly or not from a binary format) | LIBRARY — `three/examples/jsm/loaders/GLTFLoader` |
+
+**One-line decision criterion:** if the screenshot a user would see is
+*enough to catch incorrectness*, the iteration loop covers you and inline is
+cheaper. If the screenshot would look plausible even when the math is wrong,
+the library encodes the verification you don't have.
+
+**Decision table row format** when a library was rejected in favor of inline:
+
+`Subproblem | LIBRARY | INLINE — verifiable by render_capture (N lines) | <reason>`
+
+The `INLINE — verifiable by render_capture (N lines)` annotation is the
+audit trail for skipping a library: the next reviewer can see at a glance
+that the inline path was deliberate, not a "compute it myself" oversight.
+
+**Skip rationale row format** when a feature was excluded by gate 1:
+
+`<feature> | SKIP | not in user request — training-prior default | <one-line context>`
+
+That row gives the user a single place to redirect ("actually add
+OrbitControls") rather than discovering the omission post-build.
 
 ### Step 3 — Walk each tagged subproblem through the matching procedure
 
@@ -366,7 +542,71 @@ See `_conventions.md § "Latest stable + bridge gaps"` for the cross-skill versi
 
 #### 3b — ASSET subproblems
 
-Recall-first, the same way. The canonical CORS-friendly host shapes:
+**Asset URL Extract Pattern — search, extract, verify:**
+
+After Search craft surfaces a likely description page or canonical host for
+an asset, resolve the direct asset URL with one of these generic tools — no
+per-host API knowledge required:
+
+1. **`tavily_extract`** with `include_images: true` on a description page
+   URL. Returns a list of direct image URLs extracted from the page. Works
+   for Wikimedia file description pages (the `commons/<x>/<xy>/<filename>`
+   hash subdirectory pops out in the `images` array), GitHub README rendered
+   pages, dev.to articles, library example pages — anywhere images appear
+   on an HTML page.
+
+   ```json
+   {
+     "urls": ["https://commons.wikimedia.org/wiki/File:Solarsystemscope_texture_2k_moon.jpg"],
+     "include_images": true
+   }
+   ```
+
+   Returns: `{ results: [{ url, raw_content, images: [<direct image URLs>] }] }`.
+   Filter the `images` array for the file you want, then verify each
+   candidate with `mica_inspect_url`.
+
+2. **`mcp__exa__web_search_advanced_exa`** with `includeDomains` for
+   site-restricted search. Returns matching pages limited to the chosen
+   host, with image links in the result content:
+
+   ```json
+   {
+     "query": "Solarsystemscope moon texture",
+     "includeDomains": ["commons.wikimedia.org"],
+     "numResults": 5
+   }
+   ```
+
+   Use to narrow search to the canonical host you suspect, then follow up
+   with `tavily_extract` on the top result for the direct file URL.
+
+The pattern replaces per-host API knowledge with one generic mechanism.
+The same two tools cover Wikimedia (no need for the MediaWiki API),
+GitHub asset pages (no need for the GitHub contents API when the asset is
+referenced on a README), Three.js examples folder, and similar HTML-page-
+referenced asset sources.
+
+For *content-addressed library packages* (npm via jsdelivr, GitHub via
+jsdelivr/gh), the existing Step 3a Library section already documents
+`data.jsdelivr.com/v1/package/...` listing — keep using that. The extract
+pattern above is for *description pages* (HTML pages referencing assets),
+not for package contents.
+
+**When to reach for the extract pattern** depends on the calibration
+block at the top of the runtime banner:
+- If `recallProfile.assetUrlPaths` is **very-low** for the running model:
+  skip recall entirely and use the extract pattern from the start.
+- If `assetUrlPaths` is **low**: recall + verify first; advance to the
+  extract pattern only if `mica_inspect_url` rejects the recalled URL.
+- If `assetUrlPaths` is **medium** or **high**: recall + verify covers
+  most cases. The extract pattern remains the fallback for verification
+  failures.
+
+The CORS-friendly host shapes table below documents URL formats for
+constructing candidate URLs by recall (when the model class supports it).
+
+
 
 | Asset category | URL shape | Notes |
 |---|---|---|
@@ -415,7 +655,7 @@ One listing response shows you every file. Pick the right path, `mica_inspect_ur
 
 **Move 2 — you know the asset category but not the host.** Recall first. Most popular libraries with visual output ship their example assets in their own GitHub repos at `examples/` — try the library's repo first (`cdn.jsdelivr.net/gh/<owner>/<repo>@<tag>/examples/<subpath>`). Many art / texture / font assets live in well-known curated repos; if you can name a candidate repo, try it as Move 1.
 
-**Move 3 — genuine no-prior.** `mcp__tavily__tavily_search` with a sharp query naming the category PLUS a host hint (e.g. `"<asset> github jsdelivr cors"` or `"<asset> npm package"`). Cap at the 3-search rule from § Search budget. If 3 searches don't surface a candidate URL, escalate per the budget rule (drop the resource OR ask the user).
+**Move 3 — genuine no-prior.** `mcp__tavily__tavily_search` with a sharp query naming the category PLUS a host hint (e.g. `"<asset> github jsdelivr cors"` or `"<asset> npm package"`). For asset search specifically, apply the two-step pattern from § Search craft: source identification (what + likely host), then site-restricted file location. Cap at the 3-search rule from § Search budget. After two queries returning generic results, advance to a pivot strategy from § Search craft (category/topic page, library examples, tutorial copy, host listing API) instead of reformulating. If the three-query budget exhausts, escalate via `user_question` with the candidates found and the gap to fill — see § Search craft for the escalation template.
 
 **`mica_inspect_url` verifies URLs; tavily does not.** Once you have a candidate URL — even a low-confidence guess like a jsdelivr-gh path you're not certain exists — `mica_inspect_url` it directly. **Do NOT tavily-search to verify a URL.** Tavily describes pages on the open web; it cannot tell you whether `cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>` returns 200 with CORS. inspect_url can — the answer is unambiguous in 200ms. The agent's natural reflex of "let me search to see if this URL is real before committing the inspect_url" wastes the search budget — commit the inspect_url. If it 404s, that's a CHEAPER signal than a tavily snippet ("this page seems to exist"), and the next move (file listing) is deterministic.
 

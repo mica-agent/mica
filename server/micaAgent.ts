@@ -30,6 +30,7 @@ import {
 } from "./subagents.js";
 import { markProjectActivity } from "./projectActivity.js";
 import { resolveCtxWindow } from "./contextWindow.js";
+import { getModelCalibration, renderCalibrationBlock, type ModelCalibration } from "./modelCalibration.js";
 import { recordTurn, recordSubagent, countTavilyCalls, countExaCalls } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { analyzeTurnArtifacts, appendTurnEvent, readTurnEvents } from "./turnEvents.js";
@@ -142,6 +143,7 @@ function fmtKB(bytes: number): string {
 function buildRuntimeBanner(opts: {
   modelName: string | null;
   contextWindowTokens: number;
+  calibration?: ModelCalibration | null;
 }): string {
   const ctxK = Math.round(opts.contextWindowTokens / 1024);
   const subagentBudget = subagentBudgetBytes(opts.contextWindowTokens);
@@ -152,7 +154,7 @@ function buildRuntimeBanner(opts: {
   const parentSpareTokens = Math.max(8192, opts.contextWindowTokens - 25000);
   const parentSpareBytes = parentSpareTokens * 4;
   const modelLabel = opts.modelName?.trim() || "configured per chat card (see settings)";
-  return [
+  const parts: string[] = [
     `## Detected runtime`,
     ``,
     `Model: ${modelLabel}`,
@@ -162,7 +164,12 @@ function buildRuntimeBanner(opts: {
     `Per-doc inline cap (intent docs): ${fmtKB(inlineCap)}`,
     ``,
     `Treat the guidance below in light of these numbers. Where canvas-back or skill files give rules of thumb tuned for a specific model class (e.g. "lacks long reasoning", "produces silently incomplete code on large asks", "decompose at 7th–10th file"), the runtime numbers above are AUTHORITATIVE — read them before applying any threshold. A strong model on a generous slot should not be treated as a 30B local model with 65K context just because canvas-back was originally written for that profile.`,
-  ].join("\n");
+  ];
+  if (opts.calibration) {
+    parts.push(``);
+    parts.push(renderCalibrationBlock(opts.calibration));
+  }
+  return parts.join("\n");
 }
 const MAX_HISTORY = 50;
 
@@ -690,6 +697,7 @@ export async function buildContext(
   since?: number,
   modelName?: string | null,
   contextWindowTokens?: number,
+  calibration?: ModelCalibration | null,
 ): Promise<string> {
   const parts: string[] = [];
   const ctxTokens = contextWindowTokens ?? LOCAL_CTX_WINDOW;
@@ -697,7 +705,7 @@ export async function buildContext(
   // Runtime detection banner — model + budget numbers above all other
   // guidance so the agent calibrates to what's actually running, not to
   // canvas-back's hardcoded model-class assumptions.
-  parts.push(buildRuntimeBanner({ modelName: modelName ?? null, contextWindowTokens: ctxTokens }));
+  parts.push(buildRuntimeBanner({ modelName: modelName ?? null, contextWindowTokens: ctxTokens, calibration }));
 
   // 0. Since your last turn — file changes between turns. Skipped on first turn.
   // Scoped to canvas + pinned files: mirrors the file-watcher's scope, and
@@ -1753,6 +1761,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         });
         console.log(`[mica-agent] effective context window: ${effectiveCtxWindow} (provider=${provider}, model=${modelName})`);
 
+        // Fetch model calibration (architecture, training cutoff, recall reliability
+        // by category) so the runtime banner can include the self-awareness block.
+        // Cached + single-flight in modelCalibration.ts — safe to call per-turn.
+        // Always resolves: falls back to conservative "unknown" profile if introspection fails.
+        const calibration = await getModelCalibration({
+          provider,
+          modelName,
+          baseUrl: provider === "local" ? baseUrl : undefined,
+        });
+        console.log(`[mica-agent] calibration: class="${calibration.identity.class}" arch=${calibration.knownFacts.architecture ?? "?"} cutoff=${calibration.knownFacts.trainingCutoff ?? "?"} assetUrlPaths=${calibration.recallProfile.assetUrlPaths}`);
+
         const since = getLastTurnAt(ctx.filename);
 
         // Surface validator/runtime errors entering this turn as a step in
@@ -1787,7 +1806,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           }
         }
 
-        const context = await buildContext(ctx.filename, sessionProject, since, modelName, effectiveCtxWindow);
+        const context = await buildContext(ctx.filename, sessionProject, since, modelName, effectiveCtxWindow, calibration);
         // Capture the rendered system-prompt context for this turn so the chat
         // card's per-turn footer can surface a "view snapshot" link. Sidecar
         // file at `.mica/chats/<chatId>/snapshots/<turnId>.txt`. Fire-and-forget;
