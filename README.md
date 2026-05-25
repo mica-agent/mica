@@ -17,9 +17,9 @@ drop in with a config change; an OpenRouter integration is
 available for cloud models when you want them.
 
 Mica fits well when the answer to a problem is a small focused
-tool rather than a major application. Three classes have worked
-well so far: *information visualizers* (dashboards over a CSV,
-charts over a git history, maps over a list of locations);
+tool rather than a major application. Examples of categories appear are promising
+so far: *interactive information visualizers* (dashboards over a API, CSV,
+charts over a git history, interactive maps );
 *knowledge extraction over private data* (chatting with your own
 documents, notes, or chat history; answers and summaries that
 never leave the machine); and *workflow automation* (short
@@ -60,6 +60,21 @@ workspace with Tailscale Serve for remote access from a laptop,
 phone, or tablet on your tailnet — voice included, since
 browsers require HTTPS for the microphone.
 
+## How apps are built
+
+Mica builds apps by composing four compute patterns, ordered from
+cheapest to heaviest. The agent picks the cheapest one that fits
+each subtask; a single card commonly mixes two or three.
+
+| Pattern (tier) | Where the compute runs | Good for |
+|---|---|---|
+| **Browser-only** (T1) | `card.js` in the user's browser, plus optional CDN libs | Visualizers, calculators, dashboards, animations — anything purely client-side |
+| **LLM-direct** (T2) | The local LLM (or cloud) streamed straight to the card via the `llm-direct` handler | Summarizers, classifiers, persona chats, free-form rewrites |
+| **CLI wrap** (T3) | A one-shot subprocess with stdin/stdout (the `process` handler) | OCR (`tesseract`), PDF extract (`pdftotext`), audio convert (`ffmpeg`), local transcription (`whisper.cpp`) |
+| **Sidecar** (T4) | A per-card Python or Node server with warm state | Vector search, embeddings index, custom model inference — anything needing RAM-resident state across calls |
+
+See [FEATURES.md](FEATURES.md#how-apps-are-built) for worked examples and per-tier trade-offs.
+
 ## Examples
 
 *Screenshots and short demo videos will live here.*
@@ -71,31 +86,26 @@ browsers require HTTPS for the microphone.
 
 ## Run it
 
-The full guide is in [QUICKSTART.md](QUICKSTART.md). Validated on
-a DGX Spark (128 GB unified memory) and against several cloud
-models — Gemini, DeepSeek, Claude Sonnet — via OpenRouter.
-Shortest paths:
+The recommended setup is the 2-container vLLM topology. From a
+Linux GPU host with Docker and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+installed:
 
-- **Recommended (vLLM, 2 containers)** — Qwen3.6 NVFP4 in a
-  sibling vLLM container; voice and chat share the model.
-  ```
-  git clone https://github.com/<org>/mica.git && cd mica
-  ./scripts/mica-compose.sh up
-  ```
-  First run takes 5–15 minutes (vLLM downloads ~30 GB then warms
-  up; subsequent starts are seconds).
-- **Smaller (llama, 1 container)** — llama-server inside the
-  mica container with a Q4 GGUF model. Slower but simpler.
-  ```
-  ./scripts/mica-compose.sh up --llama
-  ```
-- **Developing Mica itself** — open the repo in VS Code with the
-  Dev Containers extension, then `bash scripts/start.sh` from the
-  devcontainer terminal.
+```
+git clone https://github.com/<org>/mica.git && cd mica
+./scripts/mica-compose.sh up
+```
 
-Prereqs: Docker and the [NVIDIA Container
-Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-Open http://localhost:5173 once it's up.
+First run takes 5–15 minutes (vLLM downloads ~30 GB then warms up;
+subsequent starts are seconds). Open http://localhost:5173 once
+it's up.
+
+Validated on a DGX Spark (128 GB unified memory) and against
+several cloud models — Gemini, DeepSeek, Claude Sonnet — via
+OpenRouter.
+
+For the smaller llama (1-container) topology, the devcontainer
+development workflow, multi-device remote access via Tailscale,
+customization knobs, and troubleshooting, see [SETUP.md](SETUP.md).
 
 ## Trust model
 
@@ -112,11 +122,23 @@ inline, spawn subprocesses, and read process environment
 variables. Treat installing one the way you'd treat installing a
 small Node script.
 
+That said, the runtime does keep some guardrails between cards and
+the host. Card HTTP requests go through `mica.fetch`, a server-side
+proxy that resolves DNS first and refuses private, loopback, and
+cloud-metadata ranges (so a card can't probe your LAN or scrape
+`169.254.169.254`), with per-project rate limits and response-size
+caps. File reads and writes are project-scoped — every request
+carries the project name, so one project's cards cannot reach
+another project's files via the normal helpers. The card runtime
+also tracks the timers and event listeners each card opens and
+tears them down on close, so a leaky card can't quietly peg the
+browser after you've moved on.
+
 ## Documentation
 
 | Doc | For |
 |---|---|
-| [QUICKSTART.md](QUICKSTART.md) | Installing + running Mica on a GPU host |
+| [SETUP.md](SETUP.md) | Full setup reference — topologies, remote access, customization, troubleshooting |
 | [FEATURES.md](FEATURES.md) | What you can do with Mica once it's running |
 | [SPEC.md](SPEC.md) | The design contract — how card classes, agents, and the canvas fit together |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The implementation reference — server files, channel handlers, full `mica.*` API |
@@ -128,3 +150,4 @@ under `templates/<name>/.qwen/skills/card-class-handbook/SKILL.md`.
 
 ## License
 
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
