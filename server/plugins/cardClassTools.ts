@@ -610,7 +610,7 @@ export async function listClassesImpl(
 
 export const editClassFileSchema = {
   class: z.string().describe("Card class name (directory name, e.g. 'world-clock'). Must already exist."),
-  file: z.enum(["card.html", "card.js", "card.css"]).describe("Which file to edit. metadata.json edits go through mica_create_class instead — that tool serializes the metadata from typed inputs and avoids JSON-shape mistakes."),
+  file: z.enum(["card.html", "card.js", "card.css", "server.py", "server.ts"]).describe("Which file to edit. metadata.json edits go through mica_create_class instead — that tool serializes the metadata from typed inputs and avoids JSON-shape mistakes. server.py / server.ts are the sidecar entries for T4 cards; editing them through this tool keeps writes inside the class directory and runs the same verifier gates write_file would skip."),
   content: z.string().optional().describe("Full file content (replaces existing). Mutually exclusive with old_string/new_string."),
   old_string: z.string().optional().describe("Substring to find in the existing file. Combined with new_string for partial edits. The old_string must match exactly once; if it matches zero or multiple times, the edit fails."),
   new_string: z.string().optional().describe("Replacement for old_string. Required when old_string is provided."),
@@ -757,7 +757,7 @@ export function buildCardClassMcpServer(sessionProject: string | null): unknown 
     ),
     _tool(
       "mica_edit_class_file",
-      "Edit a card class's card.html, card.js, or card.css file with PRE-WRITE validation. For card.js, the same lint that runs after every save (rejecting top-level redeclaration of CARD_SHIM globals like `mica`/`container`, `import`/`export` statements, etc.) runs BEFORE the write — lint failures surface as a tool-result error in this same turn instead of as a card-error broadcast on the next turn. Use this INSTEAD of write_file or edit when modifying class files; it gives you same-turn fixup on the most common card.js mistakes. Supports full-content replacement (content=) or partial edit (old_string=+new_string=). metadata.json edits go through mica_create_class instead — that tool serializes from typed inputs.",
+      "Edit a card class's card.html, card.js, card.css, server.py, or server.ts file with PRE-WRITE validation. For card.js, the same lint that runs after every save (rejecting top-level redeclaration of CARD_SHIM globals like `mica`/`container`, `import`/`export` statements, etc.) runs BEFORE the write — lint failures surface as a tool-result error in this same turn instead of as a card-error broadcast on the next turn. server.py / server.ts (T4 sidecars) go through the same verifier framework so writes that introduce common sidecar mistakes are caught before the file lands on disk. Use this INSTEAD of write_file or edit when modifying class files; it gives you same-turn fixup. Supports full-content replacement (content=) or partial edit (old_string=+new_string=). metadata.json edits go through mica_create_class instead — that tool serializes from typed inputs.",
       editClassFileSchema,
       (args: z.infer<z.ZodObject<typeof editClassFileSchema>>) => editClassFileImpl(sessionProject, args),
     ),

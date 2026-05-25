@@ -141,6 +141,41 @@ per § Card-class-private sidecars below.
   (retrieval that returns chunks + scores + sources together).
 - File-system operations beyond what `mica.*` exposes.
 
+**FastAPI sidecars: Mica auto-starts the server. Do NOT add `uvicorn.run(...)`
+at the bottom.** When `server.py` contains `app = FastAPI()` and has no
+`uvicorn.run` call, Mica spawns the sidecar via
+`python -m uvicorn server:app --host 127.0.0.1 --port $MICA_PORT` directly
+— your only job is to define the app and routes:
+
+```python
+from fastapi import FastAPI, HTTPException
+import os
+
+app = FastAPI()
+
+@app.get("/health")
+def health(): return {"ok": True}
+
+@app.post("/index")
+def index(payload: dict):
+    # ... your work here ...
+    return {"ok": True}
+
+# No uvicorn.run! No `if __name__ == "__main__":` block.
+# Mica's spawn site reads the file, detects FastAPI without a uvicorn.run,
+# and runs the app under uvicorn for you.
+```
+
+If you DO need to control the bootstrap yourself (custom uvicorn config,
+Flask/Starlette, a process that isn't an HTTP server at all), include
+your own `uvicorn.run(...)` call — Mica detects that and respects it,
+falling back to `python3 server.py` direct execution. The auto-bootstrap
+applies ONLY to FastAPI apps with no uvicorn.run.
+
+TS sidecars (`server.ts`) are always spawned via tsx — the author calls
+`fastify.listen({ port: process.env.MICA_PORT })` or equivalent themselves;
+no auto-bootstrap there.
+
 **Language choice within Tier 4 — by ecosystem fit, not preference:**
 
 | Task domain | Pick |

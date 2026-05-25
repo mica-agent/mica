@@ -244,15 +244,22 @@ mica.cardclassDir;   // string
 
 ### The `server.py` shape (FastAPI, recommended)
 
+**Mica auto-starts FastAPI sidecars.** When `server.py` defines
+`app = FastAPI()` and has NO `uvicorn.run` call, the spawn site runs
+`python -m uvicorn server:app --host 127.0.0.1 --port $MICA_PORT`
+directly. You write the app and routes; that's it. The `uvicorn.run`
+line at the bottom of older examples is no longer needed (it still
+works — Mica detects it and uses direct `python3 server.py` execution
+instead — but it's not required).
+
 ```python
-import os, traceback, uvicorn
+import os, traceback
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-PORT = int(os.environ["MICA_PORT"])              # never hardcode
 PROJECT_DIR = os.environ["MICA_PROJECT_DIR"]
-print(f"[my-card] starting on :{PORT}", flush=True)  # logs go to backend.log
+print(f"[my-card] starting", flush=True)  # logs go to backend.log
 
 # Load expensive state ONCE at module scope. Mica keeps the process warm.
 # (e.g. SentenceTransformer, json corpora, ML model weights)
@@ -276,7 +283,7 @@ async def search(req: AskRequest):
     # ... your compute, returning JSON ...
     return {"results": [...]}
 
-uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+# No uvicorn.run — Mica's auto-bootstrap handles it.
 ```
 
 ### The `server.ts` shape (Node stdlib http, no extra deps)

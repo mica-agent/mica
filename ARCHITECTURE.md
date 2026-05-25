@@ -357,7 +357,15 @@ a class-specific server handler:
   `MICA_PROJECT_DIR`, `MICA_WORKSPACE_DIR`, `MICA_CARD_CLASS`,
   `MICA_CARD_CLASS_DIR`, `MICA_BACKEND_URL`, and `MICA_SIDECAR_TOKEN`
   as env vars — so the sidecar can read project files directly with
-  stdlib `open()` and call back into Mica's REST API. **Binary
+  stdlib `open()` and call back into Mica's REST API. **FastAPI
+  auto-bootstrap**: if a `.py` entry defines `app = FastAPI()` and
+  has no `uvicorn.run` call, the spawn site runs it via `python -m
+  uvicorn <module>:app --host 127.0.0.1 --port $PORT` instead of
+  `python3 server.py`. Removes the most common Tier 4 footgun
+  (FastAPI app defined but never started, sidecar exits cleanly
+  with code=0). Authors keep the option to control bootstrap
+  themselves by including a `uvicorn.run` call — Mica detects it
+  and falls back to direct execution. **Binary
   uploads from card → sidecar should use the write-then-reference
   pattern** (`mica.files.write(path, file)` then `mica.fetch` with
   `{ path }` in the JSON body) rather than base64-in-JSON or

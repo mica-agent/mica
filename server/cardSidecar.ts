@@ -26,7 +26,7 @@
 
 import { spawn, type ChildProcess } from "child_process";
 import { randomBytes } from "crypto";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { readFile } from "fs/promises";
 import { createConnection } from "net";
@@ -218,6 +218,39 @@ function resolvePython(spec: string): string {
   return spec; // assume absolute path
 }
 
+/** Detect whether a Python sidecar is a FastAPI app missing its own
+ *  uvicorn bootstrap — the single most-common Tier 4 footgun. The author
+ *  defines `app = FastAPI()` and routes but never calls `uvicorn.run(app, ...)`,
+ *  so `python3 server.py` imports the module, runs to end-of-file, and exits
+ *  cleanly with code=0 leaving Mica's spawn watcher confused.
+ *
+ *  Detection is conservative: require BOTH a FastAPI app construction AND
+ *  the absence of any uvicorn.run call. False positives would over-shim a
+ *  sidecar that already starts uvicorn properly; false negatives just keep
+ *  the current direct-python behavior.
+ *
+ *  Returns `{ shim: true, module }` when we should run via uvicorn —
+ *  `module` is the import name (entry-file stem) for `<module>:app`. */
+function detectFastApiBootstrap(entryPath: string, entry: string): { shim: true; module: string } | { shim: false } {
+  if (!entry.toLowerCase().endsWith(".py")) return { shim: false };
+  let src: string;
+  try {
+    src = readFileSync(entryPath, "utf-8");
+  } catch {
+    return { shim: false };  // can't read → fall back to direct spawn, error surfaces there
+  }
+  // Look for `app = FastAPI(`. Whitespace-tolerant; covers the canonical
+  // template and the common variants (typed: `app: FastAPI = FastAPI()`).
+  if (!/^\s*app\s*(?::\s*\w+\s*)?=\s*FastAPI\s*\(/m.test(src)) return { shim: false };
+  // If the file calls uvicorn.run anywhere, the author has their own
+  // bootstrap (possibly inside `if __name__ == "__main__":`). Don't shim.
+  if (/\buvicorn\.run\s*\(/.test(src)) return { shim: false };
+  // entry like "server.py" → module "server". Subdirs (rare) survive too:
+  // "app/main.py" → "app.main".
+  const stem = entry.replace(/\.py$/i, "").replace(/\//g, ".");
+  return { shim: true, module: stem };
+}
+
 /** Pick the interpreter for the sidecar based on the entry file's extension,
  *  with an explicit override path if metadata.json supplies one.
  *
@@ -288,9 +321,28 @@ export async function ensureCardSidecar(
 
   // Select interpreter from entry file extension (or explicit override).
   const runtime = resolveRuntime(meta.entry, meta);
+  // Allocate port first — FastAPI auto-bootstrap (below) bakes the port into
+  // the args list, and we want one source of truth for the chosen port.
+  const port = await allocatePort();
   let command: string;
   let args: string[];
-  if (runtime.command === "") {
+  // FastAPI auto-bootstrap: if entry is a .py FastAPI app with no uvicorn.run
+  // of its own, run it via `python -m uvicorn server:app --host 127.0.0.1
+  // --port $PORT` so the author's job is just routes + state. Eliminates the
+  // most common Tier 4 footgun (FastAPI app defined but never started, sidecar
+  // exits cleanly with code=0 and nobody knows why).
+  const fastapi = detectFastApiBootstrap(entryPath, meta.entry);
+  const usedFastApiShim = fastapi.shim && runtime.command !== "";
+  if (usedFastApiShim) {
+    command = runtime.command;
+    args = [
+      "-m", "uvicorn",
+      `${(fastapi as { module: string }).module}:app`,
+      "--host", "127.0.0.1",
+      "--port", String(port),
+      "--log-level", "warning",
+    ];
+  } else if (runtime.command === "") {
     // Direct-execution shebang path: spawn the entry script as the program.
     command = entryPath;
     args = [];
@@ -301,10 +353,10 @@ export async function ensureCardSidecar(
   // Verify the interpreter exists (for absolute paths). System binaries like
   // `node` resolve via PATH and don't have a meaningful `existsSync` check.
   if (command.startsWith("/") && !existsSync(command)) {
+    freePort(port);  // don't leak the slot on early-throw paths
     throw new Error(`Interpreter not found: ${command} (resolved from entry='${meta.entry}', python='${meta.python}', interpreter='${meta.interpreter ?? ""}')`);
   }
 
-  const port = await allocatePort();
   const label = `card-sidecar:${className}`;
   const env = {
     ...process.env,
@@ -324,11 +376,17 @@ export async function ensureCardSidecar(
     // Python sidecars. Harmless for Node/tsx.
     PYTHONUNBUFFERED: "1",
     // PYTHONPATH: prepend Mica's vendor/ so `import mica_sidecar` resolves
-    // to Mica's bundled client (vendor/mica_sidecar/). Preserves any
-    // pre-existing PYTHONPATH from the backend env.
-    PYTHONPATH: process.env.PYTHONPATH
-      ? `${join(REPO_ROOT, "vendor")}:${process.env.PYTHONPATH}`
-      : join(REPO_ROOT, "vendor"),
+    // to Mica's bundled client (vendor/mica_sidecar/), AND prepend classDir
+    // so `python -m uvicorn server:app` (FastAPI auto-bootstrap path) can
+    // import the sidecar entry as a module from any cwd. Direct-python
+    // entries don't need classDir on PYTHONPATH (sys.path[0] is the script
+    // dir for `python3 server.py`), but having it there too is harmless.
+    // Preserves any pre-existing PYTHONPATH from the backend env.
+    PYTHONPATH: (() => {
+      const parts = [classDir, join(REPO_ROOT, "vendor")];
+      if (process.env.PYTHONPATH) parts.push(process.env.PYTHONPATH);
+      return parts.join(":");
+    })(),
     // NODE_PATH so TypeScript/Node sidecars can `import` Mica's own
     // node_modules (zod, fastify, hono, etc. — anything Mica ships) AND
     // Mica's vendor/ directory (where `mica-sidecar` lives). Cards that
@@ -337,6 +395,11 @@ export async function ensureCardSidecar(
     NODE_PATH: `${join(REPO_ROOT, "node_modules")}:${join(REPO_ROOT, "vendor")}`,
   };
 
+  if (usedFastApiShim) {
+    const note = `FastAPI auto-bootstrap: ${meta.entry} defines an app but has no uvicorn.run — invoking via 'python -m uvicorn ${(fastapi as { module: string }).module}:app'`;
+    console.log(`[${label}] ${note}`);
+    appendLog(k, note);
+  }
   console.log(`[${label}] spawning on :${port} (${command} ${args.join(" ")})`);
   appendLog(k, `--- spawning on :${port} (${command} ${args.join(" ")}) ---`);
   const proc = spawn(command, args, {
