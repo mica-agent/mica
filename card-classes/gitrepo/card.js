@@ -5,6 +5,8 @@
 
 const branchEl = container.querySelector('#gr-branch');
 const countersEl = container.querySelector('#gr-counters');
+const originEl = container.querySelector('#gr-origin');
+const originUrlEl = container.querySelector('#gr-origin-url');
 const refreshBtn = container.querySelector('#gr-refresh');
 const pullBtn = container.querySelector('#gr-pull');
 const pushBtn = container.querySelector('#gr-push');
@@ -75,6 +77,10 @@ if (logClearBtn) logClearBtn.addEventListener('click', clearLog);
 function setBusy(b) {
   busy = b;
   [refreshBtn, pullBtn, pushBtn, commitBtn, initBtn].forEach((el) => { if (el) el.disabled = b; });
+  // Stage-all buttons in section headers — disable visually so the user
+  // sees the action is unavailable mid-fetch (the click-handler busy guard
+  // catches it functionally either way).
+  container.querySelectorAll('[data-stage-all]').forEach((el) => { el.disabled = b; });
   refreshBusyFlags();
 }
 
@@ -118,15 +124,59 @@ function renderHeader() {
   const parts = [];
   if (state.ahead > 0) parts.push('↑' + state.ahead);
   if (state.behind > 0) parts.push('↓' + state.behind);
-  if (state.hasRemote && parts.length === 0 && state.ahead === 0 && state.behind === 0) {
-    parts.push('in sync');
-  } else if (!state.hasRemote) {
+  // Three distinct states for the trailing label:
+  //   - no origin remote configured at all → "(no remote)"
+  //   - origin configured but no upstream tracking ref yet (post
+  //     `git remote add origin URL`, pre first --set-upstream push)
+  //     → "(no upstream)"
+  //   - upstream set, no divergence → "in sync"
+  if (!state.hasOriginRemote) {
     parts.push('(no remote)');
+  } else if (!state.hasUpstream) {
+    parts.push('(no upstream)');
+  } else if (parts.length === 0) {
+    parts.push('in sync');
   }
   countersEl.textContent = parts.join(' ');
   if (state.ahead > 0 && state.behind > 0) countersEl.classList.add('gr-counters--both');
   else if (state.ahead > 0) countersEl.classList.add('gr-counters--ahead');
   else if (state.behind > 0) countersEl.classList.add('gr-counters--behind');
+  // Origin URL — hide when no remote is configured. Render SSH URLs
+  // (git@github.com:user/repo.git) as their https equivalent so they're
+  // clickable too. The displayed text mirrors what we link to.
+  if (originEl && originUrlEl) {
+    if (state.hasOriginRemote && state.originRemoteUrl) {
+      const linkUrl = normalizeRemoteForLink(state.originRemoteUrl);
+      originUrlEl.textContent = state.originRemoteUrl;
+      originUrlEl.title = state.originRemoteUrl;
+      originUrlEl.href = linkUrl;
+      originEl.style.display = '';
+    } else {
+      originEl.style.display = 'none';
+      originUrlEl.removeAttribute('href');
+      originUrlEl.textContent = '';
+    }
+  }
+}
+
+// Turn a git remote URL into a browsable https link when possible.
+// Handles SSH form (git@host:user/repo.git → https://host/user/repo)
+// and strips trailing .git so the URL points at the repo's web page.
+// Other shapes (e.g. ssh://, git://) are returned unchanged.
+function normalizeRemoteForLink(url) {
+  if (!url) return url;
+  const trimmed = url.trim();
+  // SSH shorthand: git@host:user/repo(.git)
+  const ssh = /^([^@]+)@([^:]+):(.+?)(\.git)?$/.exec(trimmed);
+  if (ssh) {
+    const [, , host, path] = ssh;
+    return 'https://' + host + '/' + path;
+  }
+  // https / http: strip trailing .git for the web view
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/\.git$/i, '');
+  }
+  return trimmed;
 }
 
 function renderPanels() {
@@ -149,7 +199,12 @@ function renderBucket(name, files, action) {
   const section = sectionEls[name];
   const list = section.querySelector('[data-list]');
   const countEl = section.querySelector('[data-count]');
+  const stageAllBtn = section.querySelector('[data-stage-all]');
   countEl.textContent = String(files.length);
+  // Hide the "stage all" affordance when there's nothing to stage —
+  // the click handler is wired once below and reads from state at
+  // click time, so visibility is the only per-render concern.
+  if (stageAllBtn) stageAllBtn.style.display = files.length > 0 ? '' : 'none';
   list.innerHTML = '';
   files.forEach((path) => {
     const li = window.document.createElement('li');
@@ -196,6 +251,24 @@ async function doStageToggle(action, path) {
   refreshStatus();
 }
 
+// Stage every file currently in a bucket. Reads from `state` at click
+// time (not render time), so the action always reflects the latest
+// status — no stale-snapshot bug if a refresh raced the click.
+async function doStageAll(bucket) {
+  if (!state || !state.hasGit) return;
+  const files = bucket === 'unstaged' ? state.unstaged : bucket === 'untracked' ? state.untracked : [];
+  if (!files || files.length === 0) return;
+  setBusy(true);
+  const r = await gitFetch('/api/git/stage', { method: 'POST', body: { files } });
+  setBusy(false);
+  if (!r.ok) {
+    showToast('Stage all failed: ' + r.error, false);
+    return;
+  }
+  showToast('Staged ' + files.length + ' file' + (files.length === 1 ? '' : 's'), true);
+  refreshStatus();
+}
+
 async function doCommit() {
   const msg = commitMsgEl.value.trim();
   if (!msg) return;
@@ -213,9 +286,13 @@ async function doCommit() {
 }
 
 async function doPush() {
-  // No remote yet: open the setup flow instead of letting git push
-  // produce a cryptic "No configured push destination" error.
-  if (state && state.hasGit && !state.hasRemote) {
+  // No origin remote configured: open the setup flow instead of letting
+  // git push produce a cryptic "No configured push destination" error.
+  // Uses hasOriginRemote (origin is configured) rather than hasUpstream
+  // (current branch is tracking) — the latter is only true AFTER a
+  // successful --set-upstream push, which is exactly the operation
+  // this button is trying to perform on first push.
+  if (state && state.hasGit && !state.hasOriginRemote) {
     openRemoteSetup();
     return;
   }
@@ -226,7 +303,12 @@ async function doPush() {
     showToast('Push failed: ' + r.error, false);
     return;
   }
-  showToast('Pushed' + (r.data && r.data.stderr ? '\n\n' + r.data.stderr : ''), true);
+  // Server may report renamedToMain=true on first push from a local
+  // `master` branch (GitHub's canonical flow). Surface that explicitly
+  // so the user knows the local branch was renamed.
+  const renamed = r.data && r.data.renamedToMain;
+  const prefix = renamed ? 'Renamed master → main, then pushed' : 'Pushed';
+  showToast(prefix + (r.data && r.data.stderr ? '\n\n' + r.data.stderr : ''), true);
   refreshStatus();
 }
 
@@ -299,6 +381,19 @@ pullBtn.addEventListener('click', doPull);
 commitBtn.addEventListener('click', doCommit);
 initBtn.addEventListener('click', doInit);
 commitMsgEl.addEventListener('input', refreshBusyFlags);
+
+// Stage-all buttons in the Modified/Untracked section headers. Handlers
+// are wired once and dispatch to doStageAll which reads state at click
+// time — visibility toggling happens per-render in renderBucket.
+['unstaged', 'untracked'].forEach((bucket) => {
+  const btn = sectionEls[bucket].querySelector('[data-stage-all]');
+  if (!btn) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (busy) return;
+    doStageAll(bucket);
+  });
+});
 
 // Poll + react. 10s cadence is plenty for typical editing flows; we
 // also refresh eagerly on any file-changed event in the project since

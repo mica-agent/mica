@@ -8,6 +8,13 @@
     <button id="gr-push" class="gr-btn gr-btn--primary" title="Push to origin">Push</button>
   </div>
 
+  <!-- Origin remote URL — shown after set-remote or on cloned repos.
+       Hidden when no origin is configured. -->
+  <div id="gr-origin" class="gr-origin" style="display:none;">
+    <span class="gr-origin-label">origin:</span>
+    <a id="gr-origin-url" class="gr-origin-url" target="_blank" rel="noopener noreferrer"></a>
+  </div>
+
   <div id="gr-notgit" class="gr-notgit" style="display:none;">
     <div class="gr-notgit-title">Not a git repository</div>
     <div class="gr-notgit-body">This project has no <code>.git</code> directory yet. You can start tracking it here.</div>
@@ -26,6 +33,7 @@
       <header class="gr-section-head">
         <span class="gr-section-title">Modified</span>
         <span class="gr-section-count" data-count></span>
+        <button class="gr-section-stage-all" data-stage-all type="button">stage all</button>
       </header>
       <ul class="gr-list" data-list></ul>
     </section>
@@ -33,6 +41,7 @@
       <header class="gr-section-head">
         <span class="gr-section-title">Untracked</span>
         <span class="gr-section-count" data-count></span>
+        <button class="gr-section-stage-all" data-stage-all type="button">stage all</button>
       </header>
       <ul class="gr-list" data-list></ul>
     </section>

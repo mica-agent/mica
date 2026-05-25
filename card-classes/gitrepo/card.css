@@ -56,6 +56,39 @@
 }
 .gr-btn--primary:hover:not(:disabled) { background: #8d4cff; }
 
+/* Origin URL row — small muted strip directly under the header. The
+   URL is rendered as a link (web origins open in a new tab); SSH URLs
+   (git@host:path) get a parallel https display so they're clickable
+   too. Hidden via inline style when no origin is configured. */
+.gr-origin {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 12px 8px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  border-bottom: 1px solid #30363d;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.gr-origin-label {
+  color: #6e7681;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.gr-origin-url {
+  color: #93c5fd;
+  text-decoration: none;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.gr-origin-url:hover { text-decoration: underline; color: #bfdbfe; }
+
 .gr-notgit {
   margin: 30px 20px;
   padding: 20px;
@@ -108,12 +141,36 @@
   border-radius: 10px;
   font-size: 10px;
 }
+/* Stage-all button in the section header — small text in the Mica
+   accent color, no border so it visually fits inside the muted header
+   row. Hidden when the bucket is empty (no-op anyway). */
+.gr-section-stage-all {
+  background: none;
+  border: none;
+  color: #7c3aed;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.gr-section-stage-all:hover:not(:disabled) { color: #8d4cff; }
+.gr-section-stage-all:disabled { opacity: 0.35; cursor: default; }
 .gr-list {
   list-style: none;
   margin: 0;
   padding: 0;
   max-height: 180px;
   overflow-y: auto;
+}
+/* Modified and Untracked lists are taller — those are the buckets that
+   typically accumulate dozens of files during active work; Staged is
+   usually a curated subset, so 180px stays right for it. Both still
+   scroll via overflow-y above the cap. */
+.gr-section[data-bucket="unstaged"] .gr-list,
+.gr-section[data-bucket="untracked"] .gr-list {
+  max-height: 320px;
 }
 .gr-list:empty::before {
   content: "(none)";

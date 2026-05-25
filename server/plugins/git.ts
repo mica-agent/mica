@@ -101,14 +101,20 @@ async function runGit(cwd: string, args: string[], opts: { maxBuffer?: number; t
  *  The branch header line is `## <branch>` or `## <branch>...<upstream>
  *  [ahead N, behind M]`. Detached HEAD: `## HEAD (no branch)`. */
 function parseStatus(porcelain: string): {
-  branch: string; ahead: number; behind: number; hasRemote: boolean;
+  branch: string; ahead: number; behind: number; hasUpstream: boolean;
   staged: string[]; unstaged: string[]; untracked: string[];
 } {
   const lines = porcelain.split("\n");
   let branch = "(unknown)";
   let ahead = 0;
   let behind = 0;
-  let hasRemote = false;
+  // hasUpstream = the current branch has an upstream tracking ref
+  // (e.g. main...origin/main). DIFFERENT from "has an origin remote
+  // configured" — a fresh `git remote add origin URL` doesn't create
+  // a tracking ref until the first --set-upstream push. The status
+  // endpoint reports the latter as `hasOriginRemote` from a separate
+  // `git remote get-url origin` probe.
+  let hasUpstream = false;
   const staged: string[] = [];
   const unstaged: string[] = [];
   const untracked: string[] = [];
@@ -123,7 +129,7 @@ function parseStatus(porcelain: string): {
       const upstreamIdx = rest.indexOf("...");
       if (upstreamIdx !== -1) {
         branch = rest.slice(0, upstreamIdx);
-        hasRemote = true;
+        hasUpstream = true;
         const bracket = rest.indexOf(" [", upstreamIdx);
         if (bracket !== -1) {
           const inner = rest.slice(bracket + 2, rest.lastIndexOf("]"));
@@ -149,7 +155,7 @@ function parseStatus(porcelain: string): {
     if (x !== " " && x !== "?") staged.push(path);
     if (y !== " " && y !== "?") unstaged.push(path);
   }
-  return { branch, ahead, behind, hasRemote, staged, unstaged, untracked };
+  return { branch, ahead, behind, hasUpstream, staged, unstaged, untracked };
 }
 
 export function registerGitEndpoints(app: Express, opts: RegisterOpts): void {
@@ -168,7 +174,18 @@ export function registerGitEndpoints(app: Express, opts: RegisterOpts): void {
       return;
     }
     const parsed = parseStatus(s.stdout);
-    res.json({ hasGit: true, ...parsed });
+    // Probe for an "origin" remote independently of the upstream tracking
+    // ref. This distinction matters for the card's "should I show the
+    // remote-setup modal?" check — after `git remote add origin URL`,
+    // origin is configured but no upstream exists yet; without this
+    // separate flag, the card would loop the user back to the setup
+    // modal after the very call that just configured the remote.
+    // Also surface the actual URL so the card can display it (clones
+    // and post-set-remote both expose the destination).
+    const originProbe = await runGit(cwd, ["remote", "get-url", "origin"]);
+    const hasOriginRemote = originProbe.ok;
+    const originRemoteUrl = originProbe.ok ? originProbe.stdout.trim() : "";
+    res.json({ hasGit: true, ...parsed, hasOriginRemote, originRemoteUrl });
   });
 
   app.post("/api/git/stage", async (req, res) => {
@@ -220,7 +237,10 @@ export function registerGitEndpoints(app: Express, opts: RegisterOpts): void {
   app.post("/api/git/push", async (req, res) => {
     const cwd = resolveCwd(req, res, getRequestProject);
     if (!cwd) return;
+    console.log(`[git-push] cwd=${cwd} initial push`);
     let r = await runGit(cwd, ["push"], { timeout: 60_000 });
+    console.log(`[git-push] initial push ok=${r.ok} code=${r.code} stderr=${(r.stderr || "").slice(0, 200)}`);
+    let renamedToMain = false;
     // First-push case: a fresh branch has no upstream tracking ref, so
     // `git push` errors with "no upstream branch" and suggests
     // --set-upstream. The button can't ask the user to drop into a
@@ -228,17 +248,74 @@ export function registerGitEndpoints(app: Express, opts: RegisterOpts): void {
     // tracking target. This is the one-time setup almost everyone wants;
     // modern git ships push.autoSetupRemote=true for the same reason.
     if (!r.ok && /no upstream branch/i.test(r.stderr || "")) {
-      const branchR = await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-      const branch = branchR.ok ? branchR.stdout.trim() : "";
-      if (branch && branch !== "HEAD") {
-        r = await runGit(cwd, ["push", "--set-upstream", "origin", branch], { timeout: 60_000 });
+      console.log(`[git-push] no-upstream branch detected — entering retry`);
+      // Use symbolic-ref, not rev-parse: symbolic-ref reads HEAD's pointed-to
+      // ref name (refs/heads/<branch>) and succeeds even when the ref has no
+      // commits yet. `git rev-parse --abbrev-ref HEAD` fails with "ambiguous
+      // argument 'HEAD'" on a fresh repo (no commits), which is exactly the
+      // state the user is in when they hit Set Remote & Push for the first
+      // time. Without this, the retry's branch comes back empty and the
+      // whole rename-and-push path silently no-ops.
+      const branchR = await runGit(cwd, ["symbolic-ref", "--short", "HEAD"]);
+      let branch = branchR.ok ? branchR.stdout.trim() : "";
+      console.log(`[git-push] current branch=${branch}`);
+      // Canonical "first push to GitHub" flow:
+      //   git remote add origin URL    ← already done via set-remote
+      //   git branch -M main           ← THIS step (only when current is master)
+      //   git push -u origin main
+      // GitHub's quick-setup UI shows this verbatim. Without the rename,
+      // pushing from a local `master` lands on origin/master while the
+      // GitHub repo's default-branch UI shows `main` — the repo page
+      // appears empty even though the push succeeded. We rename only
+      // when current is exactly `master` so feature branches and other
+      // names are preserved.
+      if (branch === "master") {
+        const rn = await runGit(cwd, ["branch", "-M", "main"]);
+        if (rn.ok) {
+          branch = "main";
+          renamedToMain = true;
+        }
+        // If rename fails (shouldn't normally), fall through with the
+        // original branch name — better to push to origin/master than
+        // surface a confusing rename error.
       }
+      if (branch && branch !== "HEAD") {
+        console.log(`[git-push] retry: push --set-upstream origin ${branch}`);
+        r = await runGit(cwd, ["push", "--set-upstream", "origin", branch], { timeout: 60_000 });
+        console.log(`[git-push] retry push ok=${r.ok} code=${r.code} stderr=${(r.stderr || "").slice(0, 200)}`);
+      }
+    } else if (!r.ok) {
+      console.log(`[git-push] initial push failed but regex /no upstream branch/ did NOT match`);
+    }
+    // "Nothing to push" surfaces as: "error: src refspec X does not match any" —
+    // happens when the user set a remote on a brand-new repo with no commits.
+    // Translate to a user-friendly message so the card can show actionable text.
+    if (!r.ok && /src refspec .+ does not match any/i.test(r.stderr || "")) {
+      res.status(400).json({
+        ok: false,
+        error: "Nothing committed yet. Stage some files and commit before pushing.",
+        stdout: r.stdout,
+        stderr: r.stderr,
+      });
+      return;
+    }
+    // HTTPS auth without credentials returns a few different strings depending
+    // on the credential helper situation. Catch the common ones so the user
+    // gets actionable guidance instead of raw git output.
+    if (!r.ok && /(could not read (Username|Password)|authentication failed|terminal prompts disabled)/i.test(r.stderr || "")) {
+      res.status(400).json({
+        ok: false,
+        error: "GitHub authentication required. Set up a credential helper or token via the terminal card (gh auth login, or git config credential.helper).",
+        stdout: r.stdout,
+        stderr: r.stderr,
+      });
+      return;
     }
     if (!r.ok) {
       res.status(400).json({ ok: false, error: r.stderr || r.stdout, stdout: r.stdout, stderr: r.stderr });
       return;
     }
-    res.json({ ok: true, stdout: r.stdout, stderr: r.stderr });
+    res.json({ ok: true, renamedToMain, stdout: r.stdout, stderr: r.stderr });
   });
 
   app.post("/api/git/pull", async (req, res) => {
