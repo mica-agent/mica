@@ -75,7 +75,7 @@ RUN set -eux; \
 # to know about it. Tolerate offline builds — opencode.ai unreachable
 # during `docker build` shouldn't break the image; users can run the
 # installer ad-hoc later via `bash scripts/install-opencode.sh` or the
-# `curl | bash` line documented in QUICKSTART.
+# `curl | bash` line documented in SETUP.md.
 ENV PATH=/home/vscode/.opencode/bin:$PATH
 RUN su -l vscode -c 'curl -fsSL https://opencode.ai/install | bash' || true
 

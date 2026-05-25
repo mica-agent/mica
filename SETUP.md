@@ -1,16 +1,19 @@
-# Mica Quickstart
+# Mica Setup
 
 Two ways to run Mica on a GPU host. Both use the same image and the
 same wrapper (`./scripts/mica-compose.sh`); they differ only in
-inference topology.
+inference topology. VLLM is recommended for large VRAM setups (DGX Spark) as it
+offers better concurrency support (multiple projects/agents running); Llama is recommended
+for smaller VRAM setups where inference may be split across GPU and CPU.
 
 |   | **vLLM** (default) | **llama** |
 |---|---|---|
 | Containers | 2 (mica + mica-vllm sibling) | 1 (llama-server inside mica) |
+| Base images | `nvcr.io/nvidia/vllm:26.04-py3` (mica) + `vllm/vllm-openai:cu130-nightly` (mica-vllm) — both upstream-official, no custom forks | `nvcr.io/nvidia/vllm:26.04-py3` (mica) — same NVIDIA-published base; llama-server is built from source on top |
 | Model | Qwen3.6-35B-A3B-NVFP4 (~30 GB) | Qwen3.6-35B-A3B Q4 GGUF (~22 GB) |
 | Speed | Faster (NVFP4 + MTP-1 speculative decode + continuous batching) | Slower |
-| Voice + chat share GPU | Yes (one served model) | Indirect (llama-server only serves chat; voice STT/TTS still local) |
-| Best for | Working systems, multi-card sessions | Trying it out, smaller GPUs, simpler ops |
+| Voice + chat share GPU | Yes (one served chat model; STT/TTS sidecars also on GPU) | Yes (one served chat model; STT/TTS sidecars also on GPU) |
+| Best for | Multi-card / multi-agent sessions (continuous batching keeps them concurrent) | Trying it out, smaller GPUs |
 
 Pick one path and run it. Switching later is just a re-run with the
 other flag — same image, same workspace, same volumes.
@@ -31,6 +34,18 @@ other flag — same image, same workspace, same volumes.
   git clone https://github.com/<org>/mica.git
   cd mica
   ```
+
+**Where the disk space lives.** Mica uses Docker's standard data
+root — `/var/lib/docker` on most Linux installs. Both the
+container image AND the `mica-models` named volume (which caches
+the ~30 GB of LLM weights after first run) live there; the
+`mica-workspace` bind-mount on your home directory only stores
+project files (typically a few MB each). If your root filesystem
+is tight, either relocate Docker's data root via
+`/etc/docker/daemon.json` (`"data-root": "/path/with/space"`,
+then `sudo systemctl restart docker`), or set `HF_CACHE_DIR` in
+`.env` to bind-mount a host directory and bypass the named
+volume entirely (see Customization).
 
 ## Required: Tavily API key
 

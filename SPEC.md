@@ -287,8 +287,8 @@ Two inference topologies share the same image:
 - **llama** — one container, `llama-server` spawned inside `mica`
   on first chat request.
 
-For install instructions, see [QUICKSTART.md](QUICKSTART.md). For
-the runtime topology and inference paths, see [ARCHITECTURE.md §
+For install instructions, see [SETUP.md](SETUP.md). For the
+runtime topology and inference paths, see [ARCHITECTURE.md §
 Inference backends](ARCHITECTURE.md).
 
 ## Authoring

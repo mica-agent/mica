@@ -421,7 +421,7 @@ export const manifest: HandlerManifest = {
       maxImageDimensionPx: 1568,
       supportedImageFormats: ["jpeg", "png", "webp"],
       maxOutputTokens: 8192,
-      notes: "Vision input must be a data: URL (NOT blob:) — the LLM server cannot fetch browser-process blob URLs. Mica resizes images >1568px (long edge) server-side automatically before forwarding to vLLM; no client-side resize needed. For classification/generation cards that send multiple images across calls, use `history: 'stateless'` at openChannel — otherwise accumulated images hit the maxImagesPerTurn cap on the 5th call.",
+      notes: "Vision input must be a data: URL (NOT blob:) — the LLM server cannot fetch browser-process blob URLs. Mica resizes images >1568px (long edge) server-side automatically before forwarding to the inference backend (vLLM in the 2-container topology, llama-server with mmproj-F16 in the 1-container topology — both serve Qwen3.6 with vision). For classification/generation cards that send multiple images across calls, use `history: 'stateless'` at openChannel — otherwise accumulated images hit the maxImagesPerTurn cap on the 5th call.",
     },
     "qwen-vl": {
       maxImagesPerTurn: 4,

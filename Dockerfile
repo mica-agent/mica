@@ -18,7 +18,7 @@
 #
 # In single-container mode (no vLLM sibling), this image's bundled
 # llama-server is used for local LLM serving — the "llama topology"
-# in QUICKSTART.md (`mica-compose.sh up --llama`). The legacy
+# in SETUP.md (`mica-compose.sh up --llama`). The legacy
 # `./install.sh` + `bash scripts/mica.sh` path lands the same way.
 #
 # Base: NVIDIA's vLLM 26.04 image (same as .devcontainer/Dockerfile).

@@ -2,8 +2,11 @@
 // Starts on first request, stays running until Mica shuts down.
 // Exposes an OpenAI-compatible API at http://127.0.0.1:{port}/v1/chat/completions.
 //
-// Used for the primary chat/coding model (Qwen3-Coder-Next GGUF).
-// vLLM is used separately for the VLM model (Gemma 4) — see scripts/start-vlm.sh.
+// Serves Qwen3.6-35B-A3B (Q4 GGUF) with the mmproj-F16 vision sidecar —
+// chat + image input through one process. Same multimodal model the vLLM
+// topology runs in NVFP4; the llama path trades throughput for a single-
+// container deployment and a smaller on-disk footprint. There is no
+// separate VLM process.
 
 import { spawn, type ChildProcess } from "child_process";
 

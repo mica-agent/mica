@@ -3,11 +3,63 @@
 A catalog of what you can do in Mica today, organized by what each
 thing gives you.
 
+## Projects
+
+A project is a directory of files plus a `.mica/` metadata folder.
+It's the unit of work in Mica — one project per task, codebase, or
+experiment. Inside, every file is potentially a card; `.mica/` holds
+config, layout, chat history, and project-scoped card classes (all
+of which travel with the project in git).
+
+- **Bring one up from a template, an empty directory, or by cloning
+  a git repo.** Templates are copied **wholesale** into the new
+  project — the agent skills (`.qwen/skills/`), MCP server config
+  (`.qwen/settings.json`), seeded canvas cards, and the
+  `.mica/canvas-back.md` standing context are all duplicated in.
+  Edits after creation only affect this project; nothing about the
+  builder workflow lives in Mica core. If the project was cloned
+  from a git repo, the `.gitrepo` card lets you stage, commit, and
+  push changes back without leaving Mica. Rename or delete from the
+  same project list
+  ([src/api/canvasFiles.ts](src/api/canvasFiles.ts)).
+- **`.mica/canvas-back.md` is where you tune the project's brain.**
+  The agent reads it every turn — it carries the project's framing
+  (which agent, what model class, per-project conventions, routing
+  preferences). Edit it via the `canvas-back` card on the canvas,
+  or via the canvas gear ⚙️ → "Edit canvas back…".
+- **Multiple devices, multiple tabs, simultaneously.** A project can
+  be open from any device on your network (or tailnet) at the same
+  time — phone, laptop, tablet, big screen — and edits sync within
+  ~300 ms. See *Multi-device & remote access* for the layout details.
+- **Background work survives closing tabs.** Agents keep their turn
+  state and chat history when the last browser tab closes; the
+  project keeps running server-side. Reopen from the project list
+  and the in-progress work picks up where it left off.
+- **Agent activity at a glance.** The project list shows a pulsing
+  green dot next to any project whose agent is currently working,
+  so long-running tasks can run in the background while you focus
+  on another project.
+- **Library projects.** Mark a project as a library (canvas gear ⚙️
+  → 📚) and its `.mica/card-classes/` becomes available to every
+  other project on the same machine. The lightweight way to share
+  a card class across experiments without packaging it.
+
+
+
 ## Canvas
 
 The canvas is the primary surface — a freeform layout where every
-file in the canvas-root is a card you can arrange, edit, and
+file in the *canvas-root* is a card you can arrange, edit, and
 interact with.
+
+The canvas-root is a directory *inside* the project (defaults to
+`canvas/`, but you can pick another name via the canvas gear ⚙️ →
+"Canvas-root path"). Only files in that directory become cards on
+the canvas by default; everything else in the project is still
+reachable via the file browser card and can be *pinned* onto the
+canvas one file at a time. That distinction keeps a project free
+to hold non-card assets (raw datasets, source repos, build
+artifacts) without cluttering the canvas surface.
 
 - **Freeform card layout** — drag, resize, and stack cards. Toolbar
   along the top creates new files, adds agents, and opens settings
@@ -17,20 +69,15 @@ interact with.
   - **Alt+Tidy** — fit every card on screen at uniform size.
   - **Shift+Tidy** — resize each card to fit its current contents
     (good after a card has loaded data or expanded).
-- **Multi-project** — one Mica instance hosts many projects, all of
-  which can be running at the same time. Switch from the project
-  list ([src/ProjectList.tsx](src/ProjectList.tsx)); a pulsing
-  green dot next to a project name means an agent there is
-  actively working.
-- **Project lifecycle** — create from template, git clone, rename,
-  or delete ([src/api/canvasFiles.ts](src/api/canvasFiles.ts)).
-- **Library projects** — open canvas settings (gear ⚙️), toggle 📚
-  to mark a project as a library, and its card classes become
-  available in your other projects.
+- **Card-header gestures** — double-click a card's header (banner)
+  to cycle collapsed → normal → expanded → normal. Useful for
+  triaging a busy canvas without manually resizing each card. The
+  expand / collapse buttons in the header do the same thing one
+  step at a time.
 
 ## Multi-device & remote access
 
-Mica is designed for working across multiple devices at once.
+Mica is designed for working across multiple devices and screens at once.
 
 - **Use multiple devices on the same project simultaneously.**
   Phone, tablet, laptop, and big-screen display all stay live-synced.
@@ -38,7 +85,8 @@ Mica is designed for working across multiple devices at once.
 - **Per-device layouts.** The same project keeps a separate card
   arrangement for each device class — phone (<768 px), tablet
   (<1200 px), desktop (<2560 px), and display (≥2560 px). Rearrange
-  on your phone without disturbing your desktop layout.
+  on your phone without disturbing your desktop layout. *Work in
+  progress — still rough; expect occasional bugs.*
 - **Two windows on one device.** Open the same project in two tabs
   for side-by-side workflows (a canvas-heavy view in one, a
   terminal in the other) — writes from each window don't bounce
@@ -59,7 +107,7 @@ in [card-classes/](card-classes/); per-project classes live in
 
 ### Agents & chat
 
-Each agent card sees the same canvas your other cards live on, and
+Within a project, each agent card sees the same canvas your other cards live on, and
 ships with tools for creating cards, editing files, running shell
 commands, browsing the project, fetching URLs, and taking
 screenshots. Full tool catalog in
@@ -137,6 +185,52 @@ screenshots. Full tool catalog in
   alongside canvas files. When the agent pins one itself, a toast
   tells you what landed
   ([card-classes/shared-library/](card-classes/shared-library/)).
+
+## How apps are built
+
+Card classes pick a compute pattern based on what each subtask
+needs. Mica supports four, ordered from cheapest to heaviest. The
+agent decomposes a request into subtasks and picks the cheapest
+pattern that fits each one — a single card class commonly mixes
+two or three.
+
+| Pattern (tier) | Where the compute runs | Examples |
+|---|---|---|
+| **Browser-only** (T1) | `card.js` in the user's browser, optionally loading CDN libs (D3, Chart.js, Three.js, Leaflet, …) | Calculators, dashboards over local CSV, mermaid diagrams, 3D visualizers, world clocks, IndexedDB-backed notes |
+| **LLM-direct** (T2) | The local LLM (or a cloud model via OpenRouter) streamed straight to the card by Mica's `llm-direct` handler — zero server-side code per card | Summarizers, classifiers, persona chats, "rewrite as bullet points", translation, sentiment tagging |
+| **CLI wrap** (T3) | A one-shot subprocess: card.js opens a `process` channel, sends stdin, receives stdout/stderr | OCR (`tesseract`), PDF extract (`pdftotext`), audio convert (`ffmpeg`), local transcription (`whisper.cpp`), JSON munging (`jq`), image convert (`convert`) |
+| **Sidecar** (T4) | A per-card Python or Node server (`server.py` / `server.ts` next to `card.js`) that Mica spawns on demand and keeps warm | Vector search over private docs, embeddings index, in-memory FAISS, custom local model inference, anything needing RAM-resident state across calls |
+
+### Why "cheapest that fits"
+
+Each tier has a different startup cost and a different ongoing
+RAM cost. T1 is free — it runs in a tab the user already has open.
+T2 is amortised against the local LLM that's already warm. T3
+pays a fork-exec per call but releases all state between calls,
+making it safe to ignore from a memory-pressure standpoint. T4
+holds RAM for as long as the card stays "warm" (Mica auto-shuts
+the sidecar down ~10 minutes after the last call), so reaching
+for T4 when T1–T3 would have done the job is a real cost on a
+GPU-constrained host.
+
+A typical PDF-RAG card decomposes as **T1** (UI in `card.js`) +
+**T3** (`pdftotext` for extract) + **T4** (sidecar that holds an
+embedding index in memory) + **T2** (`llm-direct` for the
+streamed answer). Four tiers in one card class; no single tier
+on its own would do the job well.
+
+### Where the pattern is declared
+
+A card class picks its handler in [`metadata.json`](server/plugins/cardClassTools.ts):
+`handler: "llm-direct"` enables T2, `handler: "process"` enables
+T3, no handler (or `null`) leaves the card at T1. T4 is declared
+separately by shipping `server.py` or `server.ts` alongside
+`card.js`; Mica detects the file and treats the card as having a
+sidecar regardless of `handler`.
+
+Full schema, sidecar lifecycle, and worked decompositions live in
+the `card-class-handbook` skill that ships with each project
+template (`templates/<name>/.qwen/skills/card-class-handbook/SKILL.md`).
 
 ## Templates & the builder workflow
 
@@ -240,6 +334,83 @@ Surrounding skills support that core loop:
 - **`_conventions.md`** — canonical home for cross-skill patterns
   (reading discipline, library reuse, API discipline,
   decomposition gates, approval flow, file-naming hygiene).
+
+### MCP tools the agent uses
+
+The agent's tool surface is wired together over **MCP** (Model
+Context Protocol), and splits into two servers:
+
+**1. Mica's built-in tools.** An internal SDK-MCP server Mica spins
+up per session, common to all three chat agents
+([server/agentTools/sdkMcpBuilder.ts](server/agentTools/sdkMcpBuilder.ts)).
+These are the tools that make Mica *Mica* — anything that touches
+the canvas, the card-class system, the sidecar lifecycle, or the
+host:
+
+- `mica_create_class`, `mica_edit_class_file`,
+  `mica_create_card_instance`, `mica_delete_card_instance`,
+  `mica_delete_class`, `mica_list_classes` — card-class lifecycle.
+  The only sanctioned path for writes under `.mica/card-classes/`
+  (schema enforced, partial-edit safety, project-scope checks).
+- `mica_list_handlers` — list the channel handlers a card class
+  can pick (`llm-direct`, `process`, `agent_session`, …), so the
+  agent reaches for the right tier when shaping a new card class.
+- `mica_inspect_url`, `mica_inspect_python_package` — verify a
+  3rd-party URL or Python package's API shape *before* code
+  depends on it. Tenet 16 (validate before relying).
+- `mica_list_shared_docs`, `mica_pin_shared_doc` — browse and pin
+  pre-vetted reference docs from the shared library.
+- `mica_list_skill_packages`, `mica_install_skills` — discover
+  and install skill packages into the current project.
+- `mica_shell` — run a shell command in the project's working
+  directory with Mica-aware safety guards (refuses commands that
+  would kill the backend, etc.). The agent's general-purpose
+  exec path.
+- `mica_sidecar_log`, `mica_restart_sidecar`,
+  `mica_verify_sidecar` — T4 sidecar diagnostics.
+- `render_capture` — take a screenshot of a card and reason over
+  the result, giving the agent a visual feedback loop for "the
+  chart didn't render" / "the button is in the wrong place."
+- `propose_changes` — suggest cascading edits to OTHER docs (e.g.
+  "the rename in spec.md should also apply to interfaces.md")
+  without writing them directly. Each proposal renders as an
+  Apply / Dismiss UI in the agent's chat card.
+
+**2. External MCP servers, declared per-project.** A project's
+`.qwen/settings.json` carries an `mcpServers` block that points
+at any number of additional MCP servers — stdio binaries the SDK
+launches and proxies. Mica's templates ship one entry:
+
+- `tavily` — web search backed by Tavily's free tier
+  (`TAVILY_API_KEY` in the project's `.env`).
+
+### Adding more MCP servers
+
+Edit the project's `.qwen/settings.json` and append to
+`mcpServers`:
+
+```json
+"mcpServers": {
+  "tavily": { "command": "npx", "args": ["-y", "tavily-mcp"] },
+  "your-server": {
+    "command": "npx",
+    "args": ["-y", "<package-name>"],
+    "env": { "YOUR_API_KEY": "${YOUR_API_KEY}" }
+  }
+}
+```
+
+Anything that speaks the MCP stdio protocol drops in: published
+servers (the `@modelcontextprotocol/server-*` family,
+3rd-party offerings on npm or PyPI), a locally-installed binary,
+or a script you wrote yourself. Environment variables interpolate
+from the project's `.env` and the host shell. The agent picks the
+new server up on its next turn — no Mica restart needed.
+
+Because `.qwen/settings.json` lives inside the project, each
+project carries its own MCP server set: a research project might
+have `tavily` + a Linear MCP; a coding project might have a
+GitHub MCP + a search index over your private docs.
 
 ### Tweaking the workflow
 
