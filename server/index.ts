@@ -233,8 +233,13 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as NodeJS.Signals[]
 
 const app = express();
 app.use(cors());
-// JSON body parser — skip binary upload + voice audio routes
-const jsonParser = express.json({ limit: "5mb" });
+// JSON body parser — skip binary upload + voice audio routes.
+// Limit is generous (50 MB) because cards can send base64-encoded payloads
+// to their T4 sidecar via mica.fetch('mica-internal://card-server/...');
+// a 4-5 MB binary file is ~6-7 MB once base64-inflated and wrapped in JSON,
+// and the old 5 MB cap was hitting on real-world PDFs / images / audio.
+// Single-user trust model means there's no DoS-via-large-bodies concern.
+const jsonParser = express.json({ limit: "50mb" });
 app.use((req, res, next) => {
   if (req.method === "POST") {
     if (req.path.endsWith("/upload")) return next();

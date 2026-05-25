@@ -353,7 +353,18 @@ a class-specific server handler:
   `server/cardSidecar.ts` owns the lifecycle. Sidecar HTTP is
   reachable from `card.js` via
   `mica.fetch('mica-internal://card-server/...')`, which the bridge
-  routes to the right sidecar.
+  routes to the right sidecar. At spawn time the sidecar inherits
+  `MICA_PROJECT_DIR`, `MICA_WORKSPACE_DIR`, `MICA_CARD_CLASS`,
+  `MICA_CARD_CLASS_DIR`, `MICA_BACKEND_URL`, and `MICA_SIDECAR_TOKEN`
+  as env vars — so the sidecar can read project files directly with
+  stdlib `open()` and call back into Mica's REST API. **Binary
+  uploads from card → sidecar should use the write-then-reference
+  pattern** (`mica.files.write(path, file)` then `mica.fetch` with
+  `{ path }` in the JSON body) rather than base64-in-JSON or
+  multipart — the binary write path streams to disk without the
+  JSON-body cap, and the sidecar reads from the project directly.
+  See `card-class-handbook` §"Binary uploads to a card-class
+  sidecar".
 
   **Sidecar shutdown — five pathways:**
   1. **Idle** — every 60 s, an `idleSweep` walks the sidecar map and

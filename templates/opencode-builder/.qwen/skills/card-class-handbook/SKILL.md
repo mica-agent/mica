@@ -705,6 +705,123 @@ For Mica's own `/api/*`, prefer `mica.files.*` helpers (auto
 URL-encode, set `source`/`cardSource`). Raw `fetch('/api/...')`
 works too — the runtime auto-injects `X-Mica-Project`.
 
+## Binary uploads to a card-class sidecar
+
+If a Tier 4 card has to ingest binary files (PDF, image, audio,
+dataset, etc.) and hand them to its sidecar — **always use the
+write-then-reference pattern**, never base64-encode-and-POST or
+chunked-upload protocols. Both alternatives have failure modes
+the agent reliably writes incorrectly; this pattern uses only
+APIs the agent already knows.
+
+### The pattern
+
+**Card-side:**
+
+```js
+async function handleUpload(file) {
+  // 1. Land the bytes in the project. Streams directly to disk —
+  //    no size cap, no base64 inflation, constant memory.
+  const projectPath = `uploads/${file.name}`;
+  await mica.files.write(projectPath, file);  // file is a File / Blob
+
+  // 2. Tell the sidecar where the bytes are. JSON body is small.
+  const r = await mica.fetch('mica-internal://card-server/index', {
+    method: 'POST',
+    body: JSON.stringify({ path: projectPath }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (r.errorCode || r.status >= 400) {
+    mica.reportError(`indexing failed: ${r.error || r.status}`);
+    return;
+  }
+  const data = r.json();
+  // …
+}
+```
+
+**Sidecar (`server.py`):**
+
+```python
+import os
+from pathlib import Path
+
+PROJECT_DIR = Path(os.environ['MICA_PROJECT_DIR'])  # injected at spawn
+
+@app.post("/index")
+def index(payload: dict):
+    rel = payload.get("path", "")
+    full = (PROJECT_DIR / rel).resolve()
+    # Defensive: refuse paths that escape the project root
+    if PROJECT_DIR not in full.parents and full != PROJECT_DIR:
+        raise HTTPException(403, f"path '{rel}' is outside the project")
+    if not full.exists():
+        raise HTTPException(404, f"file '{rel}' not found")
+    # Stream straight from disk — fitz/PIL/whisper/etc all accept paths
+    doc = fitz.open(str(full))
+    # … chunk, embed, index …
+    return { "ok": True, "page_count": len(doc), "chunk_count": n_chunks }
+```
+
+### Why this is the robust pattern
+
+- **No size cap.** `mica.files.write` for binary content streams via
+  `POST /api/files/<path>/upload` — explicitly in the Express
+  JSON-parser bypass list. Limited only by available disk space.
+- **No base64 inflation.** Raw bytes go to disk; the sidecar reads
+  raw bytes from disk. No 4/3× encoding overhead at any hop.
+- **Constant memory.** Browser streams the File → Mica streams to
+  disk → sidecar opens path with streaming reads. No copy ever
+  holds the whole file in RAM at once.
+- **Sidecar already has project access.** The spawn site
+  ([server/cardSidecar.ts](server/cardSidecar.ts)) injects
+  `MICA_PROJECT_DIR` and `MICA_WORKSPACE_DIR` env vars. The sidecar
+  reads project files directly with stdlib `open()`, no Mica round
+  trip needed.
+- **Persistent + introspectable.** The uploaded file lands at
+  `uploads/<name>` and shows up in the file browser, in `git`, in
+  the canvas if pinned. Useful for re-indexing without re-upload,
+  for inspecting what failed, for debugging.
+- **Idempotent.** Re-uploading the same `path` overwrites — no
+  chunk-ordering invariants, no "what if a chunk retries" edge cases.
+
+### Anti-patterns (what NOT to write)
+
+**1. base64-in-JSON.**
+
+```js
+// BAD — hits the 50 MB JSON-body cap, holds 3× the file in memory,
+// 33% size inflation, and JSON.parse of bytes is fragile.
+const base64 = btoa(String.fromCharCode(...new Uint8Array(await file.arrayBuffer())));
+await mica.fetch('mica-internal://card-server/upload', {
+  method: 'POST',
+  body: JSON.stringify({ pdf_base64: base64 }),
+});
+```
+
+**2. Custom chunked-upload protocol.**
+
+```js
+// BAD — requires the sidecar to declare matching /upload-chunk +
+// /upload-complete routes AND track per-filename buffers + ordering.
+// The agent reliably writes the client side without the matching
+// server side, and the resulting 404s look like Mica being broken.
+for (const chunk of chunks) {
+  await mica.fetch('mica-internal://card-server/upload-chunk', {
+    method: 'POST',
+    body: JSON.stringify({ chunk_index: i, data: btoa(chunk), … }),
+  });
+}
+```
+
+**3. `multipart/FormData`.** Works, but FastAPI needs `python-multipart`
+installed AND `UploadFile = File(...)` annotation. Both are easy to
+get wrong; both shift the problem to the sidecar's request parsing.
+The write-then-reference pattern sidesteps multipart entirely.
+
+If you find yourself reaching for any of these, stop. Land the
+file with `mica.files.write` first, then pass the path.
+
 ## Surfacing card failures via `mica.reportError`
 
 CARD_SHIM auto-reports only two error classes: (a) errors **thrown**
