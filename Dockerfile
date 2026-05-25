@@ -115,6 +115,23 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
  && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Playwright system dependencies for headless Chromium. Used by the live-
+# mount verifier (server/verifiers/cardLiveMount.ts) to actually run each
+# card class in a real browser at write time and catch runtime errors
+# that defensive try/catch in card.js would otherwise swallow. The
+# Chromium binary itself is downloaded by `npx playwright install
+# chromium` after the `npm ci` step further down; this RUN just provides
+# the apt-level libs (libnss3, libatspi, etc.) so the binary can launch.
+# Mirrors the devcontainer's block verbatim so dev and release see the
+# same Playwright surface — listed straight from `playwright install-deps`
+# so future Playwright updates can be diff'd against `install-deps`.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+      libxkbcommon0 libatspi2.0-0t64 libxcomposite1 libxdamage1 libxfixes3 \
+      libxrandr2 libgbm1 libcairo2 libpango-1.0-0 libasound2t64 fonts-liberation \
+      fonts-noto-color-emoji fonts-wqy-zenhei xfonts-cyrillic xfonts-scalable \
+ && rm -rf /var/lib/apt/lists/*
+
 USER vscode
 WORKDIR /opt/mica
 
@@ -139,6 +156,14 @@ RUN curl -fsSL https://opencode.ai/install | bash || true
 # Mica deps first (layer cache): just package*.json → npm ci.
 COPY --chown=vscode:vscode package.json package-lock.json ./
 RUN npm ci
+
+# Download the Chromium binary Playwright uses for the live-mount verifier.
+# The apt deps for Chromium were installed above as root; this step (run as
+# vscode after USER switch) pulls the actual browser into the per-user
+# Playwright cache (~/.cache/ms-playwright). Without this, the verifier's
+# `chromium.launch()` errors at first call and live-mount verification
+# silently no-ops. Matches devcontainer's postCreate step.
+RUN npx playwright install chromium
 
 # The Qwen Code CLI ships bundled with @qwen-code/sdk (0.1.1+) at
 # node_modules/.bin/qwen. Its SDK's auto-detect scans /usr/local/bin/qwen
