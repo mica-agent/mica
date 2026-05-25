@@ -19,6 +19,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { micaDir, findCardClassInLibraries, WORKSPACE_DIR } from "../files.js";
 import { ensureCardSidecar, touchCardSidecar } from "../cardSidecar.js";
+import { recordPendingError } from "../cardErrorBuffer.js";
 
 // Built-in card classes ship under <repo>/card-classes/<name>/. Same constant
 // as index.ts's CARD_CLASSES_DIR (kept local so this file stays self-contained).
@@ -366,9 +367,128 @@ async function proxyToCardSidecar(
   }
 }
 
+// ── Persistent-failure streak tracking ──────────────────────
+//
+// Track consecutive same-status (or same-errorCode) failures per
+// (project, cardFilename, urlPattern). After STREAK_THRESHOLD
+// consecutive failures with no intervening success, fire ONE card-error
+// broadcast (routed through cardErrorBuffer's holdback so the agent has
+// a chance to self-heal first). Reset on success.
+//
+// Why: cards routinely catch their own failures, console.error them, and
+// move on. Mica never sees them. A persistent 429 / 500 loop is invisible
+// to the agent until the user pastes browser console output. This makes
+// "stuck broken" visible automatically while still being quiet about
+// transient single failures (one 429 is fine — the card handles it via
+// backoff).
+
+interface StreakEntry {
+  /** What kind of failure: `status:429`, `errorCode:rate_limited`, etc. */
+  label: string;
+  count: number;
+  firstSeenAt: number;
+  /** True once we've already fired the broadcast for this streak — prevents
+   *  the same streak firing again on the 4th/5th/Nth failure. Cleared on
+   *  the next success (which deletes the entry entirely). */
+  reported: boolean;
+}
+
+const STREAK_THRESHOLD = 3;
+const STREAK_PRUNE_AFTER_MS = 10 * 60_000;  // 10 min idle → forget
+const streaks = new Map<string, StreakEntry>();
+
+function streakKey(project: string, cardFilename: string, urlPattern: string): string {
+  return `${project}|${cardFilename}|${urlPattern}`;
+}
+
+function urlPatternFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.origin + u.pathname;
+  } catch {
+    return url;
+  }
+}
+
+/** Update the streak for one fetch outcome. Fires card-error after
+ *  STREAK_THRESHOLD consecutive matching failures. */
+function recordOutcome(
+  project: string,
+  cardFilename: string,
+  url: string,
+  result: FetchResult,
+): void {
+  const pattern = urlPatternFromUrl(url);
+  const key = streakKey(project, cardFilename, pattern);
+
+  // Success (any 2xx or 3xx) → reset.
+  if (result.status >= 200 && result.status < 400) {
+    streaks.delete(key);
+    return;
+  }
+
+  // Failure shape. errorCode means our-side; status >=400 means upstream.
+  const label = result.errorCode
+    ? `errorCode:${result.errorCode}`
+    : result.status > 0 ? `status:${result.status}` : "unknown";
+
+  const existing = streaks.get(key);
+  if (existing && existing.label === label) {
+    existing.count++;
+    if (existing.count === STREAK_THRESHOLD && !existing.reported) {
+      existing.reported = true;
+      const elapsedSec = Math.round((Date.now() - existing.firstSeenAt) / 1000);
+      const hint = result.errorCode === "rate_limited"
+        ? "Mica's own rate limiter — slow the polling cadence or batch requests."
+        : label.startsWith("status:4") || label.startsWith("status:5")
+          ? "Check the URL, auth headers, request body, or upstream rate limit."
+          : "Check the card's request URL or network reachability.";
+      recordPendingError(
+        project,
+        cardFilename,
+        `mica.fetch persistent failure on ${pattern}: ${label} ` +
+        `(${existing.count} consecutive times over ${elapsedSec}s). ${hint}`,
+      );
+    }
+  } else {
+    // First failure, or different shape than the prior streak — reset.
+    streaks.set(key, { label, count: 1, firstSeenAt: Date.now(), reported: false });
+  }
+}
+
+// Periodic prune: a card that errored 3× then went idle shouldn't keep
+// a stale streak around forever (would prevent a fresh streak from
+// reporting if the same card's URL fails again after a long gap).
+setInterval(() => {
+  const cutoff = Date.now() - STREAK_PRUNE_AFTER_MS;
+  for (const [k, e] of streaks) {
+    if (e.firstSeenAt < cutoff) streaks.delete(k);
+  }
+}, STREAK_PRUNE_AFTER_MS).unref();
+
 // ── Main handler ─────────────────────────────────────────────
 
 export async function fetchHandler(
+  method: string,
+  params: unknown,
+  project: string | null,
+): Promise<unknown> {
+  const result = await fetchHandlerInner(method, params, project);
+  // Track outcome for streak detection. Skip if we don't have the calling
+  // card's filename (older bridge versions, internal callers) — there's
+  // nowhere to attribute the broadcast.
+  if (method === "request" && project && result && typeof result === "object") {
+    const p = params as { url?: unknown; _cardFilename?: unknown };
+    const cardFilename = typeof p._cardFilename === "string" ? p._cardFilename : null;
+    const url = typeof p.url === "string" ? p.url : "";
+    if (cardFilename && url && !url.startsWith("mica-internal://card-server/")) {
+      recordOutcome(project, cardFilename, url, result as FetchResult);
+    }
+  }
+  return result;
+}
+
+async function fetchHandlerInner(
   method: string,
   params: unknown,
   project: string | null,
@@ -384,6 +504,7 @@ export async function fetchHandler(
     body?: unknown;
     timeout?: unknown;
     _cardClass?: unknown;
+    _cardFilename?: unknown;
   };
 
   const startedAt = Date.now();

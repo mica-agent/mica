@@ -673,7 +673,9 @@ timeout.
 
 The Promise **always resolves**. Check `errorCode` first
 (our-side: SSRF, DNS, timeout, rate limit), then `status`
-(upstream HTTP). Body is always a string.
+(upstream HTTP). Body is **always a string** — use `r.json()`
+to parse, never `JSON.parse(r.body)` (works, but the bridge's
+helper is the canonical idiom).
 
 ```js
 const r = await mica.fetch('https://api.example.com/items', {
@@ -684,8 +686,14 @@ const r = await mica.fetch('https://api.example.com/items', {
 });
 if (r.errorCode) { /* our-side failure: r.error human-readable */ }
 else if (r.status >= 400) { /* upstream HTTP error */ }
-else { const data = JSON.parse(r.body); /* ... */ }
+else { const data = r.json(); /* parses r.body; throws on bad JSON */ }
 ```
+
+**Anti-pattern: defensive `typeof r.body === 'object'` checks.**
+Body is contract-string. Cards that wrap JSON.parse in a type-check
+end up calling `JSON.parse(someObject)` on a code-drift case, which
+coerces to `"[object Object]"` and crashes with *"Unexpected
+identifier 'object'"*. Just call `r.json()`.
 
 `errorCode` values: `url_invalid`, `ssrf_blocked`, `dns_error`,
 `connect_error`, `timeout`, `rate_limited`, `response_error`,
@@ -696,6 +704,78 @@ respect it; don't fire-loop. For binaries (PDFs, images), use
 For Mica's own `/api/*`, prefer `mica.files.*` helpers (auto
 URL-encode, set `source`/`cardSource`). Raw `fetch('/api/...')`
 works too — the runtime auto-injects `X-Mica-Project`.
+
+## Surfacing card failures via `mica.reportError`
+
+CARD_SHIM auto-reports only two error classes: (a) errors **thrown**
+out of card.js init, event handlers, or `setInterval`/`setTimeout`
+callbacks, and (b) **unhandled** Promise rejections. It deliberately
+does NOT capture `console.error` / `console.warn` (too noisy — many
+cards log warnings during normal operation), and it does NOT treat
+HTTP non-2xx from `mica.fetch` as an error (status codes are part of
+the contract; the card decides what's fatal).
+
+That means a card that catches its own failures and only `console.error`s
+them is **invisible to Mica**. The agent has no signal to fix or
+escalate, even if every refresh is failing.
+
+**The rule for every catch block:**
+
+- **Real failure the user/agent should know about** (config error,
+  upstream 5xx, persistent 4xx, parser blew up on an unexpected
+  payload, our-side `errorCode` from `mica.fetch`): call
+  `mica.reportError("<short context>: <message>")` *and* return.
+- **Expected + handled** (e.g. a transient 429 with a 60s backoff,
+  empty response from a poll, a "no data yet" branch): local
+  `console.warn` is fine; don't report. Reporting every transient
+  hit floods the agent and trains it to ignore real signals.
+- **Persistent transient failure** (e.g. been 429 for 5+ minutes):
+  track a streak counter; report **once** when the streak crosses a
+  threshold (say 3 consecutive failures), not on every retry.
+
+### Canonical `mica.fetch` failure shape
+
+```js
+const r = await mica.fetch(url, { timeout: 15000 });
+if (r.errorCode) {
+  // Our-side: SSRF / DNS / timeout / rate_limited / connect_error.
+  // These are real and the agent needs to know.
+  mica.reportError(`fetch ${url} failed (${r.errorCode}): ${r.error}`);
+  return;
+}
+if (r.status === 429) {
+  failStreak++;
+  if (failStreak >= 3) mica.reportError(`stuck rate-limited on ${url} (${failStreak} consecutive 429s)`);
+  scheduleRetry(60_000);
+  return;
+}
+if (r.status >= 400) {
+  // Other 4xx/5xx — usually config or server fault, report immediately.
+  mica.reportError(`API ${url} returned ${r.status}: ${r.body.slice(0, 200)}`);
+  return;
+}
+failStreak = 0;  // success — reset
+```
+
+### Anti-pattern: the silent swallow
+
+```js
+// BAD — agent has no idea the card has been broken for hours
+catch (err) {
+  console.error('[my-card] fetch error:', err);
+  return;
+}
+
+// GOOD — one red bubble with the real cause; agent can investigate
+catch (err) {
+  mica.reportError(`my-card: fetch failed: ${err.message || err}`);
+  return;
+}
+```
+
+The reverse anti-pattern — calling `mica.reportError` on every
+single transient failure (e.g. every 429 inside a backoff loop) —
+is just as harmful. Streak gating is the discipline.
 
 ## WebSocket events via `mica.on(event, cb)`
 

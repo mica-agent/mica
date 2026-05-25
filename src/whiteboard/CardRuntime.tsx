@@ -985,12 +985,22 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
           error?: string;
           errorCode?: string;
           retryAfterMs?: number;
+          /** Parse the body as JSON. Equivalent to `JSON.parse(resp.body)`
+           *  but disambiguates the response shape: never check
+           *  `typeof resp.body === "object"` — body is always a string. */
+          json(): unknown;
         }> => {
           const payload: Record<string, unknown> = { url };
           if (opts.method) payload.method = opts.method;
           if (opts.headers) payload.headers = opts.headers;
           if (opts.body !== undefined) payload.body = opts.body;
           if (typeof opts.timeout === "number") payload.timeout = opts.timeout;
+          // Always pass the calling card's filename so the server can
+          // attribute persistent-failure broadcasts back to it. The
+          // server's fetchHandler tracks per-(project,filename,url) failure
+          // streaks and emits a card-error after N consecutive same-status
+          // failures — see server/plugins/micaFetch.ts §"failure streak".
+          payload._cardFilename = filename;
           // For card-class-private sidecar calls (`mica-internal://card-server/...`)
           // inject the calling card's class so the server can spawn / route to
           // the right sidecar. Class is the extension on the canvas-relative
@@ -999,6 +1009,27 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
             const dot = filename.lastIndexOf(".");
             if (dot >= 0) payload._cardClass = filename.slice(dot + 1);
           }
+          // Wrap the raw result with a `.json()` helper. Body is contract-
+          // always-a-string from the server (both proxy paths in
+          // server/plugins/micaFetch.ts go through buffer.toString("utf-8")),
+          // but cards have repeatedly written defensive `typeof body ===
+          // 'object'` checks that then call JSON.parse on the object and
+          // crash with "Unexpected identifier 'object'". Exposing a named
+          // accessor — same shape as the web fetch API's `resp.json()` —
+          // eliminates the ambiguity at the callsite.
+          const augment = (result: Record<string, unknown>): Record<string, unknown> => {
+            Object.defineProperty(result, "json", {
+              value: function (): unknown {
+                // Safety net: if some future drift makes body non-string,
+                // pass it through rather than crash on toString coercion.
+                if (typeof this.body !== "string") return this.body;
+                return JSON.parse(this.body as string);
+              },
+              enumerable: false,
+              configurable: true,
+            });
+            return result;
+          };
           try {
             const r = await fetch("/api/mica/fetch/request", {
               method: "POST",
@@ -1010,19 +1041,19 @@ export default function CardRuntime({ html, exports: exportFns, dependencies, se
               // structured result. If it does (e.g. network between card and
               // Mica server), surface as internal_error so callers see it.
               const txt = await r.text().catch(() => "");
-              return {
+              return augment({
                 status: 0, headers: {}, body: "", durationMs: 0,
                 error: `mica.fetch transport failed: HTTP ${r.status} ${txt.slice(0, 200)}`,
                 errorCode: "internal_error",
-              };
+              });
             }
-            return await r.json();
+            return augment(await r.json());
           } catch (e) {
-            return {
+            return augment({
               status: 0, headers: {}, body: "", durationMs: 0,
               error: `mica.fetch transport failed: ${(e as Error).message}`,
               errorCode: "internal_error",
-            };
+            });
           }
         },
       };

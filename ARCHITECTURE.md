@@ -992,14 +992,26 @@ Return shape:
 {
   status: number;              // upstream HTTP status; 0 on our-side failure
   headers: Record<string, string>;   // lowercased upstream headers; empty on our-side failure
-  body: string;                // response body; empty on our-side failure
+  body: string;                // response body — ALWAYS a string; empty on our-side failure
   truncated?: boolean;         // true if body was capped at the response-size limit
   durationMs: number;          // DNS + connect + read
   error?: string;              // human-readable message, present only on our-side failure
   errorCode?: string;          // stable code, present only on our-side failure
   retryAfterMs?: number;       // present only when errorCode === "rate_limited"
+  json(): unknown;             // convenience: JSON.parse(this.body). Throws on bad JSON.
 }
 ```
+
+**Persistent-failure auto-reporting.** The server tracks per-(project,
+cardFilename, urlOrigin+pathname) failure streaks. After 3 consecutive
+fetches with the same status code (or same `errorCode`) without any
+2xx/3xx in between, a card-error is queued via the existing
+`cardErrorBuffer` holdback (60-s window for the agent to self-heal,
+then surfaced to the user). One broadcast per streak; a single 2xx
+resets the counter. Streak state lives in `server/plugins/micaFetch.ts`
+§"Persistent-failure streak tracking". The card-side bridge passes
+its `mica.filename` to the server (payload field `_cardFilename`) so
+broadcasts can be attributed back to the originating card.
 
 `errorCode` values (all are our-side; upstream HTTP errors come
 back as `status >= 400`):
