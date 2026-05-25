@@ -98,6 +98,45 @@ If a fetch or import test fails at this stage, that's the
 cheapest place to catch it — before code is written around the
 wrong shape.
 
+## Precision over recall for external facts
+
+Read the **"Model self-awareness"** block at the top of each
+turn — it lists categories where this model's recall is rated
+`very-low`. For any `very-low` category, *do not estimate from
+memory*, even when you "feel sure," and even for famous things.
+The cost-of-error (visibly wrong output) far exceeds the cost of
+a tool call.
+
+The trap that keeps tripping the geographic-coordinates case:
+
+- Text search (Tavily, `web_fetch`) returns **prose**
+  snippets — *"on the south shore"*, *"near Shipwreck Beach"* —
+  not coordinates. Reading those and then producing a lat/lng
+  IS recall, hidden inside a tool call. The model still made up
+  the numbers; web search just confirmed the place exists.
+- The right tool for precise external facts is one whose
+  **output shape matches what you need**:
+  - Coordinates → a geocoder. Free public option:
+    `nominatim.openstreetmap.org/search?q=<name>&format=json`
+    (returns `{ lat, lon, display_name, ... }`). Reach it via
+    `mica_shell curl ...` for one-off queries, or via
+    `mica.fetch` from inside a card. Respect the 1 req/sec
+    rate limit and set a `User-Agent` header naming your card.
+  - Prices → a finance API (Yahoo Finance, Alpha Vantage).
+  - Current weather → OpenWeather or NWS.
+  - Real-time anything → an API that returns structured data,
+    not a blog post.
+
+When a `very-low` category has no matching tool in your surface,
+the procedural default still applies: stop and propose to the
+user *"I need precise X; my tools return prose. Want me to call
+<service> directly via `mica_shell` / `mica.fetch`?"* before
+writing any code that consumes estimated values.
+
+This applies the same shape of discipline as the existing
+asset-URL rule: skip recall, reach for the structured tool,
+verify before commit.
+
 ## Curate-context dispatch (tenet 13)
 
 When dispatching to a subagent:

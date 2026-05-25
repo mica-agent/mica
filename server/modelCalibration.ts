@@ -28,6 +28,14 @@ export interface RecallProfile {
   assetUrlPaths: Confidence;
   apiEndpoints: Confidence;
   browserApis: Confidence;
+  /** Precise lat/lng of named places — POIs, trailheads, restaurants,
+   *  beaches, harbors. Universally `very-low` across current LLMs: no
+   *  frontier model reliably recalls non-centroid coordinates to better
+   *  than ~0.5 km. Web search returns prose snippets, not coordinates,
+   *  so the agent must reach for a geocoder (Nominatim, Mapbox, Google
+   *  Maps) rather than recall or generic text search. See
+   *  `_conventions.md` "Precision over recall for external facts." */
+  geographicCoordinates: Confidence;
 }
 
 export interface ModelCalibration {
@@ -78,6 +86,7 @@ const RULES: CalibrationRule[] = [
       assetUrlPaths: "low",
       apiEndpoints: "medium",
       browserApis: "high",
+      geographicCoordinates: "very-low",
     },
     notes: [
       "Library names and browser APIs: recall freely.",
@@ -94,6 +103,7 @@ const RULES: CalibrationRule[] = [
       assetUrlPaths: "low",
       apiEndpoints: "medium",
       browserApis: "high",
+      geographicCoordinates: "very-low",
     },
     notes: [
       "Library names and browser APIs: recall freely.",
@@ -110,6 +120,7 @@ const RULES: CalibrationRule[] = [
       assetUrlPaths: "very-low",
       apiEndpoints: "medium",
       browserApis: "high",
+      geographicCoordinates: "very-low",
     },
     notes: [
       "Library names and browser APIs: recall freely.",
@@ -126,6 +137,7 @@ const RULES: CalibrationRule[] = [
       assetUrlPaths: "very-low",
       apiEndpoints: "medium",
       browserApis: "high",
+      geographicCoordinates: "very-low",
     },
     notes: [
       "Library names and browser APIs: recall freely.",
@@ -142,6 +154,7 @@ const RULES: CalibrationRule[] = [
       assetUrlPaths: "very-low",
       apiEndpoints: "low",
       browserApis: "medium",
+      geographicCoordinates: "very-low",
     },
     notes: [
       "This model class is not in Mica's calibration table. Treat any recalled URL specific as a hypothesis; verify via mica_inspect_url before committing.",
@@ -368,6 +381,7 @@ export function renderCalibrationBlock(cal: ModelCalibration): string {
   lines.push(`- Asset URL specifics (file paths inside repos, image hosts) — ${cal.recallProfile.assetUrlPaths}`);
   lines.push(`- API endpoint paths — ${cal.recallProfile.apiEndpoints}`);
   lines.push(`- Browser API specifics — ${cal.recallProfile.browserApis}`);
+  lines.push(`- Geographic coordinates (precise lat/lng of places, trailheads, addresses) — ${cal.recallProfile.geographicCoordinates}`);
 
   lines.push(``);
   lines.push(`**Confidence → procedural default (apply per category):**`);
