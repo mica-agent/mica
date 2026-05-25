@@ -1305,6 +1305,69 @@ After authoring card.js, scan your file for every function name and confirm each
 
 This pattern is library-agnostic — it applies to any card.js with multiple functions and async resources. It's the negative-counterpart to the positive "load N → create dependent objects → start render loop" pattern documented in library-specific skill packs (`threejs-loaders/SKILL.md` for Three.js, equivalent for other libraries).
 
+### Native HTML semantics + JS handler = double-trigger
+
+Some HTML elements already do work natively when clicked. Wrapping a
+JS click handler around them that *also* triggers the same work
+creates a double-fire that most browsers cancel — the visible failure
+is "feature doesn't work" with no console error.
+
+**The canonical case: file input inside a label.**
+
+```html
+<label class="upload-btn">
+  Pick a photo
+  <input type="file" id="file-input" accept="image/*">
+</label>
+```
+
+The HTML alone is enough — clicking the label opens the file picker
+natively (the label-input pairing is built into the browser, no JS
+needed). Adding JS like this **breaks it**:
+
+```js
+// BAD — the label click is handled natively AND by this JS handler.
+// The two .click() requests fight and the picker doesn't open.
+uploadArea.addEventListener('click', (e) => {
+  if (e.target.closest('.upload-placeholder') || e.target.tagName === 'LABEL') {
+    fileInput.click();
+  }
+});
+```
+
+Symptom: user clicks the upload button, nothing happens. No error in
+console. Often misdiagnosed as "the file event isn't firing" — the
+event never gets to fire because the picker never opens.
+
+**The rule**: when wrapping a JS click handler around HTML that has
+its own native click behavior (label-with-input, `<a href>`, `<form>`
++ `<button type="submit">`, `<details>`), make the handler skip
+those targets. For the file-input case:
+
+```js
+uploadArea.addEventListener('click', (e) => {
+  // Let the label-input pairing handle clicks on the label or input itself.
+  if (e.target.closest('label') || e.target.tagName === 'INPUT') return;
+  fileInput.click();   // Only fires when user clicks the surrounding area.
+});
+```
+
+Or even simpler: drop the JS click handler entirely and rely on the
+label. Background-area clicks won't trigger the picker, but the label
+is prominent enough that users find it.
+
+**Other native-pair traps in the same family:**
+
+- `<a href="…">` with a JS `onClick` that calls `location.href = …`
+  → double-navigation flash.
+- `<form>` with `<button type="submit">` AND an onClick that calls
+  `form.submit()` → double POST.
+- `<details><summary>` with a JS handler that toggles `.open`
+  → state desync (browser toggles, then JS toggles back).
+
+Same rule for all: either remove the JS handler, or skip the target
+when it's the element with native behavior. Don't fight the browser.
+
 ### `render_capture` and WebGL — usually just works
 
 CARD_SHIM auto-enables `preserveDrawingBuffer: true` on any WebGL context created within card scope. So when the capture pipeline's `html2canvas` fallback calls `canvas.toDataURL()`, the WebGL back buffer is readable and the screenshot returns the actual frame. **You don't need to do anything special** for WebGL cards — the common case (Three.js, regl, PixiJS, Babylon, raw WebGL) captures cleanly out of the box.
