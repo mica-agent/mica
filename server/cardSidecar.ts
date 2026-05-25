@@ -29,6 +29,7 @@ import { randomBytes } from "crypto";
 import { existsSync } from "fs";
 import { join } from "path";
 import { readFile } from "fs/promises";
+import { createConnection } from "net";
 import { WORKSPACE_DIR } from "./files.js";
 
 // Per-backend-startup secret. Sidecars include this in the `x-mica-sidecar-auth`
@@ -140,12 +141,41 @@ function key(project: string, className: string): string {
   return `${project}::${className}`;
 }
 
-function allocatePort(): number {
+/** TCP-probe a port on 127.0.0.1. Resolves true if SOMETHING is listening,
+ *  false if the connection refuses (port genuinely free) or the probe
+ *  hits any other error. ~200ms cap. Used to dodge races where a recently-
+ *  killed sidecar's port hasn't fully released yet, or where a non-mica
+ *  process is squatting on a pool port (e.g. orphan from a prior crash
+ *  that orphan-reap didn't catch). */
+function probePortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = createConnection({ host: "127.0.0.1", port });
+    const done = (inUse: boolean): void => {
+      try { sock.destroy(); } catch { /* best-effort */ }
+      resolve(inUse);
+    };
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+    sock.setTimeout(200, () => done(false));
+  });
+}
+
+/** Pick the next free port in the pool. Two filters:
+ *   1. Not in our local `usedPorts` set (cheap, in-process).
+ *   2. TCP probe shows nothing listening (catches OS-level races: previous
+ *      sidecar SIGTERMed but socket still in TIME_WAIT, or an orphan from
+ *      before this backend started).
+ *  Async because the probe is async. Caller (ensureCardSidecar) is already
+ *  async so no restructure needed. */
+async function allocatePort(): Promise<number> {
   for (let p = POOL_START; p <= POOL_END; p++) {
-    if (!usedPorts.has(p)) {
-      usedPorts.add(p);
-      return p;
+    if (usedPorts.has(p)) continue;
+    if (await probePortInUse(p)) {
+      console.warn(`[card-sidecar] port :${p} is held by an unknown process — skipping`);
+      continue;
     }
+    usedPorts.add(p);
+    return p;
   }
   throw new Error(`Card-sidecar port pool exhausted (${POOL_START}-${POOL_END}). Too many sidecars active.`);
 }
@@ -274,7 +304,7 @@ export async function ensureCardSidecar(
     throw new Error(`Interpreter not found: ${command} (resolved from entry='${meta.entry}', python='${meta.python}', interpreter='${meta.interpreter ?? ""}')`);
   }
 
-  const port = allocatePort();
+  const port = await allocatePort();
   const label = `card-sidecar:${className}`;
   const env = {
     ...process.env,
