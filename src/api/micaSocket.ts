@@ -26,6 +26,16 @@ interface PendingCall {
 interface ChannelHandle {
   onData: ((data: unknown) => void) | null;
   onClose: (() => void) | null;
+  /** Messages received before `onData` was registered. Buffered here so
+   *  state-replay broadcasts (chat history, queue snapshot, initial
+   *  status) aren't lost in the race between `mica.openChannel(...)` at
+   *  the top of a card script and `ch.onData(cb)` near the bottom. On
+   *  iOS Safari this race is real: script execution is slower than on
+   *  desktop while WebSocket roundtrips are similar, widening the
+   *  window. Flushed in order when `onData` is finally set. Cleared
+   *  (set to null) once flushed so subsequent live messages dispatch
+   *  through the cb directly with no buffering overhead. */
+  earlyBuffer: unknown[] | null;
   // Params needed to re-send `channel_open` after a WebSocket reconnect
   // (e.g., backend restart). Without this, sessions silently die on the
   // server but the card still holds a stale handle, so its `ch.send()`
@@ -307,7 +317,10 @@ function handleMessage(msg: Record<string, unknown>): void {
 
     case "channel_data": {
       const ch = id ? activeChannels.get(id) : undefined;
-      if (ch) ch.onData?.(msg.data);
+      if (ch) {
+        if (ch.onData) ch.onData(msg.data);
+        else if (ch.earlyBuffer) ch.earlyBuffer.push(msg.data);
+      }
       break;
     }
 
@@ -454,6 +467,7 @@ export function openChannel(
   const handle: ChannelHandle = {
     onData: null,
     onClose: null,
+    earlyBuffer: [],
     reopenSpec: { project, canvas, filename, fn, args, sessionId },
   };
 
@@ -479,17 +493,34 @@ export function openChannel(
       // Does NOT notify server. Session stays alive.
       handle.onData = null;
       handle.onClose = null;
+      handle.earlyBuffer = null;  // drop any pre-registration buffered messages
     },
     destroy: () => {
       // Hard close — notifies server to detach this client.
       handle.onData = null;
       handle.onClose = null;
+      handle.earlyBuffer = null;
       activeChannels.delete(id);
       waitForConnection().then(() => {
         sendMsg({ type: "channel_close", id });
       }).catch(() => {});
     },
-    onData: (cb) => { handle.onData = cb; },
+    onData: (cb) => {
+      handle.onData = cb;
+      // Flush messages that arrived before the card registered its
+      // handler. Set to null afterward so subsequent live messages
+      // bypass the buffer entirely.
+      if (handle.earlyBuffer && handle.earlyBuffer.length > 0) {
+        const queued = handle.earlyBuffer;
+        handle.earlyBuffer = null;
+        for (const data of queued) {
+          try { cb(data); }
+          catch (err) { console.error("[mica-socket] onData callback threw on buffered data:", err); }
+        }
+      } else {
+        handle.earlyBuffer = null;
+      }
+    },
     onClose: (cb) => { handle.onClose = cb; },
   };
 }
