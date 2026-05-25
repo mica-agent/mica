@@ -325,7 +325,7 @@ async function enqueueSpeechWav(b64) {
   if (!isPlayingQueue) playNextWav();
 }
 
-function playNextWav() {
+async function playNextWav() {
   const buffer = wavQueue.shift();
   if (!buffer) {
     isPlayingQueue = false;
@@ -347,6 +347,20 @@ function playNextWav() {
     updateMediaSession(false);
     return;
   }
+  // Defensive resume: AudioContext can re-suspend between enqueue and
+  // play in Safari (tab briefly backgrounds, OS audio session changes,
+  // headphones plugged in mid-turn). Without this, src.start() silently
+  // succeeds but the destination produces nothing — no error, no audio.
+  // After tab-close → reopen → mic-on, the context's user-gesture
+  // grant can also become stale by the time the first response frame
+  // arrives; resume() here under any active gesture window saves it.
+  if (ctx.state === 'suspended') {
+    try { await ctx.resume(); }
+    catch (e) { console.warn('[voice] playNextWav: ctx.resume() failed: ' + (e && e.message ? e.message : e)); }
+  }
+  if (ctx.state !== 'running') {
+    console.warn('[voice] playback ctx not running (state=' + ctx.state + ') — output likely silent. Click mic OFF/ON to re-grant gesture.');
+  }
   isPlayingQueue = true;
   updateMediaSession(true);
   const src = ctx.createBufferSource();
@@ -366,7 +380,7 @@ function playNextWav() {
   updateStopSpeakingButton();
   try {
     src.start(0);
-    console.log('[voice] started AudioBufferSource (' + buffer.duration.toFixed(2) + 's)');
+    console.log('[voice] started AudioBufferSource (' + buffer.duration.toFixed(2) + 's, ctxState=' + ctx.state + ')');
   } catch (err) {
     console.warn('[voice] src.start() threw: ' + (err && err.message ? err.message : err));
     playNextWav();
@@ -558,16 +572,40 @@ async function turnMicOn() {
     // (window.location.reload()) — the context's `state` reads
     // "running" and src.start() doesn't throw, but ctx.destination
     // produces nothing until a real buffer flows through it. Playing
-    // a 1-frame silent buffer synchronously inside this user gesture
-    // physically wires the graph to the output device. Force-refresh
-    // worked around this; primingthe graph in-page removes the need.
+    // a buffer synchronously inside this user gesture physically wires
+    // the graph to the output device.
+    //
+    // Was a 1-frame silent buffer; upgraded to a 100ms buffer at very
+    // low non-zero amplitude (-60dB, well below audibility). The
+    // longer + non-zero signal forces macOS Safari to fully claim the
+    // output device rather than treat the prime as a no-op the audio
+    // session can ignore. The level is low enough not to be heard;
+    // the duration is long enough for the OS audio session to commit.
+    //
+    // Caveat: when Safari's audio session is wedged at the *process*
+    // level (e.g. after closing the last voice tab and reopening), no
+    // in-page prime can recover — only Cmd+Q + relaunch. This is a
+    // known Safari/WebKit limitation, not something this code can fix.
     try {
-      const primeBuf = playCtx.createBuffer(1, 1, playCtx.sampleRate);
+      const primeSec = 0.1;                  // 100 ms
+      const primeFrames = Math.max(1, Math.floor(playCtx.sampleRate * primeSec));
+      const primeBuf = playCtx.createBuffer(1, primeFrames, playCtx.sampleRate);
+      const data = primeBuf.getChannelData(0);
+      // -60 dB ≈ 0.001 linear amplitude. Sub-perceptual on speakers,
+      // sub-perceptual on headphones at normal listening volume, but
+      // a real signal the audio session can lock onto.
+      const amp = 0.001;
+      for (let i = 0; i < primeFrames; i++) {
+        // Tiny triangle wave at sub-audible frequency. Anything non-DC
+        // works; this just keeps the signal moving rather than letting
+        // any optimizer treat it as silence.
+        data[i] = amp * (((i * 4 / primeFrames) % 2) - 1);
+      }
       const primeSrc = playCtx.createBufferSource();
       primeSrc.buffer = primeBuf;
       primeSrc.connect(playCtx.destination);
       primeSrc.start(0);
-      console.log('[voice] playback AudioContext (re)created, resumed, primed; state=' + playCtx.state + ' sampleRate=' + playCtx.sampleRate);
+      console.log('[voice] playback AudioContext (re)created, resumed, primed (' + (primeSec * 1000) + 'ms @ -60dB); state=' + playCtx.state + ' sampleRate=' + playCtx.sampleRate);
     } catch (e) {
       console.warn('[voice] prime buffer failed: ' + (e && e.message ? e.message : e));
     }

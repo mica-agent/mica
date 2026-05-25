@@ -11,7 +11,7 @@
  * States: registered -> active -> idle -> destroyed
  */
 
-import { readProjectFile, writeProjectFile, WORKSPACE_DIR, getCardClassMeta } from "./files.js";
+import { readProjectFile, writeProjectFile, WORKSPACE_DIR, getCardClassMeta, getOrCreateCardId } from "./files.js";
 import { registerManifest, validateArgs, getManifest, getManifestNames, type HandlerManifest } from "./handlerManifest.js";
 import { join } from "path";
 
@@ -432,6 +432,60 @@ export class ChannelManager {
       console.warn(`[channel-mgr] dispatchToFilename(${filename}) handler.onData threw: ${(err as Error).message}`);
       return { ok: false };
     }
+  }
+
+  /** Like dispatchToFilename, but lazy-creates the session if it doesn't
+   *  exist yet — using the file's stable card-UUID so a subsequent UI
+   *  open reuses the same session. Right semantic for "send a message to
+   *  the chat card whether or not the user has interacted with it yet"
+   *  (per CLAUDE.md tenet 5: user intent, not transport).
+   *
+   *  The voice card's send_to_card tool routes through this so a user
+   *  can ask voice to delegate work even when the qwen/claude/opencode
+   *  chat card is in the layout but hasn't been "woken up" by a click.
+   *  The agent processes the message with no UI clients attached;
+   *  results persist to chat history and surface when the UI does
+   *  attach (onAttach replays history).
+   *
+   *  Returns the same shape as dispatchToFilename. ok=false here only
+   *  when the file's card class has no registered handler, or the
+   *  session creation itself threw (rare). */
+  async dispatchOrCreate(
+    project: string | null,
+    filename: string,
+    data: unknown,
+  ): Promise<{ ok: boolean; clientCount?: number; queueDepth?: number; created?: boolean }> {
+    let sessionId = this.filenameToSessionId.get(this.filenameKey(project, filename));
+    let created = false;
+    if (!sessionId) {
+      try {
+        // Use the file's stable card UUID so a later UI open reuses
+        // this session instead of forking a parallel one.
+        sessionId = await getOrCreateCardId(project ?? undefined, filename);
+      } catch (err) {
+        console.warn(`[channel-mgr] dispatchOrCreate(${filename}) cardId lookup failed: ${(err as Error).message}`);
+        return { ok: false };
+      }
+      // Single-flight: if a concurrent attachClient is mid-creation, await
+      // its promise instead of racing a duplicate createSession.
+      let creation = this.creating.get(sessionId);
+      if (!creation && !this.sessions.has(sessionId)) {
+        creation = this.createSession(sessionId, project, filename, {});
+        this.creating.set(sessionId, creation);
+        creation.finally(() => this.creating.delete(sessionId!));
+        created = true;
+      }
+      if (creation) {
+        try { await creation; }
+        catch (err) {
+          console.warn(`[channel-mgr] dispatchOrCreate(${filename}) createSession failed: ${(err as Error).message}`);
+          return { ok: false };
+        }
+      }
+    }
+    const result = this.dispatchToFilename(project, filename, data);
+    if (created) (result as { created?: boolean }).created = true;
+    return result;
   }
 
   sendData(clientId: string, data: unknown): void {

@@ -220,17 +220,25 @@ export function buildVoiceTools(deps: VoiceToolDeps) {
             message: `"${file}" isn't a chat card. send_to_card only routes to chat-class cards. Pick one from the 'Chat cards' section and retry.`,
           };
         }
-        const result = channelMgr.dispatchToFilename(sessionProject, file, { message });
+        // Lazy-creates the chat card's session if it hasn't opened yet.
+        // Per CLAUDE.md tenet 5 ("user intent, not transport"), voice can
+        // dispatch to chat cards that are in the layout but haven't been
+        // clicked on — the agent processes the message with no UI clients
+        // attached, and the message + reply show up when the user later
+        // opens the card (onAttach replays from chat history).
+        const result = await channelMgr.dispatchOrCreate(sessionProject, file, { message });
         if (!result.ok) {
           return {
             ok: false,
             file,
-            message: `Card "${file}" isn't open — the user must open it once before voice can route to it.`,
+            message: `Couldn't reach "${file}" — the file may not exist on this canvas, or its card class has no registered handler.`,
           };
         }
         onDelegationTracked?.(file, message);
         let detail: string;
-        if (result.clientCount === 0) {
+        if (result.created) {
+          detail = "Dispatched to a freshly-spawned session — the chat card will populate when the user opens it.";
+        } else if (result.clientCount === 0) {
           detail = "Dispatched, but the chat card isn't currently visible — the user should open it to see the message arrive.";
         } else if (typeof result.queueDepth === "number" && result.queueDepth > 0) {
           detail = `Queued behind ${result.queueDepth} other request${result.queueDepth === 1 ? "" : "s"}.`;

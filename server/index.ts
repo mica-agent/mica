@@ -2350,13 +2350,22 @@ app.get("/api/layout", async (req, res) => {
   try {
     const data = await readFile(join(micaDir(proj), "layout.json"), "utf-8");
     const all = JSON.parse(data);
-    if (all[device] && typeof all[device] === "object" && all[device].cards) {
-      res.json(all[device]);
-    } else if (all.cards) {
-      res.json(all);
-    } else {
-      res.json({});
+    // Try the requested device class first, then walk a fallback chain
+    // so phones/tablets visiting a project with only a desktop layout
+    // still see all the cards (positions may overflow, but the canvas
+    // pans). Without this fallback the layout endpoint returns {} for
+    // any new device class, and the user sees an empty canvas with no
+    // cards mounted — even though the project clearly has cards. Order:
+    // requested → desktop → tablet → phone → display → legacy root.
+    const fallback = [device, "desktop", "tablet", "phone", "display"];
+    for (const d of fallback) {
+      if (all[d] && typeof all[d] === "object" && all[d].cards) {
+        res.json(all[d]);
+        return;
+      }
     }
+    if (all.cards) { res.json(all); return; }  // legacy non-keyed shape
+    res.json({});
   } catch {
     res.json({});
   }
