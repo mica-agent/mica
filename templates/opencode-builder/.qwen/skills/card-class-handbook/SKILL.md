@@ -781,15 +781,20 @@ async function handleUpload(file) {
 import os
 from pathlib import Path
 
-PROJECT_DIR = Path(os.environ['MICA_PROJECT_DIR'])  # injected at spawn
+# Card-side paths from mica.files.write are canvas-root-relative. The bridge
+# canonicalizes "uploads/foo.pdf" → "<canvasRoot>/uploads/foo.pdf" on disk.
+# MICA_CANVAS_DIR matches that base directly, so paths the card sent verbatim
+# resolve correctly. Use MICA_PROJECT_DIR only when you need files OUTSIDE
+# canvas-root (e.g. `.mica/`, `shared/`, project-root metadata).
+CANVAS_DIR = Path(os.environ['MICA_CANVAS_DIR'])
 
 @app.post("/index")
 def index(payload: dict):
     rel = payload.get("path", "")
-    full = (PROJECT_DIR / rel).resolve()
-    # Defensive: refuse paths that escape the project root
-    if PROJECT_DIR not in full.parents and full != PROJECT_DIR:
-        raise HTTPException(403, f"path '{rel}' is outside the project")
+    full = (CANVAS_DIR / rel).resolve()
+    # Defensive: refuse paths that escape the canvas-root
+    if CANVAS_DIR not in full.parents and full != CANVAS_DIR:
+        raise HTTPException(403, f"path '{rel}' is outside the canvas")
     if not full.exists():
         raise HTTPException(404, f"file '{rel}' not found")
     # Stream straight from disk — fitz/PIL/whisper/etc all accept paths
@@ -808,9 +813,11 @@ def index(payload: dict):
 - **Constant memory.** Browser streams the File → Mica streams to
   disk → sidecar opens path with streaming reads. No copy ever
   holds the whole file in RAM at once.
-- **Sidecar already has project access.** The spawn site
+- **Sidecar already has canvas + project access.** The spawn site
   ([server/cardSidecar.ts](server/cardSidecar.ts)) injects
-  `MICA_PROJECT_DIR` and `MICA_WORKSPACE_DIR` env vars. The sidecar
+  `MICA_CANVAS_DIR` (matches the canvas-root the card writes against),
+  `MICA_PROJECT_DIR` (project root — use for off-canvas files like
+  `.mica/` and `shared/`), and `MICA_WORKSPACE_DIR`. The sidecar
   reads project files directly with stdlib `open()`, no Mica round
   trip needed.
 - **Persistent + introspectable.** The uploaded file lands at

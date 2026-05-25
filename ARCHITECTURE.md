@@ -354,7 +354,10 @@ a class-specific server handler:
   reachable from `card.js` via
   `mica.fetch('mica-internal://card-server/...')`, which the bridge
   routes to the right sidecar. At spawn time the sidecar inherits
-  `MICA_PROJECT_DIR`, `MICA_WORKSPACE_DIR`, `MICA_CARD_CLASS`,
+  `MICA_PROJECT_DIR` (project root), `MICA_CANVAS_DIR` (the canvas-root
+  subdirectory — matches the base that card-side `mica.files.write`
+  paths resolve against, so paths the card sent verbatim address the
+  same files for the sidecar), `MICA_WORKSPACE_DIR`, `MICA_CARD_CLASS`,
   `MICA_CARD_CLASS_DIR`, `MICA_BACKEND_URL`, and `MICA_SIDECAR_TOKEN`
   as env vars — so the sidecar can read project files directly with
   stdlib `open()` and call back into Mica's REST API. **FastAPI

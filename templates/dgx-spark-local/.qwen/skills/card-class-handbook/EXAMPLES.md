@@ -192,7 +192,8 @@ You usually don't read these directly — the `mica_sidecar` package surfaces th
 |---|---|---|
 | `MICA_PORT` | port (8200-8299 from pool) | **READ THIS** — bind your server here; never hardcode a port |
 | `MICA_PROJECT` | active project name | logging / context |
-| `MICA_PROJECT_DIR` | absolute path to the project | available as `mica.project_dir` |
+| `MICA_PROJECT_DIR` | absolute path to the project root | for off-canvas files (`.mica/`, `shared/`) |
+| `MICA_CANVAS_DIR` | absolute path to the canvas-root subdir | **for files the card wrote via `mica.files.write` — its paths are canvas-root-relative** |
 | `MICA_WORKSPACE_DIR` | absolute path to the projects root | rare; project resolution |
 | `MICA_CARD_CLASS` | your card class name | mica.log uses this as the prefix |
 | `MICA_CARD_CLASS_DIR` | absolute path to your card class directory | available as `mica.cardclass_dir` |
