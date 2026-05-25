@@ -388,7 +388,130 @@ cmd_up() {
     info "MICA_AUTO_BUILD=1 and image is stale — adding --build"
     filtered=("--build" "${filtered[@]}")
   fi
-  exec docker compose "${compose_args[@]}" up "${filtered[@]}"
+
+  # Set expectations BEFORE the long compose-up wait. First-time users hit
+  # ~30 GB of model download with no granular feedback (raw container logs
+  # aren't stage-shaped) — the banner names the stages so a 10-min wait
+  # doesn't feel like a hang.
+  print_startup_banner "$topology"
+
+  # Heartbeat watcher: every 30s, print a state snapshot alongside the
+  # live compose logs. Stands out from per-line log noise via a bordered
+  # multi-line block. Killed by the EXIT trap when compose returns.
+  start_progress_watcher "$topology" &
+  local watcher_pid=$!
+  # shellcheck disable=SC2064
+  trap "kill $watcher_pid 2>/dev/null; wait $watcher_pid 2>/dev/null; trap - EXIT INT TERM" EXIT INT TERM
+
+  # NOT exec — we need the trap to fire on compose exit to reap the
+  # watcher. Ctrl+C still works (compose handles SIGINT cleanly, then
+  # control returns to the trap).
+  docker compose "${compose_args[@]}" up "${filtered[@]}"
+}
+
+# ── startup-progress messaging ───────────────────────────────────
+#
+# Pre-banner names the stages first-time setup walks through, so a
+# 5-15 min wait on docker pull + 30 GB model download doesn't feel
+# like a hang. The watcher heartbeat (next function) then anchors
+# the user against wall-clock elapsed time.
+
+print_startup_banner() {
+  local topology="$1"
+  local first_run="no"
+  # Heuristic: missing image OR missing/empty mica-models volume → first
+  # run. Doesn't account for partial first runs; that's ok, banner is
+  # advisory not authoritative.
+  if ! docker image inspect mica:latest >/dev/null 2>&1; then
+    first_run="image-missing"
+  elif ! docker volume inspect mica_mica-models >/dev/null 2>&1; then
+    first_run="weights-missing"
+  fi
+
+  printf '\n'
+  if [ "$first_run" = "no" ]; then
+    printf '  %sWarm restart%s — model weights cached, vLLM should be ready in 30-90s.\n' \
+      "$C_BLD" "$C_RST"
+    printf '\n'
+    return
+  fi
+  printf '  %sFirst-run startup — expect 5–15 minutes:%s\n' "$C_BLD" "$C_RST"
+  local step=1
+  if [ "$first_run" = "image-missing" ]; then
+    printf '    %d. Pulling Docker image %s(~3 GB)%s\n' "$step" "$C_DIM" "$C_RST"
+    step=$((step + 1))
+  fi
+  if [ "$topology" = "vllm" ]; then
+    printf '    %d. Downloading model weights %s(~30 GB NVFP4 — the long stage)%s\n' \
+      "$step" "$C_DIM" "$C_RST"
+    step=$((step + 1))
+    printf '    %d. Warming up vLLM %s(~60s after download finishes)%s\n' \
+      "$step" "$C_DIM" "$C_RST"
+  else
+    printf '    %d. Downloading model weights %s(~22 GB GGUF)%s\n' \
+      "$step" "$C_DIM" "$C_RST"
+    step=$((step + 1))
+    printf '    %d. Warming up llama-server %s(~30s after download finishes)%s\n' \
+      "$step" "$C_DIM" "$C_RST"
+  fi
+  step=$((step + 1))
+  printf '    %d. Starting frontend + backend %s(seconds)%s\n' "$step" "$C_DIM" "$C_RST"
+  printf '\n'
+  printf '  %sProgress heartbeat every 30s. Subsequent runs are seconds.%s\n' "$C_DIM" "$C_RST"
+  printf '\n'
+}
+
+start_progress_watcher() {
+  local topology="$1"
+  local start_ts
+  start_ts="$(date +%s)"
+  # First heartbeat at +30s — gives compose a moment to print its own
+  # initial "Pulling X" lines so we don't immediately interleave.
+  while sleep 30; do
+    local now elapsed_sec elapsed_min elapsed_disp
+    now="$(date +%s)"
+    elapsed_sec=$((now - start_ts))
+    elapsed_min=$((elapsed_sec / 60))
+    elapsed_disp="$(printf '%dm%02ds' "$elapsed_min" "$((elapsed_sec % 60))")"
+
+    # Probe each layer. Failures (curl timeout, ps empty) are expected
+    # mid-startup; we just want a snapshot.
+    local mica_state="" vllm_state="" vllm_ready="no" frontend_ready="no"
+    if mica_state="$(docker compose ps --format '{{.Service}}|{{.State}}' 2>/dev/null \
+        | awk -F'|' '$1=="mica"{print $2}')"; then :; fi
+    if [ "$topology" = "vllm" ]; then
+      vllm_state="$(docker compose ps --format '{{.Service}}|{{.State}}' 2>/dev/null \
+        | awk -F'|' '$1=="mica-vllm"{print $2}')"
+      curl -fsS --max-time 2 http://localhost:8012/v1/models >/dev/null 2>&1 \
+        && vllm_ready="yes"
+    fi
+    curl -fsS --max-time 2 http://localhost:5173/ >/dev/null 2>&1 \
+      && frontend_ready="yes"
+
+    # Bordered multi-line banner stands out from docker's per-line output.
+    printf '\n'
+    printf '  %s┌─ mica progress: %s elapsed ─────────────────────%s\n' \
+      "$C_BLU" "$elapsed_disp" "$C_RST"
+    if [ "$topology" = "vllm" ]; then
+      _heartbeat_line "vLLM container" "$([ "$vllm_state" = "running" ] && echo ok || echo "${vllm_state:-pending}")"
+      _heartbeat_line "vLLM /v1/models ready" "$([ "$vllm_ready" = "yes" ] && echo ok || echo "waiting (model loading)")"
+    fi
+    _heartbeat_line "Mica container" "$([ "$mica_state" = "running" ] && echo ok || echo "${mica_state:-pending}")"
+    _heartbeat_line "Frontend (port 5173)" "$([ "$frontend_ready" = "yes" ] && echo ok || echo "waiting")"
+    printf '  %s└─ open http://localhost:5173 once everything is ok ──%s\n' "$C_BLU" "$C_RST"
+    printf '\n'
+  done
+}
+
+_heartbeat_line() {
+  local label="$1" status="$2"
+  if [ "$status" = "ok" ]; then
+    printf '  %s│%s  %s✓%s %-26s %s%s%s\n' \
+      "$C_BLU" "$C_RST" "$C_GRN" "$C_RST" "$label" "$C_DIM" "ready" "$C_RST"
+  else
+    printf '  %s│%s  %s⠿%s %-26s %s%s%s\n' \
+      "$C_BLU" "$C_RST" "$C_YLW" "$C_RST" "$label" "$C_DIM" "$status" "$C_RST"
+  fi
 }
 
 cmd_doctor() {
