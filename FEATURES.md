@@ -219,6 +219,46 @@ embedding index in memory) + **T2** (`llm-direct` for the
 streamed answer). Four tiers in one card class; no single tier
 on its own would do the job well.
 
+### T4 sidecar lifecycle
+
+You don't start or stop sidecars by hand — Mica manages the whole
+lifecycle. What that looks like in practice:
+
+- **First card open → first sidecar fetch starts it.** The sidecar
+  process spawns lazily, on the first `mica.fetch` call from the
+  card. A health probe waits until the sidecar's `ready_path`
+  responds (~seconds for most workloads, longer if the sidecar has
+  to load a model or build an index from disk). Subsequent fetches
+  reuse the running process.
+- **Stays warm while in use.** Each successful fetch into the
+  sidecar resets an idle clock. As long as the card is being used,
+  the sidecar holds its port + RAM and serves requests at warm
+  speed (no model-load on each call).
+- **Auto-shuts down after ~10 minutes idle.** If nothing has called
+  the sidecar for 10 minutes, Mica SIGTERMs it (5-second grace,
+  then SIGKILL). The next fetch will cold-spawn a fresh one. 10 min
+  is generous on purpose — model-load cost dominates fresh-start
+  cost, so erring on the warm side is cheaper than tight cycling.
+- **Closing the tab doesn't kill the sidecar.** The sidecar lives
+  on the server, not in your browser. Walking away from a card
+  just stops the fetches; the 10-minute idle timer takes over from
+  there. Open a new tab and re-engage the card before then and
+  you'll see warm latency.
+- **Deleting the project kills its sidecars immediately.** When you
+  delete a project, Mica stops every sidecar belonging to it
+  before removing the project's files — port and RAM freed in
+  seconds rather than waiting on the idle timer.
+- **Restarting / stopping Mica shuts everything down cleanly.**
+  `scripts/stop.sh` / Ctrl+C the dev server triggers a SIGTERM →
+  5 s → SIGKILL sweep over every running sidecar. On the next Mica
+  start, an orphan-reap pass cleans up anything left over from a
+  crash or hard kill of the previous run, so you don't accumulate
+  zombie sidecars across restarts.
+- **Agents can force-restart a sidecar.** When the agent edits a
+  sidecar's `server.py` it can call the `mica_restart_sidecar`
+  tool to kill the current process so the next fetch picks up the
+  new code. (Sidecars don't auto-watch their own source files.)
+
 ### Where the pattern is declared
 
 A card class picks its handler in [`metadata.json`](server/plugins/cardClassTools.ts):

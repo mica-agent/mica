@@ -95,7 +95,7 @@ import { getProposal, consumeProposal, dismissProposal } from "./proposalStore.j
 import { suppressNextCascadeWrite } from "./reactiveCoalesce.js";
 import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llamaServer.js";
 import { ensureVoiceServers, stopVoiceServers, getVoiceServerStatus, getSttUrl, getTtsUrl } from "./voiceServers.js";
-import { stopAllCardSidecars, reapOrphanCardSidecars } from "./cardSidecar.js";
+import { stopAllCardSidecars, stopSidecarsForProject, reapOrphanCardSidecars } from "./cardSidecar.js";
 import { SentenceFanout } from "./voiceStreaming.js";
 import { chatHandler, setActiveProject as setChatProject } from "./micaChat.js";
 import { createAgentHandler, setActiveProject as setAgentProject, buildContext as buildMicaAgentContext } from "./micaAgent.js";
@@ -458,6 +458,10 @@ app.delete("/api/projects/:project", async (req, res) => {
       fileWatcher.releaseProject(name);
     }
     channelManager.destroyAllForProject(name);
+    // Kill sidecars BEFORE rm-rf so they don't see their working dir
+    // disappear mid-request, and so the port + RAM are freed
+    // immediately rather than waiting on the 10-min idle sweep.
+    await stopSidecarsForProject(name);
     evictCardIdsForProject(name);
     clearProjectValidatorErrors(name);
     clearProjectSkillInvocations(name);

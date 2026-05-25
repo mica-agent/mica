@@ -526,3 +526,31 @@ export async function stopAllCardSidecars(): Promise<void> {
     }
   }
 }
+
+/** SIGTERM every sidecar belonging to `project`, then SIGKILL stragglers
+ *  after 5s. Called from the project-delete path so a deleted project
+ *  doesn't leave sidecars holding ports + RAM for the rest of the idle
+ *  window (up to ~10 min). Same kill ladder as `stopAllCardSidecars`,
+ *  scoped to one project. */
+export async function stopSidecarsForProject(project: string): Promise<void> {
+  const handles = [...sidecars.values()].filter((h) => h.project === project);
+  if (handles.length === 0) return;
+  for (const h of handles) {
+    console.log(`[card-sidecar:${h.className}] project "${project}" deleted — stopping...`);
+    try { h.proc.kill("SIGTERM"); } catch { /* best effort */ }
+  }
+  // Wait up to 5s for graceful exit; the 'exit' handler removes each
+  // from the map. Then SIGKILL anything still alive.
+  const deadline = Date.now() + 5000;
+  while (
+    Date.now() < deadline &&
+    handles.some((h) => sidecars.has(key(h.project, h.className)))
+  ) {
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  for (const h of handles) {
+    if (!h.proc.killed) {
+      try { h.proc.kill("SIGKILL"); } catch { /* best effort */ }
+    }
+  }
+}

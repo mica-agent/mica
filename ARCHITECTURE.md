@@ -147,12 +147,13 @@ live?", not a full inventory.
 
 | File | What it does |
 |---|---|
-| `registry.ts` | Master `AGENT_TOOLS` array; 18 tools today |
+| `registry.ts` | Master `AGENT_TOOLS` array; 19 tools today |
 | `sdkMcpBuilder.ts` | Wraps the registry into the in-process MCP server each agent SDK consumes |
 | `restRoutes.ts` | REST adapter (`/api/tools/*`) for the opencode out-of-process MCP bridge |
 | `promptPrelude.ts` | Standing tool-usage guidance injected into every chat agent's system prompt |
 | `renderCapture.ts` | `render_capture` — screenshot a card and run vision over it |
 | `cardClass.ts` | `mica_create_class`, `mica_edit_class_file`, `mica_create_card_instance`, `mica_delete_*`, `mica_list_classes` |
+| `proposeChanges.ts` | `propose_changes` — suggest cascade edits to OTHER docs without writing them; renders as Apply/Dismiss UI in the originating chat card |
 | `installSkills.ts`, `listSkillPackages.ts` | `mica_install_skills`, `mica_list_skill_packages` (curated library-skill packs) |
 | `inspectUrl.ts` | `mica_inspect_url` — verified-CDN URL probe (status, content-type, UMD/ESM detection, methods extraction) |
 | `inspectPythonPackage.ts` | `mica_inspect_python_package` — verify a package is installed, surface top-level API |
@@ -349,11 +350,39 @@ a class-specific server handler:
   authoring.
 - **Card-class private sidecars** — declare `metadata.json#sidecar`
   to spawn a per-class subprocess on first card open.
-  `server/cardSidecar.ts` owns the lifecycle (start, health-poll
-  the `ready_path`, restart on file change, tear down on Mica
-  exit). Sidecar HTTP is reachable from `card.js` via
-  `mica.fetch('mica-internal://card-server/...')`, which the
-  bridge routes to the right sidecar.
+  `server/cardSidecar.ts` owns the lifecycle. Sidecar HTTP is
+  reachable from `card.js` via
+  `mica.fetch('mica-internal://card-server/...')`, which the bridge
+  routes to the right sidecar.
+
+  **Sidecar shutdown — five pathways:**
+  1. **Idle** — every 60 s, an `idleSweep` walks the sidecar map and
+     SIGTERMs anything whose `lastActivityAt` is older than
+     `IDLE_SHUTDOWN_MS` (10 min). `lastActivityAt` is bumped from
+     `server/plugins/micaFetch.ts` after every successful proxy
+     into the sidecar. The 'exit' handler removes the entry from
+     the map and frees the port. This is the common case — user
+     closes the tab, no fetches arrive, sidecar reaped within 0-10
+     min.
+  2. **Backend shutdown** — `stopAllCardSidecars()`. SIGTERM every
+     sidecar in parallel, wait 5 s, SIGKILL stragglers. Called
+     from the server's exit handler.
+  3. **Project delete** — `stopSidecarsForProject(name)`. Same kill
+     ladder as #2 but scoped to one project; called from the
+     `DELETE /api/projects/:project` endpoint BEFORE the `rm -rf`
+     so sidecars don't see their working directory disappear
+     mid-request and the port + RAM are freed immediately.
+  4. **Orphan reap on startup** — `reapOrphanCardSidecars()` scans
+     the port pool (8200-8299), `/health`-probes each held port,
+     and SIGTERMs any sidecar that answered (i.e. left over from
+     a previous backend that crashed or was killed abruptly).
+     Best-effort, zero persisted state.
+  5. **Explicit restart** — the `mica_restart_sidecar` MCP tool
+     calls `restartCardSidecar(project, className)`. SIGTERM, 5 s
+     grace, SIGKILL, then the next `mica.fetch` re-spawns. Useful
+     when the agent has edited the sidecar's `server.py` and
+     wants the new code picked up — sidecars do **not** auto-watch
+     their own source files.
 - **Workspace-shared docs** — pre-vetted reference docs at
   `/workspaces/shared/` (CDN library catalogs, design notes) can
   be pinned into a project via the `mica_pin_shared_doc` tool or
@@ -563,13 +592,23 @@ as TTS audio chunks via the Kokoro sidecar.
 sentences for low-latency TTS playback.
 
 The voice agent's distinguishing tool is **dispatch to other
-chat cards on the canvas** (`voiceTools.ts`,
+chat cards on the canvas** (`send_to_card` in `voiceTools.ts` /
 `voiceTools.sdk.ts`): "ask the qwen agent to do X" routes the
 user's intent into the named chat card's channel without the
-voice agent itself performing the coding work. Per-card sidecar
-settings (`/api/cards/settings?path=…`) cover voice selection,
-ambient auto-read, default dispatch target, VAD preset
-(quiet/normal/noisy), and inter-sentence pacing.
+voice agent itself performing the coding work. The full tool
+surface also covers canvas read-back (`list_cards`, `read_card`,
+`read_recent_replies`, `card_status`), light search
+(`search` via Tavily, `web_fetch`, `time`), and queue control
+(`delete_queue_item`, `replace_queue_item`, `abort`).
+
+Per-card sidecar settings (`/api/cards/settings?path=…`) cover
+voice selection, ambient auto-read, default dispatch target, VAD
+preset (quiet/normal/noisy), inter-sentence pacing, and a
+**pronunciations table** — an ordered list of `{from, to}` string
+substitutions that `SentenceFanout` applies after `cleanForTts()`
+and before TTS POST. Seeded with `Qwen → Kwen` on first open so
+Kokoro pronounces the model name correctly; users add more entries
+(project jargon, surnames, etc.) via the gear panel.
 
 ### Unified agent-tools surface (mica-builtins MCP)
 
@@ -747,9 +786,12 @@ updates instantly. Only the agent gets held back until idle.
 
 ## Inference backends
 
-Three local-inference paths and two cloud paths are wired up.
+Three local-inference paths and three cloud paths are wired up.
 What runs depends on the active card class and (for opencode) its
-per-card provider setting.
+per-card provider setting. Local: vLLM (primary chat + voice),
+llama-server (rollback), and the Parakeet/Kokoro voice sidecars.
+Cloud: Anthropic (via `.claude`), OpenRouter (via `.opencode`),
+and any OpenAI-compatible endpoint (via `.opencode`).
 
 ### Primary: vLLM (chat + voice agents, May 2026 → present)
 
@@ -836,7 +878,7 @@ project, not in Mica core. Two consequences:
 
 | Directory | Seeds onto canvas | Intended workflow |
 |---|---|---|
-| `templates/dgx-spark-local/` | `agent.qwen`, `canvas-back.canvas-back`, `shared.shared-library`, `skills.skills` | Local-first. The `.qwen` agent talks to the bundled vLLM. No API key required. Canvas-back tells the agent it's on a local model and to be lean. |
+| `templates/dgx-spark-local/` | `agent.qwen`, `canvas-back.canvas-back`, `shared.shared-library`, `skills.skills`, `voice.voice` | Local-first. The `.qwen` agent talks to the bundled vLLM. Voice card seeded for hands-free narration. No API key required. Canvas-back tells the agent it's on a local model and to be lean. |
 | `templates/opencode-builder/` | `agent.opencode`, `canvas-back.canvas-back`, `shared.shared-library`, `skills.skills`, `voice.voice` | Hybrid local-or-cloud. The `.opencode` agent's gear menu picks local vLLM / OpenRouter / OpenAI-compat per card. Voice card seeded by default for hands-free narration. Canvas-back explains routing tradeoffs. |
 | `templates/_card-class-skeleton/` | n/a (not a project template) | Scaffold copied by `mica_create_class` when authoring a new card class. Not picked from the project-creation UI. |
 
@@ -868,7 +910,7 @@ wins.
 | Property | Type | Meaning |
 |---|---|---|
 | `mica.project` | `string` | Current project name |
-| `mica.canvas` | `string` | Canvas identifier (currently always `"__canvas__"` for the root canvas) |
+| `mica.canvas` | `string` | Canvas identifier (`"__canvas__"` — one canvas per project today; reserved for future multi-canvas) |
 | `mica.filename` | `string` | This card's instance filename, project-relative |
 | `mica.windowId` | `string` | Per-browser-tab ID, stable across renders |
 | `mica.cardId` | `string` | Per-card-instance UUID, stable across reloads. Sidecar at `.mica/cards/<sanitized>.id.json` |
@@ -909,6 +951,18 @@ auto-injects both `source` (windowId) and `cardSource`
 | `mica.on(event, cb)` | `(event: string, cb: (data) => void) => () => void` | Returns an unsubscribe function. Events: `file-changed`, `file-created`, `file-deleted`, `layout-changed`, `card-class-changed` |
 | `mica.onDestroy(cb)` | `(cb: () => void) => void` | Runs on card unmount and re-render. Use for explicit cleanup |
 | `mica.broadcast(event, data)` | `(event: string, data?: object) => void` | Browser-side signal to all cards in this tab (and other tabs on the same project via server relay) |
+
+### Voice
+
+Available on cards that need spoken output or push-to-talk input.
+Both route through the project's voice sidecars (Kokoro TTS,
+Parakeet STT); they work even when no `.voice` card is open
+because the sidecars are project-scoped, not card-scoped.
+
+| Method | Signature | Notes |
+|---|---|---|
+| `mica.speak(text, opts)` | `(text: string, opts?: { voice?: string; signal?: AbortSignal }) => Promise<void>` | Kokoro TTS playback. Resolves when audio finishes; aborting the signal cuts playback mid-sentence |
+| `mica.listen(opts)` | `(opts: { mode: "press-hold"; releaseSignal: AbortSignal; minDurationMs?: number }) => Promise<string>` | Parakeet STT. `releaseSignal` is fired by the card when the user lifts the press-hold key/button; returns the transcribed text |
 
 ### Server calls
 
@@ -986,7 +1040,7 @@ trust boundaries are:
 | CARD_SHIM | Browser-side DOM isolation between cards; auto-cleanup of card-owned timers and listeners. Not a sandbox — a hostile card can in principle do anything in-browser JS can do |
 | Project path scoping | Every `/api/*` request is scoped by `X-Mica-Project`. Card code cannot reach into another project's files via the normal helpers |
 | `mica.fetch` SSRF guard | Proxied HTTP resolves DNS first, rejects private/loopback/metadata ranges, enforces per-project rate limit and response cap |
-| Agent subprocess sandbox | Claude Code runs in its own container with its own sandboxing and tool policies. Qwen agent runs inside the Mica server but its tool surface is restricted to the same file I/O boundaries as card code |
+| Agent subprocess sandbox | All three coding agents (Qwen, Claude, OpenCode) run inside the same container as the Mica server — there's no per-agent container today. Each agent's tool surface is restricted to the same file-I/O and shell boundaries as card code; shell commands additionally go through `mica_shell`'s guard list (refuses commands that would kill Mica's own backend) |
 
 No per-project Mica container. No V8 isolate card sandbox. Both
 have been considered; neither is built today.
@@ -1308,15 +1362,16 @@ The adapter tracks which WebSocket connection owns which client IDs (`Map<WebSoc
 
 ### Files are files, not directories
 
-Mica does not use a card-as-directory model. A card is a
-plain file at the project root. The file extension selects the
-card class. The canvas arranges cards by layout, not by
-directory hierarchy.
+Mica does not use a card-as-directory model. A card is a plain
+file in the project's **canvas-root** directory (defaults to
+`canvas/`, configurable per project via `.mica/config.json`).
+The file extension selects the card class. The canvas arranges
+cards by layout, not by directory hierarchy.
 
 This is the biggest departure from earlier Mica drafts. Old
 drafts had cards as directories (`project.project/`, `research/`)
 with child cards as nested directories. The current model is
-flat: files at the root, `.mica/` for operational metadata, no
+flat: files in canvas-root, `.mica/` for operational metadata, no
 containment in the file system.
 
 Reasons for the change:
@@ -1438,24 +1493,32 @@ large artifact into context; skim with intent.
 ```
 my-project/
 ├── .mica/                      ← infrastructure only
-│   ├── config.json             ← project config
+│   ├── config.json             ← project config (incl. canvas-root path)
 │   ├── layout.json             ← canvas layout, keyed by device class
-│   ├── canvas-back.md          ← project-level AI context
+│   ├── canvas-back.md          ← project-level AI context (read every turn)
 │   ├── chats/                  ← chat history per agent card
 │   ├── cards/                  ← per-card state and AI context sidecars
 │   └── card-classes/           ← project-scoped card class definitions
-├── brief.md                    ← work files at project root
-├── spec.md
-├── tasks.todo
-├── architecture.mmd
-├── agent.claude                ← agent cards are just files too
-├── .claude/skills/             ← skills copied from the template
-├── .qwen/skills/               ← skills from the template
+├── canvas/                     ← canvas-root subdirectory (configurable;
+│   │                             default name "canvas", set in config.json)
+│   ├── agent.qwen              ← agent cards are just files too
+│   ├── spec.md                 ← work files live in canvas-root
+│   ├── tasks.todo
+│   ├── architecture.mmd
+│   └── canvas-back.canvas-back ← card instance that edits .mica/canvas-back.md
+├── shared/                     ← workspace-shared pins
+│                                 (mirrored from /workspaces/shared/)
+├── .qwen/skills/               ← skills copied from the template
 └── .git/
 ```
 
 Cards are the work. `.mica/` is the machinery. Delete `.mica/`
-and the project is back to plain files.
+and the project is back to plain files. Files outside canvas-root
+(in the project but not under `canvas/`) stay reachable through the
+file browser card and can be *pinned* onto the canvas one at a time;
+the canvas-root vs project-root distinction keeps non-card assets
+(datasets, build artifacts, source repos) from cluttering the canvas
+surface.
 
 Card classes (the vocabulary) are infrastructure and stay in
 `.mica/card-classes/` (project scope) or `card-classes/` (built-
