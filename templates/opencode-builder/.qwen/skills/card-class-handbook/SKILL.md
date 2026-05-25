@@ -857,6 +857,21 @@ Read `/api/handlers` for the exact `sendShapes` / `recvShapes`
 and the optional args (e.g., model override, system prompt
 source). Treat that schema as the contract.
 
+**Model resolution is forgiving — `model` is optional.** Both
+`llm-direct` and `llm-agent` resolve the model name against the
+endpoint's `/v1/models` list at runtime. The ladder is: requested
+model if served → first known-good fallback if served (`qwen-vl`
+or `qwen3-vl-local`) → first served model. If the requested name
+isn't served (e.g. you wrote `qwen-coder` and vLLM serves only
+`qwen-vl`), the handler picks a working substitute, logs it, and
+sends an `{ type: "info", message: "model 'X' not served; using
+'Y' instead" }` broadcast to the card so users/agents see the
+resolution. Net effect: don't hardcode model names you're unsure
+about in `metadata.args` — omit the field and the runtime picks
+something served. Override only when a specific served name is
+required (e.g. image-modality cards: `qwen3-vl-local`, satisfies
+the qwen-code SDK's `/^qwen3-vl-/` regex).
+
 #### Long-running subprocess cards — `metadata.handler: "process"`
 
 The `process` handler is **lifecycle-driven**: the subprocess is

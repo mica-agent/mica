@@ -8,6 +8,7 @@
 import sharp from "sharp";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 import type { HandlerManifest } from "../handlerManifest.js";
+import { resolveServedModel } from "./llmModelResolver.js";
 
 // Default OpenAI-compatible endpoint when neither `baseUrl` nor LLAMA_URL
 // is set. Post-vLLM-consolidation the chat container is on 8012 (served
@@ -193,17 +194,31 @@ export function createLlmChatHandler() {
         // viaVoice:true so voice's ambient gate plays the reply aloud.
         const turnSource: "user" | "voice" = _clientId === "voice-dispatch" ? "voice" : "user";
 
-        // Per-message model override wins over the args default. The model
-        // name is whatever the served-model-name list of the configured
-        // endpoint exposes (post-vLLM-consolidation: qwen-vl, qwen-voice,
-        // etc.). The card populates its dropdown by hitting /v1/models on
-        // attach via the `list_models` message, so users see live names.
-        const modelKey = msg.model || cfg.model;
+        // Per-message model override wins over the args default. If neither
+        // names a model OR the named model isn't served, the resolver picks
+        // a known-good fallback from the served-model-name list. The card
+        // sees a one-time `info` broadcast naming what happened so the
+        // agent learns the resolution (and can fix its metadata in a
+        // subsequent edit).
+        const baseUrl = resolveBaseUrl(cfg);
+        const resolution = await resolveServedModel(
+          baseUrl,
+          msg.model || cfg.model,
+          ["qwen-vl", "qwen3-vl-local"],
+        );
+        if (resolution.reason) {
+          console.warn(`[llm-chat] ${resolution.reason}`);
+          ctx.broadcast({ type: "info", message: resolution.reason });
+        }
+        const modelKey = resolution.modelName;
         if (!modelKey) {
-          ctx.broadcast({ type: "error", error: "No model selected — pick one from the dropdown." });
+          ctx.broadcast({
+            type: "error",
+            error: `No model could be resolved — endpoint ${baseUrl} returned no served models, and no fallback was specified.`,
+          });
           return;
         }
-        const endpoint = `${resolveBaseUrl(cfg)}/v1/chat/completions`;
+        const endpoint = `${baseUrl}/v1/chat/completions`;
 
         const messageForLlm: string | ContentBlock[] = userContent || userMessage || "";
         // History policy: in 'persist' mode we accumulate the turn into the

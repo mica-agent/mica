@@ -8,6 +8,7 @@ import { join } from "path";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 import type { HandlerManifest } from "../handlerManifest.js";
 import { WORKSPACE_DIR } from "../files.js";
+import { resolveServedModel } from "./llmModelResolver.js";
 
 // SDK is loaded lazily — same pattern as micaAgent.ts, so we don't pay the
 // import cost on startup if no llm-agent card is ever opened. Module-level
@@ -134,9 +135,21 @@ export function createLlmAgentHandler() {
           const projectDir = ctx.project ? join(WORKSPACE_DIR, ctx.project) : WORKSPACE_DIR;
           // SDK-bound: the qwen-code SDK gates image modality off the model
           // name via `/^qwen3-vl-/` regex (see micaAgent.ts ~line 1620 for the
-          // full naming convention). Do NOT rename to `qwen-vl` here without
-          // first removing the SDK regex constraint.
-          const modelName = cfg.model || "qwen3-vl-local";
+          // full naming convention). Both preferred names below satisfy that
+          // regex; the resolver only falls outside the list if NEITHER is
+          // served (in which case image-input cards may degrade, but text-
+          // mode still works).
+          const LLAMA_URL_PROBE = (process.env.LLAMA_URL || "http://127.0.0.1:8012").replace(/\/v1$/, "");
+          const resolution = await resolveServedModel(
+            LLAMA_URL_PROBE,
+            cfg.model,
+            ["qwen3-vl-local", "openai:qwen3-vl-local"],
+          );
+          if (resolution.reason) {
+            console.warn(`[llm-agent] ${resolution.reason}`);
+            ctx.broadcast({ type: "info", message: resolution.reason });
+          }
+          const modelName = resolution.modelName;
 
           // The qwen-code SDK wraps OpenAI's Node SDK as its HTTP transport.
           // When authType: "openai", the OpenAI SDK is constructed from
