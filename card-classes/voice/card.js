@@ -937,12 +937,23 @@ const ch = {
 // On mount: load → apply VAD preset + sentence pause locally, notify
 // server of voice + autoRead + defaultTarget via control messages.
 // On save: write the blob back, re-apply locally, re-notify server.
+// Default pronunciation table — seeded into the persisted settings the
+// first time a voice card is loaded without a `pronunciations` field at
+// all. Kokoro otherwise reads "Qwen" with the English Q-convention
+// (queue-wen); the intended pronunciation is "kwen". Users can edit or
+// clear via the gear panel; an empty array is preserved (the seed only
+// applies when the field is missing entirely).
+const DEFAULT_PRONUNCIATIONS = [{ from: 'Qwen', to: 'Kwen' }];
+
 const currentSettings = {
   voice: DEFAULT_VOICE,
   autoReadAmbient: true,
   defaultDispatchTarget: '',
   vadPreset: 'normal',
   sentencePauseMs: 150,
+  // Array of { from, to }. Whole-word, case-insensitive TTS-only
+  // substitutions. Display text is unaffected.
+  pronunciations: DEFAULT_PRONUNCIATIONS.slice(),
 };
 
 async function loadSettings() {
@@ -955,21 +966,92 @@ async function loadSettings() {
     if (typeof parsed.defaultDispatchTarget === 'string') currentSettings.defaultDispatchTarget = parsed.defaultDispatchTarget.trim();
     if (typeof parsed.vadPreset === 'string' && VAD_PRESETS[parsed.vadPreset]) currentSettings.vadPreset = parsed.vadPreset;
     if (typeof parsed.sentencePauseMs === 'number' && parsed.sentencePauseMs >= 0) currentSettings.sentencePauseMs = parsed.sentencePauseMs;
+    // pronunciations: present-but-empty array is RESPECTED (user explicitly
+    // cleared the table). Only the absent-field case falls back to defaults.
+    if (Array.isArray(parsed.pronunciations)) {
+      currentSettings.pronunciations = parsed.pronunciations
+        .filter(function(r) { return r && typeof r.from === 'string' && typeof r.to === 'string'; })
+        .map(function(r) { return { from: r.from, to: r.to }; });
+    }
   } catch (_) { /* fresh card or non-JSON; stick with defaults */ }
   // Apply local-only settings immediately.
   currentVoice = currentSettings.voice;
   applyVadPreset(currentSettings.vadPreset);
   SENTENCE_PAUSE_MS = currentSettings.sentencePauseMs;
   // Re-sync server so the session's voicePref + autoRead + defaultTarget
-  // match the persisted values. Idempotent on the server side.
+  // + pronunciations match the persisted values. Idempotent on the
+  // server side; sent on every load (including reconnects) so newly
+  // spawned sessions inherit the user's table.
   try {
     ch.send({ type: 'set_voice', voice: currentVoice });
     ch.send({
       type: 'set_settings',
       autoReadAmbient: currentSettings.autoReadAmbient,
       defaultDispatchTarget: currentSettings.defaultDispatchTarget,
+      pronunciations: currentSettings.pronunciations,
     });
   } catch (_) {}
+}
+
+// Render the pronunciation rows into the gear-panel container based on
+// `currentSettings.pronunciations`. Called each time the panel opens so
+// the form always reflects state, never stale DOM from a prior open.
+const pronunciationsContainer = container.querySelector('#vc-settings-pronunciations');
+const pronunciationAddBtn = container.querySelector('#vc-settings-pronunciation-add');
+function renderPronunciationRows(rows) {
+  if (!pronunciationsContainer) return;
+  pronunciationsContainer.innerHTML = '';
+  rows.forEach(function(r) { appendPronunciationRow(r.from || '', r.to || ''); });
+}
+function appendPronunciationRow(fromVal, toVal) {
+  if (!pronunciationsContainer) return;
+  const row = window.document.createElement('div');
+  row.className = 'vc-pron-row';
+  row.style.cssText = 'display:flex;gap:4px;align-items:center;';
+  const fromEl = window.document.createElement('input');
+  fromEl.type = 'text';
+  fromEl.className = 'vc-pron-from';
+  fromEl.placeholder = 'Word';
+  fromEl.value = fromVal || '';
+  fromEl.autocomplete = 'off';
+  fromEl.spellcheck = false;
+  fromEl.style.cssText = 'flex:1;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:4px 6px;color:#e6edf3;font-size:11px;font-family:inherit;outline:none;box-sizing:border-box;min-width:0;';
+  const arrow = window.document.createElement('span');
+  arrow.style.cssText = 'color:#6e7681;font-size:11px;flex-shrink:0;';
+  arrow.textContent = '→';
+  const toEl = window.document.createElement('input');
+  toEl.type = 'text';
+  toEl.className = 'vc-pron-to';
+  toEl.placeholder = 'Say as';
+  toEl.value = toVal || '';
+  toEl.autocomplete = 'off';
+  toEl.spellcheck = false;
+  toEl.style.cssText = 'flex:1;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:4px 6px;color:#e6edf3;font-size:11px;font-family:inherit;outline:none;box-sizing:border-box;min-width:0;';
+  const removeBtn = window.document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.title = 'Remove row';
+  removeBtn.textContent = '×';
+  removeBtn.style.cssText = 'background:transparent;color:#8b949e;border:none;cursor:pointer;font-size:14px;padding:0 4px;line-height:1;flex-shrink:0;';
+  removeBtn.addEventListener('click', function() { row.remove(); });
+  row.appendChild(fromEl);
+  row.appendChild(arrow);
+  row.appendChild(toEl);
+  row.appendChild(removeBtn);
+  pronunciationsContainer.appendChild(row);
+}
+function collectPronunciationRows() {
+  if (!pronunciationsContainer) return [];
+  const rows = pronunciationsContainer.querySelectorAll('.vc-pron-row');
+  const out = [];
+  rows.forEach(function(row) {
+    const from = (row.querySelector('.vc-pron-from')?.value || '').trim();
+    const to = (row.querySelector('.vc-pron-to')?.value || '').trim();
+    if (from) out.push({ from: from, to: to });   // drop empty-from rows; empty-to is a valid "say nothing" override
+  });
+  return out;
+}
+if (pronunciationAddBtn) {
+  pronunciationAddBtn.addEventListener('click', function() { appendPronunciationRow('', ''); });
 }
 
 function persistSettings() {
@@ -1000,6 +1082,7 @@ function openSettingsPanel() {
     }
   }
   pauseRadios.forEach(function(r) { r.checked = (parseInt(r.value, 10) === nearest); });
+  renderPronunciationRows(currentSettings.pronunciations || []);
   settingsPanel.style.display = 'block';
 }
 
@@ -1024,16 +1107,22 @@ if (settingsSaveBtn) {
       if (r.checked) nextPause = parseInt(r.value, 10) || 0;
     });
 
+    const nextPronunciations = collectPronunciationRows();
+
     // Track what changed for the server-notify decision.
     const voiceChanged = nextVoice !== currentSettings.voice;
     const autoReadChanged = nextAutoRead !== currentSettings.autoReadAmbient;
     const targetChanged = nextTarget !== (currentSettings.defaultDispatchTarget || '');
+    const prevPron = currentSettings.pronunciations || [];
+    const pronChanged = nextPronunciations.length !== prevPron.length
+      || nextPronunciations.some(function(r, i) { return r.from !== prevPron[i]?.from || r.to !== prevPron[i]?.to; });
 
     currentSettings.voice = nextVoice;
     currentSettings.autoReadAmbient = nextAutoRead;
     currentSettings.defaultDispatchTarget = nextTarget;
     currentSettings.vadPreset = nextVadPreset;
     currentSettings.sentencePauseMs = nextPause;
+    currentSettings.pronunciations = nextPronunciations;
 
     // Apply client-side immediately.
     currentVoice = nextVoice;
@@ -1046,12 +1135,13 @@ if (settingsSaveBtn) {
     if (voiceChanged) {
       try { ch.send({ type: 'set_voice', voice: currentVoice }); } catch (_) {}
     }
-    if (autoReadChanged || targetChanged) {
+    if (autoReadChanged || targetChanged || pronChanged) {
       try {
         ch.send({
           type: 'set_settings',
           autoReadAmbient: currentSettings.autoReadAmbient,
           defaultDispatchTarget: currentSettings.defaultDispatchTarget,
+          pronunciations: currentSettings.pronunciations,
         });
       } catch (_) {}
     }

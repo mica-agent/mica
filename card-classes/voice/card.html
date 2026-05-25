@@ -114,6 +114,13 @@
         <div style="color:#6e7681;font-size:11px;margin-top:4px;">Silent gap between spoken sentences. Helps multi-item lists not run together.</div>
       </div>
 
+      <div>
+        <div style="color:#ccc;margin-bottom:6px;">Pronunciation</div>
+        <div id="vc-settings-pronunciations" style="display:flex;flex-direction:column;gap:4px;"></div>
+        <button id="vc-settings-pronunciation-add" type="button" style="background:transparent;color:#7c3aed;border:1px dashed #30363d;border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;font-family:inherit;margin-top:6px;">+ Add row</button>
+        <div style="color:#6e7681;font-size:11px;margin-top:4px;">TTS-only word substitutions. The on-screen text stays as written; only what Kokoro speaks is rewritten. Whole-word, case-insensitive (e.g. <code>Qwen</code> &rarr; <code>Kwen</code>).</div>
+      </div>
+
       <div style="display:flex;gap:8px;justify-content:flex-end;">
         <button id="vc-settings-cancel" type="button" style="background:transparent;color:#ccc;border:1px solid #30363d;border-radius:4px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;">Cancel</button>
         <button id="vc-settings-save" type="button" style="background:#7c3aed;color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Save</button>

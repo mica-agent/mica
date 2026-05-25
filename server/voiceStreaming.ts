@@ -32,6 +32,35 @@ const SENTENCE_RE = /[.!?](?=\s|$)/;
  *  is universally awful). Conservative on emphasis — `**bold**` is
  *  unwrapped but `_foo_` is left alone to avoid mangling identifiers
  *  like `snake_case`. */
+/** A single pronunciation override. `from` is matched as a whole word
+ *  (case-insensitive) in the sentence; `to` is the spoken replacement
+ *  the TTS engine reads. User-managed via the voice card's gear panel
+ *  and synced to the server through the `set_settings` channel msg. */
+export interface PronunciationRule {
+  from: string;
+  to: string;
+}
+
+/** Escape regex metacharacters in user-provided text so a rule like
+ *  `from: "C++"` doesn't blow up the substitution engine. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Apply user-defined pronunciation overrides to a sentence on the TTS
+ *  path. Each rule is a whole-word, case-insensitive substitution. The
+ *  on-screen text is never touched — only the string handed to Kokoro. */
+export function applyPronunciations(text: string, rules: PronunciationRule[] | undefined): string {
+  if (!rules || rules.length === 0) return text;
+  let out = text;
+  for (const r of rules) {
+    if (!r || !r.from) continue;
+    const re = new RegExp(`\\b${escapeRegex(r.from)}\\b`, "gi");
+    out = out.replace(re, r.to ?? "");
+  }
+  return out;
+}
+
 export function cleanForTts(text: string): string {
   let s = text;
   // Fenced code blocks ``` ``` → short placeholder (don't read code aloud).
@@ -103,6 +132,12 @@ export interface SentenceFanoutOpts {
    *  no listener is currently audible. Used when every subscribed client is
    *  hidden — saves Kokoro GPU on a stream nobody will hear. */
   skipTts?: boolean;
+  /** Optional pronunciation overrides, applied per-sentence on the path
+   *  from LLM text to TTS request. User-managed via the voice card's
+   *  gear panel; pre-seeded with `Qwen → Kwen` because Kokoro reads the
+   *  Q-convention by default. The on-screen text is unchanged — only
+   *  the Kokoro request body is rewritten. */
+  pronunciations?: PronunciationRule[];
 }
 
 export class SentenceFanout {
@@ -182,7 +217,10 @@ export class SentenceFanout {
     // Strip markdown formatting BEFORE sending to TTS. The on-screen text
     // (the `sentence` frame above) keeps the original markup so the chat
     // bubble renders normally; only Kokoro sees the cleaned version.
-    const ttsText = cleanForTts(sentence);
+    // Then apply user pronunciation overrides — same path, same
+    // "TTS-only" guarantee, kept as a second step so the cleaner stays
+    // a pure markdown-stripper and the overrides remain user-data.
+    const ttsText = applyPronunciations(cleanForTts(sentence), this.opts.pronunciations);
     if (!ttsText) {
       // After cleaning, sentence is empty (e.g. a bare URL or a header
       // with no body). Skip the TTS round-trip — emit a tts_error with a

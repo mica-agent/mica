@@ -508,6 +508,11 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
     //     "ask the agent" route to this card without naming it.
     let autoReadAmbient = true;
     let defaultDispatchTarget = "";
+    // User-defined pronunciation overrides for the TTS path. Managed by
+    // the voice card's gear panel and sent via `set_settings`. Each rule
+    // is a whole-word, case-insensitive substitution applied AFTER
+    // markdown cleanup but BEFORE Kokoro. On-screen text is untouched.
+    let pronunciations: import("./voiceStreaming.js").PronunciationRule[] = [];
     const history: VoiceTurn[] = [];
     let activeAbort: AbortController | null = null;
     // `busy` gates new USER utterances. True from STT through the LLM
@@ -861,6 +866,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           ttsUrl: getTtsUrl(),
           voice: voicePref,
           skipTts,
+          pronunciations,
           onFrame: (f) => {
             if (f.type === "sentence") {
               ctx.broadcast({
@@ -1023,10 +1029,11 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // the server can skip TTS work when every subscriber is hidden.
           visible?: boolean;
           // set_settings payload (sent by the card's gear panel on save
-          // + on reconnect echo). Both fields optional; only the slices
-          // that changed need to be sent, but the card always sends both.
+          // + on reconnect echo). All fields optional; only the slices
+          // that changed need to be sent, but the card always sends them.
           autoReadAmbient?: boolean;
           defaultDispatchTarget?: string;
+          pronunciations?: Array<{ from: string; to: string }>;
         };
 
         // Diagnostic log: every inbound channel message. Helps debug
@@ -1108,6 +1115,23 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
             if (next !== defaultDispatchTarget) {
               defaultDispatchTarget = next;
               console.log(`[voice-agent] defaultDispatchTarget → "${defaultDispatchTarget}"`);
+            }
+          }
+          if (Array.isArray(msg.pronunciations)) {
+            // Sanitize: keep only rules with a non-empty `from`. Empty
+            // entries in the array would degrade the regex pass to a no-op
+            // but cost a per-sentence loop iteration each — strip them.
+            const clean = msg.pronunciations
+              .filter((r): r is { from: string; to: string } =>
+                !!r && typeof r.from === "string" && r.from.length > 0 && typeof r.to === "string")
+              .map((r) => ({ from: r.from, to: r.to }));
+            // Detect change to avoid spamming the log when reconnect-echoes
+            // resend an identical payload.
+            const changed = clean.length !== pronunciations.length ||
+              clean.some((r, i) => r.from !== pronunciations[i]?.from || r.to !== pronunciations[i]?.to);
+            if (changed) {
+              pronunciations = clean;
+              console.log(`[voice-agent] pronunciations → ${pronunciations.length} rule${pronunciations.length === 1 ? "" : "s"}`);
             }
           }
           return;
@@ -1399,7 +1423,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           const promptParts: string[] = [];
 
           promptParts.push(
-            `You are Mica's voice on canvas "${projectLabel}". Reply in 1–2 spoken sentences. Speed matters.\n\n` +
+            `You are Mica, speaking on canvas "${projectLabel}". Use she/her pronouns when referring to yourself ("I sent that to Qwen", "let me check"). Reply in 1–2 spoken sentences. Speed matters.\n\n` +
 
             "CORE RULES\n\n" +
 
@@ -2033,6 +2057,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
               ttsUrl: getTtsUrl(),
               voice: msg.voice || voicePref,
               skipTts,
+              pronunciations,
               onFrame: (f) => {
                 if (f.type === "sentence") {
                   ctx.broadcast({ type: "assistant_speech_text", sentence_idx: f.idx, text: f.text });
@@ -2776,6 +2801,7 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
               ttsUrl: getTtsUrl(),
               voice: msg.voice || voicePref,
               skipTts,
+              pronunciations,
               onFrame: (f) => {
                 if (f.type === "sentence") {
                   ctx.broadcast({
