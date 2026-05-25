@@ -1,6 +1,6 @@
 ---
 name: discover-dependency
-description: Invoke before designing or writing any component that pulls from external resources — libraries (JS code), assets (images, video, audio, fonts, 3D model files, data files), OR services (live APIs). Most non-trivial cards need MULTIPLE kinds in one build (e.g. a rendering library plus textures plus a public API). This skill is the single entry point: enumerate subproblems, classify each as library/asset/service, walk through them in order with the matching procedure. Lookup discipline is calibrated by model class via the runtime banner's `recallProfile`: high/medium/low confidence categories recall + verify, very-low confidence categories skip recall and go directly to Search craft + Asset URL Extract Pattern (`tavily_extract` with include_images, or `mcp__exa__web_search_advanced_exa` with includeDomains). Produces a documented decisions table on canvas. Library / asset is the default for any non-trivial subproblem; bespoke implementation is the exception that requires a documented "nothing fits because Z" decision.
+description: Invoke before designing or writing any component that pulls from external resources — libraries (JS code), assets (images, video, audio, fonts, 3D model files, data files), OR services (live APIs). Most non-trivial cards need MULTIPLE kinds in one build (e.g. a rendering library plus textures plus a public API). This skill is the single entry point: enumerate subproblems, classify each as library/asset/service, walk through them in order with the matching procedure. Lookup discipline is calibrated by model class via the runtime banner's `recallProfile`: high/medium/low confidence categories recall + verify, very-low confidence categories skip recall and go directly to Search craft + Asset URL Extract Pattern (`tavily_extract` with include_images, or `mcp__tavily__tavily_search` with site-restricted queries). Produces a documented decisions table on canvas. Library / asset is the default for any non-trivial subproblem; bespoke implementation is the exception that requires a documented "nothing fits because Z" decision.
 ---
 
 # Discover external dependencies — libraries, assets, services
@@ -470,7 +470,7 @@ curl -s "https://registry.npmjs.org/-/v1/search?text=<common-name>&size=5" | hea
 
 Self-check: if Step 1's package lookup returns 404 or an obviously-wrong package, your recall was wrong — go back and run Step 0.
 
-**Step 1 — Look up the package.** One call gives you the latest version AND every file the package ships. *(Do NOT use Exa `answer` for this — it confabulates the filename. Probed: it answered "ESM" with the historical UMD filename `three.min.js`. The jsdelivr listing below is deterministic — structured JSON cannot hallucinate.)*
+**Step 1 — Look up the package.** One call gives you the latest version AND every file the package ships. *(Use the jsdelivr listing below — it's deterministic. Structured JSON cannot hallucinate. Do not ask a search-style tool for "the ESM filename for package X" — those return prose that often picks a plausible-but-wrong path, e.g. the historical UMD `three.min.js` when the ESM file is `three.module.js`.)*
 
 ```bash
 curl -s "https://data.jsdelivr.com/v1/package/npm/<pkg>" | head -c 4000
@@ -566,26 +566,24 @@ per-host API knowledge required:
    Filter the `images` array for the file you want, then verify each
    candidate with `mica_inspect_url`.
 
-2. **`mcp__exa__web_search_advanced_exa`** with `includeDomains` for
-   site-restricted search. Returns matching pages limited to the chosen
-   host, with image links in the result content:
+2. **`mcp__tavily__tavily_search` with a site-restricted query** —
+   add `site:commons.wikimedia.org` (or whichever host you suspect)
+   into the query string. Returns matching pages limited to that
+   host; pick the top result and run `tavily_extract` on it to pull
+   the direct file URLs:
 
    ```json
    {
-     "query": "Solarsystemscope moon texture",
-     "includeDomains": ["commons.wikimedia.org"],
-     "numResults": 5
+     "query": "Solarsystemscope moon texture site:commons.wikimedia.org",
+     "max_results": 5
    }
    ```
 
-   Use to narrow search to the canonical host you suspect, then follow up
-   with `tavily_extract` on the top result for the direct file URL.
-
 The pattern replaces per-host API knowledge with one generic mechanism.
-The same two tools cover Wikimedia (no need for the MediaWiki API),
-GitHub asset pages (no need for the GitHub contents API when the asset is
-referenced on a README), Three.js examples folder, and similar HTML-page-
-referenced asset sources.
+Tavily extract + site-restricted search covers Wikimedia (no need for
+the MediaWiki API), GitHub asset pages (no need for the GitHub contents
+API when the asset is referenced on a README), Three.js examples folder,
+and similar HTML-page-referenced asset sources.
 
 For *content-addressed library packages* (npm via jsdelivr, GitHub via
 jsdelivr/gh), the existing Step 3a Library section already documents
@@ -619,21 +617,6 @@ constructing candidate URLs by recall (when the model class supports it).
 **Many hosts that serve image bytes do NOT send CORS headers, so the asset 200s in a fetch but fails as a WebGL texture / canvas drawImage source.** The failure shape: the sphere or surface renders as solid color, no console error. Mitigation: for any asset used in WebGL / canvas / SubresourceIntegrity, verify CORS during step 2 below. If a needed asset's source doesn't send CORS, find a GitHub mirror and serve it through jsdelivr-gh.
 
 **Canonical first moves for asset hunting** — these compress what's otherwise dozens of tavily searches into a few inspect_url calls. Reach for them in order; only fall through to tavily when recall genuinely produces no candidate.
-
-**Move 0 — Exa `answer` for specific URL lookup or asset discovery** (when `EXA_API_KEY` is configured). For *"what's the direct upload.wikimedia.org URL for file X"* or *"CORS-friendly URLs for asset category Y"* — one synthesized response with citations replaces what's otherwise a multi-search + page-fetch loop. Empirically: 1 Exa call (~2-3s, ~$0.005) for a Wikimedia direct-URL lookup vs ~13 tavily+fetch calls.
-
-```bash
-curl -s -X POST "https://api.exa.ai/answer" \
-  -H "x-api-key: $EXA_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"<specific URL lookup or asset-discovery query>"}'
-```
-
-`mcp__exa__*` MCP tools are also registered when the key is set — same backing API.
-
-**Trust citations more than the `answer` field.** Exa's synthesized answer is empirically right ~70% of the time and confabulates the rest (e.g. mixing "ESM" with a UMD filename, or describing a plausible-but-wrong path). The citations are the truth — read them. Treat the `answer` URL as a candidate and verify with `mica_inspect_url`.
-
-Fall through to Move 1 if Exa isn't configured, returns nothing usable, or you're looking for the *latest version + file structure* of a library (use the deterministic `data.jsdelivr.com/v1/package/npm/<pkg>` listing per §3a instead — Exa hallucinates library URLs but is reliable for asset lookup).
 
 **Move 1 — you know the host but not the exact path.** Construct a candidate URL from one of the host shapes above and `mica_inspect_url` it. The tool returns `{ok, status, contentType, format}` in ~500 bytes. If `ok: true`, commit.
 

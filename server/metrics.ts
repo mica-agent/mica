@@ -33,10 +33,6 @@ export interface TurnRecord {
    *  build turns that skipped web search — the wtc4 / Crunch2 failure
    *  shape. */
   tavily_calls: number;
-  /** Parallel surface for Exa MCP activity. Counts exa-search + exa-answer
-   *  calls. Lets us A/B the lookup-first flow's hunt cost: tavily-heavy
-   *  turns vs exa-heavy turns vs deterministic-listing turns. */
-  exa_calls: number;
   /** Names of skills explicitly invoked via the SDK's `skill` tool this turn.
    *  Distinct from `tool_calls.skill` (which only counts invocations) — this
    *  preserves WHICH skills fired so the chat card's per-turn footer can
@@ -62,19 +58,6 @@ export interface SubagentRecord {
 export function countTavilyCalls(toolCalls: Record<string, number>): number {
   return (toolCalls["mcp__tavily__tavily_search"] || 0)
     + (toolCalls["mcp__tavily__tavily_extract"] || 0);
-}
-
-/** Sum exa MCP tool calls from a `tool_calls` map. Names follow the
- *  exa-mcp server's tool registration shape (`mcp__exa__<tool>`); the
- *  exact set depends on which exa-mcp tools the server exposes
- *  (web_search_exa, answer_exa, etc.) — sum any that start with the
- *  exa MCP prefix so we don't have to maintain a name list. */
-export function countExaCalls(toolCalls: Record<string, number>): number {
-  let n = 0;
-  for (const [name, count] of Object.entries(toolCalls)) {
-    if (name.startsWith("mcp__exa__")) n += count;
-  }
-  return n;
 }
 
 export async function recordTurn(project: string | null, rec: TurnRecord): Promise<void> {

@@ -31,7 +31,7 @@ import {
 import { markProjectActivity } from "./projectActivity.js";
 import { resolveCtxWindow } from "./contextWindow.js";
 import { getModelCalibration, renderCalibrationBlock, type ModelCalibration } from "./modelCalibration.js";
-import { recordTurn, recordSubagent, countTavilyCalls, countExaCalls } from "./metrics.js";
+import { recordTurn, recordSubagent, countTavilyCalls } from "./metrics.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { analyzeTurnArtifacts, appendTurnEvent, readTurnEvents } from "./turnEvents.js";
 import { getFreshPendingValidatorErrors, getRecentlyClearedFlaps } from "./validatorErrorBuffer.js";
@@ -2984,7 +2984,6 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             subagent_count: subagentCount,
             tool_calls: toolCallCounts,
             tavily_calls: countTavilyCalls(toolCallCounts),
-            exa_calls: countExaCalls(toolCallCounts),
             skills_invoked: skillsInvoked,
             files_changed: filesChanged ? 1 : 0,
             cursor_advanced: false,
@@ -3043,7 +3042,6 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
           tavily_calls: countTavilyCalls(toolCallCounts),
-          exa_calls: countExaCalls(toolCallCounts),
           skills_invoked: skillsInvoked,
           files_changed: filesChanged ? 1 : 0,
           cursor_advanced: cursorAdvanced,
@@ -3147,7 +3145,6 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
           tavily_calls: countTavilyCalls(toolCallCounts),
-          exa_calls: countExaCalls(toolCallCounts),
           skills_invoked: skillsInvoked,
           files_changed: 0,
           cursor_advanced: false,
@@ -3323,7 +3320,6 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           subagent_count: 0,
           tool_calls: { attach_image: 1 },
           tavily_calls: 0,
-          exa_calls: 0,
           skills_invoked: [],
           files_changed: 0,
           cursor_advanced: false,

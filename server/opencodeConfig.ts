@@ -270,7 +270,7 @@ function mapToolName(toolName: string): string | null {
     grep: "grep",
     run_shell_command: "bash",
     bash: "bash",
-    web_search: "websearch",         // opencode has both webfetch + websearch (Exa)
+    web_search: "websearch",         // opencode has both webfetch + websearch
     web_fetch: "webfetch",
     todo_write: "todowrite",
     // No equivalents — drop:

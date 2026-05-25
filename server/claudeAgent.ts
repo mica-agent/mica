@@ -27,7 +27,7 @@ import {
   getConcurrencyStatus,
   type ParsedSubagent,
 } from "./subagents.js";
-import { recordTurn, recordSubagent, countTavilyCalls, countExaCalls } from "./metrics.js";
+import { recordTurn, recordSubagent, countTavilyCalls } from "./metrics.js";
 import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
@@ -1213,7 +1213,6 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
           tavily_calls: countTavilyCalls(toolCallCounts),
-          exa_calls: countExaCalls(toolCallCounts),
           skills_invoked: skillsInvoked,
           files_changed: filesChanged ? 1 : 0,
           cursor_advanced: cursorAdvanced,
@@ -1256,7 +1255,6 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           subagent_count: subagentCount,
           tool_calls: toolCallCounts,
           tavily_calls: countTavilyCalls(toolCallCounts),
-          exa_calls: countExaCalls(toolCallCounts),
           skills_invoked: skillsInvoked,
           files_changed: 0,
           cursor_advanced: false,
