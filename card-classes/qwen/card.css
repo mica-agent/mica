@@ -28,6 +28,9 @@
 .chat-md h3 { font-size: 13px; }
 .chat-md strong { color: #fff; }
 .chat-md a { color: #58a6ff; }
+#chat-input { border: 1px solid #30363d; transition: border-color 200ms ease; }
+#chat-input.chat-input--ready { border-color: rgba(124,58,237,0.3); }
+#chat-input.chat-input--busy { border-color: rgba(255,255,255,0.08); }
 #chat-input:focus { border-color: rgba(124,58,237,0.5); }
 #chat-settings-btn:hover { color: #ccc; }
 

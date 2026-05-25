@@ -71,6 +71,9 @@ function setBusy(b) {
   busy = b;
   const card = container.closest('.wb-card');
   if (card) card.classList.toggle('wb-card--busy', b);
+  inputEl.classList.toggle('chat-input--busy', b);
+  inputEl.classList.toggle('chat-input--ready', !b);
+  inputEl.placeholder = b ? "Working — please wait…" : "Your turn — ask OpenCode…";
   if (wasBusy && !b) playChime();
 }
 let queuedCount = 0;  // user messages typed during busy — server queues them
@@ -102,7 +105,7 @@ const ch = mica.openChannel("agent_session");
 hydrateFuelGauge();
 
 // OpenCode uses the cloud — no local model-loading status to poll.
-inputEl.placeholder = 'Ask OpenCode...';
+inputEl.placeholder = 'Your turn — ask OpenCode…';
 sendBtn.disabled = false;
 
 // ── Per-card LLM settings (provider + model) ────────────────
@@ -1249,6 +1252,7 @@ function send() {
     clearAttachment();
   }
   ch.send(payload);
+  if (!busy) setBusy(true);
   updateSendButton();
 }
 

@@ -60,6 +60,9 @@ function setBusy(b) {
   busy = b;
   const card = container.closest('.wb-card');
   if (card) card.classList.toggle('wb-card--busy', b);
+  inputEl.classList.toggle('chat-input--busy', b);
+  inputEl.classList.toggle('chat-input--ready', !b);
+  inputEl.placeholder = b ? "Working — please wait…" : "Your turn — ask Claude Code…";
   if (wasBusy && !b) playChime();
 }
 let queuedCount = 0;  // user messages typed during busy — server queues them
@@ -91,7 +94,7 @@ const ch = mica.openChannel("agent_session");
 hydrateFuelGauge();
 
 // Claude Code uses the cloud — no local model-loading status to poll.
-inputEl.placeholder = 'Ask Claude Code...';
+inputEl.placeholder = 'Your turn — ask Claude Code…';
 sendBtn.disabled = false;
 
 function scrollBottom() {
@@ -722,6 +725,7 @@ function send() {
     addDetailLine(`Queued: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
   }
   ch.send({ message: text });
+  if (!busy) setBusy(true);
   updateSendButton();
 }
 

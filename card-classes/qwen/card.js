@@ -114,6 +114,9 @@ function setBusy(b) {
   busy = b;
   const card = container.closest('.wb-card');
   if (card) card.classList.toggle('wb-card--busy', b);
+  inputEl.classList.toggle('chat-input--busy', b);
+  inputEl.classList.toggle('chat-input--ready', !b);
+  inputEl.placeholder = b ? "Working — please wait…" : "Your turn — ask Qwen Agent…";
   if (wasBusy && !b) playChime();
 }
 
@@ -199,7 +202,7 @@ function checkLlmStatus() {
   // is irrelevant to them, so don't show "Model loading..." or block Send.
   if (currentSettings.provider === 'openrouter' || currentSettings.provider === 'openai-compat') {
     sendBtn.disabled = false;
-    inputEl.placeholder = 'Ask Qwen Agent...';
+    inputEl.placeholder = 'Your turn — ask Qwen Agent…';
     return;
   }
   fetch('/api/llm/status').then(function(r) { return r.json(); }).then(function(s) {
@@ -207,7 +210,7 @@ function checkLlmStatus() {
     if (typeof s.engine === 'string') serverEngine = s.engine;
     if (s.ready) {
       sendBtn.disabled = false;
-      inputEl.placeholder = 'Ask Qwen Agent...';
+      inputEl.placeholder = 'Your turn — ask Qwen Agent…';
       if (s.startupSummary) showStartupSummaryQwen(s.startupSummary);
     } else {
       sendBtn.disabled = true;
@@ -1533,6 +1536,7 @@ function send() {
     clearAttachment();
   }
   ch.send(payload);
+  if (!busy) setBusy(true);
   updateSendButton();
 }
 
