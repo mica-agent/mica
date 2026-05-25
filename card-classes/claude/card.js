@@ -62,7 +62,7 @@ function setBusy(b) {
   if (card) card.classList.toggle('wb-card--busy', b);
   inputEl.classList.toggle('chat-input--busy', b);
   inputEl.classList.toggle('chat-input--ready', !b);
-  inputEl.placeholder = b ? "Working — please wait…" : "Your turn — ask Claude Code…";
+  inputEl.placeholder = b ? "Working…" : "Your turn — ask Claude Code…";
   if (wasBusy && !b) playChime();
 }
 let queuedCount = 0;  // user messages typed during busy — server queues them

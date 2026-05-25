@@ -553,6 +553,12 @@ app.get("/api/card-classes/:className/:file", async (req, res) => {
       ".json": "application/json", ".md": "text/markdown",
     };
     const ext = fileName.substring(fileName.lastIndexOf("."));
+    // Card-class files are dev-iteration code — every edit needs to land in
+    // every open tab on next mount, no manual hard-refresh. Browser heuristic
+    // caching of .js (often Last-Modified-based) was masking edits: HTML
+    // refetched but JS served from cache, so changes in card.js silently
+    // didn't apply. no-store kills the browser cache for this route entirely.
+    res.set("Cache-Control", "no-store, must-revalidate");
     res.type(types[ext] || "text/plain").send(content);
   } catch (err) {
     res.status(404).json({ error: (err as Error).message });

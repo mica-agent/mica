@@ -116,7 +116,7 @@ function setBusy(b) {
   if (card) card.classList.toggle('wb-card--busy', b);
   inputEl.classList.toggle('chat-input--busy', b);
   inputEl.classList.toggle('chat-input--ready', !b);
-  inputEl.placeholder = b ? "Working — please wait…" : "Your turn — ask Qwen Agent…";
+  inputEl.placeholder = b ? "Working…" : "Your turn — ask Qwen Agent…";
   if (wasBusy && !b) playChime();
 }
 
@@ -202,7 +202,11 @@ function checkLlmStatus() {
   // is irrelevant to them, so don't show "Model loading..." or block Send.
   if (currentSettings.provider === 'openrouter' || currentSettings.provider === 'openai-compat') {
     sendBtn.disabled = false;
-    inputEl.placeholder = 'Your turn — ask Qwen Agent…';
+    // Don't clobber the busy placeholder if a turn is in flight — this fetch
+    // resolves async and can race with a "thinking" event that already wrote
+    // "Working — please wait…". setBusy(false) re-establishes the ready
+    // placeholder at turn end.
+    if (!busy) inputEl.placeholder = 'Your turn — ask Qwen Agent…';
     return;
   }
   fetch('/api/llm/status').then(function(r) { return r.json(); }).then(function(s) {
@@ -210,7 +214,8 @@ function checkLlmStatus() {
     if (typeof s.engine === 'string') serverEngine = s.engine;
     if (s.ready) {
       sendBtn.disabled = false;
-      inputEl.placeholder = 'Your turn — ask Qwen Agent…';
+      // Same async-race guard as the remote-provider branch above.
+      if (!busy) inputEl.placeholder = 'Your turn — ask Qwen Agent…';
       if (s.startupSummary) showStartupSummaryQwen(s.startupSummary);
     } else {
       sendBtn.disabled = true;
