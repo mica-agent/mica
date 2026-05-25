@@ -1087,6 +1087,43 @@ The hook fires BEFORE the html2canvas fallback. It's per-card, auto-cleaned on u
 - The library was loaded BEFORE card.js executed (e.g., via a `<script>` tag that fires during HTML parse). In that case the prototype patch wasn't yet in place. Move library init into card.js.
 - The captioner is genuinely seeing a blank scene (clear color, nothing drawn, camera pointing the wrong way). Investigate the scene composition.
 
+## Responding to canvas signals
+
+Mica may inject synthetic user turns based on canvas file activity. These are NOT real user messages — they're Mica reporting events. Two shapes, both prefixed so you can recognise them in the first line of your turn:
+
+- **`[Draft revision]`** — A file you wrote earlier in this session was edited by the user. Carries a unified diff (` ```diff ` block) of what changed against your original draft. Cumulative across multiple user edits; the diff stays anchored to your last write.
+- **`[File activity]`** — Files changed that you did NOT author in this session. Filenames + change type only, no diff.
+
+Both fire after ~60s of user idle — never during continuous typing. The signal exists; what you do with it is the discipline below.
+
+### `[Draft revision]` — engage with the diff and consider cascades
+
+1. **Read the diff.** Acknowledge what changed in one or two plain sentences. Be specific: "you renamed the spec from `hotdog` to `photo-classifier` and dropped the `capture` subtask" — not "I see you made some changes." Specificity is the difference between Mica feeling alive and Mica feeling boilerplate.
+
+2. **Consider cascades.** Walk the canvas listing (already in your baseline). For each sibling doc that *plausibly references the changed identifier* (renamed name, removed subtask, restructured frontmatter), open it with `read_file` and decide whether it needs an update to stay consistent. Examples that imply cascades:
+   - Renamed `name:` in a card spec → sibling docs that mention the old name; layout entries; `.mica/card-classes/<old-name>/` directory
+   - Dropped or renamed a subtask in `## Architecture decomposition` → implementation notes or plans that referenced it
+   - Changed `handler:` or `dependencies:` in the spec → architecture / decisions docs that documented the old choice
+   - Changed a public command, API endpoint, or env var name in a design doc → README / setup / runbook that mentions the old name
+
+3. **Propose, don't write.** If you find cascade impact, emit a SINGLE `propose_changes` tool call with all affected files. The user sees Apply / Dismiss buttons in the chat card and decides. Do NOT call `write_file` or `edit` on sibling docs to propagate cascades — that bypasses approval and risks loops.
+
+4. **Stop at the cascade.** One reactive turn produces at most one `propose_changes` call. If the cascade naturally spans more than ~5 files, don't propose all of them — summarise the breadth in chat and ask the user which threads to follow. Wide cascades usually mean the rename was bigger than you initially thought; the user's input keeps it bounded.
+
+5. **No-impact case is also valid.** If the user's edits don't imply any sibling changes (typo fix, prose tightening, formatting), say so in one sentence and stop. Don't manufacture cascades to look thorough.
+
+### `[File activity]` — default to acknowledge, no action
+
+Files you didn't author changed. The user is working on the canvas; that's normal. Default: a one-sentence acknowledgement and stop. Take action only if the diff/event explicitly directs you — e.g. the changed file has your agent tag in the new lines (`@qwen do X`), or it's a file you were already mid-task on and the user is unblocking you with new info.
+
+When in doubt, treat `[File activity]` as informational, not actionable. The user can always send a direct message if they want action.
+
+### Cascade safety — the loop is closed by the apply step
+
+When the user clicks Apply on a `propose_changes` proposal, Mica writes the sibling files with a `user-approved-cascade` tag that the file watcher recognises — those writes don't fire another `[Draft revision]` turn. So a single edit by the user produces at most one cascade pass, with the user's click in the middle. No autonomous propagation.
+
+This means: if you've proposed cascade edits and the user applies them, you'll get a `propose_changes_applied` confirmation in your turn — NOT a fresh `[Draft revision]`. Don't expect to "see" the cascade writes via the reactive channel; expect them via apply confirmation.
+
 ## References
 
 - `.qwen/skills/develop/SKILL.md` — universal build flow

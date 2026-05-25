@@ -14,6 +14,11 @@ import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
 import {
+  attachReactiveCoalesce,
+  registerReactiveSession,
+  type ReactiveSessionHandle,
+} from "./reactiveCoalesce.js";
+import {
   loadProjectSubagents,
   configureConcurrency,
   canStartSubagentTask,
@@ -552,68 +557,12 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 
 // -- Channel handler factory --
 
-const USER_IDLE_BEFORE_AGENT_MS = 60000; // Wait 60s of quiet before delivering file events to the agent.
-// Purpose: don't react to in-progress user edits. Each incoming file-change event
-// re-arms the timer, so continuous typing (and short thinking pauses within 15s)
-// never fires. Broadcast to other card clients is a separate path and is unaffected —
-// multi-screen live typing still works.
+// Reactive-coalesce machinery lives in server/reactiveCoalesce.ts, shared
+// with micaAgent.ts and opencodeAgent.ts. Server emits the structured
+// signal; response policy lives in template skill prose.
 
 export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
-  // Single file-watcher listener shared across all agent sessions.
-  // Maps filename -> session state. Prevents listener leaks from StrictMode.
-  const activeSessions = new Map<string, {
-    project: string | null;
-    busy: boolean;
-    agentWrittenFiles: Set<string>;
-    coalesceBuffer: Map<string, { type: "created" | "changed" | "deleted"; count: number }>;
-    coalesceTimer: ReturnType<typeof setTimeout> | null;
-    deliverFn: (() => void) | null;
-    canvasRoot: string;
-    pinnedFiles: Set<string>;
-  }>();
-
-  function inCanvasScope(filename: string, canvasRoot: string, pinned: Set<string>): boolean {
-    if (pinned.has(filename)) return true;
-    if (canvasRoot === "" || canvasRoot === ".") return !filename.includes("/");
-    const prefix = canvasRoot.replace(/\/$/, "") + "/";
-    return filename.startsWith(prefix);
-  }
-
-  fileWatcher.on("file-change", (event: { type: string; filename: string; project: string }) => {
-    if (event.filename.startsWith(".")) return;
-
-    for (const [sessionFile, state] of activeSessions) {
-      if (state.project && state.project !== event.project) continue; // different project
-      if (event.filename === sessionFile) continue; // ignore own chat file
-      if (state.busy) continue; // agent is working, skip
-      if (!inCanvasScope(event.filename, state.canvasRoot, state.pinnedFiles)) continue;
-      if (state.agentWrittenFiles.has(event.filename)) {
-        state.agentWrittenFiles.delete(event.filename);
-        continue; // agent wrote this file
-      }
-
-      const existing = state.coalesceBuffer.get(event.filename);
-      const newType = event.type as "created" | "changed" | "deleted";
-      if (existing?.type === "created" && newType === "deleted") {
-        // Created then deleted within the coalesce window: net nothing.
-        state.coalesceBuffer.delete(event.filename);
-      } else if (existing?.type === "deleted" && newType === "created") {
-        // Deleted then recreated: net effect is a modification.
-        state.coalesceBuffer.set(event.filename, { type: "changed", count: existing.count + 1 });
-      } else {
-        state.coalesceBuffer.set(event.filename, {
-          type: newType,
-          count: (existing?.count ?? 0) + 1,
-        });
-      }
-
-      if (state.coalesceTimer) clearTimeout(state.coalesceTimer);
-      state.coalesceTimer = setTimeout(() => {
-        state.coalesceTimer = null;
-        if (state.deliverFn) state.deliverFn();
-      }, USER_IDLE_BEFORE_AGENT_MS);
-    }
-  });
+  attachReactiveCoalesce(fileWatcher);
 
   return async function agentHandlerFactory(
     _content: string,
@@ -665,52 +614,29 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
 
     const cfg = await readCanvasConfig(sessionProject || undefined);
 
-    // Register this session in the shared state (replaces any previous from StrictMode)
-    const sessionState = {
+    // Reactive-coalesce session handle. Shared module owns buffer, timer,
+    // snapshot map, and synthetic-turn composition. Callback decides
+    // queue-vs-immediate based on this agent's busy state.
+    //
+    // FOLLOWUP: Claude's prior tail prose ("DEFAULT: reply with one short
+    // acknowledgement sentence and stop. Do NOT read these files. Do NOT
+    // take action. ONLY take action if an explicit @<your-name> task is
+    // visible…") was stripped when we moved to the shared module — policy
+    // moved out of the pipe and into skill prose. There is no Claude-side
+    // skill structure shipped with templates today; until one exists, the
+    // shared promptPrelude.ts's "default disposition" paragraph covers the
+    // acknowledge-only default. Add a Claude-specific skill once we ship
+    // .claude skills in any template.
+    const reactive: ReactiveSessionHandle = registerReactiveSession({
       project: sessionProject,
-      busy: false,
-      agentWrittenFiles: new Set<string>(),
-      coalesceBuffer: new Map<string, { type: "created" | "changed" | "deleted"; count: number }>(),
-      coalesceTimer: null as ReturnType<typeof setTimeout> | null,
-      deliverFn: null as (() => void) | null,
+      sessionFilename: ctx.filename,
       canvasRoot: cfg.canvasRoot,
-      pinnedFiles: new Set(cfg.pinned),
-    };
-    activeSessions.set(ctx.filename, sessionState);
-
-    function deliverCoalescedEvents() {
-      if (sessionState.coalesceBuffer.size === 0) return;
-
-      const label = { created: "added", changed: "modified", deleted: "deleted" } as const;
-      const lines: string[] = [];
-      let hasSurvivors = false;
-      for (const [filename, entry] of sessionState.coalesceBuffer) {
-        const suffix = entry.type !== "deleted" && entry.count > 1
-          ? ` (${label[entry.type]}, ${entry.count}x)`
-          : ` (${label[entry.type]})`;
-        lines.push(`- ${filename}${suffix}`);
-        if (entry.type !== "deleted") hasSurvivors = true;
-      }
-      sessionState.coalesceBuffer.clear();
-
-      const tail = hasSurvivors
-        ? "DEFAULT: reply with one short acknowledgement sentence and stop. " +
-          "Do NOT read these files. Do NOT take action. " +
-          "ONLY take action if an explicit @<your-name> task is visible in the changes " +
-          "(e.g. plan.todo gained '@claude do X'), or a clear directive aimed at you " +
-          "appears. Otherwise the user is editing for their own reasons; don't intervene."
-        : "Files were deleted. DEFAULT: one short acknowledgement, no action.";
-
-      const message = `[File activity] These files changed since your last reply:\n${lines.join("\n")}\n\n${tail}`;
-
-      if (busy) {
-        queue.push({ text: message, source: "file-changes" });
-      } else {
-        processMessage(message, "file-changes");
-      }
-    }
-
-    sessionState.deliverFn = deliverCoalescedEvents;
+      pinnedFiles: cfg.pinned,
+      onDeliver: (message, source) => {
+        if (busy) queue.push({ text: message, source });
+        else processMessage(message, source);
+      },
+    });
 
     async function processMessage(message: string, source: QueuedMsg["source"] = "user") {
       // Guard against concurrent invocations. If another processMessage is
@@ -721,7 +647,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
         return;
       }
       const turnSource = source;
-      busy = true; sessionState.busy = true;
+      busy = true; reactive.setBusy(true);
       markProjectActivity(sessionProject, +1);
       // Record real-user messages so toolPrerequisites can enforce the
       // spec-approval gate (refuse mica_create_class until a real user
@@ -1105,12 +1031,12 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
                     const writtenPath = String((block.input as Record<string, unknown>)?.file_path || (block.input as Record<string, unknown>)?.filePath || "");
                     if (writtenPath) {
                       const writtenFile = writtenPath.split("/").pop();
-                      if (writtenFile) sessionState.agentWrittenFiles.add(writtenFile);
                       const projRoot = sessionProject ? join(WORKSPACE_DIR, sessionProject) : "";
                       const relPath = projRoot && writtenPath.startsWith(projRoot + "/")
                         ? writtenPath.slice(projRoot.length + 1)
                         : writtenFile || writtenPath;
                       markAgentWrite(relPath);
+                      reactive.markAgentWrite(relPath);
                     }
                   }
                 }
@@ -1350,14 +1276,14 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
             // The guard at the top of processMessage will let this through since
             // we're transitioning the in-flight slot, not racing.
             // Temporarily release the guard so the recursive call proceeds.
-            busy = false; sessionState.busy = false;
+            busy = false; reactive.setBusy(false);
             processMessage(next.text, next.source);
           });
         } else {
-          busy = false; sessionState.busy = false;
-          if (sessionState.coalesceBuffer.size > 0) {
-            setImmediate(() => deliverCoalescedEvents());
-          }
+          busy = false; reactive.setBusy(false);
+          // setBusy(false) arms the 30s idle timer if events accumulated
+          // during the turn. Don't flushIfPending here — that would
+          // deliver immediately and skip the post-turn idle wait.
         }
       }
     }
@@ -1466,8 +1392,7 @@ export function createClaudeAgentHandler(fileWatcher: FileWatcher) {
           activeQuery = null;
           try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
         }
-        if (sessionState.coalesceTimer) clearTimeout(sessionState.coalesceTimer);
-        activeSessions.delete(ctx.filename);
+        reactive.destroy();
       },
     };
   };

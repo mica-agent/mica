@@ -331,27 +331,24 @@ function playNextWav() {
     isPlayingQueue = false;
     currentSource = null;
     updateStopSpeakingButton();
+    updateMediaSession(false);
     if (statusEl.dataset.state === 'speaking') {
       setStatus(micOn ? 'Listening' : 'Ready', micOn ? 'recording' : 'ready');
     }
     return;
   }
-  // Visibility gate: only the focused tab plays audio. Other tabs
-  // (background tab on the same device, a different device, or a
-  // different project) still render assistant_speech_text into the
-  // reply panel but stay silent. Drop the buffer rather than queue it
-  // — by the time the user refocuses, the answer is stale.
-  if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-    console.log('[voice] dropping audio buffer (tab hidden)');
-    playNextWav();
-    return;
-  }
+  // Visibility gate removed — background tabs hear audio by design.
+  // The browser's native tab speaker icon shows which tab is talking;
+  // tab-mute (Chrome) / per-tab silence (Safari) is the kill switch
+  // alongside our in-card "stop speaking" button.
   const ctx = ensurePlaybackCtx();
   if (!ctx) {
     isPlayingQueue = false;
+    updateMediaSession(false);
     return;
   }
   isPlayingQueue = true;
+  updateMediaSession(true);
   const src = ctx.createBufferSource();
   src.buffer = buffer;
   src.connect(ctx.destination);
@@ -384,6 +381,47 @@ function stopVoicePlayback() {
   wavQueue = [];
   isPlayingQueue = false;
   updateStopSpeakingButton();
+  updateMediaSession(false);
+}
+
+// Media Session API integration. When playing, the OS-level media
+// controls (lock screen on mobile, macOS Now Playing widget, hardware
+// media keys, browser tab audio indicator menus) show "Mica voice — <project>"
+// and route their pause/stop button to stopVoicePlayback. Mica voice
+// is ephemeral (no resume — the queue is the only state), so we only
+// register pause + stop; no play/resume handlers. The browser shows
+// the controls automatically when it detects audio output; this adds
+// metadata + the kill switch.
+function _initMediaSession() {
+  if (typeof navigator === 'undefined' || !navigator.mediaSession) return;
+  const ms = navigator.mediaSession;
+  try { ms.setActionHandler('pause', function() { stopVoicePlayback(); }); } catch (_) {}
+  try { ms.setActionHandler('stop', function() { stopVoicePlayback(); }); } catch (_) {}
+  // No 'play'/'seekto'/'previoustrack'/'nexttrack' — these don't map
+  // to anything sensible for ephemeral TTS. Browsers gray those buttons
+  // out when no handler is registered, which is the right affordance.
+}
+_initMediaSession();
+
+function updateMediaSession(speaking) {
+  if (typeof navigator === 'undefined' || !navigator.mediaSession) return;
+  try {
+    if (speaking) {
+      if (typeof window.MediaMetadata !== 'undefined') {
+        navigator.mediaSession.metadata = new window.MediaMetadata({
+          title: 'Mica voice',
+          artist: (typeof mica !== 'undefined' && mica.project) || 'Mica',
+          album: 'Voice card',
+        });
+      }
+      navigator.mediaSession.playbackState = 'playing';
+    } else {
+      navigator.mediaSession.playbackState = 'none';
+      // Leave metadata in place briefly — the OS widget gracefully fades
+      // when playbackState goes to 'none'; clearing metadata would yank
+      // the title mid-fade and look glitchy.
+    }
+  } catch (_) { /* mediaSession is best-effort across browsers */ }
 }
 
 // Wire the explicit "stop talking" button. Visible only while audio
@@ -400,27 +438,19 @@ if (_stopSpeakingBtn) {
   });
 }
 
-// Visibility-gated playback + mic. When the tab hides:
-//   1. Stop active playback and drop the queue (audio gate).
-//   2. Turn the mic off — prevents continuous audio→STT→LLM→TTS work
-//      on a tab no one is listening to. User has to re-click mic on
-//      when they return (matches browser autoplay/gesture rules).
-//   3. Notify the server (`presence: false`) so it can skip TTS work
-//      for sessions where every subscriber is hidden.
-// The rule applies symmetrically across same-device tabs and across
-// devices — only the document-visible tab consumes upstream resources.
+// Visibility handling: when the tab hides, turn the mic off (privacy +
+// avoids continuous STT/LLM work on an unattended tab — user re-clicks
+// mic on return). Audio OUTPUT continues regardless of visibility — a
+// background tab keeps speaking so the user can listen while working
+// elsewhere. They can hit the "stop speaking" button (or unmount the
+// card) to silence it. `presence` is still broadcast to the server in
+// case future per-tab routing wants the info, but it no longer gates TTS.
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', function() {
     const visible = document.visibilityState === 'visible';
-    if (!visible) {
-      if (isPlayingQueue || wavQueue.length > 0) {
-        console.log('[voice] tab hidden during playback — stopping');
-        stopVoicePlayback();
-      }
-      if (micOn) {
-        console.log('[voice] tab hidden — turning mic off');
-        turnMicOff();
-      }
+    if (!visible && micOn) {
+      console.log('[voice] tab hidden — turning mic off');
+      turnMicOff();
     }
     try { ch.send({ type: 'presence', visible: visible }); } catch (_) {}
   });
@@ -1216,6 +1246,7 @@ checkServerReady();
 mica.onDestroy(function() {
   turnMicOff();
   stopVoicePlayback();
+  updateMediaSession(false);
   if (playbackCtx) {
     try { playbackCtx.close(); } catch (_) {}
     playbackCtx = null;

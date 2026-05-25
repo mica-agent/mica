@@ -42,6 +42,11 @@ import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { buildAgentToolsMcpServer } from "./agentTools/sdkMcpBuilder.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
+import {
+  attachReactiveCoalesce,
+  registerReactiveSession,
+  type ReactiveSessionHandle,
+} from "./reactiveCoalesce.js";
 import { z } from "zod";
 
 // Tool names (normalized to lowercase) that mutate a file and therefore should
@@ -1299,68 +1304,13 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 
 // -- Channel handler factory --
 
-const USER_IDLE_BEFORE_AGENT_MS = 60000; // Wait 60s of quiet before delivering file events to the agent.
-// Purpose: don't react to in-progress user edits. Each incoming file-change event
-// re-arms the timer, so continuous typing (and short thinking pauses within 15s)
-// never fires. Broadcast to other card clients is a separate path and is unaffected —
-// multi-screen live typing still works.
+// Reactive-coalesce machinery (60s debounce, snapshot+diff on user edits
+// of agent-authored files, cascade suppression) lives in server/reactiveCoalesce.ts —
+// shared with claudeAgent.ts and opencodeAgent.ts. Server emits the signal;
+// response policy lives in template skill prose.
 
 export function createAgentHandler(fileWatcher: FileWatcher) {
-  // Single file-watcher listener shared across all agent sessions.
-  // Maps filename -> session state. Prevents listener leaks from StrictMode.
-  const activeSessions = new Map<string, {
-    project: string | null;
-    busy: boolean;
-    agentWrittenFiles: Set<string>;
-    coalesceBuffer: Map<string, { type: "created" | "changed" | "deleted"; count: number }>;
-    coalesceTimer: ReturnType<typeof setTimeout> | null;
-    deliverFn: (() => void) | null;
-    canvasRoot: string;        // e.g. "canvas" — files outside this (and not pinned) don't trigger reactive turns
-    pinnedFiles: Set<string>;  // files explicitly pinned to the canvas regardless of folder
-  }>();
-
-  function inCanvasScope(filename: string, canvasRoot: string, pinned: Set<string>): boolean {
-    if (pinned.has(filename)) return true;
-    if (canvasRoot === "" || canvasRoot === ".") return !filename.includes("/");
-    const prefix = canvasRoot.replace(/\/$/, "") + "/";
-    return filename.startsWith(prefix);
-  }
-
-  fileWatcher.on("file-change", (event: { type: string; filename: string; project: string }) => {
-    if (event.filename.startsWith(".")) return;
-
-    for (const [sessionFile, state] of activeSessions) {
-      if (state.project && state.project !== event.project) continue; // different project
-      if (event.filename === sessionFile) continue; // ignore own chat file
-      if (state.busy) continue; // agent is working, skip
-      if (!inCanvasScope(event.filename, state.canvasRoot, state.pinnedFiles)) continue;
-      if (state.agentWrittenFiles.has(event.filename)) {
-        state.agentWrittenFiles.delete(event.filename);
-        continue; // agent wrote this file
-      }
-
-      const existing = state.coalesceBuffer.get(event.filename);
-      const newType = event.type as "created" | "changed" | "deleted";
-      if (existing?.type === "created" && newType === "deleted") {
-        // Created then deleted within the coalesce window: net nothing.
-        state.coalesceBuffer.delete(event.filename);
-      } else if (existing?.type === "deleted" && newType === "created") {
-        // Deleted then recreated: net effect is a modification.
-        state.coalesceBuffer.set(event.filename, { type: "changed", count: existing.count + 1 });
-      } else {
-        state.coalesceBuffer.set(event.filename, {
-          type: newType,
-          count: (existing?.count ?? 0) + 1,
-        });
-      }
-
-      if (state.coalesceTimer) clearTimeout(state.coalesceTimer);
-      state.coalesceTimer = setTimeout(() => {
-        state.coalesceTimer = null;
-        if (state.deliverFn) state.deliverFn();
-      }, USER_IDLE_BEFORE_AGENT_MS);
-    }
-  });
+  attachReactiveCoalesce(fileWatcher);
 
   return async function agentHandlerFactory(
     _content: string,
@@ -1502,53 +1452,20 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     // — those are rare config changes).
     const cfg = await readCanvasConfig(sessionProject || undefined);
 
-    // Register this session in the shared state (replaces any previous from StrictMode)
-    const sessionState = {
+    // Reactive-coalesce session handle: shared module owns the buffer,
+    // timer, snapshot map, and synthetic-turn composition. We just give
+    // it a callback for delivery (queue vs immediate) and feed it
+    // markAgentWrite / setBusy from the tool loop and busy toggles.
+    const reactive: ReactiveSessionHandle = registerReactiveSession({
       project: sessionProject,
-      busy: false,
-      agentWrittenFiles: new Set<string>(),
-      coalesceBuffer: new Map<string, { type: "created" | "changed" | "deleted"; count: number }>(),
-      coalesceTimer: null as ReturnType<typeof setTimeout> | null,
-      deliverFn: null as (() => void) | null,
+      sessionFilename: ctx.filename,
       canvasRoot: cfg.canvasRoot,
-      pinnedFiles: new Set(cfg.pinned),
-    };
-    activeSessions.set(ctx.filename, sessionState);
-
-    function deliverCoalescedEvents() {
-      if (sessionState.coalesceBuffer.size === 0) return;
-
-      const label = { created: "added", changed: "modified", deleted: "deleted" } as const;
-      const lines: string[] = [];
-      let hasSurvivors = false;
-      for (const [filename, entry] of sessionState.coalesceBuffer) {
-        const suffix = entry.type !== "deleted" && entry.count > 1
-          ? ` (${label[entry.type]}, ${entry.count}x)`
-          : ` (${label[entry.type]})`;
-        lines.push(`- ${filename}${suffix}`);
-        if (entry.type !== "deleted") hasSurvivors = true;
-      }
-      sessionState.coalesceBuffer.clear();
-
-      const tail = hasSurvivors
-        ? "Review what changed and respond proportionally. Short acknowledgement " +
-          "for small or incidental edits; for substantive changes (spec, plan, " +
-          "decisions, doc updates) read the relevant file(s), engage with what " +
-          "you noticed, and offer next steps. Do NOT take destructive or " +
-          "build-shaped actions (creating cards, writing code, deleting files) " +
-          "without explicit user confirmation — propose first."
-        : "Files were deleted. Respond with a brief acknowledgement; no action.";
-
-      const message = `[File activity] These files changed since your last reply:\n${lines.join("\n")}\n\n${tail}`;
-
-      if (busy) {
-        enqueueMessage(message, "file-changes");
-      } else {
-        processMessage(message);
-      }
-    }
-
-    sessionState.deliverFn = deliverCoalescedEvents;
+      pinnedFiles: cfg.pinned,
+      onDeliver: (message, source) => {
+        if (busy) enqueueMessage(message, source);
+        else processMessage(message, source);
+      },
+    });
 
     async function processMessage(message: string, source: QueuedItem["source"] = "user") {
       // Guard against concurrent invocations. If another processMessage is
@@ -1566,7 +1483,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // read the reply in full (voice-dispatched, the user is on voice
       // and wants to hear it all) or just summarize (background ambient).
       const turnSource = source;
-      busy = true; sessionState.busy = true;
+      busy = true; reactive.setBusy(true);
       markProjectActivity(sessionProject, +1);
       // Record real-user messages so toolPrerequisites can enforce the
       // spec-approval gate (refuse mica_create_class until a real user
@@ -2617,12 +2534,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     const writtenPath = String((block.input as Record<string, unknown>)?.file_path || (block.input as Record<string, unknown>)?.filePath || "");
                     if (writtenPath) {
                       const writtenFile = writtenPath.split("/").pop();
-                      if (writtenFile) sessionState.agentWrittenFiles.add(writtenFile);
                       const projRoot = sessionProject ? join(WORKSPACE_DIR, sessionProject) : "";
                       const relPath = projRoot && writtenPath.startsWith(projRoot + "/")
                         ? writtenPath.slice(projRoot.length + 1)
                         : writtenFile || writtenPath;
+                      // Two parallel concerns: writeSource tags the next
+                      // broadcast (so cards can render an "agent wrote this"
+                      // glow); reactive.markAgentWrite suppresses the next
+                      // reactive turn AND captures a snapshot for diff.
+                      // Both expect the full canvas-relative path.
                       markAgentWrite(relPath);
+                      reactive.markAgentWrite(relPath);
                     }
                   }
                 }
@@ -3248,15 +3170,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         const next = dequeueNext();
         if (next) {
           setImmediate(() => {
-            busy = false; sessionState.busy = false;
+            busy = false; reactive.setBusy(false);
             if (next.attach) processImageMessage(next.text, next.attach, next.source);
             else processMessage(next.text, next.source);
           });
         } else {
-          busy = false; sessionState.busy = false;
-          if (sessionState.coalesceBuffer.size > 0) {
-            setImmediate(() => deliverCoalescedEvents());
-          }
+          busy = false; reactive.setBusy(false);
+          // setBusy(false) arms the 30s idle timer if events accumulated
+          // during the turn — no manual flush needed. Calling flushIfPending
+          // here would deliver immediately, bypassing the post-turn idle
+          // wait, which gives the agent stale half-edits if the user is
+          // still typing when the turn ends.
         }
       }
     }
@@ -3276,7 +3200,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         enqueueMessage(text, source, attachmentFilename);
         return;
       }
-      busy = true; sessionState.busy = true;
+      busy = true; reactive.setBusy(true);
       markProjectActivity(sessionProject, +1);
       console.log(`[mica-agent] processImageMessage START: ${text.slice(0, 60)} [attach=${attachmentFilename}]`);
 
@@ -3416,12 +3340,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         const next = dequeueNext();
         if (next) {
           setImmediate(() => {
-            busy = false; sessionState.busy = false;
+            busy = false; reactive.setBusy(false);
             if (next.attach) processImageMessage(next.text, next.attach, next.source);
             else processMessage(next.text, next.source);
           });
         } else {
-          busy = false; sessionState.busy = false;
+          busy = false; reactive.setBusy(false);
         }
       }
     }
@@ -3626,8 +3550,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           activeQuery = null;
           try { if (!q.isClosed()) void q.close().catch(() => {}); } catch {}
         }
-        if (sessionState.coalesceTimer) clearTimeout(sessionState.coalesceTimer);
-        activeSessions.delete(ctx.filename);
+        reactive.destroy();
       },
     };
   };

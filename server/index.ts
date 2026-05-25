@@ -90,7 +90,9 @@ import { existsSync } from "fs";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import { FileWatcher } from "./fileWatcher.js";
-import { ChannelManager } from "./channelManager.js";
+import { ChannelManager, setActiveChannelManager, getActiveChannelManager } from "./channelManager.js";
+import { getProposal, consumeProposal, dismissProposal } from "./proposalStore.js";
+import { suppressNextCascadeWrite } from "./reactiveCoalesce.js";
 import { ensureLlamaServer, stopLlamaServer, getLlamaServerStatus } from "./llamaServer.js";
 import { ensureVoiceServers, stopVoiceServers, getVoiceServerStatus, getSttUrl, getTtsUrl } from "./voiceServers.js";
 import { stopAllCardSidecars, reapOrphanCardSidecars } from "./cardSidecar.js";
@@ -2207,6 +2209,138 @@ app.delete("/api/files/:filename", async (req, res) => {
   }
 });
 
+// ── Cascade-edit proposals (propose_changes tool) ────────────────────
+//
+// The agent emits a proposal via the `propose_changes` tool; the chat
+// card renders Apply/Dismiss UI; these endpoints back the user
+// actions. Apply writes are tagged via suppressNextCascadeWrite so the
+// file-watcher reactive coalesce skips them — single-step cascade by
+// construction.
+
+app.post("/api/proposals/apply", jsonParser, async (req, res) => {
+  const reqProject = getRequestProject(req);
+  const { proposalId, hunkIndexes } = (req.body ?? {}) as {
+    proposalId?: string;
+    /** Per-file selected hunk indexes: { "canvas/foo.md": [0, 2] }.
+     *  Omit to apply every hunk in every file. */
+    hunkIndexes?: Record<string, number[]>;
+  };
+  if (!proposalId || typeof proposalId !== "string") {
+    res.status(400).json({ error: "proposalId (string) required" });
+    return;
+  }
+  const proposal = getProposal(proposalId);
+  if (!proposal) {
+    res.status(404).json({ error: "proposal not found or already applied/expired" });
+    return;
+  }
+  if (proposal.project !== reqProject) {
+    // Cross-project apply attempt — guard. The chat card lives in one
+    // project; the proposal was created for that project; they must match.
+    res.status(403).json({ error: "proposal/project mismatch" });
+    return;
+  }
+
+  const projectRoot = join(WORKSPACE_DIR, proposal.project);
+  const results: Array<{ file: string; appliedHunks: number; error?: string }> = [];
+  let totalApplied = 0;
+
+  for (const f of proposal.files) {
+    const abs = join(projectRoot, f.file);
+    if (!abs.startsWith(projectRoot + "/")) {
+      results.push({ file: f.file, appliedHunks: 0, error: "path escapes project root" });
+      continue;
+    }
+    const selected = hunkIndexes?.[f.file];
+    const indexesToApply = selected ?? f.hunks.map((_h, i) => i);
+    if (indexesToApply.length === 0) {
+      results.push({ file: f.file, appliedHunks: 0 });
+      continue;
+    }
+    let content: string;
+    try {
+      content = await readFile(abs, "utf-8");
+    } catch (err) {
+      results.push({ file: f.file, appliedHunks: 0, error: `read failed: ${(err as Error).message}` });
+      continue;
+    }
+    let applied = 0;
+    let lastError: string | undefined;
+    for (const idx of indexesToApply) {
+      const hunk = f.hunks[idx];
+      if (!hunk) { lastError = `hunk index ${idx} out of range`; continue; }
+      const first = content.indexOf(hunk.old_string);
+      if (first === -1) { lastError = `hunk ${idx}: old_string not found (file may have changed since proposal)`; continue; }
+      const second = content.indexOf(hunk.old_string, first + hunk.old_string.length);
+      if (second !== -1) { lastError = `hunk ${idx}: old_string now matches multiple places — skipping`; continue; }
+      content = content.slice(0, first) + hunk.new_string + content.slice(first + hunk.old_string.length);
+      applied++;
+    }
+    if (applied === 0) {
+      results.push({ file: f.file, appliedHunks: 0, error: lastError });
+      continue;
+    }
+    // Tag writes BEFORE writing so:
+    //  - markWriteSource: the cross-window broadcast carries
+    //    source="user-approved-cascade" (cards can choose how to render)
+    //  - suppressNextCascadeWrite: the reactive coalesce skips this
+    //    event for every active agent session in the project
+    markWriteSource(f.file, "user-approved-cascade");
+    suppressNextCascadeWrite(proposal.project, f.file);
+    try {
+      await writeProjectFile(f.file, content, proposal.project);
+      totalApplied += applied;
+      results.push({ file: f.file, appliedHunks: applied });
+    } catch (err) {
+      results.push({ file: f.file, appliedHunks: 0, error: `write failed: ${(err as Error).message}` });
+    }
+  }
+
+  consumeProposal(proposalId);
+
+  // Tell the chat card the proposal was applied so it can swap the
+  // Apply UI for a "Applied" state. The card might not be attached
+  // (user closed it) — broadcastToFilename returns false, harmless.
+  const cm = getActiveChannelManager();
+  if (cm) {
+    cm.broadcastToFilename(proposal.project, proposal.chatFilename, {
+      type: "propose_changes_applied",
+      proposalId,
+      totalApplied,
+      results,
+    });
+  }
+  res.json({ ok: true, totalApplied, results });
+});
+
+app.post("/api/proposals/dismiss", jsonParser, async (req, res) => {
+  const reqProject = getRequestProject(req);
+  const { proposalId } = (req.body ?? {}) as { proposalId?: string };
+  if (!proposalId || typeof proposalId !== "string") {
+    res.status(400).json({ error: "proposalId (string) required" });
+    return;
+  }
+  const proposal = getProposal(proposalId);
+  if (!proposal) {
+    // Already gone — treat dismiss as idempotent.
+    res.json({ ok: true });
+    return;
+  }
+  if (proposal.project !== reqProject) {
+    res.status(403).json({ error: "proposal/project mismatch" });
+    return;
+  }
+  dismissProposal(proposalId);
+  const cm = getActiveChannelManager();
+  if (cm) {
+    cm.broadcastToFilename(proposal.project, proposal.chatFilename, {
+      type: "propose_changes_dismissed",
+      proposalId,
+    });
+  }
+  res.json({ ok: true });
+});
+
 // ── Layout persistence (.mica/layout.json, keyed by device class) ────
 
 app.get("/api/layout", async (req, res) => {
@@ -2428,6 +2562,7 @@ function reportSubscriptionState(reason: string): void {
 }
 
 const channelManager = new ChannelManager();
+setActiveChannelManager(channelManager);
 
 wss.on("error", (err) => {
   console.error("[websocket-server] Error:", (err as Error).message);

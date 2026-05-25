@@ -49,6 +49,11 @@ import {
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
+import {
+  attachReactiveCoalesce,
+  registerReactiveSession,
+  type ReactiveSessionHandle,
+} from "./reactiveCoalesce.js";
 import { buildHandlerContractsBaseline } from "./handlerBaselineInjection.js";
 import { loadProjectSubagents } from "./subagents.js";
 import { getFreshPendingValidatorErrors, getRecentlyClearedFlaps } from "./validatorErrorBuffer.js";
@@ -452,8 +457,8 @@ function describeOpencodeTool(toolName: string, input: Record<string, unknown>):
 
 // ── Channel handler factory ─────────────────────────────────────
 
-export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
-  void _fileWatcher;  // file-watcher coalescing not yet wired — see top-of-file note
+export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
+  attachReactiveCoalesce(fileWatcher);
 
   return async function opencodeHandlerFactory(
     _content: string,
@@ -462,6 +467,20 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
   ): Promise<ChannelHandler> {
     const sessionProject = ctx.project;
     const chatId = ctx.sessionId;
+    // Reactive-coalesce session handle. Same mechanism qwen + Claude use;
+    // gives opencode chat cards file-edit reactivity for free. Onset is
+    // the next 60s-idle after any user edit in canvas scope.
+    const reactiveCfg = await readCanvasConfig(sessionProject || undefined);
+    const reactive: ReactiveSessionHandle = registerReactiveSession({
+      project: sessionProject,
+      sessionFilename: ctx.filename,
+      canvasRoot: reactiveCfg.canvasRoot,
+      pinnedFiles: reactiveCfg.pinned,
+      onDeliver: (message, source) => {
+        if (busy) queue.push({ text: message, source });
+        else void processMessage(message, source);
+      },
+    });
 
     // Per-card SSE subscription state. Started lazily on first turn (not at
     // session create) so cards that mount but never send a message don't
@@ -834,6 +853,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
                 const projRoot = sessionProject ? join(WORKSPACE_DIR, sessionProject) : "";
                 const rel = projRoot && fp.startsWith(projRoot + "/") ? fp.slice(projRoot.length + 1) : fp;
                 markAgentWrite(rel);
+                reactive.markAgentWrite(rel);
               }
             }
           }
@@ -1011,6 +1031,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       if (busy) { queue.push({ text: message, source, attach: attachmentFilename }); return; }
       const turnSource = source;
       busy = true;
+      reactive.setBusy(true);
       markProjectActivity(sessionProject, +1);
       // Reset the per-turn render_capture cap. Fresh user message ⇒ fresh
       // budget for screenshot verifications. See renderCaptureCounter.ts.
@@ -1424,10 +1445,14 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
         // and released here — milestone, not timer.
         if (sessionProject) flushProjectPendingErrors(sessionProject);
         busy = false;
+        reactive.setBusy(false);
         if (queue.length > 0) {
           const next = queue.shift()!;
           setImmediate(() => processMessage(next.text, next.source, next.attach));
         }
+        // No explicit flush — setBusy(false) above arms the 30s idle
+        // timer if events accumulated during the turn. flushIfPending
+        // would deliver immediately and skip the post-turn idle wait.
       }
     }
 
@@ -1533,6 +1558,7 @@ export function createOpencodeAgentHandler(_fileWatcher: FileWatcher) {
       },
 
       onDestroy() {
+        reactive.destroy();
         if (sseAbort) {
           try { sseAbort.abort(); } catch { /* ignore */ }
         }

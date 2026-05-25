@@ -46,6 +46,7 @@ import { restartSidecarTool } from "./restartSidecar.js";
 import { sidecarLogTool } from "./sidecarLog.js";
 import { verifySidecarTool } from "./verifySidecar.js";
 import { listSharedDocsTool, pinSharedDocTool } from "./sharedDocs.js";
+import { proposeChangesTool } from "./proposeChanges.js";
 
 // Per-backend startup secret. Agents include this in the
 // `x-mica-agent-auth` header on every /api/tools/* request. Browser cards
@@ -113,6 +114,7 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   verifySidecarTool,
   listSharedDocsTool,
   pinSharedDocTool,
+  proposeChangesTool,
 ];
 
 // ── Project resolution for opencode bridge ───────────────────────────

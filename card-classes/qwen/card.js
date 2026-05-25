@@ -1001,6 +1001,174 @@ queueClearAllBtn.addEventListener("click", function() {
   ch.send({ type: "clear_queue" });
 });
 
+// ── Cascade-edit proposals (propose_changes tool) ─────────────────────
+// The agent calls propose_changes when it spots a cascade. The server
+// stores the proposal and broadcasts the event; this card renders an
+// Apply / Dismiss UI. Per-hunk select is intentionally out of scope —
+// users can iterate via chat ("propose a smaller version").
+var proposalBubbles = {};  // proposalId → DOM container
+
+function renderProposeChanges(data) {
+  if (!data || !data.proposalId) return;
+  if (messagesEl.children.length === 1 && messagesEl.children[0].style.textAlign === "center") {
+    messagesEl.innerHTML = "";
+  }
+  maybeRenderHorizon();
+  var bubble = window.document.createElement("div");
+  bubble.style.cssText = "align-self:flex-start;background:rgba(252,211,77,0.06);border:1px solid rgba(252,211,77,0.25);border-radius:12px 12px 12px 4px;padding:10px 12px;max-width:90%;";
+  bubble.dataset.proposalId = data.proposalId;
+  proposalBubbles[data.proposalId] = bubble;
+
+  var hdr = window.document.createElement("div");
+  hdr.style.cssText = "color:#fcd34d;font-size:11px;font-weight:600;margin-bottom:6px;letter-spacing:0.02em;";
+  var fileCount = (data.files || []).length;
+  var hunkCount = (data.files || []).reduce(function(n, f) { return n + (f.hunks ? f.hunks.length : 0); }, 0);
+  hdr.textContent = "PROPOSED CASCADE EDITS · " + hunkCount + " hunk" + (hunkCount === 1 ? "" : "s") + " · " + fileCount + " file" + (fileCount === 1 ? "" : "s");
+  bubble.appendChild(hdr);
+
+  if (data.reason) {
+    var reason = window.document.createElement("div");
+    reason.style.cssText = "color:#e6edf3;font-size:12px;line-height:1.5;margin-bottom:8px;font-style:italic;";
+    reason.textContent = data.reason;
+    bubble.appendChild(reason);
+  }
+
+  (data.files || []).forEach(function(f) {
+    var fileBlock = window.document.createElement("div");
+    fileBlock.style.cssText = "margin-bottom:8px;";
+    var fpath = window.document.createElement("div");
+    fpath.style.cssText = "color:#8b949e;font-size:11px;font-family:monospace;margin-bottom:4px;";
+    fpath.textContent = f.file;
+    fileBlock.appendChild(fpath);
+    (f.hunks || []).forEach(function(hunk) {
+      if (hunk.label) {
+        var lbl = window.document.createElement("div");
+        lbl.style.cssText = "color:#c9d1d9;font-size:11px;margin:4px 0 2px 0;";
+        lbl.textContent = hunk.label;
+        fileBlock.appendChild(lbl);
+      }
+      var diff = window.document.createElement("pre");
+      diff.style.cssText = "font-family:'SF Mono','Monaco','Cascadia Code','Menlo',monospace;font-size:11px;line-height:1.4;background:rgba(0,0,0,0.25);border-radius:4px;padding:6px 8px;margin:0 0 4px 0;overflow-x:auto;white-space:pre;color:#e6edf3;";
+      var oldLines = String(hunk.old_string || "").split("\n");
+      var newLines = String(hunk.new_string || "").split("\n");
+      oldLines.forEach(function(line) {
+        var span = window.document.createElement("div");
+        span.style.cssText = "color:#fca5a5;background:rgba(248,113,113,0.08);";
+        span.textContent = "- " + line;
+        diff.appendChild(span);
+      });
+      newLines.forEach(function(line) {
+        var span = window.document.createElement("div");
+        span.style.cssText = "color:#86efac;background:rgba(134,239,172,0.08);";
+        span.textContent = "+ " + line;
+        diff.appendChild(span);
+      });
+      fileBlock.appendChild(diff);
+    });
+    bubble.appendChild(fileBlock);
+  });
+
+  // Action row.
+  var actions = window.document.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;margin-top:8px;";
+  var applyBtn = window.document.createElement("button");
+  applyBtn.style.cssText = "background:rgba(134,239,172,0.18);border:1px solid rgba(134,239,172,0.45);color:#86efac;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;";
+  applyBtn.textContent = "Apply all";
+  var dismissBtn = window.document.createElement("button");
+  dismissBtn.style.cssText = "background:transparent;border:1px solid rgba(255,255,255,0.18);color:#8b949e;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit;";
+  dismissBtn.textContent = "Dismiss";
+  applyBtn.addEventListener("click", function() {
+    applyBtn.disabled = true;
+    dismissBtn.disabled = true;
+    applyBtn.textContent = "Applying…";
+    fetch("/api/proposals/apply", {
+      method: "POST",
+      headers: projectHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ proposalId: data.proposalId }),
+    }).then(function(r) { return r.json(); }).then(function(res) {
+      // The server also broadcasts propose_changes_applied which triggers
+      // markProposalApplied — but apply latency on the click side feels
+      // better with a same-tab update too. The broadcast is idempotent
+      // against the same bubble.
+      if (res && res.ok) {
+        markProposalApplied({ proposalId: data.proposalId, totalApplied: res.totalApplied, results: res.results });
+      } else {
+        applyBtn.disabled = false;
+        dismissBtn.disabled = false;
+        applyBtn.textContent = "Apply all";
+        bubble.appendChild(buildErrorRow("Apply failed: " + (res && res.error ? res.error : "unknown")));
+      }
+    }).catch(function(err) {
+      applyBtn.disabled = false;
+      dismissBtn.disabled = false;
+      applyBtn.textContent = "Apply all";
+      bubble.appendChild(buildErrorRow("Apply failed: " + err.message));
+    });
+  });
+  dismissBtn.addEventListener("click", function() {
+    applyBtn.disabled = true;
+    dismissBtn.disabled = true;
+    fetch("/api/proposals/dismiss", {
+      method: "POST",
+      headers: projectHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ proposalId: data.proposalId }),
+    }).then(function() {
+      markProposalDismissed({ proposalId: data.proposalId });
+    }).catch(function() {
+      // Even if dismiss fails server-side, the UI should reflect the user's intent.
+      markProposalDismissed({ proposalId: data.proposalId });
+    });
+  });
+  actions.appendChild(applyBtn);
+  actions.appendChild(dismissBtn);
+  bubble.appendChild(actions);
+
+  messagesEl.appendChild(bubble);
+  bubble.scrollIntoView({ behavior: "smooth", block: "end" });
+}
+
+function buildErrorRow(text) {
+  var el = window.document.createElement("div");
+  el.style.cssText = "color:#fca5a5;font-size:11px;margin-top:6px;";
+  el.textContent = text;
+  return el;
+}
+
+function markProposalApplied(data) {
+  var bubble = proposalBubbles[data.proposalId];
+  if (!bubble) return;
+  // Replace the action row with a status row. Keep the diffs above
+  // so the user can still see what was applied.
+  var actions = bubble.querySelector("div:last-child");
+  if (actions) bubble.removeChild(actions);
+  var status = window.document.createElement("div");
+  status.style.cssText = "color:#86efac;font-size:12px;font-weight:600;margin-top:8px;display:flex;align-items:center;gap:6px;";
+  var totalApplied = typeof data.totalApplied === "number" ? data.totalApplied : 0;
+  status.textContent = "✓ Applied " + totalApplied + " hunk" + (totalApplied === 1 ? "" : "s");
+  bubble.appendChild(status);
+  // If any per-file errors, list them.
+  var errs = (data.results || []).filter(function(r) { return r.error; });
+  if (errs.length > 0) {
+    var errBlock = window.document.createElement("div");
+    errBlock.style.cssText = "color:#fcd34d;font-size:11px;margin-top:4px;";
+    errBlock.textContent = "Skipped: " + errs.map(function(e) { return e.file + " (" + e.error + ")"; }).join("; ");
+    bubble.appendChild(errBlock);
+  }
+  delete proposalBubbles[data.proposalId];
+}
+
+function markProposalDismissed(data) {
+  var bubble = proposalBubbles[data.proposalId];
+  if (!bubble) return;
+  var actions = bubble.querySelector("div:last-child");
+  if (actions) bubble.removeChild(actions);
+  var status = window.document.createElement("div");
+  status.style.cssText = "color:#8b949e;font-size:11px;margin-top:6px;font-style:italic;";
+  status.textContent = "Dismissed";
+  bubble.appendChild(status);
+  delete proposalBubbles[data.proposalId];
+}
+
 // Handle channel data from server
 ch.onData(function(data) {
   switch (data.type) {
@@ -1225,6 +1393,15 @@ ch.onData(function(data) {
           { forceChoice: true }
         );
       }
+      break;
+    case "propose_changes":
+      renderProposeChanges(data);
+      break;
+    case "propose_changes_applied":
+      markProposalApplied(data);
+      break;
+    case "propose_changes_dismissed":
+      markProposalDismissed(data);
       break;
     case "error":
       setBusy(false);

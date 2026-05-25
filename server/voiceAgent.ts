@@ -846,17 +846,17 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           agent: next.agent,
           mode: next.mode,
         });
-        // Skip Kokoro round-trip when:
-        //   - no subscriber is currently visible (the tab is hidden, so
-        //     audio would go nowhere usefully), OR
-        //   - the user has turned off "Auto-read replies" in the gear
-        //     panel (autoReadAmbient = false). The sentence text frames
-        //     still go out so the reply panel keeps updating; the audio
-        //     just doesn't get synthesized.
-        const skipTts = !anyVisible() || !autoReadAmbient;
+        // Skip Kokoro round-trip when the user has turned off "Auto-read
+        // replies" in the gear panel (autoReadAmbient = false). The
+        // sentence text frames still go out so the reply panel keeps
+        // updating; the audio just doesn't get synthesized.
+        // Visibility no longer gates TTS — background tabs receive audio
+        // by design now (the user has a "stop speaking" button if it gets
+        // intrusive). clientVisibility is still tracked for future
+        // per-tab routing options.
+        const skipTts = !autoReadAmbient;
         if (skipTts) {
-          const why = !autoReadAmbient ? "autoReadAmbient=false" : "all subscribers hidden";
-          console.log(`[voice-agent:ambient] ${why} — skipping TTS for ${next.filename}`);
+          console.log(`[voice-agent:ambient] autoReadAmbient=false — skipping TTS for ${next.filename}`);
         }
         const fanout = new SentenceFanout({
           ttsUrl: getTtsUrl(),
@@ -1698,7 +1698,9 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           // the stream finishes and we can count tool calls — once audio
           // has played, scrubbing is impossible.
           if (process.env.MICA_VOICE_SDK === "1") {
-            const skipTts = !anyVisible();
+            // Always speak — visibility no longer gates TTS. Background
+            // tabs receive audio by design; user has a stop-speaking button.
+            const skipTts = false;
             console.log(
               `[voice-agent:sdk] s=${sessionTag} turn start skipTts=${skipTts} systemPrompt=${systemPrompt.length}ch history=${history.length}msgs`,
             );
@@ -2763,11 +2765,11 @@ export function createVoiceAgentHandler(channelMgr: ChannelManager) {
           setImmediate(() => { void drainAnnouncementQueue(); });
 
           if (speakable) {
-            // Skip Kokoro round-trip when no subscriber is currently visible.
-            // Sentence text still goes out so the reply panel updates; a tab
-            // that becomes visible later sees the answer text.
-            const skipTts = !anyVisible();
-            console.log(`[voice-agent] speaking ${speakable.length} chars (fallback=${usedFallback}${skipTts ? ", skipTts=true (no visible client)" : ""}): ${JSON.stringify(speakable.slice(0, 200))}`);
+            // Always speak — visibility no longer gates TTS. Background
+            // tabs receive audio by design; user can stop via the
+            // "stop speaking" button on the voice card.
+            const skipTts = false;
+            console.log(`[voice-agent] speaking ${speakable.length} chars (fallback=${usedFallback}): ${JSON.stringify(speakable.slice(0, 200))}`);
             ctx.broadcast({ type: "thinking", phase: "tts" });
             let audioFramesEmitted = 0;
             const fanout = new SentenceFanout({

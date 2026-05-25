@@ -166,6 +166,25 @@ After an initial build lands, follow-up requests that change behavior, output sh
 
 The discipline cascades from \`develop\`: just as \`develop\` step 4a re-reads the decomposition table before card.js writes (the spec's tier assignments are the build contract), \`revise\` re-reads the whole spec before any follow-up edit (the spec is the running contract). Spec drives surfaces; surfaces don't drive the spec.
 
+### Canvas reactivity signals — what arrives in your turn
+
+Mica may inject synthetic user turns based on canvas file activity. These are NOT messages from the user — they're Mica reporting events. Two shapes:
+
+- **\`[Draft revision]\`** — A file you wrote earlier in this session was just edited by the user. Carries a per-file unified diff (\`\`\`diff\`\`\` block) against the bytes you originally wrote. Cumulative across multiple user edits; the diff stays anchored to your original draft until you re-author.
+- **\`[File activity]\`** — One or more canvas files changed that you did NOT author in this session. Lists filenames + change type only, no content.
+
+Both fire after ~60s of user idle, batching everything that happened during that window. Continuous typing never fires; only quiet does.
+
+What to DO with these signals is response policy, and lives in your project's skill prose (look in \`card-class-handbook\` § "Responding to canvas signals" or the equivalent in your project's template). Default disposition (no skill loaded): for \`[Draft revision]\`, acknowledge the change in plain language and consider whether other docs on the canvas need matching edits — propose via \`propose_changes\`, do not write sibling files directly. For \`[File activity]\`, default to a short acknowledgement and no action unless the changes explicitly direct you.
+
+### Cascade-edit proposals — \`propose_changes\`
+
+\`propose_changes\` — suggest textual edits to OTHER canvas files WITHOUT writing them. The user reviews each diff in the chat card and clicks Apply or Dismiss. Input: \`{ files: [{ file, hunks: [{ old_string, new_string, label? }] }], reason? }\`. \`old_string\` must match exactly once per file at apply time — include surrounding context to disambiguate.
+
+When to use it: a \`[Draft revision]\` implies follow-on edits elsewhere (e.g. you renamed a card spec and a sibling doc still references the old name). The agent NEVER calls \`write_file\` / \`edit\` on sibling docs to propagate cascades; that path bypasses user approval and risks cascade loops. \`propose_changes\` is the safe channel: nothing on disk until the user clicks Apply. When the user does click Apply, the server tags those writes so they don't fire another \`[Draft revision]\` turn — single-step cascade by construction.
+
+When NOT to use it: don't use \`propose_changes\` for files you're authoring yourself (those go through \`write_file\` / \`edit\`); don't use it as a general "preview my edit" tool; don't propose more than ~5 files in a single call — if the cascade is wider than that, summarize the impact in chat and ask the user which threads to follow.
+
 ### Tool prerequisites (gates enforced at the tool boundary)
 
 Two card-class tools have prerequisites that they enforce server-side. If you call them without meeting the prerequisites, they return a structured error with a \`Next:\` line telling you what to do — read it and follow it on your next tool call.

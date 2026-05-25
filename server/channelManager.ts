@@ -69,6 +69,19 @@ interface Session {
   ctx: SessionContext;
 }
 
+// ── Singleton holder ────────────────────────────────────────
+// Long-running modules that need to broadcast into channel sessions
+// (the propose_changes agent tool, future cross-cutting hooks) need a
+// way to reach the live ChannelManager without threading it through
+// every API surface. server/index.ts registers the instance at boot.
+let _activeChannelManager: ChannelManager | null = null;
+export function setActiveChannelManager(m: ChannelManager): void {
+  _activeChannelManager = m;
+}
+export function getActiveChannelManager(): ChannelManager | null {
+  return _activeChannelManager;
+}
+
 // ── ChannelManager ─────────────────────────────────────────
 
 export class ChannelManager {
@@ -329,6 +342,23 @@ export class ChannelManager {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
     return { project: session.project, filename: session.filename };
+  }
+
+  /** Push `data` to all clients attached to a (project, filename) session
+   *  using the same path as `ctx.broadcast` inside the handler. Returns
+   *  `true` if the session exists and was broadcast to, `false` if no
+   *  session is registered (caller can decide whether to fall back to a
+   *  REST/queue path). Used by agent tools (propose_changes) that need
+   *  to push structured events to the originating chat card without
+   *  routing through `dispatchToFilename` (which mimics a CLIENT message,
+   *  not a server broadcast). */
+  broadcastToFilename(project: string | null, filename: string, data: unknown): boolean {
+    const sessionId = this.filenameToSessionId.get(this.filenameKey(project, filename));
+    if (!sessionId) return false;
+    const session = this.sessions.get(sessionId);
+    if (!session || session.state !== "active") return false;
+    session.ctx.broadcast(data);
+    return true;
   }
 
   /** Subscribe to every broadcast across all sessions. Used by voiceAgent's
