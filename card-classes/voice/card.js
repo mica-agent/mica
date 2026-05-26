@@ -280,6 +280,12 @@ function ensurePlaybackCtx() {
     return null;
   }
   playbackCtx = new Ctx();
+  // If another tab is currently holding the mic claim, the new context
+  // must start suspended so the next enqueue/play call doesn't
+  // immediately produce sound through the listener tab's mic.
+  if (muted) {
+    try { playbackCtx.suspend(); } catch (_) {}
+  }
   return playbackCtx;
 }
 
@@ -300,7 +306,10 @@ async function enqueueSpeechWav(b64) {
   // Resume context if it suspended (browser may have done so during
   // page sleep / background). resume() fails gracefully if the
   // gesture context has lapsed; we'll know from the catch.
-  if (ctx.state === 'suspended') {
+  // Skip resume while another tab holds the mic claim — the ctx is
+  // intentionally suspended to prevent acoustic loopback. The buffer
+  // still decodes + queues fine; playback resumes on mute clearance.
+  if (ctx.state === 'suspended' && !muted) {
     try { await ctx.resume(); } catch (_) { /* keep going; decode below will still work */ }
   }
   let buffer;
@@ -354,11 +363,14 @@ async function playNextWav() {
   // After tab-close → reopen → mic-on, the context's user-gesture
   // grant can also become stale by the time the first response frame
   // arrives; resume() here under any active gesture window saves it.
-  if (ctx.state === 'suspended') {
+  // Skip resume + suppress the not-running warning while another tab
+  // holds the mic claim; the source still schedules and will play once
+  // the mute clears (AudioContext clock pauses, source position is held).
+  if (ctx.state === 'suspended' && !muted) {
     try { await ctx.resume(); }
     catch (e) { console.warn('[voice] playNextWav: ctx.resume() failed: ' + (e && e.message ? e.message : e)); }
   }
-  if (ctx.state !== 'running') {
+  if (ctx.state !== 'running' && !muted) {
     console.warn('[voice] playback ctx not running (state=' + ctx.state + ') — output likely silent. Click mic OFF/ON to re-grant gesture.');
   }
   isPlayingQueue = true;
@@ -397,6 +409,172 @@ function stopVoicePlayback() {
   updateStopSpeakingButton();
   updateMediaSession(false);
 }
+
+// ── Cross-tab TTS muting ───────────────────────────────────────────
+//
+// Prevents acoustic loopback across voice tabs: when tab A's mic is
+// hot and tab B is doing TTS, tab B's speakers feed tab A's mic, and
+// Parakeet faithfully transcribes Mica's own voice as if it were the
+// user — producing spurious dispatches in tab A's project. The bug
+// is acoustic, not architectural; browser AEC isn't enough across
+// independent tab audio sessions.
+//
+// Coordination is over a same-origin BroadcastChannel — no server
+// round-trip needed. Each card holds a unique TAB_ID and:
+//   - broadcasts {type:'mic-claim', tabId, project, ts} while its
+//     mic is hot, heartbeating every MIC_HEARTBEAT_MS so listeners
+//     can detect a crashed/closed claimer via TTL expiry;
+//   - broadcasts {type:'mic-release', tabId} on mic-off;
+//   - on receipt of a non-self claim, suspends its playback
+//     AudioContext (freezes the in-flight source mid-buffer, leaves
+//     pending buffers queued) and flips the host page favicon to a
+//     speaker-with-slash so the user knows that tab is muted.
+//
+// Edge cases:
+//   - Both tabs engage mic simultaneously: neither tab is a passive
+//     noise source, so we honor that and don't mute either.
+//   - Claimer tab crashes / closes without release: stale claims age
+//     out after CLAIM_TTL_MS via the reaper, returning audio.
+//   - Card mounted mid-claim: new card broadcasts 'mic-query' so any
+//     hot peers re-announce their claim.
+
+const MIC_CHANNEL_NAME = 'mica-voice-mic';
+const MIC_HEARTBEAT_MS = 2000;
+const CLAIM_TTL_MS = 5000;
+const TAB_ID = (typeof crypto !== 'undefined' && crypto.randomUUID)
+  ? crypto.randomUUID()
+  : 'tab-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+let micChannel = null;
+const otherClaims = new Map();  // tabId -> { ts, project }
+let micHeartbeatHandle = null;
+let claimReaperHandle = null;
+let muted = false;  // true while ANY non-self tab has mic hot
+
+function broadcastMicMessage(msg) {
+  if (!micChannel) return;
+  try { micChannel.postMessage(msg); } catch (_) { /* channel may be closed */ }
+}
+
+function broadcastMicClaim() {
+  broadcastMicMessage({
+    type: 'mic-claim',
+    tabId: TAB_ID,
+    project: (typeof mica !== 'undefined' && mica.project) || '',
+    ts: Date.now(),
+  });
+}
+
+function broadcastMicRelease() {
+  broadcastMicMessage({ type: 'mic-release', tabId: TAB_ID });
+}
+
+function reapStaleClaims() {
+  const cutoff = Date.now() - CLAIM_TTL_MS;
+  let changed = false;
+  for (const [tabId, claim] of otherClaims.entries()) {
+    if (claim.ts < cutoff) {
+      otherClaims.delete(tabId);
+      changed = true;
+    }
+  }
+  if (changed) refreshMuteState();
+}
+
+function refreshMuteState() {
+  const nowMuted = otherClaims.size > 0;
+  if (nowMuted === muted) return;
+  muted = nowMuted;
+  if (muted) {
+    // Pick a representative project for the activity log so the user
+    // knows which tab took the mic.
+    let claimant = '';
+    for (const claim of otherClaims.values()) {
+      claimant = claim.project || '';
+      break;
+    }
+    appendActivity('mute', 'Paused — ' + (claimant || 'another tab') + ' is listening');
+    if (playbackCtx) {
+      try { playbackCtx.suspend(); } catch (_) {}
+    }
+    setMutedFavicon(true);
+  } else {
+    appendActivity('mute', 'Resumed — other tab released mic');
+    if (playbackCtx && playbackCtx.state === 'suspended') {
+      try { playbackCtx.resume(); } catch (_) {}
+    }
+    setMutedFavicon(false);
+  }
+}
+
+// Speaker-with-slash favicon, embedded as inline SVG so there's no
+// asset to ship. encodeURIComponent escapes `#` to `%23` for the
+// SVG color attribute.
+const MUTED_FAVICON = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#d33" stroke="#d33" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M11 5L6 9H2v6h4l5 4V5z"/>' +
+    '<line x1="23" y1="9" x2="17" y2="15"/>' +
+    '<line x1="17" y1="9" x2="23" y2="15"/>' +
+  '</svg>'
+);
+let originalFaviconHref = null;
+
+function setMutedFavicon(on) {
+  try {
+    let link = document.querySelector('link[rel="icon"]');
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    if (on) {
+      if (originalFaviconHref === null) originalFaviconHref = link.href || '';
+      link.href = MUTED_FAVICON;
+    } else if (originalFaviconHref !== null) {
+      link.href = originalFaviconHref;
+    }
+  } catch (_) { /* DOM access may be unavailable in some shim contexts */ }
+}
+
+function initMicCoordChannel() {
+  if (typeof window.BroadcastChannel === 'undefined') return;
+  try { micChannel = new window.BroadcastChannel(MIC_CHANNEL_NAME); }
+  catch (_) { micChannel = null; return; }
+  micChannel.onmessage = function(ev) {
+    const m = ev.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.tabId === TAB_ID) return;  // ignore self
+    if (m.type === 'mic-claim') {
+      otherClaims.set(m.tabId, { ts: Date.now(), project: m.project || '' });
+      refreshMuteState();
+    } else if (m.type === 'mic-release') {
+      otherClaims.delete(m.tabId);
+      refreshMuteState();
+    } else if (m.type === 'mic-query') {
+      // A fresh card is asking who's hot; re-announce if we are.
+      if (micOn) broadcastMicClaim();
+    }
+  };
+  // Ask peers to re-announce — covers the case where this card mounts
+  // while another tab already has the mic hot.
+  broadcastMicMessage({ type: 'mic-query', tabId: TAB_ID });
+  claimReaperHandle = window.setInterval(reapStaleClaims, 1000);
+}
+
+function startMicClaimHeartbeat() {
+  if (micHeartbeatHandle) return;
+  broadcastMicClaim();
+  micHeartbeatHandle = window.setInterval(broadcastMicClaim, MIC_HEARTBEAT_MS);
+}
+
+function stopMicClaimHeartbeat() {
+  if (micHeartbeatHandle) {
+    window.clearInterval(micHeartbeatHandle);
+    micHeartbeatHandle = null;
+  }
+  broadcastMicRelease();
+}
+
+initMicCoordChannel();
 
 // Media Session API integration. When playing, the OS-level media
 // controls (lock screen on mobile, macOS Now Playing widget, hardware
@@ -643,6 +821,11 @@ async function turnMicOn() {
   speechStartedAt = 0;
   lastSpeechMs = 0;
   suppressNextUtterance = false;
+  // Announce mic-hot to peer tabs so they pause TTS — prevents their
+  // speakers from bleeding into this mic and producing spurious
+  // dispatches in their projects. Heartbeats every MIC_HEARTBEAT_MS
+  // so peers can detect a crash via TTL.
+  startMicClaimHeartbeat();
   // Start the recorder NOW — before the user has spoken — so we capture
   // the first phoneme without spin-up lag. VAD only marks where speech
   // starts/ends within this rolling recording.
@@ -656,6 +839,9 @@ async function turnMicOn() {
 function turnMicOff() {
   if (!micOn) return;
   micOn = false;
+  // Release the cross-tab mic claim so peer tabs resume TTS playback.
+  // Broadcast first (cheap) before tearing down the recorder/stream.
+  stopMicClaimHeartbeat();
   speechActive = false;
   silenceStartedAt = 0;
   speechStartedAt = 0;
@@ -1378,6 +1564,19 @@ mica.onDestroy(function() {
   if (playbackCtx) {
     try { playbackCtx.close(); } catch (_) {}
     playbackCtx = null;
+  }
+  // Restore the favicon if we left it on speaker-with-slash, so an
+  // unmount during muted state doesn't leave the host page stuck on
+  // the muted icon.
+  if (muted) setMutedFavicon(false);
+  // Tear down the cross-tab coordination channel.
+  if (claimReaperHandle) {
+    window.clearInterval(claimReaperHandle);
+    claimReaperHandle = null;
+  }
+  if (micChannel) {
+    try { micChannel.close(); } catch (_) {}
+    micChannel = null;
   }
   // Explicitly close the channel so the server detaches this client from
   // the voice session. Without this, the React unmount cleans local
