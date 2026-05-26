@@ -340,7 +340,52 @@ function switchProject(projectName: string) {
   console.log(`[mica] Active project: ${projectName}`);
 }
 
+// Voice readiness tracking for /health (used by docker-compose
+// healthcheck so mica-vllm waits for voice sidecars to claim memory
+// before vLLM starts grabbing pages). Updated by the startup
+// ensureVoiceServers() call below: on success → voiceStartupOk=true,
+// on failure → voiceStartupFailed=true. Either terminal state lets
+// /health return 200 so vLLM can proceed; the still-loading state
+// returns 503. voiceWasEverReady covers the post-startup crash case:
+// once voice has reached ready at least once, don't flap /health if a
+// sidecar later dies and gets respawned.
+let voiceStartupOk = false;
+let voiceStartupFailed = false;
+let voiceWasEverReady = false;
+
 // ── REST Endpoints ───────────────────────────────────────────
+
+// Liveness + voice-readiness probe. Docker-compose healthcheck on the
+// `mica` service hits this; `mica-vllm` depends_on this service being
+// healthy, so vLLM doesn't start until voice has claimed its CUDA
+// slice (or terminally failed). Voice failure is non-fatal — chat
+// works without voice — so a failed startup still resolves the
+// healthcheck so the rest of the stack can come up.
+app.get("/health", (_req, res) => {
+  const v = getVoiceServerStatus();
+  if (v.disabled) {
+    res.status(200).json({ ok: true, voice: "disabled" });
+    return;
+  }
+  if (v.stt.ready && v.tts.ready) {
+    voiceWasEverReady = true;
+    res.status(200).json({ ok: true, voice: "ready" });
+    return;
+  }
+  if (voiceWasEverReady) {
+    // Voice loaded successfully at least once; treat current degraded
+    // state as healthy from the orchestrator's perspective. A sidecar
+    // self-heal is in progress (ensureVoiceServers respawns on next
+    // voice request); don't flap the compose healthcheck.
+    res.status(200).json({ ok: true, voice: "degraded" });
+    return;
+  }
+  if (voiceStartupFailed) {
+    res.status(200).json({ ok: true, voice: "failed" });
+    return;
+  }
+  res.status(503).json({ ok: false, voice: voiceStartupOk ? "ready-flag-set-but-status-pending" : "loading" });
+});
 
 // Workspace info
 app.get("/api/workspace", async (_req, res) => {
@@ -3171,12 +3216,20 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
     console.log("[startup] MICA_DISABLE_LLAMA=1 — skipping local llama-server.");
   }
 
-  // Voice sidecars (Parakeet STT + Kokoro TTS) — lazy on startup, same
-  // posture as llama-server. Failure here is non-fatal: chat/agents work
-  // without voice; only the .voice card surfaces the error.
+  // Voice sidecars (Parakeet STT + Kokoro TTS). Startup eagerly spawns
+  // both so /health can flip green before vLLM starts (voice-first boot
+  // order — see [docker-compose.yml](../docker-compose.yml) for the
+  // dependency inversion rationale). Failure is non-fatal: chat/agents
+  // work without voice; only the .voice card surfaces the error.
+  // We track terminal success/failure in module-level flags so the
+  // /health endpoint can distinguish "still loading" (503) from "done,
+  // one way or another" (200).
   if (process.env.MICA_DISABLE_VOICE !== "1") {
-    ensureVoiceServers().catch((err) => {
+    ensureVoiceServers().then(() => {
+      voiceStartupOk = true;
+    }).catch((err) => {
       console.warn("[startup] voice servers failed to start:", (err as Error).message);
+      voiceStartupFailed = true;
     });
   } else {
     console.log("[startup] MICA_DISABLE_VOICE=1 — skipping voice sidecars.");

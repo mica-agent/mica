@@ -95,25 +95,26 @@ services:
     depends_on:
       mica-init:
         condition: service_completed_successfully
-      mica-vllm:
-        # service_started (not service_healthy) is deliberate. The
-        # devcontainer's scripts/start.sh spawns its chat-vllm sibling
-        # detached and immediately starts the backend in parallel; the
-        # voice-tts sidecar then gets to claim its CUDA slice DURING
-        # vLLM's ~60-90 s weight-load window. If we gated on
-        # service_healthy instead, mica wouldn't boot until vLLM had
-        # already grown PyTorch's caching allocator to ~127 GiB of the
-        # 130 GiB unified pool — and voice-tts would OOM at Kokoro's
-        # CUDA init (3 GiB free isn't enough). Booting in parallel mirrors
-        # the devcontainer race, which empirically works.
-        # Chat requests during the ~60 s warmup will get 503s from the
-        # backend's chat handlers, but that's a brief window before the
-        # user starts interacting.
-        #
-        # required: false (compose 2.20+) lets `mica` start even when
-        # mica-vllm is profile-filtered out (llama topology).
-        condition: service_started
-        required: false
+    # Voice-first boot order: mica starts BEFORE mica-vllm. Voice
+    # sidecars (Parakeet STT + Kokoro TTS) claim their ~3.4 GB of
+    # GPU memory against an empty pool, then mica's /health goes green,
+    # which lets mica-vllm start and reserve its share of what's left.
+    # This eliminates the boot-time race between voice and vLLM that
+    # previously caused Kokoro to OOM during vLLM's allocator-grow
+    # window. The healthcheck below returns 200 when voice is ready
+    # OR has terminally failed (failure is non-fatal — chat works
+    # without voice — so vLLM should still come up).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3002/health"]
+      # Voice sidecars need ~5-10s to load with cached models, longer on
+      # first-run weight download (Parakeet ~1.5 GB, Kokoro ~250 MB).
+      # start_period covers the first-run pull on slow links; once /health
+      # is green, the orchestrator moves on. After start_period, retries
+      # at this interval catch any post-startup degradation.
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 600s
     ports:
       - "${MICA_FRONTEND_PORT:-5173}:5173"   # Vite frontend
       - "${MICA_PORT:-${MICA_BACKEND_PORT:-3002}}:3002"  # Node backend API
@@ -216,6 +217,13 @@ services:
     depends_on:
       mica-init:
         condition: service_completed_successfully
+      # Voice-first boot order: wait for mica's voice sidecars to load
+      # AND claim their ~3.4 GB of GPU memory before vLLM starts. vLLM's
+      # `--gpu-memory-utilization 0.55` is then computed against
+      # (total - voice's slice), so we don't fight for memory. See the
+      # `mica` service's healthcheck for what "healthy" means here.
+      mica:
+        condition: service_healthy
     environment:
       HF_HOME: /cache/huggingface
       # The vllm/vllm-openai image's /etc/passwd has no entry for UID 1000
@@ -264,10 +272,12 @@ services:
     volumes:
       - ${HF_CACHE_DIR:-mica-models}:/cache/huggingface
     healthcheck:
-      # Sibling `mica` service uses depends_on.condition: service_healthy
-      # to wait for this before starting. 120s start period leaves room
-      # for first-run model download on slow links; on cached runs the
-      # service typically reaches ready in 30-60s.
+      # Used by `mica-compose.sh`'s heartbeat to surface "vLLM ready" in
+      # the Ready banner. The dependency direction is now inverted from
+      # the original design — `mica` does NOT wait for vLLM; vLLM waits
+      # for `mica` (voice-first boot order). 120s start period leaves
+      # room for first-run model download on slow links; on cached runs
+      # the service typically reaches ready in 30-60s.
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/v1/models"]
       interval: 30s
       timeout: 10s

@@ -673,11 +673,14 @@ print_startup_banner() {
     printf '    %d. Pulling Docker image %s(~3 GB)%s\n' "$step" "$C_DIM" "$C_RST"
     step=$((step + 1))
   fi
+  printf '    %d. Starting backend + voice sidecars %s(STT + TTS, ~5-10s once weights cached)%s\n' \
+    "$step" "$C_DIM" "$C_RST"
+  step=$((step + 1))
   if [ "$topology" = "vllm" ]; then
     printf '    %d. Downloading model weights %s(~30 GB NVFP4 — the long stage)%s\n' \
       "$step" "$C_DIM" "$C_RST"
     step=$((step + 1))
-    printf '    %d. Warming up vLLM %s(~60s after download finishes)%s\n' \
+    printf '    %d. Warming up vLLM %s(~60s after download finishes, gated on voice ready)%s\n' \
       "$step" "$C_DIM" "$C_RST"
   else
     printf '    %d. Downloading model weights %s(~22 GB GGUF)%s\n' \
@@ -687,7 +690,7 @@ print_startup_banner() {
       "$step" "$C_DIM" "$C_RST"
   fi
   step=$((step + 1))
-  printf '    %d. Starting frontend + backend %s(seconds)%s\n' "$step" "$C_DIM" "$C_RST"
+  printf '    %d. Frontend %s(seconds, parallel with the rest)%s\n' "$step" "$C_DIM" "$C_RST"
   printf '\n'
   printf '  %sProgress heartbeat every 30s. Subsequent runs are seconds.%s\n' "$C_DIM" "$C_RST"
   printf '\n'
@@ -781,20 +784,35 @@ start_progress_watcher() {
     fi
 
     # Bordered multi-line banner stands out from docker's per-line output.
+    # Display order mirrors the voice-first boot sequence: mica first,
+    # then voice (claims its GPU slice while vLLM is still gated),
+    # then vLLM (waits for mica /health before starting), then frontend.
     printf '\n'
     printf '  %s┌─ mica progress: %s elapsed ─────────────────────%s\n' \
       "$C_BLU" "$elapsed_disp" "$C_RST"
-    if [ "$topology" = "vllm" ]; then
-      _heartbeat_line "vLLM container" "$([ "$vllm_state" = "running" ] && echo ok || echo "${vllm_state:-pending}")"
-      _heartbeat_line "vLLM /v1/models ready" "$([ "$vllm_ready" = "yes" ] && echo ok || echo "waiting (model loading)")"
-    fi
     _heartbeat_line "Mica container" "$([ "$mica_state" = "running" ] && echo ok || echo "${mica_state:-pending}")"
-    _heartbeat_line "Frontend (port 5173)" "$([ "$frontend_ready" = "yes" ] && echo ok || echo "waiting")"
     case "$voice_ready" in
       yes)      _heartbeat_line "Voice sidecars" "ok" ;;
       disabled) _heartbeat_line "Voice sidecars" "disabled (MICA_DISABLE_VOICE=1)" ;;
       *)        _heartbeat_line "Voice sidecars" "loading (STT + TTS)" ;;
     esac
+    if [ "$topology" = "vllm" ]; then
+      # Pre-voice-ready, mica-vllm is gated by depends_on so the
+      # container hasn't been started yet — vllm_state will be empty
+      # until then. "gated" makes that explicit instead of "pending"
+      # which could read as a failure.
+      local vllm_container_label
+      if [ -z "$vllm_state" ] && [ "$voice_ready" != "yes" ] && [ "$voice_ready" != "disabled" ]; then
+        vllm_container_label="gated (waiting for voice)"
+      elif [ "$vllm_state" = "running" ]; then
+        vllm_container_label="ok"
+      else
+        vllm_container_label="${vllm_state:-pending}"
+      fi
+      _heartbeat_line "vLLM container" "$vllm_container_label"
+      _heartbeat_line "vLLM /v1/models ready" "$([ "$vllm_ready" = "yes" ] && echo ok || echo "waiting (model loading)")"
+    fi
+    _heartbeat_line "Frontend (port 5173)" "$([ "$frontend_ready" = "yes" ] && echo ok || echo "waiting")"
     printf '  %s└─ open http://localhost:5173 once everything is ok ──%s\n' "$C_BLU" "$C_RST"
     printf '\n'
   done

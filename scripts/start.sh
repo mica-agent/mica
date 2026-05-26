@@ -109,16 +109,23 @@ cd "$PROJECT_DIR"
 #   3. Dev default /workspaces/testproj (only fires outside containers)
 export PROJECT_DIR="${PROJECT_DIR_OVERRIDE:-${_INHERITED_PROJECT_DIR:-/workspaces/testproj}}"
 
-# ── Chat vLLM container ─────────────────────────────────────────
-# Replaces the previous llama-server lifecycle. Qwen3.6-35B-A3B-NVFP4
-# in vllm/vllm-openai:cu130-nightly on port 8012 — same port the
-# backend's voice handler + chat agent already point at, so this is a
-# drop-in. vLLM continuous batching means voice + chat share this one
-# model with near-zero overhead.
+# ── Chat vLLM container (deferred until voice is healthy) ───────
+# Voice-first boot order: backend + voice sidecars start FIRST so Parakeet
+# and Kokoro can claim their ~3.4 GB of GPU memory against an empty pool.
+# THEN we start the chat vLLM container so its `--gpu-memory-utilization
+# 0.55` computes against (total - voice's slice). This eliminates the
+# boot-time race that caused Kokoro to OOM during vLLM's allocator-grow
+# window. Mirrors docker-compose.yml's healthcheck-gated dependency.
 #
-# Set MICA_DISABLE_CHAT_VLLM=1 to skip (e.g. if iterating on frontend
-# only or running an external vLLM you've already started).
+# We set up the chat vLLM variables here (so backend startup gets the
+# right LLAMA_URL + MICA_DISABLE_LLAMA env) but defer the actual
+# `docker run` to the post-backend-healthy block further down.
+#
+# Set MICA_DISABLE_CHAT_VLLM=1 to skip entirely (e.g. frontend-only
+# iteration, or you've started an external vLLM yourself).
+CHAT_VLLM_ENABLED=0
 if [ "${MICA_DISABLE_CHAT_VLLM:-0}" != "1" ]; then
+  CHAT_VLLM_ENABLED=1
   # PROJECT_DIR gets overwritten to the workspace path lower in this
   # script (it's the env the backend reads to scope its workspace).
   # Use REPO_ROOT here, which always points at the Mica repo.
@@ -150,45 +157,36 @@ if [ "${MICA_DISABLE_CHAT_VLLM:-0}" != "1" ]; then
     CHAT_SPEC_CONFIG='{"method":"mtp","num_speculative_tokens":1}'
   fi
 
-  if vllm_container_running "$CHAT_NAME"; then
-    echo "Chat vLLM ($CHAT_NAME) already running on :$CHAT_PORT"
-  else
-    vllm_container_check_docker
-    vllm_container_remove_stopped "$CHAT_NAME"
-    vllm_container_pull_or_use "$CHAT_IMAGE"
-    echo "Starting chat vLLM ($CHAT_NAME) on port $CHAT_PORT..."
-    echo "  Model:  $CHAT_MODEL"
-    echo "  Logs:   $PID_DIR/chat.log"
-
-    # Steve Scargall's April 2026 Spark recipe for Qwen3.6-NVFP4.
-    # GPU mem 0.30 ≈ 36 GB; vLLM batching shares this between voice
-    # and chat. MTP-1 spec decode + flashinfer_cutlass MoE backend.
-    #
-    # Served-model-name convention:
-    #   - `qwen-vl`   — semantic alias for direct vLLM callers
-    #                   (renderCapture, micaAgent's captioning fetch). Today
-    #                   this resolves to the same Qwen3.6 multimodal vLLM
-    #                   as everything else; when a dedicated VL model lands,
-    #                   only this alias re-points.
-    #   - `qwen-voice` — semantic alias for voiceAgent. Same container today;
-    #                   re-points if we move voice to Qwen-Omni or similar.
-    #   - `qwen3-vl-local` — SDK-bound alias. The qwen-code SDK gates image
-    #                   modality off the model name via `/^qwen3-vl-/` regex
-    #                   (see server/micaAgent.ts ~line 1620). Required for
-    #                   SDK callers (the chat agent loop, plugins/llmAgent.ts);
-    #                   they CANNOT use `qwen-vl` without losing image-bearing
-    #                   tool results. Keep this alias until the SDK constraint
-    #                   is removed upstream.
-    #   - `openai:qwen-vl` — opencode bridge's OpenAI-API-compatible alias.
-    #   - `openai:qwen3-vl-local` — SDK-bound path's OpenAI-prefixed form.
-    #                   micaAgent.ts and plugins/llmAgent.ts build
-    #                   `openai:${modelName}` strings for SDK calls, so both
-    #                   the bare and `openai:`-prefixed SDK-bound names need
-    #                   to be served.
-    # Convention rules: no version numbers, no quantization, no hosting in
-    # served names — those belong in $CHAT_MODEL only. Roles map to aliases
-    # one-to-one (today + future-pointing). See ARCHITECTURE.md decisions.
-    chat_cmd=$(cat <<EOF
+  # Build the vLLM command up-front so the post-backend-healthy block
+  # can launch it without re-deriving config. Steve Scargall's April 2026
+  # Spark recipe for Qwen3.6-NVFP4. MTP-1 spec decode + flashinfer_cutlass
+  # MoE backend.
+  #
+  # Served-model-name convention:
+  #   - `qwen-vl`   — semantic alias for direct vLLM callers
+  #                   (renderCapture, micaAgent's captioning fetch). Today
+  #                   this resolves to the same Qwen3.6 multimodal vLLM
+  #                   as everything else; when a dedicated VL model lands,
+  #                   only this alias re-points.
+  #   - `qwen-voice` — semantic alias for voiceAgent. Same container today;
+  #                   re-points if we move voice to Qwen-Omni or similar.
+  #   - `qwen3-vl-local` — SDK-bound alias. The qwen-code SDK gates image
+  #                   modality off the model name via `/^qwen3-vl-/` regex
+  #                   (see server/micaAgent.ts ~line 1620). Required for
+  #                   SDK callers (the chat agent loop, plugins/llmAgent.ts);
+  #                   they CANNOT use `qwen-vl` without losing image-bearing
+  #                   tool results. Keep this alias until the SDK constraint
+  #                   is removed upstream.
+  #   - `openai:qwen-vl` — opencode bridge's OpenAI-API-compatible alias.
+  #   - `openai:qwen3-vl-local` — SDK-bound path's OpenAI-prefixed form.
+  #                   micaAgent.ts and plugins/llmAgent.ts build
+  #                   `openai:${modelName}` strings for SDK calls, so both
+  #                   the bare and `openai:`-prefixed SDK-bound names need
+  #                   to be served.
+  # Convention rules: no version numbers, no quantization, no hosting in
+  # served names — those belong in $CHAT_MODEL only. Roles map to aliases
+  # one-to-one (today + future-pointing). See ARCHITECTURE.md decisions.
+  CHAT_CMD=$(cat <<EOF
 vllm serve $CHAT_MODEL \
   --host 0.0.0.0 --port 8000 \
   --served-model-name qwen-vl qwen-voice openai:qwen-vl qwen3-vl-local openai:qwen3-vl-local \
@@ -211,25 +209,24 @@ vllm serve $CHAT_MODEL \
 EOF
 )
 
-    vllm_container_run_detached \
-      "$CHAT_NAME" "$CHAT_IMAGE" "$CHAT_PORT:8000" \
-      "$PID_DIR/chat.cid" "$PID_DIR/chat.log" \
-      --gpus all --ipc=host --shm-size=16g \
-      -v "$HF_CACHE:/root/.cache/huggingface" \
-      -- \
-      "$chat_cmd" >/dev/null
-
-    vllm_container_wait_health "$CHAT_NAME" "http://$CHAT_HOST:$CHAT_PORT/health" "$CHAT_HEALTH_TIMEOUT"
+  # If chat vLLM is already running from a previous session, we don't
+  # need the voice-first delay — vLLM's pool is already established, so
+  # voice will load against a stable allocator regardless of order. Just
+  # report and proceed; the post-backend block will skip the start path.
+  if vllm_container_running "$CHAT_NAME"; then
+    echo "Chat vLLM ($CHAT_NAME) already running on :$CHAT_PORT"
   fi
   # The backend's startup auto-spawns llama-server unless this is set.
-  # Chat vLLM is up on the same port — we don't want both fighting.
+  # Chat vLLM is up (or about to be) on the same port — we don't want
+  # both fighting. Set BEFORE backend launch so the backend's
+  # ensureLlamaServer gate sees it.
   export MICA_DISABLE_LLAMA=1
   # Backend processes (chat/voice/render) reach the chat vLLM via the
   # host docker bridge, not localhost. Export so server/{micaChat,
   # micaAgent,voiceAgent,index}.ts all share one source of truth.
   export LLAMA_URL="${LLAMA_URL:-http://$CHAT_HOST:$CHAT_PORT}"
 fi
-# ── End chat vLLM container ─────────────────────────────────────
+# ── End chat vLLM container setup ───────────────────────────────
 
 # Start backend. We invoke tsx, which itself spawns a node child running our
 # code. We record the *child* PID so that external kills (e.g. `kill -TERM`)
@@ -273,9 +270,10 @@ echo "Starting frontend on port $FRONTEND_PORT..."
 setsid nohup node "$REPO_ROOT/node_modules/.bin/vite" > "$PID_DIR/frontend.log" 2>&1 < /dev/null &
 record_child_pid $! "$PID_DIR/frontend.pid"
 
-# Wait for backend to be ready (up to 15 seconds)
+# Wait for backend's HTTP listener to come up (up to 15 seconds).
+# This is a liveness probe, not voice readiness — that comes next.
 echo ""
-echo "Waiting for servers..."
+echo "Waiting for backend..."
 for i in $(seq 1 15); do
   if node -e "
     const http = require('http');
@@ -287,6 +285,79 @@ for i in $(seq 1 15); do
   fi
   sleep 1
 done
+
+# Voice-first boot order: wait for backend /health to report voice ready
+# (or terminally failed) BEFORE starting the chat vLLM container. Voice
+# sidecars then claim their ~3.4 GB of GPU memory against an empty pool,
+# and vLLM's --gpu-memory-utilization 0.55 reservation lands cleanly
+# against (total - voice). Eliminates the boot-time race that previously
+# caused Kokoro OOM during vLLM's allocator-grow window.
+#
+# Skipped when:
+#   - MICA_DISABLE_CHAT_VLLM=1 (no vLLM to coexist with)
+#   - MICA_DISABLE_VOICE=1     (no voice sidecars to wait for)
+#   - chat vLLM is already running (its pool is already established;
+#     voice will load fine against a stable allocator regardless)
+HEALTH_WAIT_REASON=""
+if [ "${MICA_DISABLE_CHAT_VLLM:-0}" = "1" ]; then
+  HEALTH_WAIT_REASON="chat-vllm disabled"
+elif [ "${MICA_DISABLE_VOICE:-0}" = "1" ]; then
+  HEALTH_WAIT_REASON="voice disabled"
+elif [ "$CHAT_VLLM_ENABLED" = "1" ] && vllm_container_running "$CHAT_NAME"; then
+  HEALTH_WAIT_REASON="chat-vllm already running"
+fi
+
+if [ -z "$HEALTH_WAIT_REASON" ] && [ "$CHAT_VLLM_ENABLED" = "1" ]; then
+  echo "Waiting for voice sidecars to load before starting chat vLLM..."
+  # Voice can take ~5-10s with cached models; first-run weight pull can
+  # be minutes (Parakeet ~1.5 GB, Kokoro ~250 MB). 600s upper bound is
+  # generous; if voice fails terminally, /health flips to 200 with
+  # voice:"failed" sooner so we proceed without blocking the stack.
+  VOICE_HEALTH_TIMEOUT="${VOICE_HEALTH_TIMEOUT:-600}"
+  voice_elapsed=0
+  voice_ok=0
+  while [ "$voice_elapsed" -lt "$VOICE_HEALTH_TIMEOUT" ]; do
+    if curl -fsS --max-time 5 "http://localhost:$BACKEND_PORT/health" >/dev/null 2>&1; then
+      voice_ok=1
+      break
+    fi
+    sleep 2
+    voice_elapsed=$((voice_elapsed + 2))
+    # Progress nag every 30s so the user knows it isn't hung.
+    if [ $((voice_elapsed % 30)) -eq 0 ]; then
+      echo "  ...still waiting (${voice_elapsed}s elapsed)"
+    fi
+  done
+  if [ "$voice_ok" -eq 1 ]; then
+    voice_state=$(curl -fsS --max-time 5 "http://localhost:$BACKEND_PORT/health" 2>/dev/null \
+      | grep -oP '"voice":"[^"]*"' | head -1 || echo '"voice":"?"')
+    echo "Voice ready ($voice_state). Starting chat vLLM..."
+  else
+    echo "Voice didn't reach /health within ${VOICE_HEALTH_TIMEOUT}s — starting chat vLLM anyway."
+  fi
+elif [ -n "$HEALTH_WAIT_REASON" ]; then
+  echo "Skipping voice-first wait: $HEALTH_WAIT_REASON."
+fi
+
+# Now actually launch the chat vLLM container if needed.
+if [ "$CHAT_VLLM_ENABLED" = "1" ] && ! vllm_container_running "$CHAT_NAME"; then
+  vllm_container_check_docker
+  vllm_container_remove_stopped "$CHAT_NAME"
+  vllm_container_pull_or_use "$CHAT_IMAGE"
+  echo "Starting chat vLLM ($CHAT_NAME) on port $CHAT_PORT..."
+  echo "  Model:  $CHAT_MODEL"
+  echo "  Logs:   $PID_DIR/chat.log"
+
+  vllm_container_run_detached \
+    "$CHAT_NAME" "$CHAT_IMAGE" "$CHAT_PORT:8000" \
+    "$PID_DIR/chat.cid" "$PID_DIR/chat.log" \
+    --gpus all --ipc=host --shm-size=16g \
+    -v "$HF_CACHE:/root/.cache/huggingface" \
+    -- \
+    "$CHAT_CMD" >/dev/null
+
+  vllm_container_wait_health "$CHAT_NAME" "http://$CHAT_HOST:$CHAT_PORT/health" "$CHAT_HEALTH_TIMEOUT"
+fi
 
 # Check results
 backend_ok=false
