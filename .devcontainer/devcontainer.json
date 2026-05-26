@@ -101,7 +101,13 @@
 	// `bash -lc` invocation can't re-read the rc file the installer just
 	// modified, so we export PATH inline before the verification step and
 	// fall back to the full path so the test doesn't fail spuriously.
-	"postCreateCommand": "bash -lc 'sudo chown -R vscode:vscode /home/vscode/.cache 2>/dev/null; sudo mkdir -p /workspaces/testproj && sudo chown vscode:vscode /workspaces/testproj; export PATH=$HOME/.local/bin:$PATH; command -v claude >/dev/null 2>&1 || (curl -fsSL https://claude.ai/install.sh | bash); $HOME/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null || true; cd /workspaces/mica && [ -d node_modules ] && npx playwright install chromium 2>&1 | tail -3 || true'",
+	// The voice/install.sh step matches what the release Dockerfile does
+	// (line 187 of Dockerfile): pre-installs Parakeet STT + Kokoro TTS
+	// into scripts/voice/.venv/ so voice features work out of the box on
+	// first use. The script is idempotent — short-circuits if .venv
+	// already exists. Adds ~5-10 min to first container create; subsequent
+	// rebuilds reuse the venv via the host bind mount.
+	"postCreateCommand": "bash -lc 'sudo chown -R vscode:vscode /home/vscode/.cache 2>/dev/null; sudo mkdir -p /workspaces/testproj && sudo chown vscode:vscode /workspaces/testproj; export PATH=$HOME/.local/bin:$PATH; command -v claude >/dev/null 2>&1 || (curl -fsSL https://claude.ai/install.sh | bash); $HOME/.local/bin/claude --version 2>/dev/null || claude --version 2>/dev/null || true; cd /workspaces/mica && npm install 2>&1 | tail -5; cd /workspaces/mica && [ -d node_modules ] && npx playwright install chromium 2>&1 | tail -3 || true; cd /workspaces/mica && bash scripts/voice/install.sh 2>&1 | tail -5 || true'",
 
 	// Connect as non-root user with sudo access
 	"remoteUser": "vscode"
