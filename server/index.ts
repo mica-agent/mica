@@ -2751,7 +2751,15 @@ wss.on("connection", (ws) => {
               wsChannels.get(ws)?.delete(oldCid);
             }
 
-            const openPromise = channelManager.open(cid, sessionId, wsProject, fname, fn as string, channelArgs, msgTabId, onData, onClose);
+            // Pass a getProject resolver so the channel manager's broadcast
+            // path can filter clients whose WebSocket has navigated to a
+            // different project after this channel was opened. Without
+            // this, a voice session in project A keeps delivering TTS to
+            // a tab that's now viewing project B. The resolver reads
+            // wsProjects live every time it's called, so subscribe-project
+            // updates (line 2690) take effect on the next broadcast.
+            const getProject = (): string | null => wsProjects.get(ws) ?? null;
+            const openPromise = channelManager.open(cid, sessionId, wsProject, fname, fn as string, channelArgs, msgTabId, onData, onClose, getProject);
             pendingChannelOpens.set(cid, openPromise.then(() => { /* swallow */ }).catch(() => { /* errored open — pending channel_data will check has() and drop */ }));
             try {
               await openPromise;

@@ -22,6 +22,13 @@ type SessionState = "registered" | "active" | "idle" | "destroyed";
 interface ClientHandle {
   onData: (data: unknown) => void;
   onClose: () => void;
+  /** Optional resolver: what project is this client's WebSocket CURRENTLY
+   *  subscribed to? Used by broadcast() to skip cross-project delivery —
+   *  a voice session in project A should not emit TTS to a client whose
+   *  tab has navigated away to project B (even though the WS is still
+   *  alive). Returns null when the resolver isn't installed (legacy
+   *  callers; treated as "deliver to all attached clients"). */
+  getProject?: () => string | null;
 }
 
 export interface SessionContext {
@@ -149,7 +156,24 @@ export class ChannelManager {
         if (t === "assistant_speech") {
           console.log(`[channel-mgr:broadcast] ${session.filename} type=assistant_speech clients=${session.clients.size}`);
         }
+        let skippedCrossProject = 0;
         for (const [clientId, handle] of session.clients) {
+          // Project-scoped delivery: a session in project A should not
+          // deliver to clients whose WebSocket has navigated to project B.
+          // This catches the cross-project voice-TTS leak when the React
+          // unmount doesn't fully tear down a previous project's channel
+          // before the same WS subscribes to a new project. Only filters
+          // when BOTH session.project AND the client's current project
+          // are non-null and differ (workspace-level sessions with null
+          // project, or legacy clients without a getProject resolver,
+          // deliver to all attached clients).
+          if (session.project && handle.getProject) {
+            const clientProject = handle.getProject();
+            if (clientProject && clientProject !== session.project) {
+              skippedCrossProject++;
+              continue;
+            }
+          }
           try {
             handle.onData(data);
           } catch (err) {
@@ -157,6 +181,11 @@ export class ChannelManager {
             session.clients.delete(clientId);
             self.clientToSession.delete(clientId);
           }
+        }
+        if (skippedCrossProject > 0 && t === "assistant_speech") {
+          console.log(
+            `[channel-mgr:broadcast] ${session.filename} skipped ${skippedCrossProject} cross-project client(s)`,
+          );
         }
         // Notify cross-session listeners (used by voiceAgent for ambient
         // announcements). Wrapped in try/catch per listener so a buggy
@@ -217,6 +246,7 @@ export class ChannelManager {
     tabId: string | null,
     onData: (data: unknown) => void,
     onClose: () => void,
+    getProject?: () => string | null,
   ): Promise<void> {
     let session = this.sessions.get(sessionId);
 
@@ -258,7 +288,7 @@ export class ChannelManager {
       this.tabClients.get(tabId)!.add(clientId);
     }
 
-    session.clients.set(clientId, { onData, onClose });
+    session.clients.set(clientId, { onData, onClose, getProject });
     this.clientToSession.set(clientId, sessionId);
     session.handler?.onAttach?.(clientId, args);
   }

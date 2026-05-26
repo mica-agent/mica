@@ -1379,4 +1379,11 @@ mica.onDestroy(function() {
     try { playbackCtx.close(); } catch (_) {}
     playbackCtx = null;
   }
+  // Explicitly close the channel so the server detaches this client from
+  // the voice session. Without this, the React unmount cleans local
+  // state but the server's session keeps clientCount > 0, hasSubscriber()
+  // stays true, and the voice agent keeps emitting TTS for a card no
+  // one is looking at — leaking audio across projects when the user
+  // navigates from project A to project B.
+  try { if (typeof ch !== 'undefined' && ch) ch.close(); } catch (_) {}
 });
