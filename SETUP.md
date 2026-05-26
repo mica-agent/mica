@@ -238,6 +238,55 @@ Same image, same workspace, same `mica-models` volume. The vLLM
 model and the llama Q4 GGUF are separate downloads, so the first
 switch into a fresh topology re-downloads (then caches).
 
+## Running multiple Mica instances
+
+Two clones of Mica at different paths share docker state if they
+share a directory basename. `~/dev/mica` and `~/dev/test/mica` both
+resolve to compose project name `mica` and end up using the same
+containers, networks, and volumes — confusing in the best case,
+data-corrupting in the worst.
+
+The wrapper's preflight detects this and warns:
+
+    [WARN] compose project name 'mica' is already used by another clone:
+           /home/rob/dev/mica/docker-compose.yml
+           → Run this clone with its own project name (separate volumes, etc.):
+           →   COMPOSE_PROJECT_NAME=mica-test ./scripts/mica-compose.sh up
+           → Or rename the dir so the basename differs from the other clone.
+
+To run two instances side-by-side cleanly, give each clone a unique
+**project name**, **ports**, and **workspace**:
+
+    # Production / primary
+    git clone https://github.com/mica-agent/mica.git ~/dev/mica
+    cd ~/dev/mica
+    ./scripts/mica-compose.sh up
+
+    # Test / side-by-side (different basename works without
+    # COMPOSE_PROJECT_NAME, but ports + workspace still need overrides)
+    git clone https://github.com/mica-agent/mica.git ~/dev/mica-test
+    cd ~/dev/mica-test
+    MICA_PORT=3003 \
+    MICA_FRONTEND_PORT=5174 \
+    MICA_WORKSPACE=$HOME/mica-test-workspace \
+      ./scripts/mica-compose.sh up
+
+The two instances are then fully isolated:
+
+| What | Primary | Test |
+|---|---|---|
+| Compose project | `mica` | `mica-test` |
+| Containers | `mica-mica-1`, `mica-mica-vllm-1` | `mica-test-mica-1`, `mica-test-mica-vllm-1` |
+| Model cache volume | `mica_mica-models` | `mica-test_mica-models` (separate weights download) |
+| Workspace | `$HOME/mica-workspace` | `$HOME/mica-test-workspace` |
+| Backend port | 3002 | 3003 |
+| Frontend port | 5173 | 5174 |
+
+If you'd rather share the model weights between the two (avoid the
+second ~30 GB download), point both at the same host HF cache:
+
+    HF_CACHE_DIR=$HOME/.cache/huggingface ./scripts/mica-compose.sh up
+
 ## What's running (and what's pinned)
 
 Mica's release stack has several moving pieces. The defaults

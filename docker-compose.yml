@@ -96,11 +96,23 @@ services:
       mica-init:
         condition: service_completed_successfully
       mica-vllm:
+        # service_started (not service_healthy) is deliberate. The
+        # devcontainer's scripts/start.sh spawns its chat-vllm sibling
+        # detached and immediately starts the backend in parallel; the
+        # voice-tts sidecar then gets to claim its CUDA slice DURING
+        # vLLM's ~60-90 s weight-load window. If we gated on
+        # service_healthy instead, mica wouldn't boot until vLLM had
+        # already grown PyTorch's caching allocator to ~127 GiB of the
+        # 130 GiB unified pool — and voice-tts would OOM at Kokoro's
+        # CUDA init (3 GiB free isn't enough). Booting in parallel mirrors
+        # the devcontainer race, which empirically works.
+        # Chat requests during the ~60 s warmup will get 503s from the
+        # backend's chat handlers, but that's a brief window before the
+        # user starts interacting.
+        #
         # required: false (compose 2.20+) lets `mica` start even when
-        # mica-vllm is profile-filtered out (llama topology). When the
-        # vllm profile IS active, we still wait for mica-vllm to be
-        # healthy.
-        condition: service_healthy
+        # mica-vllm is profile-filtered out (llama topology).
+        condition: service_started
         required: false
     ports:
       - "${MICA_FRONTEND_PORT:-5173}:5173"   # Vite frontend
@@ -183,6 +195,18 @@ services:
     # what the Mica container writes, so the shared /cache/huggingface
     # mount has consistent ownership.
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    # Match scripts/start.sh's docker run flags for the devcontainer
+    # mica-chat container — same vLLM image needs the same host-side
+    # plumbing or behavior diverges. Specifically:
+    #   - shm_size: 16g — Docker's default /dev/shm is 64 MB, far too
+    #     small for vLLM's multi-process worker IPC. Without this, vLLM
+    #     falls back to slower channels AND ends up retaining more in
+    #     the GPU allocator (which is what was locking Kokoro out of
+    #     CUDA at voice-tts spawn time).
+    #   - ipc: host — use the host IPC namespace so vLLM's workers can
+    #     mmap with each other directly. Standard vLLM recommendation.
+    shm_size: 16g
+    ipc: host
     # See `mica` service for rationale — first-run model pulls from HF
     # Hub need a working resolver, and the host's systemd-resolved stub
     # at 127.0.0.53 is unreachable from inside the container.
@@ -225,9 +249,9 @@ services:
       --moe-backend flashinfer_cutlass
       --kv-cache-dtype fp8_e4m3
       --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
-      --gpu-memory-utilization 0.50
+      --gpu-memory-utilization 0.55
       --max-model-len 131072
-      --max-num-batched-tokens 16384
+      --max-num-batched-tokens 8192
       --enable-prefix-caching
       --enable-chunked-prefill
       --trust-remote-code

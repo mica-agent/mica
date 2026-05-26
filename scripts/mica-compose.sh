@@ -421,6 +421,44 @@ check_hf_token() {
   hint "(safe to skip — RedHatAI/Qwen3.6-35B-A3B-NVFP4 is public, just rate-limited)"
 }
 
+check_project_name_collision() {
+  # Compose derives the project name from $COMPOSE_PROJECT_NAME or the
+  # working-dir basename. Two clones at $HOME/dev/mica and
+  # $HOME/dev/TEST/mica BOTH resolve to project name "mica" and silently
+  # share containers, networks, and volumes — which manifests as
+  # confusing "network <id> not found" loops, mixed state, and surprise
+  # volume reuse. Detect when our project name is already in use by a
+  # DIFFERENT clone (different docker-compose.yml path) and warn with
+  # the override commands. Picks up running, stopped, or just-Created
+  # containers — any of them mean compose will try to attach.
+  local project="${COMPOSE_PROJECT_NAME:-$(basename "$REPO_ROOT")}"
+  local our_yaml="$REPO_ROOT/docker-compose.yml"
+  # `docker ps --format '{{.Labels}}'` returns a comma-separated string
+  # like `com.docker.compose.project=mica,com.docker.compose.project.config_files=/path/...`
+  # (unlike `docker inspect`'s map output, ps's .Labels is one flat
+  # string). Pluck out the config_files label per container with grep.
+  local foreign_yamls
+  foreign_yamls="$(docker ps -a \
+    --filter "label=com.docker.compose.project=$project" \
+    --format '{{.Labels}}' 2>/dev/null \
+    | tr ',' '\n' \
+    | sed -nE 's/^com\.docker\.compose\.project\.config_files=(.*)$/\1/p' \
+    | sort -u | grep -vF "$our_yaml" 2>/dev/null || true)"
+  if [ -n "$foreign_yamls" ]; then
+    warn "compose project name '$project' is already used by another clone:"
+    while IFS= read -r yaml; do
+      [ -n "$yaml" ] && hint "  $yaml"
+    done <<< "$foreign_yamls"
+    hint "Multiple Mica clones with the same directory basename share docker"
+    hint "containers, networks, and volumes — sources of mysterious bugs."
+    hint "Run this clone with its own project name (separate volumes, etc.):"
+    hint "  COMPOSE_PROJECT_NAME=mica-test ./scripts/mica-compose.sh up"
+    hint "Or rename the dir so the basename differs from the other clone."
+  else
+    pass "compose project name '$project' is unique to this clone"
+  fi
+}
+
 check_existing_models_volume() {
   # Three states the user can be in:
   #   A. mica-models volume already exists → models cached, nothing to say
@@ -512,6 +550,7 @@ run_preflight() {
   check_image_built
   check_tavily_key
   check_hf_token
+  check_project_name_collision
   check_existing_models_volume
   if [ "$FAILED" -eq 1 ]; then
     printf '\n%spreflight failed%s — fix the issues above, or set MICA_SKIP_PREFLIGHT=1 to bypass.\n' \
@@ -700,20 +739,44 @@ start_progress_watcher() {
     curl -fsS --max-time 2 http://localhost:5173/ >/dev/null 2>&1 \
       && frontend_ready="yes"
 
+    # Voice readiness — gates the Ready banner just like vLLM does.
+    # Three states: yes / no / disabled. "disabled" is also a terminal
+    # green state for the gate (voice not running by design, treat as
+    # ready). "no" includes both "still loading" and "failed to load";
+    # the latter would keep the watcher heartbeating forever, which is
+    # the right behavior — the user sees state and can investigate.
+    local voice_ready="no"
+    if [ "${MICA_DISABLE_VOICE:-0}" = "1" ]; then
+      voice_ready="disabled"
+    else
+      local voice_status
+      voice_status="$(curl -fsS --max-time 2 http://localhost:3002/api/voice/status 2>/dev/null || true)"
+      if [ -n "$voice_status" ]; then
+        if echo "$voice_status" | grep -q '"disabled":true'; then
+          voice_ready="disabled"
+        elif echo "$voice_status" | grep -q '"stt":{[^}]*"ready":true' \
+          && echo "$voice_status" | grep -q '"tts":{[^}]*"ready":true'; then
+          voice_ready="yes"
+        fi
+      fi
+    fi
+
     # All-ready short-circuit: when every probed component reports
     # green, print the one-shot Ready banner and exit the watcher.
     # Llama topology has no vllm-sibling probe — `mica` itself spawns
     # llama-server lazily on first chat, so we don't gate on a model
-    # readiness signal there.
+    # readiness signal there. Voice gate accepts "yes" OR "disabled".
+    local voice_ok=0
+    [ "$voice_ready" = "yes" ] || [ "$voice_ready" = "disabled" ] && voice_ok=1
     local all_ready=0
     case "$topology" in
       vllm)
-        [ "$mica_state" = "running" ] && [ "$vllm_ready" = "yes" ] && [ "$frontend_ready" = "yes" ] && all_ready=1 ;;
+        [ "$mica_state" = "running" ] && [ "$vllm_ready" = "yes" ] && [ "$frontend_ready" = "yes" ] && [ "$voice_ok" = 1 ] && all_ready=1 ;;
       llama)
-        [ "$mica_state" = "running" ] && [ "$frontend_ready" = "yes" ] && all_ready=1 ;;
+        [ "$mica_state" = "running" ] && [ "$frontend_ready" = "yes" ] && [ "$voice_ok" = 1 ] && all_ready=1 ;;
     esac
     if [ "$all_ready" = 1 ]; then
-      _print_ready_banner "$topology"
+      _print_ready_banner "$topology" "$voice_ready"
       break
     fi
 
@@ -727,6 +790,11 @@ start_progress_watcher() {
     fi
     _heartbeat_line "Mica container" "$([ "$mica_state" = "running" ] && echo ok || echo "${mica_state:-pending}")"
     _heartbeat_line "Frontend (port 5173)" "$([ "$frontend_ready" = "yes" ] && echo ok || echo "waiting")"
+    case "$voice_ready" in
+      yes)      _heartbeat_line "Voice sidecars" "ok" ;;
+      disabled) _heartbeat_line "Voice sidecars" "disabled (MICA_DISABLE_VOICE=1)" ;;
+      *)        _heartbeat_line "Voice sidecars" "loading (STT + TTS)" ;;
+    esac
     printf '  %s└─ open http://localhost:5173 once everything is ok ──%s\n' "$C_BLU" "$C_RST"
     printf '\n'
   done
@@ -740,6 +808,7 @@ start_progress_watcher() {
 # the local Dockerfile — same source the wrapper just built from.
 _print_ready_banner() {
   local topology="$1"
+  local voice_ready="${2:-yes}"
 
   # Topology label + vLLM version (when applicable). vLLM version is
   # queried via `python3 -c "import vllm; print(vllm.__version__)"`
@@ -777,8 +846,12 @@ _print_ready_banner() {
     chat_model="loads on first chat (llama-server, Q4 GGUF)"
   fi
 
-  local voice_status="Parakeet STT + Kokoro TTS (localhost only)"
-  [ "${MICA_DISABLE_VOICE:-0}" = "1" ] && voice_status="disabled (MICA_DISABLE_VOICE=1)"
+  local voice_status
+  case "$voice_ready" in
+    disabled) voice_status="disabled (MICA_DISABLE_VOICE=1)" ;;
+    yes)      voice_status="Parakeet STT + Kokoro TTS — ready (localhost only)" ;;
+    *)        voice_status="Parakeet STT + Kokoro TTS (localhost only)" ;;
+  esac
 
   # Model cache location. Two states reach this banner (Ready ⇒ models
   # are loaded ⇒ they were cached somewhere): a host bind-mount via
