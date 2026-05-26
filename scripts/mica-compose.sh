@@ -602,14 +602,18 @@ cmd_status() {
 }
 
 cmd_stop() {
-  # --remove-orphans because mica-vllm is profile-gated (profiles: ["vllm"]).
-  # Without it, `docker compose down` (no --profile flag) leaves mica-vllm
-  # Exited rather than removed. The next `up` then creates a fresh
-  # mica_default network with a new ID, tries to start the orphaned
-  # mica-vllm whose HostConfig still references the OLD network ID, and
-  # errors with "failed to set up container networking: network <id> not
-  # found". --remove-orphans cleans up regardless of profile state.
-  exec docker compose down --remove-orphans "$@"
+  # mica-vllm is profile-gated (profiles: ["vllm"]) and `docker compose
+  # down` without --profile DOESN'T touch services hidden behind a
+  # profile gate — they stay Exited rather than being removed.
+  # --remove-orphans does NOT cover this case; it only removes containers
+  # for services that are no longer in the YAML at all. The next `up`
+  # then creates a fresh mica_default network with a new ID, tries to
+  # start the orphaned mica-vllm whose HostConfig still references the
+  # OLD network ID, and errors with "failed to set up container
+  # networking: network <id> not found". The fix is to explicitly pass
+  # the profile so down considers mica-vllm part of the active set.
+  # If new profiles are added to the compose file, add them here too.
+  exec docker compose --profile vllm down --remove-orphans "$@"
 }
 
 cmd_nuke() {
@@ -617,8 +621,8 @@ cmd_nuke() {
   printf '%sModels will need to re-download on next 'up'.%s\n' "$C_YLW" "$C_RST"
   read -r -p "Type 'yes' to confirm: " ans
   [ "$ans" = "yes" ] || { echo "aborted"; exit 1; }
-  # See cmd_stop for rationale on --remove-orphans.
-  exec docker compose down -v --remove-orphans "$@"
+  # See cmd_stop for rationale on --profile vllm + --remove-orphans.
+  exec docker compose --profile vllm down -v --remove-orphans "$@"
 }
 
 cmd_logs() {
