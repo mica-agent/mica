@@ -41,11 +41,36 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 VENV="$HERE/.venv"
 
 # ── Python venv ──────────────────────────────────────────────────
+# Recreate the venv if it was made under a different absolute path. This
+# happens when a devcontainer-created venv (its pyvenv.cfg bakes
+# /workspaces/mica/...) ends up inside the production image (which lives
+# at /opt/mica/...) — the venv's torch is then weeks stale relative to
+# the rest of the image, and a later `pip install --force-reinstall
+# nvidia-cudnn-cu13` updates only cuDNN, leaving torch and cuDNN
+# mismatched (CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH at runtime).
+# .dockerignore should already exclude `**/.venv`, but defend in depth.
+venv_stale_path() {
+  local cfg="$VENV/pyvenv.cfg"
+  [ -f "$cfg" ] || return 1
+  # pyvenv.cfg's `command` line records the absolute path the venv was
+  # created at: `command = /usr/bin/python3 -m venv /path/to/.venv`.
+  local cmd_path
+  cmd_path=$(grep -E '^command' "$cfg" | awk '{print $NF}')
+  [ -n "$cmd_path" ] && [ "$cmd_path" != "$VENV" ]
+}
+
 if [ ! -d "$VENV" ]; then
   say "Creating venv at $VENV ..."
   command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH"
   python3 -m venv "$VENV"
   ok "venv created"
+elif venv_stale_path; then
+  cfg_path=$(grep -E '^command' "$VENV/pyvenv.cfg" | awk '{print $NF}')
+  warn "venv at $VENV was created at $cfg_path — recreating to avoid stale-binary mix"
+  command -v python3 >/dev/null 2>&1 || die "python3 not found on PATH"
+  rm -rf "$VENV"
+  python3 -m venv "$VENV"
+  ok "venv recreated"
 else
   ok "venv exists"
 fi

@@ -4,6 +4,17 @@ node_modules
 dist
 .mica-pids
 
+# Python virtualenvs MUST be excluded. The voice install.sh creates
+# scripts/voice/.venv during devcontainer setup; if that dir is left in
+# the build context, `COPY . .` would ship a venv whose pyvenv.cfg bakes
+# the devcontainer's absolute path (/workspaces/mica/...) and whose
+# binaries are weeks stale relative to the rest of the image. install.sh
+# would then skip its create step (idempotency guard) and force-reinstall
+# only nvidia-cudnn-cu13, leaving torch from the devcontainer date and
+# cuDNN from today — different builds, CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH
+# at runtime. Build always starts from a fresh venv.
+**/.venv
+
 # Source control / hidden state we don't need at runtime:
 .git
 .github

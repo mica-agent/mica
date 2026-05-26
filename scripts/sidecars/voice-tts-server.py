@@ -41,9 +41,18 @@ def load_pipeline():
         return _pipeline
     from kokoro import KPipeline  # type: ignore
 
-    print("[voice-tts] loading Kokoro-82M ...", flush=True)
+    # Device selection. Kokoro defaults to CUDA-if-available, which OOMs
+    # when vLLM (or llama-server) is occupying the GPU — and ~1 s/sentence
+    # on CPU is plenty for a demo, so VOICE_TTS_DEVICE=cpu is a safe
+    # production default. Unset = let Kokoro auto-pick.
+    device = os.environ.get("VOICE_TTS_DEVICE") or None
+    device_tag = f" (device={device})" if device else ""
+    print(f"[voice-tts] loading Kokoro-82M ...{device_tag}", flush=True)
     t0 = time.perf_counter()
-    _pipeline = KPipeline(lang_code="a")  # "a" = American English
+    _pipeline = (
+        KPipeline(lang_code="a", device=device) if device
+        else KPipeline(lang_code="a")
+    )  # "a" = American English
     print(f"[voice-tts] model loaded in {time.perf_counter() - t0:.1f}s", flush=True)
     return _pipeline
 

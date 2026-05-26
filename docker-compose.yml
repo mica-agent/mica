@@ -224,7 +224,7 @@ services:
       --moe-backend flashinfer_cutlass
       --kv-cache-dtype fp8_e4m3
       --speculative-config '{"method":"mtp","num_speculative_tokens":1}'
-      --gpu-memory-utilization 0.55
+      --gpu-memory-utilization 0.50
       --max-model-len 131072
       --max-num-batched-tokens 16384
       --enable-prefix-caching
