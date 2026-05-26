@@ -400,6 +400,42 @@ installed library skill describes its disposers, init-order quirks, and
 version-specific gotchas — read that skill BEFORE filling in the body, so
 the body lands right the first time.
 
+### Cards that accept file upload — add this fragment
+
+The canonical file-picker shape. Use it verbatim. **Do not write your own
+click handler that calls `fileInput.click()` — the label-input pairing
+opens the picker natively and a JS handler that double-fires it will
+cancel the picker.** Do not rebuild the upload area via
+`uploadArea.innerHTML = ...` either — that destroys the original input
+element and detaches the change listener, so the picker opens but
+selections are silently dropped.
+
+```html
+<!-- card.html — the label is the click target; the input is hidden. -->
+<label class="upload-btn" for="file-input">
+  📄 Click to upload
+  <input type="file" id="file-input" accept=".pdf" hidden>
+</label>
+```
+
+```js
+// card.js — extends the six-step skeleton above. Step 1: querySelector.
+// Step 4: ONE change listener. No click handler. No fileInput.click().
+const fileInput = container.querySelector('#file-input');
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  // … hand off to § Binary uploads to a card-class sidecar (below) …
+});
+```
+
+That's the entire shape. Three lines of card.html, four lines of
+card.js, one event handler. Variants (drag-and-drop, camera capture,
+multi-file, MIME filter) are attribute additions on the same `<input>`
+— never a parallel code path. See § Common UX patterns below for the
+attribute table.
+
 If you're about to write `const container = ...`, `import {...}`, `export
 const`, or `(function(){ ... })()`, you've left the canonical shape. Stop
 and rewrite the section to match.
@@ -740,65 +776,37 @@ For Mica's own `/api/*`, prefer `mica.files.*` helpers (auto
 URL-encode, set `source`/`cardSource`). Raw `fetch('/api/...')`
 works too — the runtime auto-injects `X-Mica-Project`.
 
-## Common UX patterns — canonical shapes to copy
+## Common UX patterns
 
-For UI patterns the agent reaches for often (file picker, drag-and-
-drop, camera capture), the handbook ships one canonical shape per
-pattern. Copy these verbatim into card.html + card.js as a starting
-point. They're written to be correct by construction — no "watch
-out for X" caveats apply when you use them as-is.
+UX variants the agent reaches for often. The **base shape lives in
+§ CANONICAL CARD.JS above** ("Cards that accept file upload — add
+this fragment") — do not re-author it here. This section adds just
+the attribute-table for variants on the same shape.
 
-### File upload — canonical shape
+### File upload variants
 
-**Use the label, not a JS click handler.** A `<label for="…">`
-natively opens the file picker for the input it points at — no
-JavaScript required. Listen for the `change` event on the input to
-receive the file.
+All variants are attribute additions on the same `<input
+type="file">` from the canonical shape — never a parallel code
+path. The `change` listener stays the same:
 
-```html
-<!-- card.html — the label IS the click target. The hidden input
-     receives the file; the visible label triggers the picker. -->
-<label class="upload-btn" for="file-input">
-  📄 Click to upload PDF
-  <input type="file" id="file-input" accept=".pdf" hidden>
-</label>
-```
+| Want | Add to `<input>` | Other changes |
+|---|---|---|
+| Camera capture (mobile) | `capture="environment"` (rear camera) or `capture="user"` (front) | none |
+| Multi-file | `multiple` | iterate `e.target.files` in the same listener |
+| MIME filter | `accept="image/*"` or `accept=".pdf,.docx"` (comma-separated) | none |
+| Drag-and-drop | leave the input as-is | listen for `drop` on a wrapper element, set `wrapper.files = e.dataTransfer.files` is NOT a thing — instead call `handleFile(e.dataTransfer.files[0])` directly, sharing the function with the `change` listener |
 
-```js
-// card.js — listen for `change`, never call fileInput.click() yourself.
-const fileInput = container.querySelector('#file-input');
+The canonical `change` listener in § CANONICAL CARD.JS is the only
+file-handling code path. Variants do not get their own listener or
+their own DOM rebuild — just additional attributes (or, for
+drag-drop, an additional event handler that funnels into the same
+`handleFile()`).
 
-fileInput.addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  // … write to disk + call sidecar; see § Binary uploads below …
-});
-```
-
-**Why this shape and not a JS click handler:** if you wrap a click
-listener around the upload area AND keep the `<label for>`, the
-label's native picker-open fires together with your JS-driven
-`fileInput.click()` — two open requests in the same event loop
-cancel each other and the picker never appears. The label-only
-shape sidesteps that entirely. See § Pitfalls §"Native HTML
-semantics + JS handler = double-trigger" for the failure mode if
-you ever inherit a card that uses both.
-
-**Variants** are all simple attribute additions on the same input —
-no new code paths:
-- **Drag-and-drop:** add `<input type="file" hidden>` inside the
-  drop target, listen for `drop` on the target, set
-  `dropTarget.files = e.dataTransfer.files` if needed; the same
-  `change` listener fires.
-- **Camera capture (mobile):** add `capture="environment"` to the
-  input. Same shape, same listener.
-- **Multi-file:** add `multiple`. Iterate `e.target.files` in the
-  same `change` listener.
-- **MIME filter:** set `accept="image/*"` (or
-  `accept=".pdf,.docx"`, etc.) — `accept` is comma-separated.
-
-After the `change` handler has the `File` object, hand it off to
-the next section's write-then-reference pattern.
+If you inherit a card that wraps `<input type="file">` in a JS
+click handler that also calls `fileInput.click()`, see § Pitfalls
+§"Native HTML semantics + JS handler = double-trigger" — that
+shape cancels the picker. Rewrite to the canonical label-only
+shape above.
 
 ## Binary uploads to a card-class sidecar
 
