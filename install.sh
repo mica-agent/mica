@@ -39,6 +39,32 @@ ok()   { printf '%s✓%s %s\n' "$C_OK" "$C_RESET" "$*"; }
 warn() { printf '%s!%s %s\n' "$C_WARN" "$C_RESET" "$*" >&2; }
 die()  { printf '%sError:%s %s\n' "$C_ERR" "$C_RESET" "$*" >&2; exit 1; }
 
+# ── Not-yet-supported gate ──────────────────────────────────────
+#
+# install.sh expects a pre-built image at ghcr.io/mica-agent/mica:latest,
+# but Mica isn't publishing that image yet. Until the publish pipeline
+# (GitHub Actions → ghcr.io) is wired up, the pull below would fail with
+# an opaque "manifest unknown" error. Bail loudly with a pointer to the
+# build-from-source path that DOES work today.
+#
+# Set MICA_INSTALL_FORCE=1 to bypass this gate — useful once an image
+# does exist (a hand-built local tag, a custom registry via MICA_IMAGE,
+# or after the publish pipeline lands and this gate gets removed).
+if [ "${MICA_INSTALL_FORCE:-0}" != "1" ]; then
+  printf '\n%sMica install.sh is not supported yet.%s\n\n' "$C_WARN" "$C_RESET" >&2
+  printf 'This path expects a published image at\n' >&2
+  printf '  %sghcr.io/mica-agent/mica:latest%s\n' "$C_DIM" "$C_RESET" >&2
+  printf 'but Mica is not yet publishing one. Pulling it would fail with\n' >&2
+  printf '"manifest unknown".\n\n' >&2
+  printf 'For now, use the %sbuild-from-source%s path documented in SETUP.md:\n\n' "$C_OK" "$C_RESET" >&2
+  printf '  git clone https://github.com/mica-agent/mica.git && cd mica\n' >&2
+  printf '  ./scripts/mica-compose.sh up\n\n' >&2
+  printf 'Once a published image is available, this gate will be removed.\n' >&2
+  printf 'To bypass it now (e.g. you built %smica:latest%s locally and pinned\n' "$C_DIM" "$C_RESET" >&2
+  printf 'MICA_IMAGE), re-run with %sMICA_INSTALL_FORCE=1%s.\n\n' "$C_DIM" "$C_RESET" >&2
+  exit 1
+fi
+
 # ── Tweakable defaults (env-var overrides above). ──
 # Port env vars: MICA_PORT (backend), MICA_FRONTEND_PORT (frontend),
 # MICA_LLAMA_PORT (llama-server inside the container). These names match
