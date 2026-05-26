@@ -30,11 +30,20 @@
 #   logs      `docker compose logs -f` (tail all services).
 #   help      Show this text.
 #
+# Flag pass-through:
+#   Any arg after the subcommand is forwarded verbatim to docker compose,
+#   so `up -d` runs detached, `up --build` forces a rebuild, etc. See
+#   `docker compose up --help` for the full list.
+#
 # Env overrides:
 #   MICA_SKIP_PREFLIGHT=1   Skip all checks. Use in CI or when you know.
 #   MICA_SKIP_TAVILY=1      Bypass the Tavily-key preflight (agent web
 #                           search will be disabled). Get a free key
 #                           at https://app.tavily.com.
+#   MICA_SKIP_SETUP=1       Suppress the first-run interactive prompts
+#                           for Tavily / HF keys, even when stdin/stdout
+#                           are ttys. Use in CI when you've already wired
+#                           keys via env or .env and don't want prompts.
 #   MICA_AUTO_BUILD=1       Stale-image rebuild policy: silent yes. Auto-add
 #                           --build whenever the image is missing or older
 #                           than tracked source. Use in CI.
@@ -178,8 +187,11 @@ check_disk_space() {
 }
 
 check_hf_cache_dir_if_set() {
+  # When unset, model-cache reporting is handled by
+  # check_existing_models_volume below (it's smarter about the three
+  # cache states: existing named volume / HF_CACHE_DIR bind-mount /
+  # truly fresh first run with optional host-HF reuse).
   if [ -z "${HF_CACHE_DIR:-}" ]; then
-    info "HF_CACHE_DIR unset — using named volume 'mica-models'"
     return
   fi
   if [ ! -d "$HF_CACHE_DIR" ]; then
@@ -281,6 +293,28 @@ check_image_built() {
   fi
 }
 
+# Helper: append KEY=VALUE to .env (creating the file if absent), export
+# the value into the current shell so subsequent preflight checks see it,
+# and tighten permissions to 0600 so the file isn't world-readable. Used
+# by the interactive first-run setup paths in check_tavily_key /
+# check_hf_token below.
+append_env_key() {
+  local key="$1" value="$2"
+  [ -n "$key" ] && [ -n "$value" ] || return 1
+  touch .env
+  printf '%s=%s\n' "$key" "$value" >> .env
+  chmod 600 .env 2>/dev/null || true
+  export "$key=$value"
+}
+
+# Helper: is this an interactive session where prompting makes sense?
+# MICA_SKIP_SETUP=1 lets CI / non-interactive flows bypass all prompts
+# even when stdin/stdout happen to be ttys.
+setup_interactive() {
+  [ "${MICA_SKIP_SETUP:-0}" = "1" ] && return 1
+  [ -t 0 ] && [ -t 1 ]
+}
+
 check_tavily_key() {
   # Mica's agents rely on Tavily-MCP for web search (qwen-code's built-in
   # web_search was removed in CLI v0.15.2). Without a TAVILY_API_KEY, the
@@ -302,6 +336,24 @@ check_tavily_key() {
     pass "TAVILY_API_KEY present in .env"
     return
   fi
+
+  # Interactive first-run setup: prompt for the key and write it to .env
+  # so the user doesn't have to hand-edit the file. Non-TTY (CI, piped
+  # logs) falls through to the existing FAIL + hint behavior.
+  if setup_interactive; then
+    printf '\n  %sTavily API key%s (required — agent web search)\n' "$C_BLD" "$C_RST"
+    printf '         %sGet a free key (1k searches/mo, no card) at https://app.tavily.com%s\n' "$C_DIM" "$C_RST"
+    printf '         Paste key or Enter to skip: '
+    local input=""
+    read -r -s input || true
+    printf '\n'
+    if [ -n "$input" ]; then
+      append_env_key "TAVILY_API_KEY" "$input"
+      pass "TAVILY_API_KEY saved to .env"
+      return
+    fi
+  fi
+
   fail "TAVILY_API_KEY not found in .env or environment"
   hint "get a free key (1k searches/month) at https://app.tavily.com"
   hint "save it:  echo \"TAVILY_API_KEY=tvly-...\" >> .env"
@@ -313,15 +365,51 @@ check_hf_token() {
   # limits on anonymous downloads and is required for gated models. The
   # compose file's env_file directive picks it up from .env if present.
   # The HF CLI ('huggingface-cli login') writes its token to
-  # ~/.cache/huggingface/token; we surface that path so a user who already
-  # logged in there doesn't have to be told twice.
+  # ~/.cache/huggingface/token; we both auto-detect it and surface the
+  # path so a user who already logged in there doesn't have to be told
+  # twice.
   if [ -f .env ] && grep -qE '^[[:space:]]*HF_TOKEN=.+' .env 2>/dev/null; then
     pass "HF_TOKEN set in .env"
     return
   fi
 
   local cli_token_path="$HOME/.cache/huggingface/token"
+  local cli_token=""
   if [ -f "$cli_token_path" ] && [ -s "$cli_token_path" ]; then
+    cli_token="$(tr -d '\r\n[:space:]' < "$cli_token_path")"
+  fi
+
+  # Interactive first-run setup: offer the cached token if present;
+  # otherwise prompt for a paste. Both are optional — skipping is fine
+  # because the default model is public.
+  if setup_interactive; then
+    printf '\n  %sHuggingFace token%s (optional — lifts model download rate limits)\n' "$C_BLD" "$C_RST"
+    if [ -n "$cli_token" ]; then
+      printf '         Found a token at ~/.cache/huggingface/token. Use it? [Y/n]: '
+      local ans=""
+      read -r ans || true
+      case "${ans,,}" in
+        n|no) ;;
+        *)
+          append_env_key "HF_TOKEN" "$cli_token"
+          pass "HF_TOKEN saved to .env (from huggingface-cli)"
+          return
+          ;;
+      esac
+    fi
+    printf '         %sGet one at https://huggingface.co/settings/tokens%s\n' "$C_DIM" "$C_RST"
+    printf '         Paste key or Enter to skip: '
+    local input=""
+    read -r -s input || true
+    printf '\n'
+    if [ -n "$input" ]; then
+      append_env_key "HF_TOKEN" "$input"
+      pass "HF_TOKEN saved to .env"
+      return
+    fi
+  fi
+
+  if [ -n "$cli_token" ]; then
     warn "HF_TOKEN not in .env, but a token exists at ~/.cache/huggingface/token"
     hint "use it:  echo \"HF_TOKEN=\$(cat $cli_token_path)\" >> .env"
     hint "(public models still work without — first downloads will be throttled)"
@@ -334,8 +422,74 @@ check_hf_token() {
 }
 
 check_existing_models_volume() {
-  if docker volume inspect mica-models >/dev/null 2>&1; then
-    info "named volume 'mica-models' already exists — model downloads will reuse it"
+  # Three states the user can be in:
+  #   A. mica-models volume already exists → models cached, nothing to say
+  #      beyond the INFO so the user knows downloads won't re-fire.
+  #   B. HF_CACHE_DIR is set → bind-mounted host dir handles caching; show
+  #      its path so the user knows where the ~30 GB lands.
+  #   C. Neither (true first run) → about to download to a fresh named
+  #      volume. If we can SEE that the host's $HOME/.cache/huggingface
+  #      already has the models Mica needs (because the user runs
+  #      `huggingface-cli` for other things, or has installed Mica before
+  #      via a different name), hint that they can reuse it via
+  #      HF_CACHE_DIR=$HOME/.cache/huggingface and skip the download.
+  # Compose prefixes the docker volume name with the project name (which
+  # defaults to the repo's basename). Compute the same prefix here so the
+  # check works regardless of whether the repo lives at .../mica/,
+  # .../mica-prod/, etc. — and regardless of whether the user set
+  # COMPOSE_PROJECT_NAME explicitly.
+  local project="${COMPOSE_PROJECT_NAME:-$(basename "$REPO_ROOT")}"
+  local models_volume="${project}_mica-models"
+  if docker volume inspect "$models_volume" >/dev/null 2>&1; then
+    info "named volume '$models_volume' already exists — model downloads will reuse it"
+    return
+  fi
+  if [ -n "${HF_CACHE_DIR:-}" ]; then
+    info "HF_CACHE_DIR=$HF_CACHE_DIR — bind-mounting host dir for the model cache"
+    return
+  fi
+  # Detect any of Mica's model dirs in the user's existing HF cache. We
+  # only flag if at least one is present — finding zero just means a
+  # genuinely fresh user.
+  local host_hf="$HOME/.cache/huggingface/hub"
+  local found=""
+  for slug in \
+    "models--RedHatAI--Qwen3.6-35B-A3B-NVFP4" \
+    "models--nvidia--parakeet-tdt-0.6b-v2" \
+    "models--hexgrad--Kokoro-82M"
+  do
+    if [ -d "$host_hf/$slug" ]; then
+      found="${found:+$found, }$(echo "$slug" | sed 's|^models--||; s|--|/|')"
+    fi
+  done
+  if [ -n "$found" ]; then
+    info "models found in \$HOME/.cache/huggingface: $found"
+    # Interactive prompt: if we have a TTY and the user hasn't opted
+    # out via MICA_SKIP_SETUP, offer to flip HF_CACHE_DIR for them. We
+    # persist it to .env (same pattern as Tavily / HF_TOKEN prompts)
+    # so the choice is sticky on subsequent runs and the compose
+    # interpolation sees it on this run's `up`.
+    if setup_interactive; then
+      printf '         %sReuse them instead of downloading ~30 GB? [Y/n]:%s ' "$C_BLD" "$C_RST"
+      local ans=""
+      read -r ans || true
+      case "${ans,,}" in
+        n|no)
+          hint "skipping reuse — first 'up' will download to 'mica_mica-models'"
+          ;;
+        *)
+          append_env_key "HF_CACHE_DIR" "$HOME/.cache/huggingface"
+          pass "HF_CACHE_DIR=\$HOME/.cache/huggingface saved to .env — will bind-mount the host cache"
+          return
+          ;;
+      esac
+    else
+      hint "to reuse them instead of redownloading (saves ~30 GB on first run):"
+      hint "  HF_CACHE_DIR=\$HOME/.cache/huggingface ./scripts/mica-compose.sh up"
+    fi
+  else
+    info "first run — will download model weights to docker-managed volume '${project}_mica-models'"
+    hint "to use a host directory instead: HF_CACHE_DIR=/path ./scripts/mica-compose.sh up"
   fi
 }
 
@@ -504,9 +658,19 @@ start_progress_watcher() {
   local topology="$1"
   local start_ts
   start_ts="$(date +%s)"
-  # First heartbeat at +30s — gives compose a moment to print its own
-  # initial "Pulling X" lines so we don't immediately interleave.
-  while sleep 30; do
+  # First check at +5s, subsequent at +30s. The fast first tick lets
+  # warm restarts (stack already cached) flip straight to the Ready
+  # banner in ~5–10 s instead of forcing a 30 s wait. Cold starts pay
+  # the 30 s heartbeat cadence after the first tick.
+  local first_tick=1
+  while true; do
+    if [ "$first_tick" = 1 ]; then
+      sleep 5
+      first_tick=0
+    else
+      sleep 30
+    fi
+
     local now elapsed_sec elapsed_min elapsed_disp
     now="$(date +%s)"
     elapsed_sec=$((now - start_ts))
@@ -536,6 +700,23 @@ start_progress_watcher() {
     curl -fsS --max-time 2 http://localhost:5173/ >/dev/null 2>&1 \
       && frontend_ready="yes"
 
+    # All-ready short-circuit: when every probed component reports
+    # green, print the one-shot Ready banner and exit the watcher.
+    # Llama topology has no vllm-sibling probe — `mica` itself spawns
+    # llama-server lazily on first chat, so we don't gate on a model
+    # readiness signal there.
+    local all_ready=0
+    case "$topology" in
+      vllm)
+        [ "$mica_state" = "running" ] && [ "$vllm_ready" = "yes" ] && [ "$frontend_ready" = "yes" ] && all_ready=1 ;;
+      llama)
+        [ "$mica_state" = "running" ] && [ "$frontend_ready" = "yes" ] && all_ready=1 ;;
+    esac
+    if [ "$all_ready" = 1 ]; then
+      _print_ready_banner "$topology"
+      break
+    fi
+
     # Bordered multi-line banner stands out from docker's per-line output.
     printf '\n'
     printf '  %s┌─ mica progress: %s elapsed ─────────────────────%s\n' \
@@ -549,6 +730,83 @@ start_progress_watcher() {
     printf '  %s└─ open http://localhost:5173 once everything is ok ──%s\n' "$C_BLU" "$C_RST"
     printf '\n'
   done
+}
+
+# One-shot banner printed by start_progress_watcher when every probed
+# component reports green. Pulls the live chat-model name + vLLM
+# version from the running mica-vllm container (vllm topology); llama
+# topology spawns llama-server lazily so we don't try to query it. The
+# mica image's base ("FROM" in the Dockerfile) is read straight from
+# the local Dockerfile — same source the wrapper just built from.
+_print_ready_banner() {
+  local topology="$1"
+
+  # Topology label + vLLM version (when applicable). vLLM version is
+  # queried via `python3 -c "import vllm; print(vllm.__version__)"`
+  # inside mica-vllm — ~1 s, fine for a one-shot banner. Falls back to
+  # a generic label if the query fails (rare, but keep the banner from
+  # printing a misleading empty version string).
+  local topo_label
+  if [ "$topology" = "vllm" ]; then
+    local vllm_version
+    vllm_version="$(docker compose exec -T mica-vllm python3 -c \
+      'import vllm; print(vllm.__version__)' 2>/dev/null | tr -d '\r\n')"
+    if [ -n "$vllm_version" ]; then
+      topo_label="vllm — vLLM $vllm_version (mica + mica-vllm sibling)"
+    else
+      topo_label="vllm (mica + mica-vllm sibling)"
+    fi
+  else
+    topo_label="llama (1-container, llama-server in mica)"
+  fi
+
+  # Mica image's base. The Dockerfile lives next to this script's
+  # repo root; resolve it via $REPO_ROOT so this still works if the
+  # wrapper is invoked from a different cwd.
+  local mica_from
+  mica_from="$(grep -E '^FROM ' "$REPO_ROOT/Dockerfile" 2>/dev/null | head -1 | awk '{print $2}')"
+  [ -z "$mica_from" ] && mica_from="(unknown — check Dockerfile)"
+
+  local chat_model
+  if [ "$topology" = "vllm" ]; then
+    chat_model="$(docker compose exec -T mica-vllm curl -fsS --max-time 2 \
+      http://localhost:8000/v1/models 2>/dev/null \
+      | sed -nE 's/.*"root":"([^"]+)".*/\1/p' | head -1)"
+    [ -z "$chat_model" ] && chat_model="(query failed; check 'docker compose logs mica-vllm')"
+  else
+    chat_model="loads on first chat (llama-server, Q4 GGUF)"
+  fi
+
+  local voice_status="Parakeet STT + Kokoro TTS (localhost only)"
+  [ "${MICA_DISABLE_VOICE:-0}" = "1" ] && voice_status="disabled (MICA_DISABLE_VOICE=1)"
+
+  # Model cache location. Two states reach this banner (Ready ⇒ models
+  # are loaded ⇒ they were cached somewhere): a host bind-mount via
+  # HF_CACHE_DIR, or the docker-managed named volume.
+  local cache_loc
+  if [ -n "${HF_CACHE_DIR:-}" ]; then
+    cache_loc="$HF_CACHE_DIR (bind-mounted host dir)"
+  else
+    local project="${COMPOSE_PROJECT_NAME:-$(basename "$REPO_ROOT")}"
+    cache_loc="docker volume ${project}_mica-models"
+  fi
+
+  printf '\n'
+  printf '  %s┌─ Mica is ready ──────────────────────────────────%s\n' "$C_BLU" "$C_RST"
+  printf '  %s│%s  %s✓%s %-9s %shttp://localhost:5173%s\n'         "$C_BLU" "$C_RST" "$C_GRN" "$C_RST" "Frontend" "$C_DIM" "$C_RST"
+  printf '  %s│%s  %s✓%s %-9s %shttp://localhost:3002/api%s\n'     "$C_BLU" "$C_RST" "$C_GRN" "$C_RST" "Backend" "$C_DIM" "$C_RST"
+  printf '  %s│%s\n'                                                "$C_BLU" "$C_RST"
+  printf '  %s│%s    %-8s %s%s%s\n' "$C_BLU" "$C_RST" "Topology" "$C_DIM" "$topo_label" "$C_RST"
+  printf '  %s│%s    %-8s %smica:latest (built FROM %s)%s\n' "$C_BLU" "$C_RST" "Image"  "$C_DIM" "$mica_from" "$C_RST"
+  printf '  %s│%s    %-8s %s%s%s\n' "$C_BLU" "$C_RST" "Chat"     "$C_DIM" "$chat_model"  "$C_RST"
+  printf '  %s│%s    %-8s %s%s%s\n' "$C_BLU" "$C_RST" "Voice"    "$C_DIM" "$voice_status" "$C_RST"
+  printf '  %s│%s    %-8s %s%s%s\n' "$C_BLU" "$C_RST" "Cache"    "$C_DIM" "$cache_loc"    "$C_RST"
+  printf '  %s│%s\n'                                                "$C_BLU" "$C_RST"
+  printf '  %s│%s    %-8s %sscripts/mica-compose.sh stop%s\n'   "$C_BLU" "$C_RST" "Stop"   "$C_DIM" "$C_RST"
+  printf '  %s│%s    %-8s %sscripts/mica-compose.sh logs%s\n'   "$C_BLU" "$C_RST" "Logs"   "$C_DIM" "$C_RST"
+  printf '  %s│%s    %-8s %sscripts/mica-compose.sh status%s\n' "$C_BLU" "$C_RST" "Status" "$C_DIM" "$C_RST"
+  printf '  %s└──────────────────────────────────────────────────%s\n' "$C_BLU" "$C_RST"
+  printf '\n'
 }
 
 _heartbeat_line() {
@@ -652,6 +910,8 @@ Environment overrides:
   MICA_SKIP_TAVILY=1        Bypass the Tavily-key check (agent web search
                             will be disabled). Get a free key at
                             https://app.tavily.com.
+  MICA_SKIP_SETUP=1         Suppress first-run interactive prompts for
+                            Tavily / HF keys, even in a TTY.
   MICA_AUTO_BUILD=1         Stale-image rebuild policy: silent yes (CI).
                             Auto-add --build when the image is missing or
                             older than tracked source.
@@ -668,6 +928,16 @@ Environment overrides:
   MICA_PORT                 Default 3002 (backend; matches what server reads).
                             Legacy MICA_BACKEND_PORT honored as fallback.
   USER_UID, USER_GID        Default 1000:1000.
+
+Passing flags through:
+  Any argument after the subcommand is forwarded to docker compose,
+  so flags like -d (detach), --build (force rebuild), and
+  --force-recreate (replace existing containers) all work.
+
+  Examples:
+    scripts/mica-compose.sh up -d                # background, return shell prompt
+    scripts/mica-compose.sh up --build           # force a rebuild
+    scripts/mica-compose.sh up -d --force-recreate mica   # bg, recreate mica only
 
 For the single-container llama-cpp path (no vLLM sibling), see:
   ./install.sh                  — first-time install (preflight + image pull + run)

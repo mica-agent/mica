@@ -55,22 +55,35 @@ has no search tool, and multi-step builds that need to find a library
 or verify a URL stall out. **Treat this as a prerequisite, not an
 option.**
 
-Get a free read-only key (1k searches/month) at
-https://app.tavily.com, then save it to `.env` in the repo root:
+Get a free read-only key (1k searches/month) at https://app.tavily.com.
+
+**Easiest**: on first `./scripts/mica-compose.sh up` the wrapper
+prompts for the key (silent input) and writes it to `.env` for you.
+Subsequent runs detect the saved key and skip the prompt.
+
+**Hand-edit**: if you'd rather skip the prompt, drop the key into
+`.env` before running up:
 
     echo "TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxxxxxxxx" >> .env
 
-The wrapper's preflight checks for it; missing-key fails preflight with
-a remediation hint. Set `MICA_SKIP_TAVILY=1` to bypass with a warning
-(agent web search will be disabled).
+Set `MICA_SKIP_TAVILY=1` to bypass the check entirely (agent web
+search will be disabled). Set `MICA_SKIP_SETUP=1` to suppress the
+first-run prompt without disabling the check.
 
 Validated on DGX Spark.
 
 ## Recommended: HuggingFace token
 
 Both paths download model weights from HF Hub. Anonymous downloads
-work but are rate-limited. Add a free read-only token from
-https://huggingface.co/settings/tokens to your `.env`:
+work but are rate-limited. A free read-only token from
+https://huggingface.co/settings/tokens lifts those limits.
+
+**Easiest**: on first `./scripts/mica-compose.sh up` the wrapper
+detects a token at `~/.cache/huggingface/token` (from
+`huggingface-cli login`) and offers `[Y/n]` to use it; otherwise it
+prompts for a paste. Either path writes to `.env`.
+
+**Hand-edit**:
 
     echo "HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxx" >> .env
 
@@ -179,6 +192,41 @@ force a clean cold boot (e.g. to test from-scratch behavior), use
 `nuke` — it deletes the `mica-models` volume and the next `up`
 re-downloads from HF Hub.
 
+**Pass-through flags.** Any argument after the subcommand is forwarded
+verbatim to `docker compose`. So `./scripts/mica-compose.sh up -d`
+runs detached, `up --build` forces a rebuild, `up -d --force-recreate
+mica` replaces only the mica container. See `docker compose up --help`
+for the full list.
+
+## Updating Mica
+
+When a new release lands on the upstream repo:
+
+    cd mica
+    git pull
+    ./scripts/mica-compose.sh up
+
+The preflight detects that `mica:latest` is older than the updated
+source and prompts:
+
+    [WARN] mica:latest predates N commits on watched paths (built ...)
+           Recent substantive changes:
+             <commit list>
+    Image is stale. Rebuild now? [Y/n]
+
+Press Enter (default Yes) to rebuild. The image rebuild takes ~5–10
+minutes; vLLM stays running so chat keeps working until the new mica
+container swaps in. Model weights are cached — no re-download.
+
+Scripted upgrades (CI, cron) can skip the prompt:
+
+    MICA_AUTO_BUILD=1 ./scripts/mica-compose.sh up    # silent yes
+    MICA_SKIP_REBUILD=1 ./scripts/mica-compose.sh up  # silent no (use last image)
+
+Major upgrades (model swap, vLLM version bump) may also need a `nuke`
+to clear the `mica-models` volume, but that's rare and the release
+notes will say so explicitly when needed.
+
 ## Switching topologies
 
 Stop, re-run with the other flag:
@@ -189,6 +237,35 @@ Stop, re-run with the other flag:
 Same image, same workspace, same `mica-models` volume. The vLLM
 model and the llama Q4 GGUF are separate downloads, so the first
 switch into a fresh topology re-downloads (then caches).
+
+## What's running (and what's pinned)
+
+Mica's release stack has several moving pieces. The defaults
+balance "known-good on first run" against "easy to track upstream":
+
+| Component | Source | Pin posture |
+|---|---|---|
+| **vLLM** (chat + voice serving) | `vllm/vllm-openai@sha256:...` (digest of a recent `cu130-nightly`) | **pinned by default**. Smoke-tested with the Mica release. Override via `MICA_VLLM_IMAGE` to track nightly fresh or pin a different digest. |
+| **llama.cpp** (llama topology only) | `git clone --depth 1 https://github.com/ggml-org/llama.cpp.git` at image build time | not pinned; rebuilds against HEAD whenever the mica image is rebuilt |
+| **Chat model** | `RedHatAI/Qwen3.6-35B-A3B-NVFP4` (vLLM) or Qwen Q4 GGUF (llama) | pinned by name; HF Hub resolves to latest under that repo |
+| **Voice models** | Parakeet-TDT-0.6b-v2 (STT), Kokoro-82M (TTS), Silero VAD | pinned by name |
+
+Why pin vLLM by default: `cu130-nightly` is, by definition, a moving
+target. A fresh `docker pull` between Mica releases could roll in
+an incompatible nightly under your feet (silent breakage, no source
+changes on your side). Pinning means new users hit a configuration
+the maintainers have actually run.
+
+Why pin llama.cpp explicitly is not the default: the llama topology
+is the lighter, "simpler ops, slower" alternative — its audience is
+more tolerant of churn, and pinning the commit would mean rebuilding
+the image to update (no `docker pull` shortcut).
+
+To see the exact build versions inside your running stack:
+
+    docker exec mica-mica-vllm-1 python -c "import vllm; print(vllm.__version__)"
+    docker exec mica-mica-1 /opt/mica/scripts/voice/.venv/bin/python -c "import torch; print(torch.__version__)"
+    docker exec mica-mica-1 git -C /opt/llama.cpp log -1 --format='%h %s'
 
 ## Customization
 
@@ -202,19 +279,26 @@ the full annotated list.
 | `MICA_PORT` | Backend port | `3002` |
 | `MICA_FRONTEND_PORT` | Frontend port | `5173` |
 | `MICA_LLAMA_PORT` | llama-server port (llama topology) | `8012` |
-| `MICA_VLLM_IMAGE` | Pin a vLLM image digest | upstream nightly |
+| `MICA_VLLM_IMAGE` | Override the pinned vLLM digest (e.g. set to `vllm/vllm-openai:cu130-nightly` to track nightly fresh) | pinned digest |
 | `HF_CACHE_DIR` | Bind-mount a host HF cache instead of named volume | named volume |
 | `HF_TOKEN` | HuggingFace auth | unset |
 | `OPENROUTER_API_KEY` | Cloud-model fallback | unset |
-| `MICA_AUTO_BUILD` | Auto-add `--build` when image is stale | unset |
+| `MICA_AUTO_BUILD` | Auto-add `--build` when image is stale (silent yes to rebuild prompt) | unset |
+| `MICA_SKIP_REBUILD` | Suppress the rebuild prompt and proceed without `--build` (silent no) | unset |
 | `MICA_SKIP_TAVILY` | Bypass the Tavily-key preflight (search disabled) | unset |
+| `MICA_SKIP_SETUP` | Suppress first-run prompts for Tavily / HF keys, even in a TTY | unset |
 | `USER_UID` / `USER_GID` | Container user | `1000` / `1000` |
 
-### Pinning the vLLM image
+### Overriding the vLLM pin
 
-The `mica-vllm` service defaults to `vllm/vllm-openai:cu130-nightly`
-— a floating tag that drifts. Capture a digest for stable
-deployments:
+The `mica-vllm` service is digest-pinned by default to a recent
+`cu130-nightly` build that the Mica release has been smoke-tested
+against. To track upstream nightly fresh (gets you new perf wins
+as they ship; risks regressions):
+
+    MICA_VLLM_IMAGE=vllm/vllm-openai:cu130-nightly ./scripts/mica-compose.sh up
+
+To pin to a different digest (e.g. a newer one you've tested):
 
     docker pull vllm/vllm-openai:cu130-nightly
     docker inspect --format '{{index .RepoDigests 0}}' vllm/vllm-openai:cu130-nightly
@@ -237,15 +321,41 @@ first non-empty, non-`#` line of `.mica/canvas-back.md` becomes the
 template's description (truncated to 200 characters), so keep that
 line user-facing.
 
-## Workspace + history
+## Where Mica stores things
 
-- Default workspace lives at `$HOME/mica-workspace/` (outside the
-  cloned repo, so `git pull` can't touch your projects).
-- Override via `MICA_WORKSPACE=/path/of/your/choice`.
-- Projects live at `$MICA_WORKSPACE/<project>/`.
-- Chat history at `$MICA_WORKSPACE/<project>/.mica/chats/`.
+Three persistent stores, three different homes:
+
+| What | Default location | Override | Notes |
+|---|---|---|---|
+| **User projects + canvas + chat history** | `$HOME/mica-workspace/<project>/` | `MICA_WORKSPACE=/path` | Host directory (bind-mounted into the container). `git pull` in the repo can't touch it. |
+| **Model weights** (Qwen 3.6, Parakeet, Kokoro) | docker-managed volume `mica_mica-models` (typically `/var/lib/docker/volumes/mica_mica-models/_data/`) | `HF_CACHE_DIR=/path` | Bind-mount a host dir instead of the named volume. Setting `HF_CACHE_DIR=$HOME/.cache/huggingface` reuses anything `huggingface-cli` has already downloaded. |
+| **Claude Code credentials** (for `.claude` cards) | docker-managed volume `mica_mica-claude` | (none) | Survives container restarts so `claude login` state persists. |
+
+The wrapper's preflight reports which storage state you're in on every
+`up`:
+
+    [INFO] named volume 'mica_mica-models' already exists — model downloads will reuse it
+    [INFO] HF_CACHE_DIR=/path — bind-mounting host dir for the model cache
+    [INFO] first run — will download model weights to docker-managed volume 'mica_mica-models'
+
+If `$HOME/.cache/huggingface` contains any of Mica's models on a fresh
+install, the preflight surfaces a one-line hint with the override
+command — saving the ~30 GB download.
+
+### Per-project state
+
+- Project files: `$MICA_WORKSPACE/<project>/` (visible on canvas).
+- Chat history: `$MICA_WORKSPACE/<project>/.mica/chats/`.
+- Card classes: `$MICA_WORKSPACE/<project>/.mica/card-classes/`.
 - Delete `$MICA_WORKSPACE/<project>/.mica/` to reset all per-project
   state; the canvas files themselves remain.
+
+### Resetting
+
+- **Stop, keep everything**: `./scripts/mica-compose.sh stop`
+- **Delete only models (force re-download)**: `docker volume rm mica_mica-models`
+- **Delete everything Mica-side**: `./scripts/mica-compose.sh nuke` (containers + both volumes; `$HOME/mica-workspace/` survives).
+- **Delete user projects too**: `rm -rf $HOME/mica-workspace`
 
 ## Troubleshooting
 

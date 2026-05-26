@@ -163,20 +163,21 @@ services:
     # it. With raw `docker compose up`, no profile is active and this
     # service is filtered out (llama topology).
     profiles: ["vllm"]
-    # FOR STABLE DEPLOYMENTS: pin a captured digest, not the floating :cu130-nightly tag.
-    # Capture via:
-    #   docker pull vllm/vllm-openai:cu130-nightly
-    #   docker inspect --format '{{index .RepoDigests 0}}' \
-    #     vllm/vllm-openai:cu130-nightly
-    # Paste the result below as `image: vllm/vllm-openai@sha256:...`. Update
-    # intentionally (e.g. quarterly, or when a Mica change wants a newer
-    # upstream fix) — after a smoke test. We use the nightly track for the
-    # perf characteristics (NVFP4 + MTP-1 spec decode + cu130 Blackwell
-    # readiness); the floating tag drifts, so digest-pin for stable deployments.
+    # DEFAULT: digest-pinned. The base track is `vllm/vllm-openai:cu130-nightly`
+    # (chosen for NVFP4 + MTP-1 spec decode + cu130 Blackwell readiness), but
+    # that floating tag drifts — a fresh `docker pull` between Mica releases
+    # could roll in an incompatible nightly under your feet. We pin a digest
+    # we've smoke-tested with the current Mica so users get a known-good
+    # configuration on `up` instead of "whatever upstream shipped today".
     #
-    # Until a digest is captured for your deployment, the floating tag is
-    # used as a fallback. Override via MICA_VLLM_IMAGE in your shell or .env.
-    image: ${MICA_VLLM_IMAGE:-vllm/vllm-openai:cu130-nightly}
+    # To opt out (track nightly fresh): set MICA_VLLM_IMAGE before `up`:
+    #   MICA_VLLM_IMAGE=vllm/vllm-openai:cu130-nightly ./scripts/mica-compose.sh up
+    #
+    # To bump the pin (do this intentionally, after smoke-testing):
+    #   docker pull vllm/vllm-openai:cu130-nightly
+    #   docker inspect --format '{{index .RepoDigests 0}}' vllm/vllm-openai:cu130-nightly
+    # Paste the resulting `vllm/vllm-openai@sha256:...` below.
+    image: ${MICA_VLLM_IMAGE:-vllm/vllm-openai@sha256:3dbe092ec5b2cef63b6104d33fa75d6ce53a7870962529ada69f78bbbc38e776}
     # vllm/vllm-openai's default ENTRYPOINT runs as root. Forcing UID 1000
     # (or whatever USER_UID is) keeps cache files it writes line-up with
     # what the Mica container writes, so the shared /cache/huggingface

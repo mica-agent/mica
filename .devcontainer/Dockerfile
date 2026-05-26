@@ -1,7 +1,14 @@
 FROM nvcr.io/nvidia/vllm:26.04-py3
 
-# Install sudo and create vscode user with sudo access
-RUN apt-get update && apt-get install -y sudo lsof net-tools procps curl ca-certificates && rm -rf /var/lib/apt/lists/* && \
+# Install sudo and create vscode user with sudo access.
+# ffmpeg: required by the voice-stt sidecar — librosa hands off webm/opus
+# decoding (MediaRecorder default) to audioread, which shells out to a
+# `ffmpeg` on PATH. The imageio-ffmpeg-bundled binary is fragile (its
+# bare-name symlink bakes an absolute path at install time, so a venv
+# installed under /workspaces/mica/... breaks if reused under /opt/mica/...).
+# System ffmpeg avoids that whole class of bug — same fix as in the
+# production Dockerfile.
+RUN apt-get update && apt-get install -y sudo lsof net-tools procps curl ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/* && \
     if id -u 1000 >/dev/null 2>&1; then \
         existing_user=$(getent passwd 1000 | cut -d: -f1) && \
         usermod -l vscode -d /home/vscode -m "$existing_user" && \

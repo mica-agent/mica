@@ -105,9 +105,38 @@ git clone https://github.com/mica-agent/mica.git && cd mica
 ./scripts/mica-compose.sh up
 ```
 
-First run takes 5–15 minutes (vLLM downloads ~30 GB then warms up;
+On first run the wrapper prompts for a **Tavily API key** (required —
+free at https://app.tavily.com, 1k searches/month) and an optional
+**HuggingFace token** (auto-detected from `~/.cache/huggingface/token`
+if you've run `huggingface-cli login`). Both are saved to `.env`; you
+don't have to hand-edit anything.
+
+First run then takes 5–15 minutes (vLLM downloads ~30 GB then warms up;
 subsequent starts are seconds). Open http://localhost:5173 once
 it's up.
+
+**Where things live**. Mica stores model weights in a docker-managed
+named volume (`mica_mica-models`, on most hosts at
+`/var/lib/docker/volumes/`). User projects live at
+`~/mica-workspace/`. If you already have Qwen3.6 weights in
+`~/.cache/huggingface` from `huggingface-cli`, reuse them and skip the
+download:
+
+    HF_CACHE_DIR=$HOME/.cache/huggingface ./scripts/mica-compose.sh up
+
+The wrapper's preflight detects this case and prints the same hint.
+
+Once it's running:
+
+```
+./scripts/mica-compose.sh stop     # graceful stop, keeps models cached
+./scripts/mica-compose.sh logs     # tail all service logs
+./scripts/mica-compose.sh status   # services + URLs
+```
+
+To update Mica when a new release lands upstream, `git pull` and re-run
+`./scripts/mica-compose.sh up` — the wrapper detects stale source and
+prompts to rebuild.
 
 Validated on a DGX Spark (128 GB unified memory) and against
 several cloud models — Gemini, DeepSeek, Claude Sonnet — via
