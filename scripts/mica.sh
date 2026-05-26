@@ -32,7 +32,7 @@ die()  { printf '%sError:%s %s\n' "$C_ERR" "$C_RESET" "$*" >&2; exit 1; }
 # runtime (MICA_PORT / MICA_FRONTEND_PORT). Legacy MICA_PORT_BACKEND /
 # MICA_PORT_FRONTEND / MICA_PORT_LLAMA are honored as fallbacks.
 WORKSPACE="${MICA_WORKSPACE:-$HOME/mica-workspace}"
-IMAGE="${MICA_IMAGE:-ghcr.io/robchang/mica:latest}"
+IMAGE="${MICA_IMAGE:-ghcr.io/mica-agent/mica:latest}"
 NAME="${MICA_CONTAINER:-mica}"
 PORT_BACKEND="${MICA_PORT:-${MICA_PORT_BACKEND:-3002}}"
 PORT_FRONTEND="${MICA_FRONTEND_PORT:-${MICA_PORT_FRONTEND:-5173}}"
@@ -306,7 +306,7 @@ Usage:
 
 Env-var overrides (mirror install.sh):
   MICA_WORKSPACE      host workspace dir   (default: \$HOME/mica-workspace)
-  MICA_IMAGE          docker image         (default: ghcr.io/robchang/mica:latest)
+  MICA_IMAGE          docker image         (default: ghcr.io/mica-agent/mica:latest)
   MICA_CONTAINER      container name       (default: mica)
   MICA_PORT           backend host port    (default: 3002)
   MICA_FRONTEND_PORT  frontend host port   (default: 5173)

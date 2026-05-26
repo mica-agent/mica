@@ -97,7 +97,7 @@ Linux GPU host with Docker and the [NVIDIA Container Toolkit](https://docs.nvidi
 installed:
 
 ```
-git clone https://github.com/<org>/mica.git && cd mica
+git clone https://github.com/mica-agent/mica.git && cd mica
 ./scripts/mica-compose.sh up
 ```
 

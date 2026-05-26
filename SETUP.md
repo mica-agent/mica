@@ -31,7 +31,7 @@ other flag — same image, same workspace, same volumes.
 - ~50 GB free disk on first run (model + image).
 - The repo cloned locally:
   ```
-  git clone https://github.com/<org>/mica.git
+  git clone https://github.com/mica-agent/mica.git
   cd mica
   ```
 
@@ -111,7 +111,7 @@ Subsequent chats: instant. Open http://localhost:5173.
 If you're developing Mica itself (not just running it), open the repo
 in VS Code with the **Dev Containers** extension:
 
-1. `git clone https://github.com/<org>/mica.git && code mica`
+1. `git clone https://github.com/mica-agent/mica.git && code mica`
 2. VS Code prompts "Reopen in Container" — accept.
 3. Inside the devcontainer terminal:
    ```
