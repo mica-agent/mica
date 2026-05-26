@@ -482,8 +482,17 @@ start_progress_watcher() {
     if [ "$topology" = "vllm" ]; then
       vllm_state="$(docker compose ps --format '{{.Service}}|{{.State}}' 2>/dev/null \
         | awk -F'|' '$1=="mica-vllm"{print $2}')"
-      curl -fsS --max-time 2 http://localhost:8012/v1/models >/dev/null 2>&1 \
-        && vllm_ready="yes"
+      # vLLM listens on :8000 INSIDE its sibling container; not exposed
+      # to the host. Reuse the docker healthcheck status (same
+      # `curl /v1/models` probe that compose's `depends_on:
+      # condition: service_healthy` reads).
+      local vllm_cid
+      vllm_cid="$(docker compose ps -q mica-vllm 2>/dev/null)"
+      if [ -n "$vllm_cid" ]; then
+        local vllm_health
+        vllm_health="$(docker inspect "$vllm_cid" --format '{{.State.Health.Status}}' 2>/dev/null)"
+        [ "$vllm_health" = "healthy" ] && vllm_ready="yes"
+      fi
     fi
     curl -fsS --max-time 2 http://localhost:5173/ >/dev/null 2>&1 \
       && frontend_ready="yes"
