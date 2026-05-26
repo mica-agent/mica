@@ -1,0 +1,24 @@
+{
+  "examples": [
+    {
+      "name": "news-globe",
+      "url": "https://github.com/mica-agent/mica-news-globe",
+      "description": "Live news headlines on a 3D rotating globe"
+    },
+    {
+      "name": "hotdog",
+      "url": "https://github.com/mica-agent/mica-hotdog",
+      "description": "\"Hot Dog or Not Hot Dog\" image classifier"
+    },
+    {
+      "name": "solar-system",
+      "url": "https://github.com/mica-agent/mica-solar-system",
+      "description": "Interactive 3D solar system with planet info on click"
+    },
+    {
+      "name": "monitor",
+      "url": "https://github.com/mica-agent/mica-monitor",
+      "description": "Live GPU/CPU/memory dashboard for the host"
+    }
+  ]
+}

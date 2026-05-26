@@ -77,12 +77,18 @@ See [FEATURES.md](FEATURES.md#how-apps-are-built) for worked examples and per-ti
 
 ## Examples
 
-*Screenshots and short demo videos will live here.*
+A curated set of example projects ships with Mica — load any of them
+from the project list page via **Load Examples** (or `git clone` the
+repo into your workspace by hand). The manifest lives at
+[examples.json](examples.json); to add or remove entries, edit that
+file.
 
-- **Information visualizer** — *TODO: screenshot + video*
-- **Knowledge extraction over private data** — *TODO: screenshot + video*
-- **Workflow automation** — *TODO: screenshot + video*
-- **Fun** — *TODO: "Hotdog or Not Hotdog"*
+- **[news-globe](https://github.com/mica-agent/mica-news-globe)** — Live news headlines on a 3D rotating globe.
+- **[hotdog](https://github.com/mica-agent/mica-hotdog)** — "Hot Dog or Not Hot Dog" image classifier.
+- **[solar-system](https://github.com/mica-agent/mica-solar-system)** — Interactive 3D solar system with planet info on click.
+- **[monitor](https://github.com/mica-agent/mica-monitor)** — Live GPU/CPU/memory dashboard for the host.
+
+*Screenshots and short demo videos will land here.*
 
 ## Run it
 

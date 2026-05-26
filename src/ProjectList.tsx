@@ -10,6 +10,7 @@ import {
 import type { ProjectInfo, TemplateInfo } from './api/canvasFiles';
 import { on as onMicaEvent } from './api/micaSocket';
 import Connections from './Connections';
+import LoadExamplesModal from './LoadExamplesModal';
 
 interface Props {
   workspaceName: string;
@@ -37,6 +38,7 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>(readInitialSort);
   const [showConnections, setShowConnections] = useState(false);
+  const [showLoadExamples, setShowLoadExamples] = useState(false);
   // Set of project absolute paths currently configured as libraries
   // (~/.mica/include-projects.json). Used to render a 📚 icon next to
   // shared projects in the listing. Refreshed alongside the project list.
@@ -217,6 +219,9 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
         <button onClick={() => { setShowClone(true); setCreateTemplate(null); setShowNewMenu(false); }} style={btnStyle}>
           Clone Repo
         </button>
+        <button onClick={() => setShowLoadExamples(true)} style={btnStyle}>
+          Load Examples
+        </button>
         <div style={{ flex: 1 }} />
         <button onClick={() => setShowConnections(true)} style={btnStyle} title="Manage API keys for OpenRouter, Anthropic, Tavily, Claude Code, and GitHub">
           Connections
@@ -224,6 +229,13 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
       </div>
 
       {showConnections && <Connections onClose={() => setShowConnections(false)} />}
+
+      {showLoadExamples && (
+        <LoadExamplesModal
+          onClose={() => setShowLoadExamples(false)}
+          onLoaded={loadProjects}
+        />
+      )}
 
       {/* Create form */}
       {createTemplate !== null && (
@@ -247,9 +259,11 @@ export default function ProjectList({ workspaceName, onOpenProject }: Props) {
       {loading ? (
         <div style={{ color: '#666', padding: 24 }}>Loading projects...</div>
       ) : projects.length === 0 ? (
-        <div style={{ color: '#666', padding: 24, textAlign: 'center' }}>
-          <p style={{ fontSize: 16, marginBottom: 8 }}>No projects yet</p>
-          <p style={{ fontSize: 13 }}>Create a new project or clone an existing repository</p>
+        <div style={{ color: '#888', padding: 24, textAlign: 'center' }}>
+          <p style={{ fontSize: 17, marginBottom: 8, color: '#ddd' }}>Welcome to Mica.</p>
+          <p style={{ fontSize: 13 }}>
+            To get started, create a project from a template, or load some examples. Have fun!
+          </p>
         </div>
       ) : (
         <>

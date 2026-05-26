@@ -2106,6 +2106,23 @@ app.get("/api/templates", async (_req, res) => {
   }
 });
 
+// Curated example projects — repos the user can git-clone into their workspace
+// via the project-list page's "Load Examples" modal. Source of truth is
+// `examples.json` at the repo root; that file is read on every request (tiny
+// file, rare hit) so an edit-and-save lands without a restart. Missing or
+// malformed file degrades to an empty list with a warn log — the button
+// still works, the modal just shows nothing to pick.
+app.get("/api/examples", async (_req, res) => {
+  try {
+    const raw = await readFile(join(process.cwd(), "examples.json"), "utf-8");
+    const parsed = JSON.parse(raw) as { examples?: Array<{ name: string; url: string; description?: string }> };
+    res.json({ examples: parsed.examples ?? [] });
+  } catch (err) {
+    console.warn(`[examples] could not read examples.json: ${(err as Error).message}`);
+    res.json({ examples: [] });
+  }
+});
+
 // Read a file — returns raw bytes with content-type header
 app.get("/api/files/:filename", async (req, res) => {
   const filename = req.params.filename;

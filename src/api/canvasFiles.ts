@@ -105,6 +105,27 @@ export async function fetchTemplates(): Promise<TemplateInfo[]> {
   return res.json();
 }
 
+export interface ExampleProject {
+  name: string;
+  url: string;
+  description?: string;
+}
+
+/** Read the maintainer-curated list of example projects from
+ *  `/api/examples` (backed by `examples.json` at the Mica repo root).
+ *  Used by the project-list page's "Load Examples" modal. Always
+ *  resolves; on transport / server error returns []. */
+export async function listExamplesApi(): Promise<ExampleProject[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/examples`);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { examples?: ExampleProject[] };
+    return data.examples ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function cloneProjectApi(
   url: string,
   name?: string,
