@@ -92,7 +92,6 @@ file.
 - **[solar-system](https://github.com/mica-agent/mica-solar-system)** — Interactive 3D solar system with planet info on click.
 - **[monitor](https://github.com/mica-agent/mica-monitor)** — Live GPU/CPU/memory dashboard for the host.
 
-*Screenshots and short demo videos will land here.*
 
 ## Run it
 
