@@ -105,13 +105,31 @@ def load_model():
     # trips `keep_graph_ INTERNAL ASSERT FAILED at CUDAGraph.cpp:257`,
     # which surfaces as HTTP 500 on /transcribe. Disabling graphs costs
     # ~10-20% decode latency but is robust under multi-tenant GPU.
+    #
+    # NeMo's decoding cfg has TWO independent CUDA-graph flags that both
+    # need to be off for Parakeet-TDT — disabling one leaves the other
+    # capturing graphs:
+    #   - greedy.use_cuda_graphs: the RNN-T-style "greedy with cuda
+    #     graphs" path. Inherited from the RNN-T base.
+    #   - greedy.use_cuda_graph_decoder: the TDT-specific decoder path.
+    #     This is the one that actually fires for Parakeet-TDT-0.6b.
+    # Set both unconditionally; missing-key paths are tolerated.
     try:
         decoding_cfg = copy.deepcopy(_model.cfg.decoding)
+        flags_set = []
         with open_dict(decoding_cfg):
             if "greedy" in decoding_cfg:
-                decoding_cfg.greedy.use_cuda_graphs = False
+                if "use_cuda_graphs" in decoding_cfg.greedy:
+                    decoding_cfg.greedy.use_cuda_graphs = False
+                    flags_set.append("greedy.use_cuda_graphs")
+                if "use_cuda_graph_decoder" in decoding_cfg.greedy:
+                    decoding_cfg.greedy.use_cuda_graph_decoder = False
+                    flags_set.append("greedy.use_cuda_graph_decoder")
         _model.change_decoding_strategy(decoding_cfg)
-        print("[voice-stt] decoder CUDA graphs disabled (multi-tenant GPU safety)", flush=True)
+        if flags_set:
+            print(f"[voice-stt] decoder CUDA graphs disabled: {', '.join(flags_set)}", flush=True)
+        else:
+            print("[voice-stt] WARN: no CUDA-graph flags found to disable; check cfg shape", flush=True)
     except Exception as e:
         # Don't fail load if the cfg shape moved in a future NeMo release;
         # log + continue with default decoding. Worst case is the original
