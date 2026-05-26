@@ -71,11 +71,21 @@ done
 
 # Orphan node/tsx still squatting on the ports — kill defensively, but
 # never kill VSCode's port forwarder (would tear down the SSH session).
+#
+# We match on cmdline only, not `comm`: a Node process can set its
+# thread name (e.g. vite shows up with comm=MainThread), so the
+# previous `comm ∈ {node, tsx}` precondition silently dropped real
+# orphans. The cmdline patterns below are unambiguous — mica processes
+# resolve via `node_modules/.bin/{vite,tsx}` or the project directory;
+# the VSCode forwarder runs out of `/vscode/vscode-server/` and won't
+# match.
 for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
   for pid in $(lsof -ti :"$port" 2>/dev/null || true); do
     cmd=$(ps -p "$pid" -o comm= 2>/dev/null || true)
     cmdline=$(ps -p "$pid" -o args= 2>/dev/null || true)
-    if [[ "$cmd" == "node" || "$cmd" == "tsx" ]] && [[ "$cmdline" == *"mica"* || "$cmdline" == *"vite"* || "$cmdline" == *"tsx"* ]]; then
+    if [[ "$cmdline" == *"node_modules/.bin/vite"* \
+       || "$cmdline" == *"node_modules/.bin/tsx"* \
+       || "$cmdline" == *"$PROJECT_DIR"* ]]; then
       echo "Killing orphan mica process on port $port (pid $pid, $cmd)"
       kill "$pid" 2>/dev/null || true
       stopped=$((stopped + 1))

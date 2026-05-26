@@ -125,7 +125,8 @@ screenshots. Full tool catalog in
   ([card-classes/claude/](card-classes/claude/)).
 - **OpenCode (`.opencode`)** — Agent backed by any OpenAI-compatible
   endpoint you point it at (OpenRouter, a local model, or your own
-  server). Settings panel picks the model and provider
+  server). Settings panel picks the model and provider. Recommended
+  for use with models other than Qwen.
   ([card-classes/opencode/](card-classes/opencode/)).
 - **Voice (`.voice`)** — Click-to-toggle voice assistant. Local
   Parakeet speech-to-text and Kokoro spoken replies — no audio
@@ -587,3 +588,11 @@ For people building card classes or extending Mica.
   agent/handler streams, `mica.fetch` for proxied HTTP,
   `mica.speak` / `mica.listen` for voice, and the file/layout
   events you'd expect.
+- **Lifecycle scripts** — `scripts/start.sh`, `scripts/stop.sh`,
+  `scripts/restart.sh`, `scripts/status.sh`. `stop.sh` cleans up
+  backend, frontend, voice sidecars, and any leftover llama-server;
+  `--full` also tears down the chat vLLM container. Orphan
+  detection on ports 3002/5173 matches by cmdline (e.g.
+  `node_modules/.bin/vite`) rather than `comm`, so processes that
+  rename their main thread are still reaped — VSCode's port
+  forwarder is left alone.
