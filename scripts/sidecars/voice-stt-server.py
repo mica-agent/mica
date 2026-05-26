@@ -87,7 +87,9 @@ def load_model():
     global _model
     if _model is not None:
         return _model
+    import copy
     import nemo.collections.asr as nemo_asr  # type: ignore
+    from omegaconf import open_dict  # type: ignore
 
     print("[voice-stt] loading Parakeet-TDT-0.6b-v2 ...", flush=True)
     t0 = time.perf_counter()
@@ -95,6 +97,26 @@ def load_model():
         model_name="nvidia/parakeet-tdt-0.6b-v2"
     )
     _model.eval()
+    # Disable CUDA graph capture in the TDT greedy decoder. NeMo captures
+    # a graph on first decode that pins the allocator pool state at
+    # capture time. When another GPU tenant (vLLM continuous batching,
+    # Kokoro TTS allocate/free, model swap) churns the allocator between
+    # calls, the captured graph's pool is invalidated and the next replay
+    # trips `keep_graph_ INTERNAL ASSERT FAILED at CUDAGraph.cpp:257`,
+    # which surfaces as HTTP 500 on /transcribe. Disabling graphs costs
+    # ~10-20% decode latency but is robust under multi-tenant GPU.
+    try:
+        decoding_cfg = copy.deepcopy(_model.cfg.decoding)
+        with open_dict(decoding_cfg):
+            if "greedy" in decoding_cfg:
+                decoding_cfg.greedy.use_cuda_graphs = False
+        _model.change_decoding_strategy(decoding_cfg)
+        print("[voice-stt] decoder CUDA graphs disabled (multi-tenant GPU safety)", flush=True)
+    except Exception as e:
+        # Don't fail load if the cfg shape moved in a future NeMo release;
+        # log + continue with default decoding. Worst case is the original
+        # crash returns and we re-investigate.
+        print(f"[voice-stt] could not disable CUDA graphs: {type(e).__name__}: {e}", flush=True)
     print(f"[voice-stt] model loaded in {time.perf_counter() - t0:.1f}s", flush=True)
     return _model
 
