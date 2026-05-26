@@ -310,11 +310,18 @@ export class ChannelManager {
     const cardClass = meta.handler ?? ext;
     const factory = this.factories.get(cardClass);
     if (!factory) {
+      // Two-state hint: distinguish "handler set but unknown" from "no
+      // handler declared at all". The former is usually a typo (or the
+      // card class name was put in by mistake); the latter is missing
+      // metadata that needs to be added. Either way, lead with the
+      // concrete fix-action so the agent (or human) doesn't have to
+      // bounce to the handbook to figure it out.
       const available = getManifestNames();
-      const hint = available.length > 0
-        ? ` Available handlers: ${available.join(", ")}.`
-        : "";
-      throw new Error(`No handler registered for: ${cardClass}.${hint}`);
+      const choices = available.length > 0 ? available.join(", ") : "(none registered)";
+      const hint = meta.handler
+        ? `\nmetadata.json sets handler="${meta.handler}". Set it to one of the registered handlers: ${choices}.`
+        : `\nDeclare a handler in metadata.json to route mica.openChannel() calls. Choose one of: ${choices}.\nExample: { "handler": "llm-agent", ... }`;
+      throw new Error(`No handler registered for "${cardClass}" (card class: ${ext}).${hint}`);
     }
 
     // If the routed handler ships a manifest, validate args at the channel

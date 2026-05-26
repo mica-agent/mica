@@ -35,10 +35,15 @@
 #   MICA_SKIP_TAVILY=1      Bypass the Tavily-key preflight (agent web
 #                           search will be disabled). Get a free key
 #                           at https://app.tavily.com.
-#   MICA_AUTO_BUILD=1       If the image is missing or older than tracked
-#                           source files, auto-add --build to 'up'.
-#                           Without this, the script only WARNS — you decide
-#                           whether to re-invoke with --build.
+#   MICA_AUTO_BUILD=1       Stale-image rebuild policy: silent yes. Auto-add
+#                           --build whenever the image is missing or older
+#                           than tracked source. Use in CI.
+#   MICA_SKIP_REBUILD=1     Stale-image rebuild policy: silent no. Suppress
+#                           the interactive prompt and proceed without
+#                           rebuilding. Use in CI when you intentionally
+#                           don't want a rebuild. Without either, an
+#                           interactive TTY gets a [Y/n] prompt (default Y);
+#                           a non-TTY proceeds without rebuilding.
 #   MICA_WORKSPACE=/path    Where projects live on the host. Default
 #                           \$HOME/mica-workspace. Deliberately NOT inside
 #                           the cloned repo.
@@ -250,12 +255,26 @@ check_image_built() {
   fi
 
   if [ "$src_ts" -gt "$image_ts" ]; then
-    local stale_commit image_date
-    stale_commit=$(git log -1 --format='%h %s' -- "${watched[@]}" 2>/dev/null || echo "(unknown)")
+    # Show count + top-3 substantive commits since the image was built,
+    # not just the single most-recent one. The most-recent commit can be
+    # a README/lockfile bump that looks dismissable in isolation; the
+    # surrounding count + a few more commits give the user enough context
+    # to know whether to rebuild (or accept the prompt below in cmd_up).
+    local total_commits image_date
+    total_commits=$(git rev-list --count HEAD --since="@$image_ts" -- "${watched[@]}" 2>/dev/null || echo 0)
     image_date=$(date -d "$image_iso" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?")
-    warn "mica:latest is older than tracked source (image built $image_date)"
+    warn "mica:latest predates $total_commits commits on watched paths (built $image_date)"
     hint "rebuild: scripts/mica-compose.sh up --build   (or 'docker compose build mica' first)"
-    hint "last source touch: $stale_commit"
+    if [ "$total_commits" -gt 0 ]; then
+      hint "Recent substantive changes:"
+      local line
+      while IFS= read -r line; do
+        [ -n "$line" ] && hint "  $line"
+      done < <(git log --format='%h %s' --since="@$image_ts" -n 3 -- "${watched[@]}" 2>/dev/null)
+      if [ "$total_commits" -gt 3 ]; then
+        hint "  (and $((total_commits - 3)) more)"
+      fi
+    fi
     NEEDS_BUILD=1
   else
     pass "mica:latest present and current with tracked source"
@@ -378,15 +397,35 @@ cmd_up() {
     compose_args+=(--profile vllm)
   fi
 
-  # If preflight flagged a stale (or missing) image AND MICA_AUTO_BUILD=1,
-  # silently inject --build. Otherwise the user already saw the warning
-  # and a remediation hint — leave the decision to them. Avoid duplicating
-  # --build if they already passed it on the command line.
+  # Stale-image handling. Decision table:
+  #   --build already passed on cmdline → no-op (already rebuilding)
+  #   MICA_AUTO_BUILD=1                  → silent rebuild (CI: yes)
+  #   MICA_SKIP_REBUILD=1                → silent skip (CI: no)
+  #   interactive TTY                    → prompt, default Yes (catch up)
+  #   non-TTY, no overrides              → warn-and-proceed (back-compat)
   if [ "${NEEDS_BUILD:-0}" = "1" ] \
-     && [ "${MICA_AUTO_BUILD:-0}" = "1" ] \
      && ! printf '%s\n' "${filtered[@]}" | grep -qx -- '--build'; then
-    info "MICA_AUTO_BUILD=1 and image is stale — adding --build"
-    filtered=("--build" "${filtered[@]}")
+    if [ "${MICA_AUTO_BUILD:-0}" = "1" ]; then
+      info "MICA_AUTO_BUILD=1 — adding --build"
+      filtered=("--build" "${filtered[@]}")
+    elif [ "${MICA_SKIP_REBUILD:-0}" = "1" ]; then
+      info "MICA_SKIP_REBUILD=1 — proceeding without rebuild"
+    elif [ -t 0 ] && [ -t 1 ]; then
+      printf '\n  %sImage is stale.%s Rebuild now? [Y/n] ' "$C_YLW" "$C_RST"
+      local ans=""
+      read -r ans || true
+      case "${ans,,}" in
+        n|no)
+          info "skipping rebuild — re-run with --build or MICA_AUTO_BUILD=1 to refresh later"
+          ;;
+        *)
+          info "rebuilding — adding --build"
+          filtered=("--build" "${filtered[@]}")
+          ;;
+      esac
+    else
+      info "image is stale; pass --build, set MICA_AUTO_BUILD=1, or run in a TTY to accept the rebuild prompt"
+    fi
   fi
 
   # Set expectations BEFORE the long compose-up wait. First-time users hit
@@ -563,7 +602,14 @@ cmd_status() {
 }
 
 cmd_stop() {
-  exec docker compose down "$@"
+  # --remove-orphans because mica-vllm is profile-gated (profiles: ["vllm"]).
+  # Without it, `docker compose down` (no --profile flag) leaves mica-vllm
+  # Exited rather than removed. The next `up` then creates a fresh
+  # mica_default network with a new ID, tries to start the orphaned
+  # mica-vllm whose HostConfig still references the OLD network ID, and
+  # errors with "failed to set up container networking: network <id> not
+  # found". --remove-orphans cleans up regardless of profile state.
+  exec docker compose down --remove-orphans "$@"
 }
 
 cmd_nuke() {
@@ -571,7 +617,8 @@ cmd_nuke() {
   printf '%sModels will need to re-download on next 'up'.%s\n' "$C_YLW" "$C_RST"
   read -r -p "Type 'yes' to confirm: " ans
   [ "$ans" = "yes" ] || { echo "aborted"; exit 1; }
-  exec docker compose down -v "$@"
+  # See cmd_stop for rationale on --remove-orphans.
+  exec docker compose down -v --remove-orphans "$@"
 }
 
 cmd_logs() {
@@ -601,8 +648,13 @@ Environment overrides:
   MICA_SKIP_TAVILY=1        Bypass the Tavily-key check (agent web search
                             will be disabled). Get a free key at
                             https://app.tavily.com.
-  MICA_AUTO_BUILD=1         Auto-add --build when the image is stale or missing.
-                            Without this, the script only WARNS.
+  MICA_AUTO_BUILD=1         Stale-image rebuild policy: silent yes (CI).
+                            Auto-add --build when the image is missing or
+                            older than tracked source.
+  MICA_SKIP_REBUILD=1       Stale-image rebuild policy: silent no (CI).
+                            Suppress the prompt and proceed without rebuild.
+                            Without either, a TTY gets [Y/n] (default Y);
+                            a non-TTY proceeds without rebuilding.
   MICA_WORKSPACE=/path      Where projects live on the host.
                             Default: \$HOME/mica-workspace (matches install.sh).
                             NOT inside the cloned repo.

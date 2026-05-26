@@ -288,6 +288,20 @@ export default function App() {
           <span style={{ fontWeight: 600, fontSize: 14 }}>{workspace.name}</span>
         )}
         <span style={{ flex: 1 }} />
+        <a
+          href="https://github.com/mica-agent/mica"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Mica on GitHub — opens in new tab"
+          style={{
+            color: '#888', textDecoration: 'none',
+            fontWeight: 600, fontSize: 13, letterSpacing: 0.3,
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = '#ccc'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = '#888'; }}
+        >
+          Mica
+        </a>
         <span
           style={{
             width: 8, height: 8, borderRadius: '50%',

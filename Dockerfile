@@ -39,7 +39,15 @@ FROM nvcr.io/nvidia/vllm:26.04-py3
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git ca-certificates sudo lsof procps \
     cmake build-essential \
+    ffmpeg \
  && rm -rf /var/lib/apt/lists/*
+# ffmpeg: required by the voice-stt sidecar — librosa hands off webm/opus
+# decoding (MediaRecorder default) to audioread, which shells out to a
+# `ffmpeg` on PATH. The imageio-ffmpeg-bundled binary is fragile: its
+# bare-name symlink bakes an absolute path at install time, so a venv
+# installed inside the devcontainer (workspace at /workspaces/mica/)
+# ships a symlink that dangles in the production container (workspace at
+# /opt/mica/). System ffmpeg avoids that whole class of bug.
 
 # UID 1000 user — matches most Linux hosts so bind-mounted workspaces
 # don't end up with permission mismatches.

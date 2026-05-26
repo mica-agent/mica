@@ -40,23 +40,38 @@ from pathlib import Path
 
 # librosa decodes wav/flac via soundfile but anything else (webm/opus from
 # MediaRecorder, m4a, etc.) hands off to audioread which shells out to
-# `ffmpeg` on PATH. The devcontainer doesn't ship system ffmpeg, so we
-# prepend the imageio-ffmpeg-bundled binary's directory to PATH here. This
-# is a no-op if imageio-ffmpeg isn't installed; install.sh adds it.
+# `ffmpeg` on PATH. Prefer system ffmpeg (apt-installed via Dockerfile) —
+# fall back to the imageio-ffmpeg-bundled binary if missing. This block
+# is a no-op when system ffmpeg is on PATH and imageio-ffmpeg isn't
+# installed; it patches PATH + ensures a bare-name symlink when the
+# bundled binary IS present but the venv was built in a different
+# mount point (devcontainer /workspaces vs production /opt/mica) so the
+# symlink target stays valid across environments.
 try:
     import imageio_ffmpeg  # type: ignore
     _ff = imageio_ffmpeg.get_ffmpeg_exe()
     _ff_dir = os.path.dirname(_ff)
     if _ff_dir not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = _ff_dir + os.pathsep + os.environ.get("PATH", "")
-    # audioread also probes for an `ffmpeg` name specifically; the bundled
-    # binary is named e.g. ffmpeg-linux-aarch64-v7.0.2. Symlink once.
+    # audioread shells out to a bare `ffmpeg`, but the bundled binary is
+    # named e.g. ffmpeg-linux-aarch64-v7.0.2 — point a bare-name symlink
+    # at it. Use a RELATIVE target so the symlink survives moves between
+    # mount points (a venv built inside the devcontainer at
+    # /workspaces/mica/... otherwise bakes an absolute path that dangles
+    # in the production container at /opt/mica/...). Repair the link if
+    # it's already there but pointing at a stale absolute path.
     _link = os.path.join(_ff_dir, "ffmpeg")
-    if not os.path.exists(_link):
-        try:
-            os.symlink(_ff, _link)
-        except OSError:
-            pass
+    _target = os.path.basename(_ff)  # relative — robust across mount points
+    try:
+        if os.path.islink(_link):
+            if os.readlink(_link) != _target:
+                os.unlink(_link)
+                os.symlink(_target, _link)
+        elif not os.path.exists(_link):
+            os.symlink(_target, _link)
+        # else: real file (not a link) at that path — leave alone.
+    except OSError:
+        pass
 except ImportError:
     pass
 

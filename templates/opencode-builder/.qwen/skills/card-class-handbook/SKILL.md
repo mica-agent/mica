@@ -586,6 +586,21 @@ specific filename inside a directory instance). Do **not** include
 `name`, `description`, or `version` — those are package.json-shaped
 fields the framework ignores.
 
+**`handler` names a registered channel handler.** When your `card.js`
+calls `mica.openChannel(...)`, the channel routes to the server-side
+handler whose name matches `metadata.handler` (built-ins: `llm-direct`,
+`llm-agent`, `process`; plus any baked-in plugin like `qwen`, `claude`,
+`terminal`). Declare it explicitly so the wiring is unambiguous:
+
+```json
+{ "extension": ".my-card", "handler": "llm-agent", "badge": "MYC", "defaultTitle": "My Card" }
+```
+
+Run `mica_list_handlers` to discover what's available; the result lists
+each handler with its `sendShapes` / `recvShapes`. Skip `handler` only
+when the card never opens a channel (static / fetch-only /
+sidecar-only).
+
 ### Injected globals in `card.js`
 
 Available without import:
