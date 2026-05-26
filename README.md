@@ -16,7 +16,9 @@ models. Mica ships preconfigured with Qwen3.6-35B (MoE) and three
 coding agents — OpenCode, Qwen Code, and Claude Code — so you can
 run the same task through each and compare. Other local models
 drop in with a config change; an OpenRouter integration is
-available for cloud models when you want them.
+available for cloud models when you want them. On a DGX Spark, 
+you can comfortably run concurrent agents alongside STT and
+TTS models.
 
 Mica fits well when the answer to a problem is a small focused
 tool rather than a major application. Examples of categories appear are promising
