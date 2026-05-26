@@ -1,5 +1,7 @@
 # Mica
 
+![Mica canvas running the solar-system example](docs/solar.jpg)
+
 Mica is an *agent-first builder*: a workspace where you
 collaborate with one or more AI agents to define a task, compose
 and review the *context* (the information relevant to solving
