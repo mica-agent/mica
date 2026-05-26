@@ -740,6 +740,66 @@ For Mica's own `/api/*`, prefer `mica.files.*` helpers (auto
 URL-encode, set `source`/`cardSource`). Raw `fetch('/api/...')`
 works too — the runtime auto-injects `X-Mica-Project`.
 
+## Common UX patterns — canonical shapes to copy
+
+For UI patterns the agent reaches for often (file picker, drag-and-
+drop, camera capture), the handbook ships one canonical shape per
+pattern. Copy these verbatim into card.html + card.js as a starting
+point. They're written to be correct by construction — no "watch
+out for X" caveats apply when you use them as-is.
+
+### File upload — canonical shape
+
+**Use the label, not a JS click handler.** A `<label for="…">`
+natively opens the file picker for the input it points at — no
+JavaScript required. Listen for the `change` event on the input to
+receive the file.
+
+```html
+<!-- card.html — the label IS the click target. The hidden input
+     receives the file; the visible label triggers the picker. -->
+<label class="upload-btn" for="file-input">
+  📄 Click to upload PDF
+  <input type="file" id="file-input" accept=".pdf" hidden>
+</label>
+```
+
+```js
+// card.js — listen for `change`, never call fileInput.click() yourself.
+const fileInput = container.querySelector('#file-input');
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  // … write to disk + call sidecar; see § Binary uploads below …
+});
+```
+
+**Why this shape and not a JS click handler:** if you wrap a click
+listener around the upload area AND keep the `<label for>`, the
+label's native picker-open fires together with your JS-driven
+`fileInput.click()` — two open requests in the same event loop
+cancel each other and the picker never appears. The label-only
+shape sidesteps that entirely. See § Pitfalls §"Native HTML
+semantics + JS handler = double-trigger" for the failure mode if
+you ever inherit a card that uses both.
+
+**Variants** are all simple attribute additions on the same input —
+no new code paths:
+- **Drag-and-drop:** add `<input type="file" hidden>` inside the
+  drop target, listen for `drop` on the target, set
+  `dropTarget.files = e.dataTransfer.files` if needed; the same
+  `change` listener fires.
+- **Camera capture (mobile):** add `capture="environment"` to the
+  input. Same shape, same listener.
+- **Multi-file:** add `multiple`. Iterate `e.target.files` in the
+  same `change` listener.
+- **MIME filter:** set `accept="image/*"` (or
+  `accept=".pdf,.docx"`, etc.) — `accept` is comma-separated.
+
+After the `change` handler has the `File` object, hand it off to
+the next section's write-then-reference pattern.
+
 ## Binary uploads to a card-class sidecar
 
 If a Tier 4 card has to ingest binary files (PDF, image, audio,

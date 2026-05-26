@@ -731,12 +731,27 @@ export async function editClassFileImpl(
     };
   }
 
+  // Warning-mode verifiers — advisory checks that DON'T block the write.
+  // Results get appended to the success message so the agent sees them
+  // same-turn without losing the write. Used for static-analysis style
+  // checks where false positives are possible (e.g. method-name lookup
+  // against Python module surfaces) — agent reads, decides, may retry.
+  const warningResult = await runVerifiers(filePath, finalContent, project, "warning");
+
   await writeFile(filePath, finalContent, "utf-8");
+
+  let text = `Wrote ${args.file} for card class "${name}" (${finalContent.length} chars).`;
+  if (!warningResult.ok) {
+    text += `\n\nNote: ${warningResult.problems.length} advisory check(s) flagged the new content. The write succeeded; review below and edit if any look real:\n\n`;
+    for (let i = 0; i < warningResult.problems.length; i++) {
+      const p = warningResult.problems[i];
+      const loc = p.line ? `:${p.line}${p.column ? `:${p.column}` : ""}` : "";
+      text += `${i + 1}. [${p.file}${loc}] ${p.problem}\n   Fix: ${p.fix_hint}\n\n`;
+    }
+  }
+
   return {
-    content: [{
-      type: "text",
-      text: `Wrote ${args.file} for card class "${name}" (${finalContent.length} chars).`,
-    }],
+    content: [{ type: "text", text }],
   };
 }
 

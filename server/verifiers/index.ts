@@ -32,4 +32,5 @@ import "./cardJsUncalledFunctions.js";
 import "./cardJsSelectorHtmlMatch.js";
 import "./cardJsChannelArgs.js";
 import "./pythonScriptParse.js";
+import "./pythonImportAttrs.js";
 import "./bashScriptParse.js";
