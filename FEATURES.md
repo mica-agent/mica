@@ -98,6 +98,11 @@ Mica is designed for working across multiple devices and screens at once.
   iPhone Safari, laptop on the road, a secondary machine.
   Tailnet-internal only; not on the public internet. Stop with
   `scripts/https-off.sh`.
+- **Run without a GPU / cloud hosting.** Mica can run CPU-only against
+  a cloud provider (OpenRouter or any OpenAI-compatible endpoint), and
+  the build is single-tenant by design. The enablers for a GPU-free
+  profile and for per-user multi-tenant forks are documented in
+  [docs/CLOUD_HOSTING.md](docs/CLOUD_HOSTING.md).
 
 ## Card classes
 

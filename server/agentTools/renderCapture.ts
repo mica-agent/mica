@@ -198,6 +198,11 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
         const captionRes = await fetch(`${llamaUrl}/v1/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          // Bound the wait. Without a timeout, a black-hole LLAMA_URL (e.g. a
+          // cloud-only deployment with no local vLLM) hangs the whole tool.
+          // ECONNREFUSED already fails fast; this covers the no-route /
+          // unresponsive-endpoint case. 30s is generous for a 400-token caption.
+          signal: AbortSignal.timeout(30000),
           body: JSON.stringify({
             model: "qwen-vl",
             max_tokens: 400,
@@ -224,10 +229,17 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
           };
           caption = data.choices?.[0]?.message?.content?.trim() || "";
         } else {
-          caption = `(captioning failed: llama-server returned ${captionRes.status})`;
+          caption = `(captioning failed: vision model returned ${captionRes.status} at ${llamaUrl})`;
         }
       } catch (capErr) {
-        caption = `(captioning failed: ${(capErr as Error).message})`;
+        // Most common cause when the local model is absent (cloud-only /
+        // GPU-free deployments): the vision endpoint is unreachable. Say so
+        // plainly so the agent treats the card as visually-unverified and
+        // moves on instead of phantom-chasing a "broken" render.
+        const reason = (capErr as Error).name === "TimeoutError" || (capErr as Error).name === "AbortError"
+          ? "timed out"
+          : (capErr as Error).message;
+        caption = `(captioning unavailable: vision needs a local or shared vLLM at ${LLAMA_URL} — ${reason}. This card was NOT visually verified.)`;
       }
 
       // Parse the compare-mode verdict line. Tolerant of minor format drift

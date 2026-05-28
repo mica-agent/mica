@@ -192,7 +192,16 @@ RUN npm run build 2>/dev/null || true
 # cuDNN MAJOR.MINOR alignment dance (see install.sh) happens once
 # and the result is baked in. Adds ~3-4 GB to the image but removes the
 # 5-10 min first-run latency every fresh deploy would otherwise pay.
-RUN bash scripts/voice/install.sh
+#
+# CONDITIONAL: only installed when INSTALL_VOICE=1 (default). A GPU-free /
+# cloud-only build (voice requires a local GPU) can pass INSTALL_VOICE=0 to
+# skip the ~3-4 GB venv. Mirrors INSTALL_LLAMA above. See docs/CLOUD_HOSTING.md.
+ARG INSTALL_VOICE=1
+RUN if [ "$INSTALL_VOICE" = "1" ]; then \
+      bash scripts/voice/install.sh; \
+    else \
+      echo "INSTALL_VOICE=$INSTALL_VOICE — skipping voice venv (GPU-free build; run with MICA_DISABLE_VOICE=1)"; \
+    fi
 
 # Default workspace mount point. Override via `-v /host/path:/project`.
 ENV PROJECT_DIR=/project

@@ -3241,6 +3241,20 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
     console.log("[startup] MICA_DISABLE_VOICE=1 — skipping voice sidecars.");
   }
 
+  // Opt-in static frontend serving (cloud / single-process deployments).
+  // Dormant unless MICA_FRONTEND_DIST points at a built bundle (`npm run build`
+  // → dist/). A deployment that sets this can skip launching Vite, dropping the
+  // dev-server process + port 5173. Default unset → the Vite dev server serves
+  // the frontend exactly as today, and none of this runs. Registered here,
+  // after every /api and /ws route, and the SPA catch-all explicitly excludes
+  // them so it can never shadow an API route. See docs/CLOUD_HOSTING.md.
+  const frontendDist = process.env.MICA_FRONTEND_DIST;
+  if (frontendDist) {
+    console.log(`[startup] MICA_FRONTEND_DIST set — serving prebuilt frontend from ${frontendDist}`);
+    app.use(express.static(frontendDist));
+    app.get(/^\/(?!api\/|ws\b).*/, (_req, res) => res.sendFile(join(frontendDist, "index.html")));
+  }
+
   const workspaceName = getWorkspaceName();
 
   server.listen(PORT, "0.0.0.0", () => {
