@@ -37,6 +37,7 @@ import {
   readProjectFile,
   readCanvasConfig,
   readCardSettings,
+  resolveDefaultProvider,
   readOpenAICompatConfig,
   BINARY_EXTS,
   isLikelyBinary,
@@ -46,6 +47,7 @@ import {
   writeChatCursor,
   DEFAULT_CANVAS_ROOT,
 } from "./files.js";
+import { probeModelEndpoint } from "./modelHealth.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
@@ -1151,18 +1153,27 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         // very next turn without a card reopen.
         const settings = await readCardSettings(sessionProject || undefined, ctx.filename);
         let modelOverride: { providerID: string; modelID: string } | undefined;
-        const provider = settings.provider ?? "local";
-        if (provider === "openrouter" && settings.model) {
-          modelOverride = { providerID: "openrouter", modelID: settings.model };
-        } else if (provider === "openai-compat" && settings.model) {
-          modelOverride = { providerID: "openai", modelID: settings.model };
+        // Unset → MICA_DEFAULT_PROVIDER; an explicit provider (incl. "local")
+        // is honored (`??` only catches undefined).
+        const provider = settings.provider ?? resolveDefaultProvider();
+        // Default model resolution per provider: per-card gear setting >
+        // <PROVIDER>_DEFAULT_MODEL env (from .env) > built-in fallback. Env
+        // defaults let a deployment pin a model without editing every card —
+        // previously a card with no model pinned passed `undefined` here and
+        // fell back to opencode's own (unconfigurable) default.
+        if (provider === "openrouter") {
+          const modelID = settings.model || process.env.OPENROUTER_DEFAULT_MODEL || "qwen/qwen3.6-35b-a3b";
+          modelOverride = { providerID: "openrouter", modelID };
+        } else if (provider === "openai-compat") {
+          const modelID = settings.model || process.env.OPENAI_DEFAULT_MODEL || "deepseek/deepseek-v4-flash";
+          modelOverride = { providerID: "openai", modelID };
         } else if (provider === "local") {
-          // Pick the user's chosen model when present, otherwise probe
-          // the local endpoint for its served set and take the first id.
-          // Probing per-prompt is fine — local /v1/models is sub-ms and
-          // honest about "what the server is actually loaded with right
-          // now" (the user could have hot-swapped containers).
-          const modelID = settings.model || (await firstLocalModelId());
+          // Pick the user's chosen model when present, then the LOCAL_DEFAULT_MODEL
+          // env, otherwise probe the local endpoint for its served set and take
+          // the first id. Probing per-prompt is fine — local /v1/models is
+          // sub-ms and honest about "what the server is actually loaded with
+          // right now" (the user could have hot-swapped containers).
+          const modelID = settings.model || process.env.LOCAL_DEFAULT_MODEL || (await firstLocalModelId());
           if (modelID) {
             modelOverride = { providerID: "mica-local", modelID };
           }
@@ -1459,6 +1470,28 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // ── Channel lifecycle ───────────────────────────────────────
 
     let initialScanDone = false;
+    // Guards concurrent attaches from double-scheduling the (async) health-
+    // gated scan; reset on probe failure so Retry (retry_init) can re-run it.
+    let initialScanScheduled = false;
+
+    const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+
+    // Health-gate the auto initialize turn: probe the configured model
+    // endpoint first. On failure, surface an inline actionable error (retry:true
+    // → card shows a Retry button) and leave the scan pending instead of firing
+    // a turn that throws deep in opencode. Fired from onAttach and retry_init.
+    async function fireInitialScanIfHealthy(): Promise<void> {
+      const probe = await probeModelEndpoint(sessionProject || undefined, ctx.filename);
+      if (!probe.ok) {
+        initialScanScheduled = false;
+        ctx.broadcast({ type: "error", error: probe.reason || "Model endpoint not reachable.", retry: true });
+        return;
+      }
+      if (initialScanDone) return;
+      initialScanDone = true;
+      if (!busy) processMessage(INITIAL_SCAN_MESSAGE, "user");
+      else queue.push({ text: INITIAL_SCAN_MESSAGE, source: "user" });
+    }
 
     return {
       async onAttach(clientId, _args) {
@@ -1481,18 +1514,25 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         ctx.sendTo(clientId, { type: "history", messages, cursor });
         for (const event of currentTurnEvents) ctx.sendTo(clientId, event);
 
-        if (!initialScanDone && messages.length === 0) {
-          initialScanDone = true;
-          const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
-          setTimeout(() => {
-            if (!busy) processMessage(scanMessage, "user");
-            else queue.push({ text: scanMessage, source: "user" });
-          }, 2000);
+        // Trigger the initial scan only after a model-endpoint health check
+        // passes (see fireInitialScanIfHealthy). Schedule once; concurrent
+        // attaches are guarded by initialScanScheduled.
+        if (!initialScanDone && !initialScanScheduled && messages.length === 0) {
+          initialScanScheduled = true;
+          setTimeout(() => { void fireInitialScanIfHealthy(); }, 2000);
         }
       },
 
       onData(clientId, data) {
         const msg = data as { type?: string; message?: string; attachmentFilename?: string };
+
+        // Retry the health-gated initialize scan after the user fixed model
+        // settings: re-probe, fire the pending scan if healthy, else re-emit
+        // the actionable error.
+        if (msg.type === "retry_init") {
+          if (!initialScanDone) void fireInitialScanIfHealthy();
+          return;
+        }
 
         if (msg.type === "interrupt") {
           // Two-step interrupt:

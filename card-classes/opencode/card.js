@@ -1161,6 +1161,26 @@ ch.onData(function(data) {
       setStatus("Error", "#f87171", false);
       addDetailLine("ERROR: " + (data.error || "Unknown"));
       addMessage("assistant", "Error: " + (data.error || "Unknown"), "System");
+      // retry:true marks a recoverable config failure (the health-gated
+      // initialize scan was skipped because the model endpoint was
+      // unreachable). Offer a Retry button that re-probes after the user fixes
+      // settings in the ⚙️ gear; the server (retry_init) fires the pending
+      // scan if the endpoint is now healthy.
+      if (data.retry) {
+        const retryWrap = window.document.createElement("div");
+        retryWrap.style.cssText = "align-self:flex-start;margin:2px 0 6px;";
+        const retryBtn = window.document.createElement("button");
+        retryBtn.textContent = "Retry";
+        retryBtn.style.cssText = "color:#e6edf3;background:rgba(124,58,237,0.25);border:1px solid rgba(124,58,237,0.5);border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit;";
+        retryBtn.addEventListener("click", function() {
+          retryBtn.disabled = true;
+          retryBtn.textContent = "Retrying…";
+          ch.send({ type: "retry_init" });
+        });
+        retryWrap.appendChild(retryBtn);
+        messagesEl.appendChild(retryWrap);
+        scrollBottom();
+      }
       break;
   }
 });

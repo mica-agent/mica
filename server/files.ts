@@ -683,6 +683,19 @@ export interface CardSettings {
   model?: string;
 }
 
+/** The provider an agent card uses when its settings sidecar doesn't pin one.
+ *  Single source of truth for the instantiation default — read by the agent
+ *  handlers, the health probe, and the GET /api/cards/settings endpoint so the
+ *  card UI's gear reflects the same default. Configured globally via
+ *  MICA_DEFAULT_PROVIDER (.env); unset or unrecognized → "local". Applied as a
+ *  resolution-time fallback only: an *explicit* provider in the sidecar
+ *  (including "local") is always honored over this. */
+export function resolveDefaultProvider(): NonNullable<CardSettings["provider"]> {
+  const v = process.env.MICA_DEFAULT_PROVIDER;
+  if (v === "openrouter" || v === "openai-compat" || v === "local") return v;
+  return "local";
+}
+
 export async function readCardSettings(project: string | undefined, filename: string): Promise<CardSettings> {
   const path = cardIdSidecarPath(project, filename);
   try {

@@ -5,9 +5,10 @@
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, resolveDefaultProvider, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
 import { runVerifiers, formatVerifyFailure } from "./verifiers/index.js";
+import { probeModelEndpoint } from "./modelHealth.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
@@ -1589,10 +1590,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // Provider allowlist: anything unknown falls back to local. The
         // PUT endpoint does the same — defense in depth in case a stale
         // sidecar JSON pre-dates this provider value.
+        // Honor an explicit provider (including "local"); only an unset
+        // sidecar resolves to MICA_DEFAULT_PROVIDER (resolveDefaultProvider).
         let provider: "local" | "openrouter" | "openai-compat";
         if (cardSettings.provider === "openrouter") provider = "openrouter";
         else if (cardSettings.provider === "openai-compat") provider = "openai-compat";
-        else provider = "local";
+        else if (cardSettings.provider === "local") provider = "local";
+        else provider = resolveDefaultProvider();
         let baseUrl: string;
         let apiKey: string;
         let modelName: string;
@@ -1609,7 +1613,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           apiKey = key;
           // Default model resolution: per-card gear setting > OPENROUTER_DEFAULT_MODEL
           // env var (from .env) > built-in fallback.
-          modelName = cardSettings.model || process.env.OPENROUTER_DEFAULT_MODEL || "anthropic/claude-3.5-sonnet";
+          modelName = cardSettings.model || process.env.OPENROUTER_DEFAULT_MODEL || "qwen/qwen3.6-35b-a3b";
         } else if (provider === "openai-compat") {
           // Generic OpenAI-compatible endpoint: user-supplied baseUrl +
           // key (api.openai.com, Together, Groq, self-hosted vLLM, etc.).
@@ -1637,9 +1641,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           baseUrl = cfg.baseUrl.replace(/\/+$/, "");
           if (!/\/v\d+$/.test(baseUrl)) baseUrl = baseUrl + "/v1";
           apiKey = cfg.key;
-          // Model: gear-setting-only. No env-var default — the user's
-          // endpoint catalog is unique to their provider.
-          modelName = cardSettings.model || "gpt-4o-mini";
+          // Default model resolution: per-card gear setting > OPENAI_DEFAULT_MODEL
+          // env var (from .env) > built-in fallback. The endpoint catalog is
+          // unique to each provider, so the env default lets a deployment pin
+          // one without editing every card.
+          modelName = cardSettings.model || process.env.OPENAI_DEFAULT_MODEL || "deepseek/deepseek-v4-flash";
         } else {
           baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
           apiKey = "dummy";
@@ -1659,7 +1665,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           //   - Voice callers: use `qwen-voice`.
           // vLLM serves all three names from the same Qwen3.6-35B-A3B-NVFP4
           // container today.
-          modelName = cardSettings.model || "qwen3-vl-local";
+          //
+          // LOCAL_DEFAULT_MODEL (from .env) overrides the built-in default but
+          // MUST keep the `qwen3-vl-` prefix — the SDK regex above is
+          // load-bearing for image modality on this SDK-facing path.
+          modelName = cardSettings.model || process.env.LOCAL_DEFAULT_MODEL || "qwen3-vl-local";
         }
         console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
 
@@ -3348,6 +3358,31 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
     // Track if initial scan has been triggered
     let initialScanDone = false;
+    // Set synchronously in onAttach so concurrent attaches don't double-schedule
+    // the (async) health-gated scan. Reset only when a probe fails, so the
+    // Retry path (retry_init) can re-run it.
+    let initialScanScheduled = false;
+
+    const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+
+    // Health-gate the auto initialize turn: probe the configured model
+    // endpoint first. If it's unreachable/misconfigured, surface an inline,
+    // actionable error (with retry:true so the card shows a Retry button) and
+    // leave the scan pending rather than firing a turn that would throw deep
+    // in the SDK. Fired from onAttach (first attach, empty history) and from
+    // the retry_init message.
+    async function fireInitialScanIfHealthy(): Promise<void> {
+      const probe = await probeModelEndpoint(sessionProject || undefined, ctx.filename);
+      if (!probe.ok) {
+        initialScanScheduled = false; // allow a later Retry to re-run
+        ctx.broadcast({ type: "error", error: probe.reason || "Model endpoint not reachable.", retry: true });
+        return;
+      }
+      if (initialScanDone) return;
+      initialScanDone = true;
+      if (!busy) processMessage(INITIAL_SCAN_MESSAGE);
+      else enqueueMessage(INITIAL_SCAN_MESSAGE, "user");
+    }
 
     return {
       async onAttach(clientId, _args) {
@@ -3392,15 +3427,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           ctx.sendTo(clientId, event);
         }
 
-        // On first attach with no history, trigger initial project scan
-        if (!initialScanDone && messages.length === 0) {
-          initialScanDone = true;
-          const scanMessage = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+        // On first attach with no history, trigger the initial project scan —
+        // but only after a model-endpoint health check passes (see
+        // fireInitialScanIfHealthy). Schedule once; concurrent attaches are
+        // guarded by initialScanScheduled.
+        if (!initialScanDone && !initialScanScheduled && messages.length === 0) {
+          initialScanScheduled = true;
           // Delay slightly to let the UI settle
-          setTimeout(() => {
-            if (!busy) processMessage(scanMessage);
-            else enqueueMessage(scanMessage, "user");
-          }, 2000);
+          setTimeout(() => { void fireInitialScanIfHealthy(); }, 2000);
         }
       },
 
@@ -3415,6 +3449,14 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         };
 
         if (typeof msg.voice === "string") voicePref = msg.voice;
+
+        // Retry the health-gated initialize scan after the user fixed model
+        // settings. Re-probes; fires the pending scan if healthy, otherwise
+        // re-broadcasts the actionable error.
+        if (msg.type === "retry_init") {
+          if (!initialScanDone) void fireInitialScanIfHealthy();
+          return;
+        }
 
         if (msg.type === "interrupt") {
           if (activeAbort) {

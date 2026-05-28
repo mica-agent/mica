@@ -8,6 +8,7 @@ import { join } from "path";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 import type { HandlerManifest } from "../handlerManifest.js";
 import { WORKSPACE_DIR } from "../files.js";
+import { probeModelEndpoint } from "../modelHealth.js";
 import { resolveServedModel } from "./llmModelResolver.js";
 
 // SDK is loaded lazily — same pattern as micaAgent.ts, so we don't pay the
@@ -75,6 +76,9 @@ export function createLlmAgentHandler() {
     }
 
     let activeAbort: AbortController | null = null;
+    // Gate the first real turn on a model-endpoint health check. Flips true
+    // after the first healthy probe; thereafter turns run without re-probing.
+    let endpointHealthy = false;
 
     return {
       onAttach(clientId) {
@@ -101,6 +105,20 @@ export function createLlmAgentHandler() {
 
         const userMessage = msg.message?.trim();
         if (!userMessage) return;
+
+        // Health-gate the first real turn. llm-agent is local-only, so this
+        // probes the local model endpoint; if it's down, surface an inline,
+        // actionable error and skip the turn — nothing is added to history, so
+        // the user's next message re-probes (resending IS the retry). Once a
+        // probe succeeds we stop checking.
+        if (!endpointHealthy) {
+          const probe = await probeModelEndpoint(ctx.project || undefined, ctx.filename);
+          if (!probe.ok) {
+            ctx.broadcast({ type: "error", error: `${probe.reason || "Model endpoint not reachable."} Then send your message again.` });
+            return;
+          }
+          endpointHealthy = true;
+        }
 
         // Synthetic clientId from channelMgr.dispatchToFilename — voice
         // dispatched this turn. The eventual `done` broadcast carries
@@ -140,9 +158,12 @@ export function createLlmAgentHandler() {
           // served (in which case image-input cards may degrade, but text-
           // mode still works).
           const LLAMA_URL_PROBE = (process.env.LLAMA_URL || "http://127.0.0.1:8012").replace(/\/v1$/, "");
+          // Requested model: card arg > LOCAL_DEFAULT_MODEL env (from .env).
+          // The env value MUST keep the `qwen3-vl-` prefix — the qwen-code SDK
+          // gates image modality on it (see the naming note above).
           const resolution = await resolveServedModel(
             LLAMA_URL_PROBE,
-            cfg.model,
+            cfg.model || process.env.LOCAL_DEFAULT_MODEL,
             ["qwen3-vl-local", "openai:qwen3-vl-local"],
           );
           if (resolution.reason) {

@@ -53,6 +53,7 @@ import {
   evictCardIdsForProject,
   readCardSettings,
   writeCardSettings,
+  resolveDefaultProvider,
   canonicalizeCardPath,
   readOpenRouterKey,
   writeOpenRouterKey,
@@ -827,7 +828,10 @@ app.get("/api/cards/settings", async (req, res) => {
   try {
     const canonical = await canonicalizeSettingsPath(path, proj);
     const settings = await readCardSettings(proj, canonical);
-    res.json(settings);
+    // Fill in the effective provider when the card hasn't pinned one, so the
+    // gear UI reflects MICA_DEFAULT_PROVIDER (the same default the handlers and
+    // probe resolve to). An explicit provider in the sidecar is left untouched.
+    res.json({ ...settings, provider: settings.provider ?? resolveDefaultProvider() });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
@@ -838,12 +842,14 @@ app.put("/api/cards/settings", async (req, res) => {
   if (!path) { res.status(400).json({ error: "missing ?path=<filename>" }); return; }
   const proj = getRequestProject(req) || undefined;
   const body = (req.body || {}) as CardSettings;
-  // Allowlist provider: any unknown value falls back to "local" so a
-  // typo or stale client doesn't write a meaningless setting.
+  // Allowlist provider: any unknown value falls back to the configured
+  // default so a typo or stale client doesn't write a meaningless setting.
+  // (The gear UI always sends a valid provider; this guards malformed writes.)
   let provider: CardSettings["provider"];
   if (body.provider === "openrouter") provider = "openrouter";
   else if (body.provider === "openai-compat") provider = "openai-compat";
-  else provider = "local";
+  else if (body.provider === "local") provider = "local";
+  else provider = resolveDefaultProvider();
   const model = typeof body.model === "string" ? body.model.trim() : "";
   const settings: CardSettings = { provider };
   if (model) settings.model = model;
