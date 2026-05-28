@@ -1557,13 +1557,22 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // to search" in the logs.
       const tavilyInFlight = new Map<string, string>();
 
-      // Send user message to browser
-      ctx.broadcast({ type: "user", content: message });
+      // Send user message to browser — but NOT for Mica-injected recovery
+      // nudges (thinking-only / skill-follow-through / exit-53 / step-cap
+      // continuations). Those are internal prompts to the model, not user
+      // content; showing them as a user bubble and persisting them to the
+      // durable transcript is noise. The model still receives `message` as
+      // this turn's prompt below.
+      if (source !== "recovery") {
+        ctx.broadcast({ type: "user", content: message });
+      }
 
       // Persist
       const history = await loadHistory(chatId, sessionProject);
-      history.push({ role: "user", content: message });
-      await saveHistory(chatId, history, sessionProject);
+      if (source !== "recovery") {
+        history.push({ role: "user", content: message });
+        await saveHistory(chatId, history, sessionProject);
+      }
 
       // Show thinking state
       ctx.broadcast({ type: "thinking" });
@@ -2272,6 +2281,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         activeQuery = q as unknown as { interrupt: () => Promise<void>; close: () => Promise<void>; isClosed: () => boolean };
 
         let resultText = "";
+        // When a turn aborts thinking-only with no visible text, we suppress
+        // its (empty) assistant bubble entirely — the enqueued recovery turn
+        // produces the real reply, so a placeholder "continuing" bubble would
+        // just be noise. Guards the assistant persist + broadcast below.
+        let suppressAssistantOutput = false;
         let filesChanged = false;
         // Final turn usage from the SDK's `result` event. Shape: { input_tokens, output_tokens, ... }.
         // CRITICAL: input_tokens here is CUMULATIVE across every LLM call in the
@@ -2781,13 +2795,12 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
             tool: "thinking-only-recovery",
             description: "⚠ Reasoning-only after tool calls — auto-continuing.",
           });
-          // Preserve earlier visible text if any (the user already saw it);
-          // append a note. If nothing visible at all, fall back to the
-          // generic placeholder so the chat bubble isn't empty.
-          if (resultText.trim()) {
-            resultText = `${resultText}\n\n_(Reasoning-only after that — continuing.)_`;
-          } else {
-            resultText = "_(Reasoning-only turn — continuing.)_";
+          // No placeholder "continuing" bubble — it's noise. Earlier visible
+          // text (if any) the user already saw is kept as-is and persisted. If
+          // nothing was visible this turn, suppress the (empty) assistant bubble
+          // entirely; the recovery turn enqueued below produces the real reply.
+          if (!resultText.trim()) {
+            suppressAssistantOutput = true;
           }
           enqueueMessage(
             "Your previous turn ended with a long internal-reasoning block but " +
@@ -2899,8 +2912,10 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         let newCursor = cursor;
 
         const updatedHistory = await loadHistory(chatId, sessionProject);
-        updatedHistory.push({ role: "assistant", content: resultText, agent: "Qwen", turn_id: turnId });
-        await saveHistory(chatId, updatedHistory, sessionProject);
+        if (!suppressAssistantOutput) {
+          updatedHistory.push({ role: "assistant", content: resultText, agent: "Qwen", turn_id: turnId });
+          await saveHistory(chatId, updatedHistory, sessionProject);
+        }
 
         if (arcComplete && capacity > 0.80) {
           newCursor = updatedHistory.length;
@@ -3005,8 +3020,8 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           return;
         }
 
-        console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)} (peak ${peakTokens} / ${contextWindow}) source=${turnSource}`);
-        ctx.broadcast({
+        console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)} (peak ${peakTokens} / ${contextWindow}) source=${turnSource} suppressed=${suppressAssistantOutput}`);
+        if (!suppressAssistantOutput) ctx.broadcast({
           type: "assistant",
           content: resultText,
           agent: "Qwen",
