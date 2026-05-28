@@ -1864,10 +1864,14 @@ const settingsBaseurlRow = container.querySelector('#chat-settings-baseurl-row')
 const settingsBaseurl = container.querySelector('#chat-settings-baseurl');
 const providerRadios = container.querySelectorAll('input[name="chat-provider"]');
 
+// Labels for the gear's "(default)" placeholder. openrouter + openai-compat are
+// refreshed from GET /api/inference/defaults when the panel opens, so they
+// reflect the server's env-resolved defaults ({OPENROUTER,OPENAI}_DEFAULT_MODEL);
+// these literals are just the offline fallback.
 const MODEL_DEFAULTS = {
   local: 'openai:local',
-  openrouter: 'anthropic/claude-3.5-sonnet',
-  'openai-compat': 'gpt-4o-mini'
+  openrouter: 'qwen/qwen3.6-35b-a3b',
+  'openai-compat': 'deepseek/deepseek-v4-flash'
 };
 
 // Lazy-loaded OpenRouter model catalog. Populated on first openSettings()
@@ -2061,13 +2065,21 @@ function openSettings() {
     fetch(settingsUrl(''), { headers: projectHeaders() }).then(function(r) { return r.json(); }),
     fetch('/api/openrouter-key', { headers: projectHeaders() }).then(function(r) { return r.json(); }),
     fetch('/api/openai-config', { headers: projectHeaders() }).then(function(r) { return r.json(); }),
-    fetch('/api/llm/status').then(function(r) { return r.json(); })
+    fetch('/api/llm/status').then(function(r) { return r.json(); }),
+    fetch('/api/inference/defaults', { headers: projectHeaders() }).then(function(r) { return r.json(); })
   ]).then(function(results) {
     const s = results[0].status === 'fulfilled' ? results[0].value : {};
     const k = results[1].status === 'fulfilled' ? results[1].value : { hasKey: false };
     const oc = results[2].status === 'fulfilled' ? results[2].value : { baseUrl: null, hasKey: false };
     const llm = results[3].status === 'fulfilled' ? results[3].value : {};
     if (typeof llm.engine === 'string') serverEngine = llm.engine;
+    // Refresh the gear's default-model placeholders from the server's
+    // env-resolved values so they don't drift from what the handler actually uses.
+    const d = results[4].status === 'fulfilled' ? results[4].value : null;
+    if (d) {
+      if (d.openrouter) MODEL_DEFAULTS.openrouter = d.openrouter;
+      if (d['openai-compat']) MODEL_DEFAULTS['openai-compat'] = d['openai-compat'];
+    }
     const provider = s.provider || 'local';
     providerRadios.forEach(function(r) { r.checked = (r.value === provider); });
     settingsModel.value = s.model || '';

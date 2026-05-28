@@ -696,6 +696,21 @@ export function resolveDefaultProvider(): NonNullable<CardSettings["provider"]> 
   return "local";
 }
 
+/** The default model for a given provider when a card's settings sidecar
+ *  doesn't pin one. Single source of truth for the per-provider env-or-fallback
+ *  defaults — read by the agent handlers (so turns use it) AND by
+ *  GET /api/inference/defaults (so the gear UI placeholder reflects the same
+ *  value). Configured via {LOCAL,OPENROUTER,OPENAI}_DEFAULT_MODEL in .env.
+ *  Note: the local fallback keeps the `qwen3-vl-` prefix the qwen-code SDK
+ *  requires for image modality on its SDK-facing path. */
+export function resolveDefaultModel(provider: NonNullable<CardSettings["provider"]>): string {
+  switch (provider) {
+    case "openrouter": return process.env.OPENROUTER_DEFAULT_MODEL || "qwen/qwen3.6-35b-a3b";
+    case "openai-compat": return process.env.OPENAI_DEFAULT_MODEL || "deepseek/deepseek-v4-flash";
+    default: return process.env.LOCAL_DEFAULT_MODEL || "qwen3-vl-local";
+  }
+}
+
 export async function readCardSettings(project: string | undefined, filename: string): Promise<CardSettings> {
   const path = cardIdSidecarPath(project, filename);
   try {

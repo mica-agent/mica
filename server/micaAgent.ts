@@ -5,7 +5,7 @@
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, resolveDefaultProvider, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
+import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, resolveDefaultProvider, resolveDefaultModel, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
 import { runVerifiers, formatVerifyFailure } from "./verifiers/index.js";
 import { probeModelEndpoint } from "./modelHealth.js";
@@ -1611,9 +1611,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           }
           baseUrl = "https://openrouter.ai/api/v1";
           apiKey = key;
-          // Default model resolution: per-card gear setting > OPENROUTER_DEFAULT_MODEL
-          // env var (from .env) > built-in fallback.
-          modelName = cardSettings.model || process.env.OPENROUTER_DEFAULT_MODEL || "qwen/qwen3.6-35b-a3b";
+          // Default model resolution: per-card gear setting > the shared
+          // per-provider default (OPENROUTER_DEFAULT_MODEL env > built-in
+          // fallback). resolveDefaultModel is the single source of truth the
+          // gear UI's placeholder also reads (GET /api/inference/defaults).
+          modelName = cardSettings.model || resolveDefaultModel("openrouter");
         } else if (provider === "openai-compat") {
           // Generic OpenAI-compatible endpoint: user-supplied baseUrl +
           // key (api.openai.com, Together, Groq, self-hosted vLLM, etc.).
@@ -1641,11 +1643,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           baseUrl = cfg.baseUrl.replace(/\/+$/, "");
           if (!/\/v\d+$/.test(baseUrl)) baseUrl = baseUrl + "/v1";
           apiKey = cfg.key;
-          // Default model resolution: per-card gear setting > OPENAI_DEFAULT_MODEL
-          // env var (from .env) > built-in fallback. The endpoint catalog is
-          // unique to each provider, so the env default lets a deployment pin
+          // Default model resolution via the shared per-provider helper
+          // (OPENAI_DEFAULT_MODEL env > built-in fallback). The endpoint catalog
+          // is unique to each provider, so the env default lets a deployment pin
           // one without editing every card.
-          modelName = cardSettings.model || process.env.OPENAI_DEFAULT_MODEL || "deepseek/deepseek-v4-flash";
+          modelName = cardSettings.model || resolveDefaultModel("openai-compat");
         } else {
           baseUrl = LLAMA_URL.replace(/\/v1$/, "") + "/v1";
           apiKey = "dummy";
@@ -1666,10 +1668,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           // vLLM serves all three names from the same Qwen3.6-35B-A3B-NVFP4
           // container today.
           //
-          // LOCAL_DEFAULT_MODEL (from .env) overrides the built-in default but
-          // MUST keep the `qwen3-vl-` prefix — the SDK regex above is
-          // load-bearing for image modality on this SDK-facing path.
-          modelName = cardSettings.model || process.env.LOCAL_DEFAULT_MODEL || "qwen3-vl-local";
+          // LOCAL_DEFAULT_MODEL (from .env, via resolveDefaultModel) overrides
+          // the built-in default but MUST keep the `qwen3-vl-` prefix — the SDK
+          // regex above is load-bearing for image modality on this SDK-facing
+          // path.
+          modelName = cardSettings.model || resolveDefaultModel("local");
         }
         console.log(`[mica-agent] provider=${provider} model=${modelName} baseUrl=${baseUrl}`);
 

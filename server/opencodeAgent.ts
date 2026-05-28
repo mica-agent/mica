@@ -38,6 +38,7 @@ import {
   readCanvasConfig,
   readCardSettings,
   resolveDefaultProvider,
+  resolveDefaultModel,
   readOpenAICompatConfig,
   BINARY_EXTS,
   isLikelyBinary,
@@ -1162,17 +1163,21 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         // previously a card with no model pinned passed `undefined` here and
         // fell back to opencode's own (unconfigurable) default.
         if (provider === "openrouter") {
-          const modelID = settings.model || process.env.OPENROUTER_DEFAULT_MODEL || "qwen/qwen3.6-35b-a3b";
+          // resolveDefaultModel is the shared per-provider default (env >
+          // fallback) that the gear UI placeholder also reads.
+          const modelID = settings.model || resolveDefaultModel("openrouter");
           modelOverride = { providerID: "openrouter", modelID };
         } else if (provider === "openai-compat") {
-          const modelID = settings.model || process.env.OPENAI_DEFAULT_MODEL || "deepseek/deepseek-v4-flash";
+          const modelID = settings.model || resolveDefaultModel("openai-compat");
           modelOverride = { providerID: "openai", modelID };
         } else if (provider === "local") {
           // Pick the user's chosen model when present, then the LOCAL_DEFAULT_MODEL
           // env, otherwise probe the local endpoint for its served set and take
           // the first id. Probing per-prompt is fine — local /v1/models is
           // sub-ms and honest about "what the server is actually loaded with
-          // right now" (the user could have hot-swapped containers).
+          // right now" (the user could have hot-swapped containers). NB: we keep
+          // the firstLocalModelId() fallback here rather than resolveDefaultModel
+          // so an unset env still auto-discovers the served model.
           const modelID = settings.model || process.env.LOCAL_DEFAULT_MODEL || (await firstLocalModelId());
           if (modelID) {
             modelOverride = { providerID: "mica-local", modelID };

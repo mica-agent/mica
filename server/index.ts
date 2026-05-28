@@ -54,6 +54,7 @@ import {
   readCardSettings,
   writeCardSettings,
   resolveDefaultProvider,
+  resolveDefaultModel,
   canonicalizeCardPath,
   readOpenRouterKey,
   writeOpenRouterKey,
@@ -835,6 +836,18 @@ app.get("/api/cards/settings", async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
+});
+
+// Effective default model per provider (env-resolved, same values the agent
+// handlers use). The agent cards' gear panels read this so their "(default)"
+// placeholder reflects {LOCAL,OPENROUTER,OPENAI}_DEFAULT_MODEL instead of a
+// stale hardcoded client-side copy. Workspace-global; not project-scoped.
+app.get("/api/inference/defaults", (_req, res) => {
+  res.json({
+    local: resolveDefaultModel("local"),
+    openrouter: resolveDefaultModel("openrouter"),
+    "openai-compat": resolveDefaultModel("openai-compat"),
+  });
 });
 
 app.put("/api/cards/settings", async (req, res) => {
