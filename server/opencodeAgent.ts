@@ -481,7 +481,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       canvasRoot: reactiveCfg.canvasRoot,
       pinnedFiles: reactiveCfg.pinned,
       onDeliver: (message, source) => {
-        if (busy) queue.push({ text: message, source });
+        if (busy) enqueueMessage(message, source);
         else void processMessage(message, source);
       },
     });
@@ -531,8 +531,53 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     let sessionErrorMsg = "";
 
     let busy = false;
-    interface QueuedMsg { text: string; source: "user" | "voice" | "file-changes"; attach?: string }
+    // QueuedMsg carries an id + queuedAt so the card's queue panel can show
+    // each pending message with a cancel button (`cancel_queued` by id) and an
+    // age stamp. Mirrors the qwen QueuedItem shape so the card UI is uniform.
+    // In-memory only for now (qwen persists via loadChatQueue/saveChatQueue;
+    // opencode v1 doesn't — a backend restart drops the opencode queue, same
+    // as the in-flight turn).
+    interface QueuedMsg { id: string; text: string; source: "user" | "voice" | "file-changes"; attach?: string; queuedAt: number }
     let queue: QueuedMsg[] = [];
+
+    /** Broadcast the current queue snapshot to all attached clients. Sent on
+     *  every push/shift/cancel/clear so the panel re-renders. Slim payload —
+     *  truncated text, ordered. Card-side `case "queue"` is single source of
+     *  truth for what the user sees. */
+    function broadcastQueue(): void {
+      ctx.broadcast({
+        type: "queue",
+        items: queue.map((q) => ({
+          id: q.id,
+          text: q.text.length > 160 ? q.text.slice(0, 160) + "…" : q.text,
+          source: q.source,
+          queuedAt: q.queuedAt,
+          attach: q.attach || undefined,
+        })),
+      });
+    }
+
+    /** Push a fresh item onto the queue + broadcast. Source is inferred at
+     *  the call site (user vs voice vs file-changes). */
+    function enqueueMessage(text: string, source: QueuedMsg["source"], attach?: string): QueuedMsg {
+      const item: QueuedMsg = {
+        id: randomUUID(),
+        text,
+        source,
+        queuedAt: Date.now(),
+        ...(attach ? { attach } : {}),
+      };
+      queue.push(item);
+      broadcastQueue();
+      return item;
+    }
+
+    /** Shift the next queued item and broadcast the update. */
+    function dequeueNext(): QueuedMsg | undefined {
+      const next = queue.shift();
+      if (next) broadcastQueue();
+      return next;
+    }
     // Tracks the in-flight prompt so onData (interrupt) can abort it. Same
     // pattern as activeAbort in claudeAgent.ts.
     let activePromptAbort: AbortController | null = null;
@@ -843,10 +888,22 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
             const tool = tp.tool;
             turnToolCalls[tool] = (turnToolCalls[tool] || 0) + 1;
             console.log(`[opencode-agent] progress: ${tool} (${describeOpencodeTool(tool, tp.state.input || {}).slice(0, 80)})`);
+            // `details` is the full tool input (pretty-printed JSON) for the
+            // card UI's hover tooltip on the corresponding detail-log line.
+            // `description` stays the compact emoji-prefixed status string;
+            // hover shows the full args (file paths, URLs, command lines,
+            // tool-specific payload). Bounded at 4KB to keep DOM nodes sane
+            // for huge inputs (e.g. a big read patch).
+            let details: string | undefined;
+            try {
+              const json = JSON.stringify(tp.state.input ?? {}, null, 2);
+              details = json && json !== "{}" ? json.slice(0, 4096) : undefined;
+            } catch { /* unserializable input — skip details */ }
             ctx.broadcast({
               type: "progress",
               tool,
               description: describeOpencodeTool(tool, tp.state.input || {}),
+              ...(details ? { details } : {}),
             });
             // Mark file writes for the canvas glow + ignore-self file-watcher.
             // opencode write tools: write, edit, apply_patch.
@@ -1032,7 +1089,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // ── Per-turn process ────────────────────────────────────────
 
     async function processMessage(message: string, source: QueuedMsg["source"] = "user", attachmentFilename?: string): Promise<void> {
-      if (busy) { queue.push({ text: message, source, attach: attachmentFilename }); return; }
+      if (busy) { enqueueMessage(message, source, attachmentFilename); return; }
       const turnSource = source;
       // Record real-user messages so toolPrerequisites' spec-approval-gate
       // predicate can compare spec mtime to the last-approval timestamp.
@@ -1470,8 +1527,8 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         if (sessionProject) flushProjectPendingErrors(sessionProject);
         busy = false;
         reactive.setBusy(false);
-        if (queue.length > 0) {
-          const next = queue.shift()!;
+        const next = dequeueNext();
+        if (next) {
           setImmediate(() => processMessage(next.text, next.source, next.attach));
         }
         // No explicit flush — setBusy(false) above arms the 30s idle
@@ -1503,7 +1560,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       if (initialScanDone) return;
       initialScanDone = true;
       if (!busy) processMessage(INITIAL_SCAN_MESSAGE, "user");
-      else queue.push({ text: INITIAL_SCAN_MESSAGE, source: "user" });
+      else enqueueMessage(INITIAL_SCAN_MESSAGE, "user");
     }
 
     return {
@@ -1526,6 +1583,19 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         }
         ctx.sendTo(clientId, { type: "history", messages, cursor });
         for (const event of currentTurnEvents) ctx.sendTo(clientId, event);
+        // Send current queue snapshot so the panel populates on first paint.
+        // Skip when empty — the card's "queue" handler hides the panel on
+        // empty list, but a no-op send is cheap; we just send unconditionally.
+        ctx.sendTo(clientId, {
+          type: "queue",
+          items: queue.map((q) => ({
+            id: q.id,
+            text: q.text.length > 160 ? q.text.slice(0, 160) + "…" : q.text,
+            source: q.source,
+            queuedAt: q.queuedAt,
+            attach: q.attach || undefined,
+          })),
+        });
 
         // Trigger the initial scan only after a model-endpoint health check
         // passes (see fireInitialScanIfHealthy). Schedule once; concurrent
@@ -1571,6 +1641,29 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           if (queue.length > 0) {
             console.log(`[opencode-agent] interrupt: dropping ${queue.length} queued message(s)`);
             queue.length = 0;
+            broadcastQueue();
+          }
+          return;
+        }
+
+        // Cancel a single queued message by id (user clicked the × on the
+        // queue panel row). Idempotent — unknown id is a no-op.
+        if (msg.type === "cancel_queued") {
+          const id = (msg as { id?: string }).id;
+          if (!id) return;
+          const before = queue.length;
+          queue = queue.filter((q) => q.id !== id);
+          if (queue.length !== before) broadcastQueue();
+          return;
+        }
+
+        // Drop every queued message (user clicked "clear queued"). Distinct
+        // from `interrupt`: the current turn keeps running. Same as qwen.
+        if (msg.type === "clear_queue") {
+          if (queue.length > 0) {
+            console.log(`[opencode-agent] clear_queue: dropping ${queue.length} queued message(s)`);
+            queue.length = 0;
+            broadcastQueue();
           }
           return;
         }
@@ -1606,7 +1699,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         // be tagged with viaVoice:true so voice's ambient gate plays it.
         const turnSource: QueuedMsg["source"] = clientId === "voice-dispatch" ? "voice" : "user";
 
-        if (busy) { queue.push({ text: message, source: turnSource, attach: msg.attachmentFilename }); return; }
+        if (busy) { enqueueMessage(message, turnSource, msg.attachmentFilename); return; }
         processMessage(message, turnSource, msg.attachmentFilename);
       },
 

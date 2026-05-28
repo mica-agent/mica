@@ -16,6 +16,10 @@ const attachBtn = container.querySelector("#chat-attach-btn");
 const attachRow = container.querySelector("#chat-attach-row");
 const attachFilenameEl = container.querySelector("#chat-attach-filename");
 const attachClearBtn = container.querySelector("#chat-attach-clear");
+const queuePanel = container.querySelector("#chat-queue-panel");
+const queueListEl = container.querySelector("#chat-queue-list");
+const queueCountEl = container.querySelector("#chat-queue-count");
+const queueClearAllBtn = container.querySelector("#chat-queue-clear-all");
 const attachPicker = container.querySelector("#chat-attach-picker");
 const attachOptionsEl = container.querySelector("#chat-attach-options");
 // Fuel gauge (B — future: capacity trajectory). See chat card for rationale.
@@ -90,11 +94,22 @@ statusMain.addEventListener("click", function(e) {
   if (detailExpanded) statusDetail.scrollTop = statusDetail.scrollHeight;
 });
 
-function addDetailLine(text) {
+function addDetailLine(text, fullText) {
   const line = window.document.createElement("div");
   line.style.cssText = "padding:1px 0;border-bottom:1px solid rgba(48,54,61,0.3);";
   line.textContent = text;
+  // Hover-tooltip with the longer-form text when the server attached a
+  // `details` field to the broadcast (e.g. full tool input, file path,
+  // expanded reasoning). Native title="" — no popover state, text is
+  // copy-pasteable. Cursor shifts to `help` over hoverable lines.
+  // Held in DOM only; cleared when the line ages out of the 200-line cap
+  // or when the detail panel is cleared at next turn. Mirrors qwen card.
+  if (fullText && fullText !== text) {
+    line.title = fullText;
+    line.style.cursor = "help";
+  }
   statusDetail.appendChild(line);
+  while (statusDetail.children.length > 200) statusDetail.removeChild(statusDetail.firstChild);
   if (detailExpanded) statusDetail.scrollTop = statusDetail.scrollHeight;
 }
 
@@ -1066,9 +1081,85 @@ function addContextSuggestion(text, opts) {
   scrollBottom();
 }
 
+// Server-pushed queue state (push/cancel/clear/initial-snapshot). The card
+// renders whatever the server sends — single source of truth so an ambient
+// voice dispatch or a reactivity-injected message shows up the same as a
+// local send. Mirrors the qwen card's renderQueuePanel exactly.
+function renderQueuePanel(items) {
+  const list = Array.isArray(items) ? items : [];
+  queuedCount = list.length;
+  updateSendButton();
+  if (list.length === 0) {
+    queuePanel.style.display = "none";
+    queueListEl.innerHTML = "";
+    return;
+  }
+  queuePanel.style.display = "flex";
+  queueCountEl.textContent = String(list.length);
+  queueListEl.innerHTML = "";
+  const now = Date.now();
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i];
+    const ageMs = typeof it.queuedAt === "number" ? now - it.queuedAt : 0;
+    const ageStr =
+      ageMs < 5000 ? "just now"
+      : ageMs < 60000 ? Math.floor(ageMs / 1000) + "s ago"
+      : ageMs < 3600000 ? Math.floor(ageMs / 60000) + "m ago"
+      : Math.floor(ageMs / 3600000) + "h ago";
+    const sourceLabel = it.source === "voice" ? "VOICE"
+      : it.source === "file-changes" ? "FILES"
+      : "YOU";
+    const sourceColor = it.source === "voice" ? "#c4b5fd"
+      : it.source === "file-changes" ? "#fcd34d"
+      : "#8b949e";
+    const sourceBg = it.source === "voice" ? "rgba(124,58,237,0.18)"
+      : it.source === "file-changes" ? "rgba(252,211,77,0.12)"
+      : "rgba(255,255,255,0.05)";
+    const row = window.document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;padding:4px 6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:4px;font-size:11px;";
+    row.dataset.queuedId = String(it.id || "");
+    const chip = window.document.createElement("span");
+    chip.style.cssText = "flex-shrink:0;font-size:9px;font-weight:600;letter-spacing:0.04em;padding:1px 5px;border-radius:3px;color:" + sourceColor + ";background:" + sourceBg + ";";
+    chip.textContent = sourceLabel;
+    row.appendChild(chip);
+    const text = window.document.createElement("span");
+    text.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9d1d9;";
+    text.textContent = String(it.text || "");
+    text.title = String(it.text || "");
+    row.appendChild(text);
+    if (it.attach) {
+      const att = window.document.createElement("span");
+      att.style.cssText = "flex-shrink:0;color:#c9aef7;font-size:10px;";
+      att.textContent = "📷";
+      att.title = "Attached: " + it.attach;
+      row.appendChild(att);
+    }
+    const age = window.document.createElement("span");
+    age.style.cssText = "flex-shrink:0;color:#6e7681;font-size:10px;font-family:monospace;";
+    age.textContent = ageStr;
+    row.appendChild(age);
+    const cancel = window.document.createElement("button");
+    cancel.style.cssText = "flex-shrink:0;background:transparent;border:none;color:#8b949e;cursor:pointer;font-size:14px;padding:0 4px;line-height:1;font-family:inherit;";
+    cancel.textContent = "×";
+    cancel.title = "Cancel this queued message";
+    cancel.addEventListener("click", function() {
+      ch.send({ type: "cancel_queued", id: it.id });
+    });
+    row.appendChild(cancel);
+    queueListEl.appendChild(row);
+  }
+}
+queueClearAllBtn.addEventListener("click", function() {
+  if (!queuedCount) return;
+  ch.send({ type: "clear_queue" });
+});
+
 // Handle channel data from server
 ch.onData(function(data) {
   switch (data.type) {
+    case "queue":
+      renderQueuePanel(data.items || []);
+      break;
     case "history":
       messagesEl.innerHTML = "";
       contextCursor = typeof data.cursor === "number" ? data.cursor : 0;
@@ -1118,9 +1209,12 @@ ch.onData(function(data) {
     case "progress":
       if (data.description) {
         stepCount++;
+        // data.details (when present) is the full tool input JSON — the card's
+        // detail-log line gets it as a hover tooltip via addDetailLine's
+        // second arg. Useful when the description was a compact emoji line.
         setStatus(data.description, ACCENT, true);
         updateMeta();
-        addDetailLine(`[${stepCount}] ${data.description}`);
+        addDetailLine(`[${stepCount}] ${data.description}`, data.details);
       }
       break;
     case "assistant":
