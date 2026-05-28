@@ -12,6 +12,7 @@ import {
   AGENT_TOOL_CHAT_FILENAME_HEADER,
   getLastActiveOpencodeProject,
   getOpencodeSessionProject,
+  getOpencodeSessionChatFilename,
 } from "./registry.js";
 
 const AGENT_TOOL_OPENCODE_SESSION_HEADER = "x-mica-opencode-session-id";
@@ -71,11 +72,21 @@ export function registerAgentToolRoutes(app: Express): void {
         getLastActiveOpencodeProject();
 
       // Chat-card filename of the originating agent session, used by
-      // session-scoped predicate gates. Empty string from SDK adapters
-      // that don't supply it → null.
+      // session-scoped predicate gates (e.g. spec-approval-gate). Same
+      // fallback chain as project resolution above:
+      //   1. Explicit x-mica-chat-filename header — qwen/Claude SDK adapters
+      //      set this directly (see sdkMcpBuilder.ts).
+      //   2. Opencode session-ID-stamping path — the opencode bridge can't
+      //      set arbitrary per-call headers, so opencodePlugin.mjs stamps
+      //      the calling sessionID onto tool args; the bridge translates it
+      //      to x-mica-opencode-session-id; the registry maps that ID to
+      //      the originating .opencode card's filename (populated by
+      //      opencodeAgent.ts at session-attach time). Without this fallback,
+      //      session-scoped gates skip silently for opencode-routed calls.
       const headerChat = req.header(AGENT_TOOL_CHAT_FILENAME_HEADER);
       const chatFilename: string | null =
-        (typeof headerChat === "string" && headerChat.trim()) ? headerChat.trim() : null;
+        (typeof headerChat === "string" && headerChat.trim()) ? headerChat.trim() :
+        getOpencodeSessionChatFilename(typeof headerOcSession === "string" ? headerOcSession.trim() : null);
 
       // Validate input against the tool's zod schema.
       const schema = z.object(tool.inputSchema);

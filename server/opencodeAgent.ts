@@ -52,6 +52,7 @@ import { probeModelEndpoint } from "./modelHealth.js";
 import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
+import { recordUserMessage } from "./userMessageTracker.js";
 import {
   attachReactiveCoalesce,
   registerReactiveSession,
@@ -586,7 +587,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       if (ocSessionId) {
         // Already resolved this turn; ensure the map mirrors current state
         // in case sessionProject changed (it shouldn't, but cheap insurance).
-        registerOpencodeSession(ocSessionId, sessionProject);
+        registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
         return ocSessionId;
       }
       const sidecar = await loadSidecar(chatId, sessionProject);
@@ -601,7 +602,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
             ocSessionId = sidecar.sessionID;
             // Map this session ID to its project so per-tool-call routing
             // works as soon as the bridge sends the first call.
-            registerOpencodeSession(ocSessionId, sessionProject);
+            registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
             return ocSessionId;
           }
         } catch {
@@ -618,7 +619,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         throw new Error(`opencode session.create returned no id: ${errBody}`);
       }
       ocSessionId = newId;
-      registerOpencodeSession(ocSessionId, sessionProject);
+      registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
       await saveSidecar(chatId, sessionProject, { sessionID: newId });
       console.log(`[opencode-agent] created session ${newId.slice(0, 8)} for ${ctx.filename}`);
       return newId;
@@ -1033,6 +1034,13 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     async function processMessage(message: string, source: QueuedMsg["source"] = "user", attachmentFilename?: string): Promise<void> {
       if (busy) { queue.push({ text: message, source, attach: attachmentFilename }); return; }
       const turnSource = source;
+      // Record real-user messages so toolPrerequisites' spec-approval-gate
+      // predicate can compare spec mtime to the last-approval timestamp.
+      // "file-changes" and "recovery" are Mica-injected and don't count.
+      // Mirrors the same pattern in micaAgent.ts (qwen) and claudeAgent.ts.
+      if (source === "user" || source === "voice") {
+        recordUserMessage(sessionProject, ctx.filename);
+      }
       busy = true;
       reactive.setBusy(true);
       markProjectActivity(sessionProject, +1);

@@ -280,9 +280,15 @@ const specHasCanonicalFrontmatter: Predicate = {
 // events don't count as approval. If the spec was written after the
 // last real user message, the agent is trying to skip the gate.
 //
-// Session-scoped: passes when chatFilename is null (caller can't
-// supply session scope — e.g. opencode bridge). The opencode-specific
-// version of this gate is a separate problem; out of scope for v1.
+// Session-scoped. chatFilename is supplied:
+//   - qwen / Claude: directly via the x-mica-chat-filename header from
+//     their SDK MCP adapters.
+//   - opencode: via the registry fallback in restRoutes.ts —
+//     opencodePlugin.mjs stamps the sessionID onto every tool call's
+//     args; the bridge forwards it as x-mica-opencode-session-id;
+//     registry.ts maps that ID to the originating .opencode card's
+//     filename (populated by opencodeAgent.ts on session attach).
+// All three agent paths run this gate.
 const specApprovalGate: Predicate = {
   name: "spec-approval-gate",
   check: ({ project, projectDir, chatFilename, toolArgs }) => {

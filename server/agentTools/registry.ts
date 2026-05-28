@@ -140,20 +140,30 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
 // (c) graceful migration. resolveOpencodeProject() prefers the per-
 // session map and only falls back to the global when no mapping exists.
 
-const opencodeSessionProjects = new Map<string, string>();
+interface OpencodeSessionInfo {
+  project: string;
+  /** Canvas-relative path of the originating .opencode card file (e.g.
+   *  "canvas/agent.opencode"). Lets session-scoped predicate gates run for
+   *  opencode-routed tool calls (the bridge can't supply the
+   *  x-mica-chat-filename header directly; restRoutes.ts falls back to this). */
+  chatFilename: string;
+}
+const opencodeSessions = new Map<string, OpencodeSessionInfo>();
 
-/** Map an opencode session ID to the Mica project it belongs to.
- *  Idempotent. Called by opencodeAgent.ts on session attach. */
-export function registerOpencodeSession(sessionId: string, project: string | null): void {
+/** Map an opencode session ID to the Mica project + the .opencode card
+ *  filename it belongs to. Idempotent. Called by opencodeAgent.ts on
+ *  session attach. chatFilename enables the spec-approval-gate predicate
+ *  (and any other session-scoped gate) to run for opencode-routed calls. */
+export function registerOpencodeSession(sessionId: string, project: string | null, chatFilename: string | null): void {
   if (!sessionId || !project) return;
-  opencodeSessionProjects.set(sessionId, project);
+  opencodeSessions.set(sessionId, { project, chatFilename: chatFilename ?? "" });
 }
 
 /** Remove a session's mapping. Called by opencodeAgent.ts in onDestroy
  *  to keep the map bounded across long-lived backends. */
 export function unregisterOpencodeSession(sessionId: string): void {
   if (!sessionId) return;
-  opencodeSessionProjects.delete(sessionId);
+  opencodeSessions.delete(sessionId);
 }
 
 /** Look up the project for an opencode session ID. Returns null when
@@ -161,7 +171,18 @@ export function unregisterOpencodeSession(sessionId: string): void {
  *  this backend started, or the agent hasn't attached yet). */
 export function getOpencodeSessionProject(sessionId: string | null | undefined): string | null {
   if (!sessionId) return null;
-  return opencodeSessionProjects.get(sessionId) ?? null;
+  return opencodeSessions.get(sessionId)?.project ?? null;
+}
+
+/** Look up the chat-card filename for an opencode session ID. Returns null
+ *  when the session isn't registered or has no filename. restRoutes.ts
+ *  uses this as a fallback when the x-mica-chat-filename header is missing
+ *  (opencode bridge can't set headers per-call). */
+export function getOpencodeSessionChatFilename(sessionId: string | null | undefined): string | null {
+  if (!sessionId) return null;
+  const info = opencodeSessions.get(sessionId);
+  if (!info || !info.chatFilename) return null;
+  return info.chatFilename;
 }
 
 let lastActiveOpencodeProject: string | null = null;
