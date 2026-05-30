@@ -6,6 +6,7 @@ import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, resolveDefaultProvider, resolveDefaultModel, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
+import { estimateTurnCost } from "./costEstimator.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
 import { runVerifiers, formatVerifyFailure } from "./verifiers/index.js";
 import { probeModelEndpoint } from "./modelHealth.js";
@@ -3020,6 +3021,30 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           return;
         }
 
+        // Per-turn cost estimate. Same shape as opencode's broadcast — cards
+        // display it in the always-visible topbar strip + the chevron footer.
+        // Local turns → $0; openai-compat → null (no public rate card).
+        // When the qwen-code SDK forwards an upstream `cost` field (some
+        // OpenRouter-wrapped paths do), prefer it over the catalog-pricing
+        // estimate — matches the actual bill including cache discounts.
+        const inputForCost = typeof (usage as { input_tokens?: unknown })?.input_tokens === "number"
+          ? (usage as { input_tokens: number }).input_tokens
+          : 0;
+        const outputForCost = typeof (usage as { output_tokens?: unknown })?.output_tokens === "number"
+          ? (usage as { output_tokens: number }).output_tokens
+          : 0;
+        const reportedCostRaw = (usage as { cost?: unknown; total_cost?: unknown })?.cost
+          ?? (usage as { total_cost?: unknown })?.total_cost;
+        const reportedCost = typeof reportedCostRaw === "number" && reportedCostRaw > 0
+          ? reportedCostRaw
+          : undefined;
+        const cost = await estimateTurnCost({
+          provider,
+          modelId: modelName,
+          billedInput: inputForCost,
+          output: outputForCost,
+          reportedCost,
+        });
         console.log(`[mica-agent] broadcasting assistant (success path) for: ${message.slice(0, 60)} (peak ${peakTokens} / ${contextWindow}) source=${turnSource} suppressed=${suppressAssistantOutput}`);
         if (!suppressAssistantOutput) ctx.broadcast({
           type: "assistant",
@@ -3034,6 +3059,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           // baseline is the turn-START reading; this is the turn's high-water
           // mark. Falls back to baseline if the SDK didn't report usage.
           inputTokens: peakTokens,
+          billedInputTokens: inputForCost,
+          outputTokens: outputForCost,
+          cost,                // per-turn USD estimate (null when no rate card)
+          provider,            // surfaced so the topbar shows provider/model
+          modelId: modelName,
           arcComplete,
           capacity,
           cursor: newCursor,
@@ -3381,7 +3411,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     // Retry path (retry_init) can re-run it.
     let initialScanScheduled = false;
 
-    const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+    const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back), then scan the project files, set up context, and report what you found.";
 
     // Health-gate the auto initialize turn: probe the configured model
     // endpoint first. If it's unreachable/misconfigured, surface an inline,

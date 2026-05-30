@@ -24,6 +24,79 @@ const fuelEl = container.querySelector("#chat-fuel");
 const fuelFill = fuelEl ? fuelEl.querySelector(".fuel-fill") : null;
 const fuelBaselineMarker = fuelEl ? fuelEl.querySelector(".fuel-baseline-marker") : null;
 const fuelHeadroomLabel = container.querySelector("#chat-fuel-headroom");
+const usageEl = container.querySelector("#chat-usage");
+
+// Session-running usage totals (in/out tokens + dollar cost). Accumulated
+// from each `assistant` event's per-turn numbers and rendered into
+// #chat-usage in the topbar. Reset on Clear / Archive. Identical helper to
+// opencode card.js — kept inline here per the no-shared-modules contract.
+const sessionUsage = {
+  billedInput: 0,
+  output: 0,
+  cost_usd: 0,
+  cost_unknown: false,
+  turns: 0,
+  lastProvider: null,
+  lastModelId: null,
+};
+function _formatK(n) {
+  if (!n) return "0";
+  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+function _formatUsd(n) {
+  if (n === 0) return "$0";
+  if (n < 0.01) return "<$0.01";
+  if (n < 1) return "$" + n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  if (n < 100) return "$" + n.toFixed(2);
+  return "$" + Math.round(n);
+}
+function renderUsage() {
+  if (!usageEl) return;
+  if (sessionUsage.turns === 0) { usageEl.style.display = "none"; return; }
+  usageEl.style.display = "inline-flex";
+  const inK = _formatK(sessionUsage.billedInput);
+  const outK = _formatK(sessionUsage.output);
+  let costLabel;
+  if (sessionUsage.cost_unknown) {
+    costLabel = "?";
+  } else {
+    costLabel = _formatUsd(sessionUsage.cost_usd);
+  }
+  usageEl.textContent = costLabel + " · " + inK + " in · " + outK + " out";
+  const providerLine = sessionUsage.lastProvider
+    ? "Provider: " + sessionUsage.lastProvider + (sessionUsage.lastModelId ? " (" + sessionUsage.lastModelId + ")" : "") + "\n"
+    : "";
+  const costLine = sessionUsage.cost_unknown
+    ? "Cost: rate card unavailable for one or more turns this session — totals are approximate.\n"
+    : "Cost: ~" + _formatUsd(sessionUsage.cost_usd) + " across " + sessionUsage.turns + " turn" + (sessionUsage.turns === 1 ? "" : "s") + ".\n";
+  usageEl.title =
+    providerLine + costLine +
+    "Input billed: " + sessionUsage.billedInput.toLocaleString() + " tokens\n" +
+    "Output: " + sessionUsage.output.toLocaleString() + " tokens";
+}
+function accumulateUsage(turn) {
+  sessionUsage.billedInput += turn.billedInput || 0;
+  sessionUsage.output += turn.output || 0;
+  if (turn.cost && typeof turn.cost.total_usd === "number") {
+    sessionUsage.cost_usd += turn.cost.total_usd;
+  } else {
+    sessionUsage.cost_unknown = true;
+  }
+  if (turn.provider) sessionUsage.lastProvider = turn.provider;
+  if (turn.modelId) sessionUsage.lastModelId = turn.modelId;
+  sessionUsage.turns++;
+  renderUsage();
+}
+function resetUsage() {
+  sessionUsage.billedInput = 0;
+  sessionUsage.output = 0;
+  sessionUsage.cost_usd = 0;
+  sessionUsage.cost_unknown = false;
+  sessionUsage.turns = 0;
+  renderUsage();
+}
 // Rolling buffers for the gauge. `recentBaselines` is misnamed for legacy
 // reasons — it actually stores the turn's PEAK input_tokens (last tool-loop
 // iteration), not the turn-start baseline. Drives the fill width + headroom
@@ -1384,6 +1457,17 @@ ch.onData(function(data) {
         statusMeta.textContent = parts.join(" · ");
         addDetailLine("Completed: " + parts.join(" · "));
       }
+      // Accumulate session-running usage in the topbar strip. Per-turn cost +
+      // tokens come from the broadcast (see server/costEstimator.ts). For
+      // local providers cost is $0; for openai-compat it's null and the
+      // strip shows tokens-only.
+      accumulateUsage({
+        billedInput: data.billedInputTokens || 0,
+        output: data.outputTokens || 0,
+        cost: data.cost || null,
+        provider: data.provider || null,
+        modelId: data.modelId || null,
+      });
       addMessage("assistant", data.content, data.agent || "Qwen", data.questions, data.turn_id);
       // Proactive Clear/Spawn suggestion at natural arc breaks when the
       // conversation is getting long. Green zone (<50%) never suggests; amber
@@ -1605,6 +1689,7 @@ function clearCard(opts) {
     if (fuelEl) fuelEl.style.display = "none";
     recentBaselines.length = 0;
     lastCapacity = 0;
+    resetUsage();
   }).catch(function(err) {
     console.error("[chat] clear failed:", err);
   });
@@ -2105,7 +2190,7 @@ function openSettings() {
       ? 'Key set ✓ — paste a new one to replace, or clear it to remove.'
       : 'No key set yet.';
     updateProviderUI(provider);
-    settingsPanel.style.display = 'block';
+    settingsPanel.style.display = 'flex';
     setTimeout(function() {
       (provider === 'openrouter' || provider === 'openai-compat' ? settingsKey : settingsModel).focus();
     }, 0);

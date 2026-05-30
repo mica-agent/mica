@@ -75,6 +75,7 @@ import { getOpencodeServer } from "./opencodeServer.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { resolveCtxWindow } from "./contextWindow.js";
+import { estimateTurnCost } from "./costEstimator.js";
 import type { Event, Part } from "@opencode-ai/sdk";
 
 interface TurnTokens {
@@ -520,6 +521,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     let turnReasoningTokens = 0;   // sum of thinking tokens (Claude extended, o1/o3, deepseek-r1)
     let turnCacheReadTokens = 0;   // sum of cache reads (cheap input, ~10% normal price)
     let turnCacheWriteTokens = 0;  // sum of cache writes
+    // Upstream-reported per-turn cost. step-finish events on OpenRouter carry
+    // `cost` (USD) for that step; summed across steps to get the turn total.
+    // When > 0 the costEstimator uses it directly (matches the bill) instead
+    // of falling back to the catalog-pricing estimate.
+    let turnReportedCost = 0;
     // Effective context window for the current turn — resolved per-turn from
     // the user's (provider, model) settings (see processMessage). Cached at
     // session scope so the 5s event-heartbeat log can include it without
@@ -928,6 +934,13 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           if (sf.tokens?.reasoning) turnReasoningTokens += sf.tokens.reasoning;
           if (sf.tokens?.cache?.read) turnCacheReadTokens += sf.tokens.cache.read;
           if (sf.tokens?.cache?.write) turnCacheWriteTokens += sf.tokens.cache.write;
+          // Upstream cost (OpenRouter / openai-compat servers that forward
+          // `usage.cost`). Some providers emit this per step; opencode persists
+          // it on the step-finish part. Sum across steps for the turn total.
+          const sfCost = (sf as { cost?: number }).cost;
+          if (typeof sfCost === "number" && isFinite(sfCost) && sfCost > 0) {
+            turnReportedCost += sfCost;
+          }
         }
       } else if (t === "todo.updated") {
         // opencode's todowrite tool publishes the full todo list on each
@@ -1119,6 +1132,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       turnReasoningTokens = 0;
       turnCacheReadTokens = 0;
       turnCacheWriteTokens = 0;
+      turnReportedCost = 0;
       sessionErrorMsg = "";
 
       const turnId = randomUUID();
@@ -1356,6 +1370,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         const allMessages = msgsRes.data ?? [];
         // Find the last assistant message
         let resultText = "";
+        let lastReasoningText = "";   // surfaced by the empty-output diagnostic below
         let assistantTokens: { input?: number } | undefined;
         for (let i = allMessages.length - 1; i >= 0; i--) {
           const msg = allMessages[i];
@@ -1363,6 +1378,15 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
             for (const p of msg.parts) {
               if (p.type === "text" && (p as { synthetic?: boolean }).synthetic !== true) {
                 resultText += (p as { text: string }).text;
+              } else if (p.type === "reasoning") {
+                // Concatenate every reasoning chunk for this assistant message.
+                // OpenRouter streams the trace token-by-token (reasoning_details[].text),
+                // and opencode persists each chunk as its own part — so we may see
+                // many short reasoning parts. The empty-output diagnostic below
+                // surfaces this when the model produced reasoning but no text or
+                // tool_call (see GH opencode-ai/opencode #7185, #24316, #27210).
+                const txt = (p as { text?: string }).text;
+                if (typeof txt === "string") lastReasoningText += txt;
               }
             }
             assistantTokens = (msg.info as { tokens?: { input?: number } }).tokens;
@@ -1394,7 +1418,34 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         }
 
         const filesChanged = !!turnToolCalls["write"] || !!turnToolCalls["edit"] || !!turnToolCalls["apply_patch"];
-        if (!resultText.trim()) resultText = filesChanged ? "Done — I made changes." : "Done.";
+        if (!resultText.trim()) {
+          // Empty-output failure mode for reasoning models on OpenRouter / vLLM:
+          // the model emits its intended tool call inside the reasoning channel
+          // instead of as a structured `tool_calls` event, so opencode-serve sees
+          // no callable tool and closes the turn with finish=stop, output=0.
+          // Documented in opencode-ai/opencode #7185, #24316, #27210, #14716,
+          // #24190 — all open, no upstream fix. Surface what actually happened
+          // (the reasoning content the model produced) instead of masking it
+          // with "Done.", which sent the user chasing phantom progress on two
+          // separate test runs before we caught it.
+          const noToolCalls = Object.keys(turnToolCalls).length === 0;
+          const emptyOutputBug = turnReasoningTokens > 0 && noToolCalls && !filesChanged;
+          if (emptyOutputBug) {
+            const trimmed = lastReasoningText.trim();
+            const preview = trimmed.length > 800 ? trimmed.slice(0, 800) + "…" : trimmed;
+            resultText =
+              "[empty-output] The model produced reasoning but no response text and no structured tool call. " +
+              "This is a known opencode-serve issue with reasoning models on OpenRouter / vLLM — the intended " +
+              "tool call ends up in the reasoning channel instead of as a callable function. Tracking issues: " +
+              "opencode-ai/opencode #7185, #24316, #27210.\n\n" +
+              "What the model was thinking:\n" +
+              (preview || "(reasoning content was empty — try again, or pick a non-reasoning model in the gear)") +
+              "\n\nWorkarounds: re-send the same prompt (often transient), or switch the model in the gear to " +
+              "a non-reasoning variant (e.g. anthropic/claude-sonnet-4.5, openai/gpt-4o, qwen/qwen3-coder-plus).";
+          } else {
+            resultText = filesChanged ? "Done — I made changes." : "Done.";
+          }
+        }
 
         // Arc-complete cursor advance, mirrors claudeAgent.
         const ARC_COMPLETE_RE = /<thread-state>\s*arc-complete\s*<\/thread-state>/i;
@@ -1419,6 +1470,24 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           tool_calls: { ...turnToolCalls },
           files_changed: filesChanged,
         };
+
+        // Per-turn cost estimate. Cards display this in the topbar (always
+        // visible) and the per-turn chevron footer (drilldown). Local turns
+        // resolve to $0 explicitly; openai-compat returns null (no public
+        // rate card to multiply against). Reasoning tokens are billed as
+        // output by every provider we route to, so they're folded into the
+        // `output` argument here.
+        const cost = await estimateTurnCost({
+          provider,
+          modelId: modelOverride?.modelID,
+          billedInput: billedInputTokens,
+          output: turnOutputTokens + turnReasoningTokens,
+          // OpenRouter (and openai-compat servers that implement it) returns
+          // the exact USD on each step-finish via `usage.cost`; we sum it
+          // across steps. When > 0 the estimator uses it instead of the
+          // catalog-pricing approximation. Zero falls back to catalog.
+          reportedCost: turnReportedCost > 0 ? turnReportedCost : undefined,
+        });
 
         const updated = await loadHistory(chatId, sessionProject);
         updated.push({ role: "assistant", content: resultText, agent: "OpenCode", turn_id: turnId, tokens: turnTokens });
@@ -1448,6 +1517,9 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           billedInputTokens,   // sum across steps — for the cost view
           outputTokens: turnOutputTokens,
           tokens: turnTokens,  // full per-turn token breakdown for the chevron footer
+          cost,                // per-turn USD estimate (null when no rate card)
+          provider,            // surfaced so the topbar can show provider/model in the same strip
+          modelId: modelOverride?.modelID,
           arcComplete,
           capacity,
           cursor: newCursor,
@@ -1544,7 +1616,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // gated scan; reset on probe failure so Retry (retry_init) can re-run it.
     let initialScanScheduled = false;
 
-    const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back) and execute the 'On Project Open' actions. Scan the project files, set up context, and report what you found.";
+    const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back), then scan the project files, set up context, and report what you found.";
 
     // Health-gate the auto initialize turn: probe the configured model
     // endpoint first. On failure, surface an inline actionable error (retry:true

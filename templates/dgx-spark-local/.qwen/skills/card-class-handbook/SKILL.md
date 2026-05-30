@@ -1458,6 +1458,47 @@ is prominent enough that users find it.
 Same rule for all: either remove the JS handler, or skip the target
 when it's the element with native behavior. Don't fight the browser.
 
+### Hot loops magnify per-instance cost — watch what multiplies
+
+The render loop and high-frequency event handlers (animation, polling,
+WS streams) run many times per second. Per-instance work inside them
+MULTIPLIES with instance count and can saturate the GPU or starve the
+frame budget while CPU stays idle. Before adding a per-instance effect,
+ask: **at N=100 instances, does each frame still fit in 16 ms?**
+
+Shapes to watch for:
+
+- **Per-instance scene-wide effects.** Features whose cost is
+  multiplicative across the scene — adding instance #N+1 makes
+  rendering instances 1..N more expensive too. Common dressing:
+  framework features where each instance globally affects every
+  other (lights, listeners, shadows, reflections). Looks fine at 5
+  instances, melts the GPU at 50. Replace with instance-local fakes
+  (emissive surfaces, billboards, baked textures) when the visual
+  effect doesn't need to actually influence other objects.
+
+- **Per-frame full-tree traversals to mutate state.** Walking the
+  scene every frame to flip a flag or set a value is N × depth work
+  at 60 fps. Cache refs at setup time; mutate via the cached refs.
+
+- **Per-frame allocation in the hot path.** New vectors, geometries,
+  closures inside the loop → GC pause every few frames. Allocate
+  once at setup, mutate in place at runtime.
+
+- **Unbounded polled history.** Trails, time-series, replay buffers
+  that grow indefinitely become O(t) per tick. Cap at the visible
+  window and drop the oldest on push.
+
+- **Render loop never pauses.** `requestAnimationFrame` by default
+  fires forever, even with no input and no new data. For
+  rarely-changing scenes prefer render-on-demand: only re-render
+  when controls fire, new data arrives, or the viewport resizes.
+
+Sanity test: DevTools → Performance, record 5 seconds at the
+plausible upper-bound instance count. Frame time over 16 ms while
+CPU has headroom = the GPU or hot loop is the bottleneck; apply the
+patterns above.
+
 ### `render_capture` and WebGL — usually just works
 
 CARD_SHIM auto-enables `preserveDrawingBuffer: true` on any WebGL context created within card scope. So when the capture pipeline's `html2canvas` fallback calls `canvas.toDataURL()`, the WebGL back buffer is readable and the screenshot returns the actual frame. **You don't need to do anything special** for WebGL cards — the common case (Three.js, regl, PixiJS, Babylon, raw WebGL) captures cleanly out of the box.

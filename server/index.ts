@@ -978,6 +978,63 @@ app.get("/api/openrouter/models", async (_req, res) => {
   }
 });
 
+// GET /api/usage/openrouter — workspace-level credit balance + time-bucketed
+// usage, surfaced in the Connections panel. Thin proxy of OpenRouter's
+// /api/v1/auth/key (the same endpoint the connections probe already hits
+// for health), but extracting the usage_{daily,weekly,monthly}, limit, and
+// limit_remaining fields so the client doesn't have to re-fetch.
+//
+// Key resolution: per-project key (saved via the gear panel) wins; falls
+// back to the OPENROUTER_API_KEY env. Returns ok:false on missing key
+// (UI hides the panel rather than showing an error toast).
+app.get("/api/usage/openrouter", async (req, res) => {
+  try {
+    const project = getRequestProject(req);
+    const key = (project ? await readOpenRouterKey(project) : null) ?? process.env.OPENROUTER_API_KEY ?? null;
+    if (!key) {
+      res.json({ ok: false, error: "no_key" });
+      return;
+    }
+    const r = await fetch("https://openrouter.ai/api/v1/auth/key", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) {
+      res.status(r.status).json({ ok: false, error: `openrouter returned ${r.status}` });
+      return;
+    }
+    const body = await r.json() as {
+      data?: {
+        label?: string;
+        limit?: number | null;
+        limit_remaining?: number | null;
+        limit_reset?: string;
+        usage?: number;
+        usage_daily?: number;
+        usage_weekly?: number;
+        usage_monthly?: number;
+        is_free_tier?: boolean;
+      };
+    };
+    const d = body.data ?? {};
+    res.json({
+      ok: true,
+      label: d.label ?? null,
+      limit: d.limit ?? null,
+      limit_remaining: d.limit_remaining ?? null,
+      limit_reset: d.limit_reset ?? null,
+      usage: d.usage ?? 0,
+      usage_daily: d.usage_daily ?? 0,
+      usage_weekly: d.usage_weekly ?? 0,
+      usage_monthly: d.usage_monthly ?? 0,
+      is_free_tier: !!d.is_free_tier,
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: (err as Error).message });
+  }
+});
+
 // ── Voice (STT + TTS sidecars) ──────────────────────────────
 //
 // Three endpoints:

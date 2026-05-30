@@ -1,16 +1,65 @@
-<div id="llm-root" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;font-family:inherit;">
+<div id="llm-root" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;font-family:inherit;-webkit-font-smoothing:antialiased;">
 
-  <div id="llm-toolbar" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid #30363d;flex-shrink:0;">
-    <select id="llm-model" style="background:#161b22;color:#ccc;border:1px solid #30363d;border-radius:4px;padding:3px 8px;font-size:12px;outline:none;font-family:inherit;">
-      <option value="" disabled selected>Loading models…</option>
-    </select>
-    <span style="flex:1"></span>
-    <button id="llm-clear" style="background:none;border:none;color:#6e7681;cursor:pointer;font-size:11px;padding:2px 6px;" title="Clear chat">Clear</button>
+  <div id="llm-toolbar" style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid #30363d;flex-shrink:0;font-size:11px;color:#8b949e;min-width:0;">
+    <span id="llm-model-label" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=""></span>
+    <span id="llm-clear-btn" title="Clear chat" style="cursor:pointer;color:#8b949e;font-size:13px;padding:0 2px;flex-shrink:0;">🗑</span>
+    <span id="llm-settings-btn" title="Settings" style="cursor:pointer;color:#8b949e;font-size:17px;padding:0 2px;flex-shrink:0;line-height:1;">&#9881;</span>
+  </div>
+
+  <div id="llm-settings-panel" style="display:none;position:absolute;inset:0;background:rgba(13,17,23,0.96);backdrop-filter:blur(2px);z-index:20;flex-direction:column;color:#e6edf3;font-size:12px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px 8px;flex-shrink:0;border-bottom:1px solid rgba(48,54,61,0.6);">
+      <div style="font-weight:600;color:#e6edf3;font-size:13px;">LLM settings</div>
+      <span id="llm-settings-close" title="Close" style="cursor:pointer;color:#8b949e;font-size:16px;line-height:1;padding:0 4px;">&times;</span>
+    </div>
+
+    <div style="flex:1;min-height:0;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
+      <div>
+        <div style="color:#ccc;margin-bottom:4px;">Provider</div>
+        <label style="display:inline-block;margin-right:14px;cursor:pointer;">
+          <input type="radio" name="llm-provider" value="local" style="vertical-align:middle;margin-right:4px;" />
+          <span>Local</span>
+        </label>
+        <label style="display:inline-block;margin-right:14px;cursor:pointer;">
+          <input type="radio" name="llm-provider" value="openrouter" style="vertical-align:middle;margin-right:4px;" />
+          <span>OpenRouter</span>
+        </label>
+        <label style="display:inline-block;cursor:pointer;">
+          <input type="radio" name="llm-provider" value="openai-compat" style="vertical-align:middle;margin-right:4px;" />
+          <span>OpenAI-compatible</span>
+        </label>
+      </div>
+
+      <div id="llm-settings-baseurl-row" style="display:none;">
+        <div style="color:#ccc;margin-bottom:4px;">Base URL <span style="color:#6e7681;font-weight:normal;">(saved per project)</span></div>
+        <input id="llm-settings-baseurl" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" spellcheck="false" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div id="llm-settings-baseurl-hint" style="color:#6e7681;font-size:11px;margin-top:3px;">e.g., api.openai.com/v1, api.together.xyz/v1, or a self-hosted vLLM URL.</div>
+      </div>
+
+      <div>
+        <div style="color:#ccc;margin-bottom:4px;">Model</div>
+        <div id="llm-settings-model-wrap" style="position:relative;">
+          <input id="llm-settings-model" type="text" placeholder="" autocomplete="off" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+          <div id="llm-settings-model-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;margin-top:2px;max-height:240px;overflow-y:auto;background:#161b22;border:1px solid #30363d;border-radius:4px;z-index:30;box-shadow:0 4px 12px rgba(0,0,0,0.5);"></div>
+        </div>
+        <div id="llm-settings-model-hint" style="color:#6e7681;font-size:11px;margin-top:3px;"></div>
+      </div>
+
+      <div id="llm-settings-key-row" style="display:none;">
+        <div id="llm-settings-key-label" style="color:#ccc;margin-bottom:4px;">OpenRouter API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span></div>
+        <input id="llm-settings-key" type="password" placeholder="sk-or-..." autocomplete="off" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
+        <div id="llm-settings-key-status" style="color:#6e7681;font-size:11px;margin-top:3px;"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;padding:10px 16px;flex-shrink:0;border-top:1px solid rgba(48,54,61,0.6);background:rgba(13,17,23,0.96);">
+      <button id="llm-settings-cancel" style="background:transparent;color:#ccc;border:1px solid #30363d;border-radius:4px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;">Cancel</button>
+      <button id="llm-settings-save" style="background:#3b82f6;color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Save</button>
+    </div>
   </div>
 
   <div id="llm-messages" style="flex:1;overflow-y:auto;padding:8px 12px;min-height:0;display:flex;flex-direction:column;gap:8px;">
     <div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">
-      Select a model and start chatting.
+      Click the gear to pick a provider and model, then start chatting.
     </div>
   </div>
 

@@ -54,6 +54,13 @@ export async function buildOpencodeConfig(): Promise<Config> {
     // which breaks discover-dependency's smoke-test path. The webfetch
     // deterrent stays in the prelude prose only.
     webfetch: "allow",
+    // external_directory stays "allow" — the auto-approve path stalls in
+    // opencode 1.15.10 (confirmed empirically: replying `always` to a
+    // permission.asked event doesn't unblock the tool). Path scoping is
+    // enforced in opencodePlugin.mjs's `tool.execute.before` hook
+    // instead, which throws an educational error before opencode's
+    // permission system fires. See Step B in
+    // .claude/plans/check-logs-for-hotdog-vectorized-bunny.md.
     external_directory: "allow",
     doom_loop: "allow",
   };
@@ -104,14 +111,24 @@ export async function buildOpencodeConfig(): Promise<Config> {
   // Tavily — readPasteKey resolves credentials.json → env var, so Connections-
   // panel-managed keys take precedence over .env. Skip silently if neither is
   // set so opencode-only users don't get a startup warning.
+  //
+  // MICA_OPENCODE_DISABLE_TAVILY=1 skips registering Tavily for the opencode
+  // path even when a key is present. Workspace-wide opt-out for opencode only
+  // (qwen/Claude don't go through this config). Off by default. Use case:
+  // testing whether a frontier model (e.g. gemini-3.5-flash) actually needs
+  // Tavily, or if its training recall + mica_inspect_url + opencode's
+  // built-in webfetch suffice. See the discussion + test plan in
+  // .claude/plans/check-logs-for-hotdog-vectorized-bunny.md.
   const tavilyKey = (await readPasteKey("tavily"))?.key;
-  if (tavilyKey) {
+  if (tavilyKey && process.env.MICA_OPENCODE_DISABLE_TAVILY !== "1") {
     mcp.tavily = {
       type: "local",
       command: ["npx", "-y", "tavily-mcp"],
       environment: { TAVILY_API_KEY: tavilyKey },
       enabled: true,
     };
+  } else if (tavilyKey) {
+    console.log("[opencode-config] MICA_OPENCODE_DISABLE_TAVILY=1 — skipping Tavily MCP for opencode");
   }
 
   // mica-builtins — unified hub for Mica-internal tools. Same surface as

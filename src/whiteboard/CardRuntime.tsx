@@ -106,6 +106,48 @@ function _reportError(e){
   // (no canvasRoot prefix) and would 404 the card-error endpoint.
   try{mica.reportError(_em(e));}catch(_){}
 }
+// Per-card console proxy. The original mica.reportError chain only catches
+// THROWN errors (window.onerror + unhandledrejection + _runCb wrappers).
+// In practice, card.js code commonly does \`try { ... } catch(e) {
+// console.error("Fetch failed", e); errorEl.textContent = e.message; }\` —
+// the throw is swallowed, the user sees the rendered overlay, but Mica's
+// agent never gets the error. Render-to-DOM was meant as a human-visible
+// backup; the PRIMARY channel is JS → Mica. Wrapping console.error here
+// (scoped to this card's closure, NOT the global window.console) closes
+// that gap: the original call still reaches DevTools as expected, AND the
+// formatted message routes to Mica via _reportError. A reentry guard
+// prevents recursion if mica.reportError itself logs through console.
+//
+// Hoisting note: \`var console = …\` would hoist to the top of the enclosing
+// async function as \`var console;\` (undefined), shadowing the outer console
+// for the entire scope. Any reference to \`console\` ABOVE the assignment
+// line would crash with TypeError. We bind off window.console (immune to the
+// hoist) and build a plain object with explicitly-bound methods — no prototype
+// chain, no this-binding surprises across call sites.
+var _origCE=window.console.error.bind(window.console);
+var _inConsoleReport=false;
+var console={
+  log:window.console.log.bind(window.console),
+  info:window.console.info.bind(window.console),
+  warn:window.console.warn.bind(window.console),
+  debug:(window.console.debug||window.console.log).bind(window.console),
+  error:function(){
+    _origCE.apply(null,arguments);
+    if(_inConsoleReport) return;
+    _inConsoleReport=true;
+    try{
+      var parts=[];
+      for(var i=0;i<arguments.length;i++){
+        var a=arguments[i];
+        if(a&&a instanceof Error) parts.push(_em(a));
+        else if(typeof a==='string') parts.push(a);
+        else{ try{parts.push(JSON.stringify(a));}catch(_e){parts.push(String(a));} }
+      }
+      _reportError(parts.join(' '));
+    }catch(_e){/* never break console.error */}
+    finally{_inConsoleReport=false;}
+  }
+};
 // _runCb: run a callback, reporting BOTH synchronous throws AND async
 // rejections (when the callback is async and returns a Promise). Card
 // authors routinely write async arrow fns as setTimeout / addEventListener
@@ -410,7 +452,16 @@ function ensureUnhandledRejectionHandler(): void {
     // all inside the CDN module file and never mention the card's sourceURL,
     // so stack-match misses. The most recently injected card is the likely
     // owner since these rejections fire during init.
-    if (!matched && lastInjectedCard && Date.now() - lastInjectedCard.ts < FALLBACK_WINDOW_MS) {
+    //
+    // EXCEPTION: don't attribute Mica's OWN infrastructure errors to a card.
+    // src/whiteboard/screenshotClient.ts throws `toDataURL: operation is
+    // insecure` whenever capture runs against a cross-origin-tainted canvas
+    // (MapLibre satellite tiles, cross-origin video frames, etc.). Pre-fix,
+    // the recency fallback routed THAT error to whatever card was most-recent,
+    // sending the agent on a phantom debug chase. Any stack frame from our
+    // own src/ tree is by definition not a card bug.
+    const isInfraError = /localhost:\d+\/src\/(whiteboard|api|runtime)\//.test(stack) || /\/@vite\/client/.test(stack);
+    if (!matched && !isInfraError && lastInjectedCard && Date.now() - lastInjectedCard.ts < FALLBACK_WINDOW_MS) {
       const reporter = cardErrorReporters.get(lastInjectedCard.filename);
       if (reporter) {
         try { reporter(`Uncaught (in promise, attributed by recency): ${full}`); } catch { /* swallow */ }
@@ -418,7 +469,11 @@ function ensureUnhandledRejectionHandler(): void {
       }
     }
     if (!matched) {
-      console.warn("[mica-card] uncaught promise rejection with no card attribution:", full);
+      if (isInfraError) {
+        console.warn("[mica-card] uncaught Mica-internal rejection (not attributing to any card):", full);
+      } else {
+        console.warn("[mica-card] uncaught promise rejection with no card attribution:", full);
+      }
     }
   });
 }

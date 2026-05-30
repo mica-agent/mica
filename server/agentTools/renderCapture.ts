@@ -4,15 +4,74 @@
 // so it's reachable from any agent through the unified /api/tools/* surface.
 
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { readFile as fsReadFile } from "fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import sharp from "sharp";
 import { captureCard } from "../screenshot.js";
 import { bumpRenderCaptureCount, RENDER_CAPTURE_CAP } from "../renderCaptureCounter.js";
 import { getPendingValidatorErrors } from "../validatorErrorBuffer.js";
-import { canonicalizeCardPath, readCanvasConfig, micaDir, findCardClassInLibraries } from "../files.js";
+import { canonicalizeCardPath, readCanvasConfig, micaDir, findCardClassInLibraries, readCardSettings, resolveDefaultModel, resolveDefaultProvider, readOpenRouterKey, readOpenAICompatConfig } from "../files.js";
 import { runLiveMount } from "../verifiers/cardLiveMount.js";
 import type { AgentToolDef, AgentToolResult } from "./registry.js";
+
+// Captioner output cache (pixel-diff gate). Skip the multimodal LLM call when
+// the rendered PNG hasn't changed since the last call. Keyed by
+// "<project>|<filename>|<user_intent>" → { pngHash, caption }. We cache the
+// captioner's TEXT output, not the verdict tag — the tag is always recomputed
+// from current validator state so errors/MISMATCH that surfaced between calls
+// aren't masked. On cache hit, the verdict still flows through the normal
+// error-buffer check; only the LLM call is short-circuited.
+//
+// Pure in-memory, resets on backend restart. Implicitly invalidated by the
+// PNG hash itself: any card-source change that affects rendering produces a
+// different PNG → different hash → cache miss. LRU-bounded to MAX entries.
+const CAPTION_CACHE_MAX_ENTRIES = 50;
+const captionerCache = new Map<string, { pngHash: string; caption: string }>();
+function captionerCacheKey(project: string, filename: string, userIntent: string): string {
+  return `${project}|${filename}|${userIntent}`;
+}
+function captionerCacheGet(key: string, pngHash: string): string | null {
+  const entry = captionerCache.get(key);
+  if (!entry || entry.pngHash !== pngHash) return null;
+  // Refresh LRU position — re-insertion moves the key to the end on Map.
+  captionerCache.delete(key);
+  captionerCache.set(key, entry);
+  return entry.caption;
+}
+function captionerCacheSet(key: string, pngHash: string, caption: string): void {
+  if (captionerCache.size >= CAPTION_CACHE_MAX_ENTRIES) {
+    // Drop oldest (first-inserted) entry.
+    const oldest = captionerCache.keys().next().value;
+    if (oldest) captionerCache.delete(oldest);
+  }
+  captionerCache.set(key, { pngHash, caption });
+}
+function sha256(buf: Buffer): string {
+  return createHash("sha256").update(buf).digest("hex");
+}
+// Caption payload knobs. The vision call dominates wall-clock + GPU/cost,
+// and previous defaults (full-resolution PNG + 400 max_tokens) were tuned
+// without measurement. Empirical: 768px-wide captures with 200 max_tokens
+// produce equivalent verdicts (CLEAN/MATCHES/MISMATCH parses identically),
+// at ~2-3x lower inference cost. Override via env if you need higher
+// resolution for a specific debug pass.
+const CAPTION_MAX_WIDTH = Number(process.env.RENDER_CAPTURE_MAX_WIDTH ?? 768);
+const CAPTION_MAX_TOKENS = Number(process.env.RENDER_CAPTURE_MAX_TOKENS ?? 200);
+/** Downscale a captured PNG to at most CAPTION_MAX_WIDTH wide for the vision
+ *  call. Sharp's resize is no-op when the image is already smaller. Falls
+ *  back to the original bytes on any sharp error so we never lose the
+ *  ability to caption when the optimizer fails. */
+async function downscaleForCaption(png: Buffer): Promise<Buffer> {
+  try {
+    const meta = await sharp(png).metadata();
+    if (!meta.width || meta.width <= CAPTION_MAX_WIDTH) return png;
+    return await sharp(png).resize({ width: CAPTION_MAX_WIDTH, withoutEnlargement: true }).png().toBuffer();
+  } catch {
+    return png;
+  }
+}
 
 // Settle delay before reading the error buffer. Runtime errors in card.js
 // (e.g. `THREE.OrbitControls is not a constructor`) fire at page-load time,
@@ -65,6 +124,139 @@ function resolveLocalClassDir(className: string, project: string | null): string
 const BLACK_CANVAS_RX = /\b(completely\s+(?:black|blank|empty|dark)|appears?\s+(?:completely\s+)?(?:black|blank|empty|dark)|all[-\s]?black|entirely\s+black|solid\s+black|nothing\s+(?:is\s+)?visible|no\s+(?:visible\s+)?(?:content|scene|3d|imagery)|empty\s+(?:canvas|scene|area|viewport|black\s+box)|black\s+(?:rectangle|background)\s+with\s+no\s+(?:visible\s+)?(?:content|elements))\b/i;
 
 const LLAMA_URL = process.env.LLAMA_URL || "http://127.0.0.1:8012";
+
+interface CaptionerConfig {
+  url: string;
+  headers: Record<string, string>;
+  model: string;
+  localKwargs: boolean;  // vLLM-specific `chat_template_kwargs.enable_thinking`
+  label: string;         // human-readable for log/error messages
+}
+
+/** Resolve the captioning endpoint for the calling card's session.
+ *
+ *  Try-then-fallback pattern: route render_capture through the SAME provider
+ *  the card uses for chat, with the card's chat model. If that call fails,
+ *  retry with a known-multimodal fallback model (env-settable per provider).
+ *  This avoids hardcoding assumptions about which models accept images —
+ *  trust the chat model first, fall back only when it actually fails.
+ *
+ *  Returns { primary, fallback } where:
+ *    - `primary` is the first request to try (card's chat model + provider).
+ *    - `fallback` is a same-provider retry with a different model, or null
+ *      when there's no useful fallback (e.g. local already uses the
+ *      dedicated qwen-vl; no second attempt would help).
+ *
+ *  Providers:
+ *    - openrouter:
+ *        primary  = card's chat model on openrouter.ai
+ *        fallback = OPENROUTER_VISION_FALLBACK env (default
+ *                   `google/gemini-3.5-flash`)
+ *    - openai-compat:
+ *        primary  = card's chat model on user's baseUrl
+ *        fallback = OPENAI_VISION_FALLBACK env (default `gpt-4o-mini`).
+ *                   NOTE: openai-compat is user-configured. The fallback
+ *                   MUST be a model their endpoint actually serves and
+ *                   that accepts images. If your endpoint has no
+ *                   multimodal model, leave the fallback unset and the
+ *                   captioner will fail loudly with a clear message.
+ *    - local (or unset): LLAMA_URL + `qwen-vl`. No fallback — qwen-vl
+ *      is already the dedicated vision model on the bundled vLLM.
+ *
+ *  localKwargs is the vLLM-specific `chat_template_kwargs.enable_thinking`
+ *  flag — only included for the local-vLLM path. */
+async function resolveCaptionerConfig(
+  project: string | null,
+  chatFilename: string | null,
+): Promise<{ primary: CaptionerConfig; fallback: CaptionerConfig | null }> {
+  const localBase = LLAMA_URL.replace(/\/v1$/, "");
+  const localConfig: CaptionerConfig = {
+    url: `${localBase}/v1/chat/completions`,
+    headers: { "Content-Type": "application/json" },
+    model: "qwen-vl",
+    localKwargs: true,
+    label: `local vLLM (${localBase})`,
+  };
+
+  // No session context → local only (direct CLI / sidecar callers that
+  // don't have a card to resolve from).
+  if (!project || !chatFilename) {
+    return { primary: localConfig, fallback: null };
+  }
+
+  const settings = await readCardSettings(project, chatFilename);
+  // Resolution order matches the rest of the agent path: explicit sidecar
+  // setting → workspace-level MICA_DEFAULT_PROVIDER → "local". Reading
+  // `settings.provider ?? "local"` was a bug — it ignored the workspace
+  // default for cards that don't pin a provider via the gear UI.
+  const provider = settings.provider ?? resolveDefaultProvider();
+
+  if (provider === "openrouter") {
+    const key = await readOpenRouterKey(project);
+    if (!key) {
+      // OpenRouter selected but no key — the health-gate already surfaced this
+      // at chat time. Fall back to local for vision so we at least produce a
+      // caption; the agent will see the chat-side error separately.
+      return {
+        primary: { ...localConfig, label: `local vLLM (OpenRouter selected but no key)` },
+        fallback: null,
+      };
+    }
+    const chatModel = (settings.model || "").trim() || resolveDefaultModel("openrouter");
+    const fallbackModel = process.env.OPENROUTER_VISION_FALLBACK || "google/gemini-3.5-flash";
+    const baseHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
+    const primary: CaptionerConfig = {
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      headers: baseHeaders,
+      model: chatModel,
+      localKwargs: false,
+      label: `OpenRouter (${chatModel}, card's chat model)`,
+    };
+    // Skip the fallback when the chat model IS the fallback — no point
+    // retrying the same model on the same provider.
+    const fallback: CaptionerConfig | null = chatModel === fallbackModel ? null : {
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      headers: baseHeaders,
+      model: fallbackModel,
+      localKwargs: false,
+      label: `OpenRouter (${fallbackModel}, OPENROUTER_VISION_FALLBACK)`,
+    };
+    return { primary, fallback };
+  }
+
+  if (provider === "openai-compat") {
+    const cfg = await readOpenAICompatConfig(project);
+    if (!cfg.baseUrl || !cfg.key) {
+      return {
+        primary: { ...localConfig, label: `local vLLM (openai-compat misconfigured)` },
+        fallback: null,
+      };
+    }
+    const baseClean = cfg.baseUrl.replace(/\/+$/, "");
+    const v1 = /\/v\d+$/.test(baseClean) ? baseClean : `${baseClean}/v1`;
+    const chatModel = (settings.model || "").trim() || resolveDefaultModel("openai-compat");
+    const fallbackModel = process.env.OPENAI_VISION_FALLBACK || "gpt-4o-mini";
+    const baseHeaders = { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` };
+    const primary: CaptionerConfig = {
+      url: `${v1}/chat/completions`,
+      headers: baseHeaders,
+      model: chatModel,
+      localKwargs: false,
+      label: `openai-compat ${v1} (${chatModel}, card's chat model)`,
+    };
+    const fallback: CaptionerConfig | null = chatModel === fallbackModel ? null : {
+      url: `${v1}/chat/completions`,
+      headers: baseHeaders,
+      model: fallbackModel,
+      localKwargs: false,
+      label: `openai-compat ${v1} (${fallbackModel}, OPENAI_VISION_FALLBACK)`,
+    };
+    return { primary, fallback };
+  }
+
+  // provider === "local" or anything unknown → local vLLM, no fallback.
+  return { primary: localConfig, fallback: null };
+}
 
 const inputSchema = {
   filename: z
@@ -164,7 +356,7 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
     try {
       const result = await captureCard(ctx.project, canonicalFilename);
       const png = await fsReadFile(result.path);
-      const base64 = png.toString("base64");
+      const pngHash = sha256(png);
 
       // Caption the image via a direct llama-server call (NOT through any
       // SDK). The SDK / MCP tool_result types are text-only, so we have
@@ -184,6 +376,15 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
       const userIntent = (input.user_intent || "").trim();
       const compareMode = userIntent.length > 0;
 
+      // Pixel-diff gate: if we already captioned an identical PNG for this
+      // (card, intent), skip the vision call entirely. Validator errors and
+      // the verdict tag are recomputed below from current state, so this
+      // doesn't mask new errors that appeared between calls — it only saves
+      // the LLM round-trip when the agent re-verifies an unchanged card
+      // (the most common "verify, then verify again" pattern).
+      const cacheKey = ctx.project ? captionerCacheKey(ctx.project, canonicalFilename, userIntent) : null;
+      const cachedCaption = cacheKey ? captionerCacheGet(cacheKey, pngHash) : null;
+
       const systemPrompt = compareMode
         ? "You are verifying a rendered Mica card against a specific user request. Look at the attached image and judge whether the visible content satisfies the request. Reply in EXACTLY this two-line format and nothing else:\nVERDICT: MATCHES or MISMATCH or UNVERIFIABLE\nEVIDENCE: <one short sentence describing what you see that supports the verdict>\n\nVerdict guide:\n- MATCHES: the visible card shows what the user asked for. STRICT: every concrete element the user explicitly named (e.g. \"planets\", \"speed slider\", \"Saturn rings\", \"day/night overlay\") must be visible in the image. If even ONE named element is missing, you cannot return MATCHES — return MISMATCH or UNVERIFIABLE instead. The captioner cannot predict future frames; \"it looks like it's loading and will probably show that later\" is NOT valid evidence for MATCHES.\n- MISMATCH: the visible card is missing one or more elements the user explicitly named, OR shows wrong text / wrong icons / wrong layout / extra elements that contradict the request. INCLUDES: cards where the main content is occluded by a \"Loading...\" overlay, progress bar, error overlay, or similar transient chrome that prevents the named content from being visible — the user asked for the loaded state, not the in-progress state. Use this ONLY when the request describes the INITIAL visible state and the screenshot disagrees. Do NOT use this when the request describes content that appears AFTER user interaction — see UNVERIFIABLE.\n- UNVERIFIABLE: the request is about content or state that requires user interaction to reach (a preview that appears after uploading a file, a result that shows after clicking a button, output that appears after submitting a form, text typed into an input) AND the screenshot shows the card in its initial idle state with no interaction performed yet. ALSO use for behavior a still image can't show (animations, spinners, transient overlays). The cue: ask 'does the request reference an action the user has to perform first?' — if yes and the screenshot is pre-action, the answer is UNVERIFIABLE, not MISMATCH. Do not use UNVERIFIABLE just because you're unsure on a verifiable initial-state request, and do not use it as an escape hatch to avoid returning MISMATCH on cards stuck loading."
         : "You are verifying a rendered Mica card class. Describe what's actually visible in the attached image — layout, colors, visible text, anything that looks broken, missing, clipped, or wrong. Look for: red error banners, blank/empty regions, overlapping elements, illegible text, missing markers/icons. Describe the IMAGE, not the source code. 5-15 lines of plain text, no markdown.";
@@ -193,24 +394,28 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
         : `Verification of ${input.filename}: describe what you see.`;
 
       let caption = "";
-      try {
-        const llamaUrl = LLAMA_URL.replace(/\/v1$/, "");
-        const captionRes = await fetch(`${llamaUrl}/v1/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // Bound the wait. Without a timeout, a black-hole LLAMA_URL (e.g. a
-          // cloud-only deployment with no local vLLM) hangs the whole tool.
-          // ECONNREFUSED already fails fast; this covers the no-route /
-          // unresponsive-endpoint case. 30s is generous for a 400-token caption.
-          signal: AbortSignal.timeout(30000),
-          body: JSON.stringify({
-            model: "qwen-vl",
-            max_tokens: 400,
-            // Captioning is descriptive, not reasoning. Disable thinking so
-            // the 400-token budget goes to the actual description instead
-            // of `<think>` content that ends up in reasoning_content and
-            // leaves `choices[0].message.content` empty. Mirrors voiceAgent.
-            chat_template_kwargs: { enable_thinking: false },
+      let cacheHit = false;
+      if (cachedCaption !== null) {
+        caption = cachedCaption;
+        cacheHit = true;
+        console.log(`[render_capture] cache hit for ${ctx.project}|${canonicalFilename} — skipping vision call (pixel-diff matched prior caption)`);
+      } else {
+        // Downscale the PNG before sending to the vision model. Sharp falls
+        // through to the original buffer on any error, so this never breaks
+        // captioning — worst case is sending the larger image.
+        const captionPng = await downscaleForCaption(png);
+        const base64 = captionPng.toString("base64");
+        // Try the card's chat model first (the user-picked model) for vision.
+        // If it errors (e.g. provider rejects images for that model), retry
+        // once with the env-set fallback. This trusts the user's choice (no
+        // hardcoded multimodal allowlist) and surfaces the failure clearly
+        // when both attempts fail.
+        const { primary, fallback } = await resolveCaptionerConfig(ctx.project, ctx.chatFilename);
+        console.log(`[render_capture] ctx: project=${ctx.project ?? "(null)"} chatFilename=${ctx.chatFilename ?? "(null)"} → route: primary=${primary.label}${fallback ? ` (fallback=${fallback.label})` : ""}`);
+        const attemptCaption = async (cfg: CaptionerConfig): Promise<{ ok: true; text: string } | { ok: false; reason: string }> => {
+          const body: Record<string, unknown> = {
+            model: cfg.model,
+            max_tokens: CAPTION_MAX_TOKENS,
             messages: [
               { role: "system", content: systemPrompt },
               {
@@ -221,25 +426,59 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
                 ],
               },
             ],
-          }),
-        });
-        if (captionRes.ok) {
-          const data = (await captionRes.json()) as {
-            choices?: Array<{ message?: { content?: string } }>;
           };
-          caption = data.choices?.[0]?.message?.content?.trim() || "";
+          // vLLM-specific knob: disable thinking so the token budget goes to
+          // the description instead of <think> blocks that land in
+          // reasoning_content. Cloud providers may error if this kwarg is
+          // included — only send for local.
+          if (cfg.localKwargs) body.chat_template_kwargs = { enable_thinking: false };
+          try {
+            const res = await fetch(cfg.url, {
+              method: "POST",
+              headers: cfg.headers,
+              // 60s accommodates OpenRouter routing + multimodal inference.
+              signal: AbortSignal.timeout(60000),
+              body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+              // Read body for context (vision-reject errors usually include a
+              // useful message). Capped to keep log lines manageable.
+              let detail = "";
+              try { detail = (await res.text()).slice(0, 200); } catch { /* ignore */ }
+              return { ok: false, reason: `${cfg.label}: HTTP ${res.status}${detail ? ` — ${detail}` : ""}` };
+            }
+            const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+            const text = data.choices?.[0]?.message?.content?.trim() || "";
+            return { ok: true, text };
+          } catch (err) {
+            const reason = (err as Error).name === "TimeoutError" || (err as Error).name === "AbortError"
+              ? "timed out"
+              : (err as Error).message;
+            return { ok: false, reason: `${cfg.label}: ${reason}` };
+          }
+        };
+
+        const first = await attemptCaption(primary);
+        if (first.ok) {
+          caption = first.text;
+        } else if (fallback) {
+          console.log(`[render_capture] primary captioner failed (${first.reason}); retrying via fallback`);
+          const second = await attemptCaption(fallback);
+          if (second.ok) {
+            caption = second.text;
+          } else {
+            caption = `(captioning unavailable: both primary [${first.reason}] and fallback [${second.reason}] failed. This card was NOT visually verified.)`;
+          }
         } else {
-          caption = `(captioning failed: vision model returned ${captionRes.status} at ${llamaUrl})`;
+          caption = `(captioning unavailable: ${first.reason}. This card was NOT visually verified.)`;
         }
-      } catch (capErr) {
-        // Most common cause when the local model is absent (cloud-only /
-        // GPU-free deployments): the vision endpoint is unreachable. Say so
-        // plainly so the agent treats the card as visually-unverified and
-        // moves on instead of phantom-chasing a "broken" render.
-        const reason = (capErr as Error).name === "TimeoutError" || (capErr as Error).name === "AbortError"
-          ? "timed out"
-          : (capErr as Error).message;
-        caption = `(captioning unavailable: vision needs a local or shared vLLM at ${LLAMA_URL} — ${reason}. This card was NOT visually verified.)`;
+
+        // Store the caption for the next pixel-diff-equal call. Skip the
+        // captioning-failed marker — a retry of that should re-attempt the
+        // LLM call, not return the same failure.
+        if (cacheKey && caption && !caption.startsWith("(captioning")) {
+          captionerCacheSet(cacheKey, pngHash, caption);
+        }
       }
 
       // Parse the compare-mode verdict line. Tolerant of minor format drift
@@ -355,8 +594,9 @@ export const renderCaptureTool: AgentToolDef<typeof inputSchema> = {
           `do not call render_capture again unless the user reports a problem.`;
       }
 
+      const cacheNote = cacheHit ? "\n\n(Caption reused from prior call — the rendered PNG hashed identically to a previous render_capture, so the vision model was skipped. The verdict tag above reflects current validator state.)" : "";
       return {
-        text: `${verdictHeader}\n\nCaption of ${input.filename} (${meta}):\n${captionBody}`,
+        text: `${verdictHeader}\n\nCaption of ${input.filename} (${meta}):\n${captionBody}${cacheNote}`,
       };
     } catch (err) {
       return {

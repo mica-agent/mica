@@ -21,6 +21,7 @@
 import { createOpencodeServer, createOpencodeClient, type OpencodeClient, type OpencodeClientConfig } from "@opencode-ai/sdk";
 import { buildOpencodeConfig } from "./opencodeConfig.js";
 import { readOpenRouterKey, readOpenAICompatConfig } from "./files.js";
+import { AGENT_TOOL_AUTH_SECRET } from "./agentTools/registry.js";
 
 interface ServerHandle {
   url: string;
@@ -52,6 +53,18 @@ async function spawn(): Promise<ServerHandle> {
   // the env unset (opencode reports "no usable provider" at spawn — the
   // existing reportProviderState() surfaces that loudly).
   await injectWorkspaceCredentials();
+
+  // Plumb the agent-tool auth + base URL into process.env BEFORE the
+  // opencode-serve child inherits it. opencodePlugin.mjs (loaded inside
+  // opencode-serve via config.plugin) reads these to call back into Mica
+  // for per-session path-scope lookups. Same env-var names as the MCP
+  // bridge uses so the plugin and bridge share one config surface.
+  // Idempotent — overwriting on re-spawn is fine (the secret is stable
+  // per Mica startup).
+  process.env.MICA_TOOLS_AUTH_SECRET = AGENT_TOOL_AUTH_SECRET;
+  if (!process.env.MICA_TOOLS_BASE_URL) {
+    process.env.MICA_TOOLS_BASE_URL = `http://127.0.0.1:${process.env.MICA_PORT || "3002"}`;
+  }
 
   // Build config at spawn time. Subagents from server/builtin-agents/ + any
   // workspace-level MCPs from env (Tavily). Per-project MCPs are NOT merged

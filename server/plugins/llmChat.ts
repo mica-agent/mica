@@ -9,18 +9,116 @@ import sharp from "sharp";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 import type { HandlerManifest } from "../handlerManifest.js";
 import { resolveServedModel } from "./llmModelResolver.js";
+import {
+  readCardSettings,
+  resolveDefaultProvider,
+  resolveDefaultModel,
+  readOpenRouterKey,
+  readOpenAICompatConfig,
+  type CardSettings,
+} from "../files.js";
+import { estimateTurnCost } from "../costEstimator.js";
 
 // Default OpenAI-compatible endpoint when neither `baseUrl` nor LLAMA_URL
 // is set. Post-vLLM-consolidation the chat container is on 8012 (served
 // from the docker-host gateway in the devcontainer; 127.0.0.1 works from
-// the host). The card discovers served model names via `list_models` →
-// /v1/models and populates its dropdown from the response.
+// the host).
 const DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8012";
 
-function resolveBaseUrl(cfg: { baseUrl?: string }): string {
+function resolveLocalBaseUrl(cfg: { baseUrl?: string }): string {
   if (cfg.baseUrl) return cfg.baseUrl.replace(/\/$/, "");
   if (process.env.LLAMA_URL) return process.env.LLAMA_URL.replace(/\/$/, "");
   return DEFAULT_LLM_BASE_URL;
+}
+
+interface ResolvedRoute {
+  /** The provider the cost estimator + per-turn telemetry use. */
+  provider: NonNullable<CardSettings["provider"]>;
+  baseUrl: string;           // includes /v1 segment; chat completions = `${baseUrl}/chat/completions`
+  authHeader: Record<string, string>;  // bearer token, or empty for local
+  modelHint?: string;        // when the user pinned a model in the card sidecar
+  /** Empty string when no fallback list is appropriate (cloud providers — the
+   *  cloud catalog is too large to use as a "did you mean" list). For local,
+   *  we keep the legacy [qwen-vl, qwen3-vl-local] fallback so the served-model
+   *  resolver can still pick a working name. */
+  servedFallbacks: string[];
+  /** Human-readable label for log/info messages. */
+  label: string;
+  /** vLLM-specific knob (chat_template_kwargs.enable_thinking=false). Only
+   *  safe to send for the local engine; cloud providers reject unknown kwargs. */
+  isLocal: boolean;
+}
+
+/** Resolve the chat-completions endpoint for THIS card. Per-card sidecar
+ *  setting (provider, model) wins; falls back to MICA_DEFAULT_PROVIDER + the
+ *  per-provider {OPENROUTER,OPENAI,LOCAL}_DEFAULT_MODEL envs. Mirrors the same
+ *  resolution order used by the qwen / opencode agent cards so an .llm-chat
+ *  card configured via the gear behaves identically to those classes. */
+async function resolveRoute(
+  cfg: { baseUrl?: string },
+  ctx: SessionContext,
+): Promise<ResolvedRoute> {
+  let settings: CardSettings = {};
+  if (ctx.project) {
+    try { settings = await readCardSettings(ctx.project, ctx.filename); } catch { /* empty */ }
+  }
+  const provider = settings.provider ?? resolveDefaultProvider();
+
+  if (provider === "openrouter") {
+    const key = ctx.project ? await readOpenRouterKey(ctx.project) : null;
+    if (!key) {
+      console.warn(`[llm-chat] OpenRouter selected for ${ctx.filename} but no key — falling back to local engine. Set the key via the card's gear panel.`);
+      // Fall through to local
+    } else {
+      const model = (settings.model || "").trim() || resolveDefaultModel("openrouter");
+      return {
+        provider: "openrouter",
+        baseUrl: "https://openrouter.ai/api/v1",
+        authHeader: { Authorization: `Bearer ${key}` },
+        modelHint: model,
+        servedFallbacks: [],
+        label: `OpenRouter (${model})`,
+        isLocal: false,
+      };
+    }
+  }
+
+  if (provider === "openai-compat") {
+    const oc = ctx.project ? await readOpenAICompatConfig(ctx.project) : { baseUrl: null, key: null };
+    if (!oc.baseUrl || !oc.key) {
+      console.warn(`[llm-chat] openai-compat selected for ${ctx.filename} but baseUrl/key missing — falling back to local engine.`);
+      // Fall through to local
+    } else {
+      const baseClean = oc.baseUrl.replace(/\/+$/, "");
+      const v1 = /\/v\d+$/.test(baseClean) ? baseClean : `${baseClean}/v1`;
+      const model = (settings.model || "").trim() || resolveDefaultModel("openai-compat");
+      return {
+        provider: "openai-compat",
+        baseUrl: v1,
+        authHeader: { Authorization: `Bearer ${oc.key}` },
+        modelHint: model,
+        servedFallbacks: [],
+        label: `openai-compat ${v1} (${model})`,
+        isLocal: false,
+      };
+    }
+  }
+
+  // Local (default, or any of the above's fallback path).
+  const localBase = resolveLocalBaseUrl(cfg);
+  // Include /v1 so it's symmetric with the cloud branches — the chat-completions
+  // call below just appends /chat/completions.
+  const v1 = /\/v\d+$/.test(localBase) ? localBase : `${localBase}/v1`;
+  const model = (settings.model || "").trim() || resolveDefaultModel("local");
+  return {
+    provider: "local",
+    baseUrl: v1,
+    authHeader: {},
+    modelHint: model,
+    servedFallbacks: ["qwen-vl", "qwen3-vl-local"],
+    label: `local ${localBase}`,
+    isLocal: true,
+  };
 }
 
 // Content can be a plain string or OpenAI-style multimodal content blocks
@@ -164,12 +262,13 @@ export function createLlmChatHandler() {
         }
 
         if (msg.type === "list_models") {
-          // Card asks for the served-model-name list from the configured
-          // endpoint. Hit /v1/models and broadcast back. The card filters
-          // & populates its dropdown.
-          const baseUrl = resolveBaseUrl(cfg);
+          // Legacy ping retained for any card-class that still asks for it (the
+          // current llm-chat card.html uses the gear panel instead and does
+          // not send this). Probe the LOCAL endpoint only — cloud catalogs
+          // are surfaced via /api/openrouter/models from the card's own gear.
+          const localBase = resolveLocalBaseUrl(cfg);
           try {
-            const modelsResp = await fetch(`${baseUrl}/v1/models`, {
+            const modelsResp = await fetch(`${localBase}/v1/models`, {
               signal: AbortSignal.timeout(5000),
             });
             if (!modelsResp.ok) {
@@ -194,31 +293,48 @@ export function createLlmChatHandler() {
         // viaVoice:true so voice's ambient gate plays the reply aloud.
         const turnSource: "user" | "voice" = _clientId === "voice-dispatch" ? "voice" : "user";
 
-        // Per-message model override wins over the args default. If neither
-        // names a model OR the named model isn't served, the resolver picks
-        // a known-good fallback from the served-model-name list. The card
-        // sees a one-time `info` broadcast naming what happened so the
-        // agent learns the resolution (and can fix its metadata in a
-        // subsequent edit).
-        const baseUrl = resolveBaseUrl(cfg);
-        const resolution = await resolveServedModel(
-          baseUrl,
-          msg.model || cfg.model,
-          ["qwen-vl", "qwen3-vl-local"],
-        );
-        if (resolution.reason) {
-          console.warn(`[llm-chat] ${resolution.reason}`);
-          ctx.broadcast({ type: "info", message: resolution.reason });
+        // Resolve the route for THIS card and turn. Per-card gear setting
+        // (sidecar) wins, MICA_DEFAULT_PROVIDER + {OPENROUTER,OPENAI,LOCAL}_
+        // DEFAULT_MODEL fills in. Per-message model override (msg.model from
+        // the card.js payload, if any) still trumps the resolver — covers
+        // call sites that pass a model id explicitly without touching the
+        // gear (used by the legacy voice-tool routing).
+        const route = await resolveRoute(cfg, ctx);
+
+        // Local engine still needs the served-model-name resolver — the card
+        // setting names "qwen-vl", but the engine may have started with
+        // "qwen3-vl-local". For cloud providers the model id is forwarded
+        // verbatim (OpenRouter / openai-compat validate and 404 cleanly).
+        let modelKey: string;
+        if (route.isLocal) {
+          const resolution = await resolveServedModel(
+            route.baseUrl.replace(/\/v\d+$/, ""),
+            msg.model || route.modelHint,
+            route.servedFallbacks,
+          );
+          if (resolution.reason) {
+            console.warn(`[llm-chat] ${resolution.reason}`);
+            ctx.broadcast({ type: "info", message: resolution.reason });
+          }
+          if (!resolution.modelName) {
+            ctx.broadcast({
+              type: "error",
+              error: `No model could be resolved — local endpoint ${route.baseUrl} returned no served models, and no fallback was specified.`,
+            });
+            return;
+          }
+          modelKey = resolution.modelName;
+        } else {
+          modelKey = (msg.model || route.modelHint || "").trim();
+          if (!modelKey) {
+            ctx.broadcast({
+              type: "error",
+              error: `No model configured for ${route.label}. Open the gear icon and pick a model.`,
+            });
+            return;
+          }
         }
-        const modelKey = resolution.modelName;
-        if (!modelKey) {
-          ctx.broadcast({
-            type: "error",
-            error: `No model could be resolved — endpoint ${baseUrl} returned no served models, and no fallback was specified.`,
-          });
-          return;
-        }
-        const endpoint = `${baseUrl}/v1/chat/completions`;
+        const endpoint = `${route.baseUrl}/chat/completions`;
 
         const messageForLlm: string | ContentBlock[] = userContent || userMessage || "";
         // History policy: in 'persist' mode we accumulate the turn into the
@@ -251,21 +367,30 @@ export function createLlmChatHandler() {
           ? await resizeImagesInMessages(messagesForLlm, maxDim)
           : messagesForLlm;
 
+        const requestBody: Record<string, unknown> = {
+          model: modelKey,
+          messages: messagesToSend,
+          max_tokens: cfg.maxTokens,
+          temperature: cfg.temperature,
+          stream: true,
+          // Ask OpenAI-compatible servers to include a final `usage` object in
+          // the SSE stream. vLLM, OpenRouter, and Together all honor this.
+          // Required for the per-turn cost estimate; without it we don't know
+          // billed input/output tokens for streamed completions.
+          stream_options: { include_usage: true },
+        };
+        // Qwen3.6+ has thinking mode on by default — turn it off for direct
+        // chat so the model writes reply tokens immediately. This is a
+        // vLLM-specific knob; OpenRouter / generic openai-compat endpoints
+        // may reject unknown kwargs, so only send it for the local engine.
+        if (route.isLocal) {
+          requestBody.chat_template_kwargs = { enable_thinking: false };
+        }
         try {
           const resp = await fetch(endpoint, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: modelKey,
-              messages: messagesToSend,
-              max_tokens: cfg.maxTokens,
-              temperature: cfg.temperature,
-              stream: true,
-              // Qwen3.6+ has thinking mode on by default — turn it off for direct chat
-              // so the model writes reply tokens immediately. Templates that don't
-              // recognize the field ignore it.
-              chat_template_kwargs: { enable_thinking: false },
-            }),
+            headers: { "Content-Type": "application/json", ...route.authHeader },
+            body: JSON.stringify(requestBody),
             signal: activeAbort.signal,
           });
 
@@ -276,6 +401,21 @@ export function createLlmChatHandler() {
           }
 
           let assistantText = "";
+          // Captured from the final SSE chunk when stream_options.include_usage
+          // is honored (vLLM, OpenRouter, Together). Used for per-turn cost
+          // and per-bubble token stats. OpenRouter additionally returns
+          // `cost` (USD) and `cost_details` directly on the usage chunk; we
+          // read those when present and pass them through the cost estimator
+          // instead of computing the dollar figure from tokens × pricing.
+          let streamUsage: {
+            prompt_tokens?: number;
+            completion_tokens?: number;
+            cost?: number;
+            cost_details?: {
+              upstream_inference_prompt_cost?: number;
+              upstream_inference_completions_cost?: number;
+            };
+          } | null = null;
           const reader = resp.body as unknown as AsyncIterable<Uint8Array>;
           const decoder = new TextDecoder();
           let buffer = "";
@@ -298,6 +438,11 @@ export function createLlmChatHandler() {
                   assistantText += delta.content;
                   ctx.broadcast({ type: "delta", content: delta.content });
                 }
+                // The terminal usage chunk has no choices array — just a
+                // usage object. Capture it for the cost broadcast below.
+                if (parsed.usage && typeof parsed.usage === "object") {
+                  streamUsage = parsed.usage as typeof streamUsage;
+                }
               } catch {
                 // skip unparseable
               }
@@ -307,10 +452,34 @@ export function createLlmChatHandler() {
           if (assistantText && !stateless) {
             history.push({ role: "assistant", content: assistantText });
           }
+          // Per-turn cost estimate. Cards display this in the per-bubble
+          // stat line (under each assistant message). Falls to null if the
+          // provider rate card isn't known (openai-compat) or if streamed
+          // usage wasn't returned by the upstream server.
+          const promptTokens = streamUsage?.prompt_tokens ?? 0;
+          const completionTokens = streamUsage?.completion_tokens ?? 0;
+          const reportedCost = typeof streamUsage?.cost === "number" && streamUsage.cost > 0
+            ? streamUsage.cost
+            : undefined;
+          const reportedInputCost = streamUsage?.cost_details?.upstream_inference_prompt_cost;
+          const reportedOutputCost = streamUsage?.cost_details?.upstream_inference_completions_cost;
+          const cost = await estimateTurnCost({
+            provider: route.provider,
+            modelId: modelKey,
+            billedInput: promptTokens,
+            output: completionTokens,
+            reportedCost,
+            reportedInputCost,
+            reportedOutputCost,
+          });
           ctx.broadcast({
             type: "done",
             content: assistantText,
             model: modelKey,
+            provider: route.provider,
+            promptTokens,
+            completionTokens,
+            cost,                // per-turn USD estimate (null when no rate card / no usage)
             // Source attribution for any listener that wants to gate
             // on voice-dispatched turns (voice's ambient TTS gate).
             // Today voice's listener only fires on `type: "assistant"`

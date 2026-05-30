@@ -95,6 +95,23 @@ const RULES: CalibrationRule[] = [
     ],
   },
   {
+    classify: "Gemini frontier (2.5+ / 3+ / Flash, Pro, Ultra)",
+    matches: (_f, m) => /gemini-(2\.5|3|3\.5|4|pro|flash|ultra)/i.test(m),
+    profile: {
+      libraryNames: "high",
+      libraryVersions: "medium",
+      assetUrlPaths: "low",
+      apiEndpoints: "medium",
+      browserApis: "high",
+      geographicCoordinates: "very-low",
+    },
+    notes: [
+      "Library names and browser APIs: recall freely. Recent training cutoff (Jan 2026 for gemini-3.5-flash) covers modern library/API surface broadly.",
+      "Library versions, API endpoint paths, asset URL specifics: recall + verify via mica_inspect_url. Gemini-flash variants lean slightly more on in-context docs than full-frontier Claude/GPT-4, but recall + verify still beats search-first wallclock.",
+      "If verification fails: advance to Search craft + Asset URL Extract Pattern in discover-dependency Step 3b. Live web search is NOT wired through Mica's OpenRouter path for plain gemini routes (no google_search tool attached, no openrouter:web_search plugin) — fall back to mcp__tavily__tavily_search / tavily_extract or webfetch when verify misses.",
+    ],
+  },
+  {
     classify: "GPT-4 frontier (GPT-4o / GPT-4 Turbo class)",
     matches: (_f, m) => /gpt-4o|gpt-4-turbo|gpt-4-omni/i.test(m),
     profile: {

@@ -176,6 +176,7 @@ function ServiceRow({
               {svc.savedAt ? ` · saved ${formatRelative(svc.savedAt)}` : ''}
             </p>
           )}
+          {svc.connected && svc.id === 'openrouter' && <OpenRouterUsage />}
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           {isPasteKey ? (
@@ -244,6 +245,77 @@ function ServiceRow({
           color: msg.kind === 'ok' ? '#4ade80' : msg.kind === 'warn' ? '#fbbf24' : '#f87171',
         }}>
           {msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Workspace-level OpenRouter usage. Thin display over GET /api/usage/openrouter
+// (proxy of openrouter.ai/api/v1/auth/key — returns this month's spend,
+// remaining credit, daily/weekly buckets). Renders inline under the OpenRouter
+// service row when the key is connected. No-ops cleanly when the endpoint
+// errors or the key has no associated limit (legacy keys before OpenRouter
+// added the per-key limit field).
+interface OpenRouterUsageData {
+  ok: boolean;
+  usage?: number;
+  usage_daily?: number;
+  usage_weekly?: number;
+  usage_monthly?: number;
+  limit?: number | null;
+  limit_remaining?: number | null;
+  limit_reset?: string | null;
+  is_free_tier?: boolean;
+}
+function fmtUsd(n: number | null | undefined): string {
+  if (n == null) return '—';
+  if (n === 0) return '$0';
+  if (n < 0.01) return '<$0.01';
+  if (n < 100) return '$' + n.toFixed(2);
+  return '$' + Math.round(n).toLocaleString();
+}
+function OpenRouterUsage() {
+  const [data, setData] = useState<OpenRouterUsageData | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/usage/openrouter')
+      .then((r) => r.json())
+      .then((j: OpenRouterUsageData) => { if (!cancelled) setData(j); })
+      .catch((e: Error) => { if (!cancelled) setErr(e.message); });
+    return () => { cancelled = true; };
+  }, []);
+  if (err) return null;          // silent fail — don't pollute the panel with transient probe errors
+  if (!data) return (
+    <p style={{ margin: '6px 0 0', fontSize: 11, color: '#666' }}>Loading usage…</p>
+  );
+  if (!data.ok) return null;     // backend reported no_key or upstream error — hide quietly
+  const usedThisMonth = data.usage_monthly ?? 0;
+  const limit = data.limit ?? null;
+  const remaining = data.limit_remaining ?? null;
+  const tooltip = [
+    `Lifetime: ${fmtUsd(data.usage)}`,
+    `Today: ${fmtUsd(data.usage_daily)}`,
+    `This week: ${fmtUsd(data.usage_weekly)}`,
+    `This month: ${fmtUsd(usedThisMonth)}`,
+    limit != null ? `Limit (${data.limit_reset || 'monthly'}): ${fmtUsd(limit)}` : null,
+    remaining != null ? `Remaining: ${fmtUsd(remaining)}` : null,
+  ].filter(Boolean).join('\n');
+  // Headline: "spent this month · X remaining" when there's a limit; else
+  // just "spent this month" (legacy keys with no per-key cap).
+  const headline = limit != null
+    ? `${fmtUsd(usedThisMonth)} / ${fmtUsd(limit)} this month · ${fmtUsd(remaining)} left`
+    : `${fmtUsd(usedThisMonth)} this month`;
+  // Subtle pct bar when limit known. Color shifts amber >75%, red >90%.
+  const pct = (limit != null && limit > 0) ? Math.min(1, usedThisMonth / limit) : 0;
+  const barColor = pct >= 0.9 ? '#f87171' : pct >= 0.75 ? '#fbbf24' : '#4ade80';
+  return (
+    <div style={{ marginTop: 8 }} title={tooltip}>
+      <div style={{ fontSize: 11, color: '#999', fontFamily: 'monospace' }}>{headline}</div>
+      {limit != null && limit > 0 && (
+        <div style={{ marginTop: 4, height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2, overflow: 'hidden' }}>
+          <div style={{ width: `${Math.round(pct * 100)}%`, height: '100%', background: barColor, transition: 'width 200ms ease' }} />
         </div>
       )}
     </div>

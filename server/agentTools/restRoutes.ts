@@ -4,6 +4,7 @@
 
 import type { Express } from "express";
 import { z } from "zod";
+import { join } from "node:path";
 import {
   AGENT_TOOLS,
   AGENT_TOOL_AUTH_HEADER,
@@ -14,6 +15,7 @@ import {
   getOpencodeSessionProject,
   getOpencodeSessionChatFilename,
 } from "./registry.js";
+import { WORKSPACE_DIR, SHARED_DIR, getIncludeProjects } from "../files.js";
 
 const AGENT_TOOL_OPENCODE_SESSION_HEADER = "x-mica-opencode-session-id";
 
@@ -43,6 +45,47 @@ export function registerAgentToolRoutes(app: Express): void {
       restPath: tool.restPath,
       params: paramShapeOf(tool.inputSchema),
     })));
+  });
+
+  // opencode-session-scope — the path allowlist for a given opencode session.
+  // Consumed by server/agentTools/opencodePlugin.mjs's `tool.execute.before`
+  // hook to gate path-taking tool calls (read/write/edit/glob/grep/list)
+  // BEFORE opencode's own permission system fires. Necessary because
+  // opencode 1.15.10's external_directory: "ask" path stalls after our
+  // auto-approve — verified empirically in Step A
+  // (see .claude/plans/check-logs-for-hotdog-vectorized-bunny.md). Plugin
+  // throws an educational error on out-of-scope paths; the agent reads it
+  // as a tool failure and self-corrects to in-project paths.
+  //
+  // Returns: { project, allowlist: string[] } where allowlist is absolute
+  // path prefixes the session is allowed to read/write/touch. Empty
+  // allowlist when the session ID isn't registered (fail-closed at the
+  // boundary of "we don't know what project this session belongs to").
+  app.get("/api/tools/opencode-session-scope", (req, res) => {
+    const supplied = req.header(AGENT_TOOL_AUTH_HEADER);
+    if (supplied !== AGENT_TOOL_AUTH_SECRET) {
+      res.status(401).json({ error: "agent auth required" });
+      return;
+    }
+    const sid = req.query.sessionID;
+    if (typeof sid !== "string" || !sid.trim()) {
+      res.status(400).json({ error: "missing sessionID query param" });
+      return;
+    }
+    const project = getOpencodeSessionProject(sid.trim());
+    if (!project) {
+      // Unknown session — the plugin should fail-open (don't gate) for
+      // resilience, but we tell the truth: no project, no allowlist.
+      res.json({ project: null, allowlist: [] });
+      return;
+    }
+    const allowlist: string[] = [
+      join(WORKSPACE_DIR, project),
+      join(WORKSPACE_DIR, ".mica"),
+      SHARED_DIR,
+      ...getIncludeProjects(),
+    ];
+    res.json({ project, allowlist });
   });
 
   for (const tool of AGENT_TOOLS) {

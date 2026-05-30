@@ -705,7 +705,13 @@ export function resolveDefaultProvider(): NonNullable<CardSettings["provider"]> 
  *  requires for image modality on its SDK-facing path. */
 export function resolveDefaultModel(provider: NonNullable<CardSettings["provider"]>): string {
   switch (provider) {
-    case "openrouter": return process.env.OPENROUTER_DEFAULT_MODEL || "qwen/qwen3.6-35b-a3b";
+    // anthropic/claude-sonnet-4.5 is the workspace fallback for OpenRouter
+    // because it reliably emits structured tool_calls under opencode's loop.
+    // Earlier defaults (qwen/qwen3.6-35b-a3b, gpt-oss-120b, etc.) hit the
+    // "reasoning channel swallows the tool call" failure mode documented in
+    // opencode-ai/opencode #7185, #24316, #27210 — turn ends with output=0,
+    // Mica masks it as "Done.", agent stalls without doing anything.
+    case "openrouter": return process.env.OPENROUTER_DEFAULT_MODEL || "anthropic/claude-sonnet-4.5";
     case "openai-compat": return process.env.OPENAI_DEFAULT_MODEL || "deepseek/deepseek-v4-flash";
     default: return process.env.LOCAL_DEFAULT_MODEL || "qwen3-vl-local";
   }
