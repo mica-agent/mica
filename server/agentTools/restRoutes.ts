@@ -12,6 +12,7 @@ import {
   AGENT_TOOL_PROJECT_HEADER,
   AGENT_TOOL_CHAT_FILENAME_HEADER,
   getLastActiveOpencodeProject,
+  getLastActiveOpencodeChatFilename,
   getOpencodeSessionProject,
   getOpencodeSessionChatFilename,
 } from "./registry.js";
@@ -129,7 +130,8 @@ export function registerAgentToolRoutes(app: Express): void {
       const headerChat = req.header(AGENT_TOOL_CHAT_FILENAME_HEADER);
       const chatFilename: string | null =
         (typeof headerChat === "string" && headerChat.trim()) ? headerChat.trim() :
-        getOpencodeSessionChatFilename(typeof headerOcSession === "string" ? headerOcSession.trim() : null);
+        getOpencodeSessionChatFilename(typeof headerOcSession === "string" ? headerOcSession.trim() : null) ??
+        getLastActiveOpencodeChatFilename();
 
       // Validate input against the tool's zod schema.
       const schema = z.object(tool.inputSchema);

@@ -2137,7 +2137,7 @@ function updateProviderUI(provider) {
 }
 
 providerRadios.forEach(function(r) {
-  r.addEventListener('change', function() { updateProviderUI(r.value); });
+  r.addEventListener('change', function() { updateProviderUI(r.value); loadCalibration(false); });
 });
 
 function openSettings() {
@@ -2191,6 +2191,7 @@ function openSettings() {
       : 'No key set yet.';
     updateProviderUI(provider);
     settingsPanel.style.display = 'flex';
+    loadCalibration(true);
     setTimeout(function() {
       (provider === 'openrouter' || provider === 'openai-compat' ? settingsKey : settingsModel).focus();
     }, 0);
@@ -2202,6 +2203,172 @@ function closeSettings() { settingsPanel.style.display = 'none'; }
 settingsBtn.addEventListener('click', openSettings);
 settingsClose.addEventListener('click', closeSettings);
 settingsCancel.addEventListener('click', closeSettings);
+
+// ── Model calibration readout + editor ──────────────────────
+// Shows what the agent's recall self-awareness block resolves to for the
+// currently-selected (provider, model), and lets the user tune it. Overrides
+// persist workspace-wide (per model id) via /api/calibration/override.
+const calBody = container.querySelector('#chat-cal-body');
+const calSourceEl = container.querySelector('#chat-cal-source');
+const CAL_DIALS = [
+  ['libraryNames', 'library names'],
+  ['libraryVersions', 'library versions'],
+  ['assetUrlPaths', 'asset URL paths'],
+  ['apiEndpoints', 'API endpoints'],
+  ['browserApis', 'browser APIs'],
+  ['geographicCoordinates', 'geo coordinates'],
+];
+const CAL_LEVELS = ['high', 'medium', 'low', 'very-low'];
+const CAL_PROC = {
+  'high': 'recall freely',
+  'medium': 'recall + verify',
+  'low': 'search + extract',
+  'very-low': 'geocoder / search, never recall',
+};
+const CAL_INPUT_STYLE = 'background:#161b22;border:1px solid #30363d;border-radius:4px;color:#e6edf3;font-size:11px;font-family:inherit;outline:none;padding:2px 4px;';
+let calSig = null;   // provider|model the readout currently reflects
+let calModel = '';   // model id the override binds to (server-resolved)
+
+function calEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+  });
+}
+
+function calProviderModel() {
+  let provider = 'local';
+  providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
+  return { provider: provider, model: settingsModel.value.trim() };
+}
+
+function loadCalibration(force) {
+  if (!calBody) return;
+  const pm = calProviderModel();
+  const sig = pm.provider + '|' + pm.model;
+  if (!force && sig === calSig) return;
+  calSig = sig;
+  calBody.textContent = 'Loading...';
+  if (calSourceEl) calSourceEl.textContent = '';
+  const qs = '?provider=' + encodeURIComponent(pm.provider) + '&model=' + encodeURIComponent(pm.model);
+  fetch('/api/calibration' + qs, { headers: projectHeaders() })
+    .then(function(r) { return r.json(); })
+    .then(function(detail) {
+      if (sig !== calSig) return;
+      if (detail && detail.calibration) renderCalibration(detail);
+      else calBody.textContent = 'Calibration unavailable.';
+    })
+    .catch(function() { if (sig === calSig) calBody.textContent = 'Calibration unavailable.'; });
+}
+
+function renderCalibration(detail) {
+  const cal = detail.calibration;
+  const base = detail.base || cal;
+  const kf = cal.knownFacts || {};
+  const bkf = base.knownFacts || {};
+  calModel = cal.identity.name || '';
+  if (calSourceEl) calSourceEl.textContent = 'source: ' + (detail.source || '?');
+
+  let h = '';
+  h += '<div style="color:#e6edf3;margin-bottom:4px;">' + calEsc(cal.identity.class) + '</div>';
+  h += '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">';
+  h += '<label>arch <select id="cal-arch" style="' + CAL_INPUT_STYLE + '">';
+  const archAuto = bkf.architecture ? ('auto (' + calEsc(bkf.architecture) + ')') : 'auto (none)';
+  h += '<option value="">' + archAuto + '</option>';
+  ['dense', 'moe'].forEach(function(a) {
+    const sel = (kf.architecture === a && bkf.architecture !== a) ? ' selected' : '';
+    h += '<option value="' + a + '"' + sel + '>' + a + '</option>';
+  });
+  h += '</select></label>';
+  h += '<label>cutoff <input id="cal-cutoff" type="text" value="' + calEsc(kf.trainingCutoff || '') + '" placeholder="' + calEsc(bkf.trainingCutoff || 'unknown') + '" style="' + CAL_INPUT_STYLE + 'width:96px;"></label>';
+  h += '</div>';
+
+  CAL_DIALS.forEach(function(d) {
+    const key = d[0];
+    const val = cal.recallProfile[key];
+    const changed = base.recallProfile[key] !== val;
+    h += '<div style="display:flex;align-items:center;gap:6px;margin:2px 0;">';
+    h += '<span style="width:108px;color:' + (changed ? '#d2a8ff' : '#8b949e') + ';">' + d[1] + (changed ? ' *' : '') + '</span>';
+    h += '<select data-dial="' + key + '" style="' + CAL_INPUT_STYLE + '">';
+    CAL_LEVELS.forEach(function(lv) {
+      h += '<option value="' + lv + '"' + (lv === val ? ' selected' : '') + '>' + lv + '</option>';
+    });
+    h += '</select>';
+    h += '<span data-proc="' + key + '" style="color:#6e7681;font-size:10px;">' + calEsc(CAL_PROC[val] || '') + '</span>';
+    h += '</div>';
+  });
+
+  h += '<div style="color:#8b949e;margin-top:6px;">notes <span style="color:#6e7681;font-size:10px;">(agent reads these verbatim; blank = rule default)</span></div>';
+  h += '<textarea id="cal-notes" rows="4" style="width:100%;box-sizing:border-box;' + CAL_INPUT_STYLE + '">' + calEsc((cal.notes || []).join('\n')) + '</textarea>';
+
+  h += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px;">';
+  h += '<button id="cal-reset" style="background:transparent;color:#ccc;border:1px solid #30363d;border-radius:4px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:inherit;">Reset to default</button>';
+  h += '<button id="cal-save" style="background:#7c3aed;color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;">Save calibration</button>';
+  h += '</div>';
+  h += '<div style="color:#6e7681;font-size:10px;margin-top:4px;">Binds to model id <b>' + calEsc(calModel) + '</b> across <b>all projects</b> (workspace-wide). * = differs from default.</div>';
+
+  calBody.innerHTML = h;
+
+  calBody.querySelectorAll('select[data-dial]').forEach(function(sel) {
+    sel.addEventListener('change', function() {
+      const proc = calBody.querySelector('[data-proc="' + sel.getAttribute('data-dial') + '"]');
+      if (proc) proc.textContent = CAL_PROC[sel.value] || '';
+    });
+  });
+  const saveBtn = calBody.querySelector('#cal-save');
+  const resetBtn = calBody.querySelector('#cal-reset');
+  if (saveBtn) saveBtn.addEventListener('click', function() { saveCalibration(detail.base || cal); });
+  if (resetBtn) resetBtn.addEventListener('click', resetCalibration);
+}
+
+function saveCalibration(base) {
+  if (!calModel) return;
+  const body = { model: calModel };
+  const recallProfile = {};
+  calBody.querySelectorAll('select[data-dial]').forEach(function(sel) {
+    const key = sel.getAttribute('data-dial');
+    if (!base || base.recallProfile[key] !== sel.value) recallProfile[key] = sel.value;
+  });
+  if (Object.keys(recallProfile).length) body.recallProfile = recallProfile;
+
+  const knownFacts = {};
+  const arch = calBody.querySelector('#cal-arch').value;
+  if (arch) knownFacts.architecture = arch;
+  const cutoff = calBody.querySelector('#cal-cutoff').value.trim();
+  if (cutoff && (!base || (base.knownFacts || {}).trainingCutoff !== cutoff)) knownFacts.trainingCutoff = cutoff;
+  if (Object.keys(knownFacts).length) body.knownFacts = knownFacts;
+
+  const notesText = calBody.querySelector('#cal-notes').value.trim();
+  const baseNotes = base ? (base.notes || []).join('\n').trim() : '';
+  if (notesText && notesText !== baseNotes) {
+    body.notes = notesText.split('\n').map(function(s) { return s.trim(); }).filter(Boolean);
+  }
+
+  const saveBtn = calBody.querySelector('#cal-save');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving...'; }
+  fetch('/api/calibration/override', {
+    method: 'PUT',
+    headers: projectHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function() { loadCalibration(true); })
+    .catch(function() { if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save calibration'; } });
+}
+
+function resetCalibration() {
+  if (!calModel) return;
+  const resetBtn = calBody.querySelector('#cal-reset');
+  if (resetBtn) { resetBtn.disabled = true; resetBtn.textContent = 'Resetting...'; }
+  fetch('/api/calibration/override?model=' + encodeURIComponent(calModel), {
+    method: 'DELETE',
+    headers: projectHeaders(),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function() { loadCalibration(true); })
+    .catch(function() { if (resetBtn) { resetBtn.disabled = false; resetBtn.textContent = 'Reset to default'; } });
+}
+
+settingsModel.addEventListener('blur', function() { setTimeout(function() { loadCalibration(false); }, 140); });
 
 settingsSave.addEventListener('click', function() {
   let provider = 'local';

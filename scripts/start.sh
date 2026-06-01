@@ -151,10 +151,83 @@ if [ "${MICA_DISABLE_CHAT_VLLM:-0}" != "1" ]; then
   # Use a plain if/else rather than `${VAR:-{...}}` parameter expansion:
   # bash's parameter expansion eats one of the closing `}`s when the
   # default value itself contains balanced braces, which corrupts overrides.
-  if [ -n "${CHAT_VLLM_SPEC_CONFIG:-}" ]; then
-    CHAT_SPEC_CONFIG="$CHAT_VLLM_SPEC_CONFIG"
+  # Speculative decoding requires the right artifacts in the checkpoint:
+  # MTP variants need an MTP head, Eagle needs an Eagle head, etc. Plain
+  # NVFP4 quants (e.g. unsloth/Qwen3.6-27B-NVFP4) ship without a spec head
+  # — vLLM refuses to start when --speculative-config is passed.
+  # Override with CHAT_VLLM_SPEC_CONFIG=none to force-skip, or set it to a
+  # JSON config to use a specific method.
+  # Auto-default MTP num_speculative_tokens by model.
+  # Empirically measured 2026-05-30 on this hardware (5-trial decode-tps sweep):
+  #   Qwen/Qwen3.6-27B-FP8         peak at N=4 (16.2 tok/s, 2.05x baseline);
+  #                                N=5 regresses (15.6) and TTFT jumps to 0.47s.
+  #                                Sweep: 0/1/2/3/4/5 → 7.9/12.6/14.4/15.2/16.2/15.6.
+  #   RedHatAI/Qwen3.6-35B-A3B-NVFP4 (MoE)  peak at N=1 (55.7 tok/s, 1.37x);
+  #                                N=2/N=3 plateau at ~53. MoE per-token compute
+  #                                is small so spec overhead saturates fast.
+  #                                Sweep: 0/1/2/3 → 40.6/55.7/53.3/53.2.
+  #   *MTP* (sakamakismile NVFP4-MTP) historical default N=1; not retested.
+  # Override with CHAT_VLLM_SPEC_CONFIG=<json>, or =none to disable.
+  if [ "${CHAT_VLLM_SPEC_CONFIG:-auto}" = "none" ]; then
+    CHAT_SPEC_FLAG=""
+  elif [ -n "${CHAT_VLLM_SPEC_CONFIG:-}" ] && [ "${CHAT_VLLM_SPEC_CONFIG}" != "auto" ]; then
+    CHAT_SPEC_FLAG="--speculative-config '$CHAT_VLLM_SPEC_CONFIG'"
+  elif [[ "$CHAT_MODEL" == *Qwen3.6-27B-FP8* ]]; then
+    # Swept 2026-05-30: 0/1/2/3/4/5 → 7.9/12.6/14.4/15.2/16.2/15.6 tok/s.
+    # N=4 is the peak; N=5 regresses and TTFT jumps 0.40→0.47s.
+    CHAT_SPEC_FLAG="--speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":4}'"
+  elif [[ "$CHAT_MODEL" == *MTP* || "$CHAT_MODEL" == *mtp* || "$CHAT_MODEL" == *A3B* ]]; then
+    # MTP-tagged repos and A3B (which historically ships MTP-1 alongside the
+    # NVFP4 weights) get spec decoding by default. TODO: bench the A3B sweep
+    # on this hardware to verify N=1 is still optimal.
+    CHAT_SPEC_FLAG="--speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":1}'"
   else
-    CHAT_SPEC_CONFIG='{"method":"mtp","num_speculative_tokens":1}'
+    CHAT_SPEC_FLAG=""
+  fi
+
+  # MoE-backend flag only applies to MoE models (the A3B suffix in Qwen3.6's
+  # naming = 3B-active MoE). Dense models like Qwen3.6-27B-Instruct don't
+  # have an `--moe-backend` notion and vLLM rejects the flag. Detect on the
+  # model name; override with CHAT_VLLM_MOE_BACKEND=none (or any non-empty
+  # value with literal "none") to force-skip even for an A3B build.
+  if [ "${CHAT_VLLM_MOE_BACKEND:-auto}" = "none" ]; then
+    CHAT_MOE_FLAG=""
+  elif [[ "$CHAT_MODEL" == *A3B* || "$CHAT_MODEL" == *MoE* || "$CHAT_MODEL" == *moe* ]]; then
+    CHAT_MOE_FLAG="--moe-backend ${CHAT_VLLM_MOE_BACKEND:-flashinfer_cutlass}"
+  else
+    CHAT_MOE_FLAG=""
+  fi
+
+  # Quantization flag must match the checkpoint's actual format. NVFP4
+  # checkpoints expect --quantization compressed-tensors; FP8 expects
+  # --quantization fp8. AWQ would be awq, etc. Detect on the model name;
+  # omit when the model doesn't look quantized (vLLM auto-detects). Override
+  # with CHAT_VLLM_QUANTIZATION=<flag> or =none to force-skip.
+  if [ "${CHAT_VLLM_QUANTIZATION:-auto}" = "none" ]; then
+    CHAT_QUANT_FLAG=""
+  elif [ "${CHAT_VLLM_QUANTIZATION:-auto}" != "auto" ]; then
+    CHAT_QUANT_FLAG="--quantization $CHAT_VLLM_QUANTIZATION"
+  elif [[ "$CHAT_MODEL" == *NVFP4* || "$CHAT_MODEL" == *nvfp4* ]]; then
+    CHAT_QUANT_FLAG="--quantization compressed-tensors"
+  elif [[ "$CHAT_MODEL" == *FP8* || "$CHAT_MODEL" == *fp8* ]]; then
+    CHAT_QUANT_FLAG="--quantization fp8"
+  elif [[ "$CHAT_MODEL" == *AWQ* || "$CHAT_MODEL" == *awq* ]]; then
+    CHAT_QUANT_FLAG="--quantization awq"
+  else
+    CHAT_QUANT_FLAG=""
+  fi
+
+  # Multimodal limits only make sense for VL models (image/video input).
+  # Text-only checkpoints (e.g. *Text* in the repo name, like sakamakismile's
+  # NVFP4-MTP text variants) ship without an image_processor and vLLM errors
+  # at startup if --limit-mm-per-prompt is passed. Detect on the name; force
+  # with CHAT_VLLM_MM_LIMIT=none to skip even for a VL build.
+  if [ "${CHAT_VLLM_MM_LIMIT:-auto}" = "none" ]; then
+    CHAT_MM_FLAG=""
+  elif [[ "$CHAT_MODEL" == *Text* || "$CHAT_MODEL" == *-text* || "$CHAT_MODEL" == *text-only* ]]; then
+    CHAT_MM_FLAG=""
+  else
+    CHAT_MM_FLAG="--limit-mm-per-prompt '{\"image\":4,\"video\":1}'"
   fi
 
   # Build the vLLM command up-front so the post-backend-healthy block
@@ -190,10 +263,10 @@ if [ "${MICA_DISABLE_CHAT_VLLM:-0}" != "1" ]; then
 vllm serve $CHAT_MODEL \
   --host 0.0.0.0 --port 8000 \
   --served-model-name qwen-vl qwen-voice openai:qwen-vl qwen3-vl-local openai:qwen3-vl-local \
-  --quantization compressed-tensors \
-  --moe-backend flashinfer_cutlass \
+  $CHAT_QUANT_FLAG \
+  $CHAT_MOE_FLAG \
   --kv-cache-dtype fp8_e4m3 \
-  --speculative-config '$CHAT_SPEC_CONFIG' \
+  $CHAT_SPEC_FLAG \
   --gpu-memory-utilization 0.55 \
   --max-model-len 131072 \
   --max-num-batched-tokens 8192 \
@@ -204,7 +277,7 @@ vllm serve $CHAT_MODEL \
   --tool-call-parser qwen3_coder \
   --enable-auto-tool-choice \
   --default-chat-template-kwargs '{"enable_thinking": true, "preserve_thinking": true}' \
-  --limit-mm-per-prompt '{"image":4,"video":1}' \
+  $CHAT_MM_FLAG \
   --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"max_new_tokens":8192}'
 EOF
 )
@@ -348,11 +421,25 @@ if [ "$CHAT_VLLM_ENABLED" = "1" ] && ! vllm_container_running "$CHAT_NAME"; then
   echo "  Model:  $CHAT_MODEL"
   echo "  Logs:   $PID_DIR/chat.log"
 
+  # HF_HUB_OFFLINE=1: force transformers / huggingface_hub to use ONLY the
+  # local cache. Required when a model's repo on HF omits files that the
+  # cached snapshot actually has (e.g. sakamakismile's NVFP4-MTP variant
+  # ships without preprocessor_config.json, but we drop one in locally —
+  # without offline mode, transformers queries the HF API, sees the file
+  # doesn't exist upstream, and refuses to load it). Safe to leave on for
+  # the typical case too: the cache has whatever vLLM previously downloaded.
+  # Override with CHAT_VLLM_OFFLINE=0 to re-enable online lookups.
+  HF_OFFLINE_ENV=""
+  if [ "${CHAT_VLLM_OFFLINE:-1}" = "1" ]; then
+    HF_OFFLINE_ENV="-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1"
+  fi
+
   vllm_container_run_detached \
     "$CHAT_NAME" "$CHAT_IMAGE" "$CHAT_PORT:8000" \
     "$PID_DIR/chat.cid" "$PID_DIR/chat.log" \
     --gpus all --ipc=host --shm-size=16g \
     -v "$HF_CACHE:/root/.cache/huggingface" \
+    $HF_OFFLINE_ENV \
     -- \
     "$CHAT_CMD" >/dev/null
 

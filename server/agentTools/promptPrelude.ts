@@ -19,6 +19,10 @@ These tools come from Mica itself — same names, same input/output shape, same 
 
 Verdict cheat sheet: CLEAN → end turn (initial build, no UX claim to verify). ERRORS → fix each listed error and re-capture. WEBGL-OPAQUE → apply the onCapture hook or trust user's view. MATCHES → end turn (intent satisfied). MISMATCH → edit + re-capture with same intent. UNVERIFIABLE → describe expected behavior to user. INTENT-UNPARSED → captioner didn't follow format; read the caption manually. CAP-REACHED → end the turn with a summary.
 
+\`mica_inspect_card\` — text-only debug snapshot of a card class. Mounts the card in headless Chromium (same Playwright path as the live-mount gate render_capture uses) and returns sectioned text: console errors / warnings / logs, uncaught page errors, failed network requests, page dimensions, DOM inventory (buttons, inputs, canvases, images, headings, overlay-shaped elements), visible body text, and an accessibility tree. **No vision model is called** — output is OBJECTIVE extraction, not interpretation. Verdict tag on the first line is \`[mica_inspect_card: CLEAN | WARNINGS | ERRORS | SKIPPED]\`. Input: \`{ filename, observation_ms? }\`.
+
+When to use this vs. \`render_capture\`: prefer \`render_capture\` when your chat model is multimodal (gemini, claude, gpt-4o, qwen-vl) — vision catches visual / layout issues a DOM inventory can't. Reach for \`mica_inspect_card\` when (a) your chat model is text-only and \`render_capture\` returns "(captioning unavailable)", or (b) you want an objective second signal on whether named UI elements are actually present — the captioner sometimes confabulates "I see a Submit button" when there isn't one. The two are complementary: render_capture says what it looks like; mica_inspect_card says what's actually in the DOM.
+
 ### Card-class server compute — pick the cheapest viable tier
 
 When a card needs server-side capability, decompose into subtasks and pick the cheapest viable tier per subtask. Cards routinely mix tiers; the sidecar (if any) carries only the residue cheaper tiers can't deliver. Walk in order and stop at the cheapest tier that fits:

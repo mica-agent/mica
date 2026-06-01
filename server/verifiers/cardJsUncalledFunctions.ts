@@ -74,8 +74,26 @@ const verifier: FileVerifier = {
       "forEach", "map", "filter", "reduce", "find", "some", "every",
       // Three.js / WebGL loaders — any `.load(url, onSuccess, onProgress, onError)` shape
       "load",
-      // Generic event hooks the shim adds
-      "ResizeObserver", "MutationObserver", "IntersectionObserver",
+    ]);
+
+    // Constructors that take callbacks as their first/main argument. The
+    // CALLBACK_SINKS set above only catches CallExpression callees, but the
+    // `new Foo(cb)` form is a NewExpression and was previously a blind spot —
+    // a card that did `function onResize() {…}; new ResizeObserver(onResize)`
+    // would trip the "defined but never called" check. The list covers the
+    // browser-side observer pattern + the Promise executor (which takes the
+    // resolve/reject pair but more commonly here is used with an inline
+    // arrow; still worth covering so identifier-style executors don't
+    // false-flag) + Worker-style sinks where applicable.
+    const CALLBACK_CONSTRUCTORS = new Set([
+      "ResizeObserver",
+      "MutationObserver",
+      "IntersectionObserver",
+      "PerformanceObserver",
+      "ReportingObserver",
+      "BroadcastChannel",
+      "EventSource",
+      "Promise",
     ]);
 
     function walk(node: unknown, depth = 0): void {
@@ -131,6 +149,27 @@ const verifier: FileVerifier = {
         // foo(...) — if foo is a callback sink (rare; mostly things like
         // setTimeout used at top level), arg identifiers count as called
         if (callee?.type === "Identifier" && callee.name && CALLBACK_SINKS.has(callee.name)) {
+          const args = (n.arguments as Array<{ type?: string; name?: string }> | undefined) ?? [];
+          for (const arg of args) {
+            if (arg?.type === "Identifier" && arg.name) callbackNames.add(arg.name);
+          }
+        }
+      }
+
+      // NewExpression — `new ResizeObserver(onResize)` and friends. Mirrors
+      // the CallExpression callback-sink handling but routes through
+      // CALLBACK_CONSTRUCTORS. The callee can be a bare Identifier
+      // (`new Foo(cb)`) or a member access (`new globalThis.Foo(cb)`,
+      // `new window.Foo(cb)`); we accept both. Without this, every card
+      // that uses `new ResizeObserver(handler)` got a false-positive
+      // "handler defined but never called" report and the agent ended up
+      // inlining the callback to work around it.
+      if (n.type === "NewExpression") {
+        const callee = n.callee as { type?: string; name?: string; property?: { name?: string } } | undefined;
+        let ctorName: string | undefined;
+        if (callee?.type === "Identifier") ctorName = callee.name;
+        else if (callee?.type === "MemberExpression") ctorName = callee.property?.name;
+        if (ctorName && CALLBACK_CONSTRUCTORS.has(ctorName)) {
           const args = (n.arguments as Array<{ type?: string; name?: string }> | undefined) ?? [];
           for (const arg of args) {
             if (arg?.type === "Identifier" && arg.name) callbackNames.add(arg.name);

@@ -413,16 +413,36 @@ For each asset subproblem, the procedure:
 
 #### 3c — SERVICE subproblems
 
-For each service (live API endpoint) subproblem:
+For each service (live API endpoint) subproblem, follow this fixed sequence. **Do not skip the docs step in favor of sampling**, even for APIs you think you know. Recall of field-level schema (response shapes, index orders, key names) is unreliable even when recall of the URL is correct — and the wrong-recall failure is silent: code runs, the wrong field gets read, the loop iterates without converging because every debug pass re-reads the same wrong assumption.
 
-1. **Recall** canonical APIs for the domain — for common categories (weather, geo, map tiles, generic open data), state the host you trust, the URL pattern, and what auth it needs.
-2. **Verify** endpoint shape:
-   ```bash
-   curl -s "<endpoint-with-sample-params>" | head -c 2000
+1. **Find the official docs for the endpoint.** Use `mcp__tavily__tavily_search` or `mcp__exa__web_search_advanced_exa` to locate the canonical doc page — the host's own docs / spec / OpenAPI page, not Stack Overflow, not a blog post, not a tutorial. Fetch the doc page via `mica_inspect_url` and read the section describing **this specific endpoint's response shape** (field names / array index order / types / nullability).
+
+2. **Cite the doc URL in code, alongside the documented schema.** Before writing any code that parses the response, paste the documented field layout into a code comment with the doc URL it came from. Example for OpenSky's state vectors:
+   ```js
+   // Per https://openskynetwork.github.io/opensky-api/rest.html#all-state-vectors
+   // state[i] = [
+   //   0: icao24,      1: callsign,        2: origin_country, 3: time_position,
+   //   4: last_contact, 5: longitude,      6: latitude,       7: baro_altitude,
+   //   8: on_ground,    9: velocity,      10: true_track,    11: vertical_rate,
+   //  12: sensors,     13: geo_altitude,  14: squawk,        15: spi,
+   //  16: position_source
+   // ];
+   const lng = s[5];
+   const lat = s[6];
    ```
-   Confirm: it returns JSON in the shape you expect; auth requirement is what you thought (no auth, API key in query, bearer token); rate limit is documented.
-3. **CORS** for client-side use: `curl -sIL "<endpoint>" -H "Origin: http://localhost:5173" | grep -i "access-control-allow-origin"`. Many APIs don't support browser CORS and require a server-side proxy. Mica's `mica.fetch` proxies through the server, bypassing CORS — use it for any third-party API call from card.js.
-4. **Search only if recall fails**: `mcp__tavily__tavily_search "<domain> free API CORS"` (max_results: 5).
+   The cited comment is your source of truth for index numbers / field names while writing parsing code. Re-read it when debugging; do not re-derive from memory. The doc URL in the comment lets the next session (or you on a future turn) confirm the field order in one click rather than guessing again.
+
+3. **Verify the live response matches the cited schema.** Run one sample fetch:
+   ```bash
+   curl -s "<endpoint-with-sample-params>" | python3 -c "import json,sys; d=json.load(sys.stdin); print(json.dumps(d if not isinstance(d, list) else d[:1], indent=2))"
+   ```
+   Confirm the response matches the documented order / types. If it **disagrees** with the docs (docs say one shape, response shows another), the API has either drifted or your doc page is stale. **Stop and surface the disagreement to the user** — do not silently pick a side. The sample is one snapshot (null/optional fields may not appear); the docs may have shipped a breaking change. Asking is faster than debugging the wrong choice for three turns.
+
+4. **CORS** for client-side use: `curl -sIL "<endpoint>" -H "Origin: http://localhost:5173" | grep -i "access-control-allow-origin"`. Many APIs don't support browser CORS and require a server-side proxy. Mica's `mica.fetch` proxies through the server, bypassing CORS — use it for any third-party API call from card.js.
+
+5. **If docs can't be found** (rare for any service worth using): `mcp__tavily__tavily_search "<domain> free API CORS"` (max_results: 5). If the only sources you can find are tutorials, blog posts, or Stack Overflow, treat the API contract as **low confidence** — record this in the spec and add explicit field-presence checks (`if (s[i] == null) continue`) before indexing, instead of assuming the documented-via-blog shape is canonical.
+
+**Failure shape this prevents:** the agent recalls an old or near-correct schema, writes plausible code, ships it, and the debug loop never converges because every iteration re-reads the same wrong recall. Concretely observed: OpenSky's v2 state vector has `time_position` at index 3 between `origin_country` and `last_contact`; agent recall frequently omits it, shifting every subsequent index down by one. The agent then writes `const lng = s[4]` (actually `last_contact`, a Unix timestamp) and `const lat = s[5]` (actually `longitude`), placing markers at coordinates like `(-122, 1748999999)` which Leaflet renders far outside the visible map. The count text shows "33 airborne" (33 records happened to have null `baro_altitude` and pass the corrupted filter), but no markers appear. With a cited doc URL in the comment, the agent (and you) can verify the correct order in one read.
 
 #### 3d — BESPOKE subproblems
 

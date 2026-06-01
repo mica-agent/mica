@@ -23,6 +23,18 @@ Cards on the canvas are read-write context for the agent. When the agent edits a
 
 The .opencode card opens a channel to its server-side agent handler and reads the canvas baseline (canvas files + canvas-back.md + class-level context) on every turn.
 
+## Debugging "card not showing on canvas"
+
+`.mica/layout.json` is **runtime UI state owned by the canvas card class**, not a thing you author or verify against. It updates asynchronously: when `mica_create_card_instance` writes a new file at the canvas-root path, the file-watcher broadcasts to the frontend; the canvas card class in the browser then sees the new file and writes the placement entry into `layout.json`. That round-trip happens AFTER your tool call returns. Reading `layout.json` right after creating an instance may catch a stale snapshot — the entry may not yet be written — and concluding "the card isn't on the canvas because layout.json doesn't mention it" is **wrong**: the card IS on the canvas the moment the file exists at the canvas-root path. The placement entry is just UI bookkeeping that lands a beat later.
+
+If a card class genuinely "isn't showing," walk this ladder in order — and **skip `layout.json` entirely**:
+
+1. **File presence at canvas-root.** `ls canvas/` (or list_directory). If `canvas/<name>.<extension>` exists, the card is on the canvas. If it doesn't, your `mica_create_card_instance` call hasn't actually run or failed silently.
+2. **Init-time runtime errors.** Call `mica_inspect_card` or `render_capture` against the instance. If `card.js` throws during init (null DOM query, library not loaded, auth call returning 4xx before render), the card is on the canvas but rendering an empty container.
+3. **Post-init runtime errors from the user's live browser.** Check the validator-error buffer for `card-error` events. These surface from the user's tab via `/api/cards/<filename>/error` and tell you what's failing AFTER mount (e.g. a poll loop hitting a wrong API endpoint).
+
+Reading `layout.json` is not on this ladder — it's never the right diagnostic. If you find yourself reading it to "verify placement," you're chasing the wrong cause.
+
 ## Card code prerequisites
 
 Before writing or editing any card class:

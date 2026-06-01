@@ -34,3 +34,4 @@ import "./cardJsChannelArgs.js";
 import "./pythonScriptParse.js";
 import "./pythonImportAttrs.js";
 import "./bashScriptParse.js";
+import "./cardSpecConformance.js";

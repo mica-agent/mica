@@ -55,42 +55,16 @@ export async function runLiveMount(
   const shortDir = classDir.replace(/^.*\//, "");
   console.log(`[live-mount:${shortDir}] start`);
 
-  // Read card sources. Any missing file → can't mount; treat as a skip
-  // (return ok) so we don't refuse render_capture on a half-built class.
-  const cardJsPath   = join(classDir, "card.js");
-  const cardHtmlPath = join(classDir, "card.html");
-  const cardCssPath  = join(classDir, "card.css");
-  if (!existsSync(cardJsPath) || !existsSync(cardHtmlPath)) {
+  // Read card sources via the shared loader (used by cardIntrospect too).
+  // Any missing required file → can't mount; treat as a skip so we don't
+  // refuse render_capture on a half-built class.
+  const sources = await loadCardMountSources(classDir);
+  if (!sources) {
     console.log(`[live-mount:${shortDir}] skip (missing card.js or card.html)`);
     return { ok: true };
   }
-  const cardJs   = await readFile(cardJsPath,   "utf-8");
-  const cardHtml = await readFile(cardHtmlPath, "utf-8");
-  const cardCss  = existsSync(cardCssPath) ? await readFile(cardCssPath, "utf-8") : "";
-  const shim     = await getCardShim();
-
-  // Read metadata.json's dependencies (scripts + styles) and inject them
-  // the way CardRuntime does. Without this, cards that rely on a UMD
-  // library shipped via `dependencies.scripts` (Leaflet, D3, Chart.js,
-  // etc.) false-fail with "L is not defined" because the global never
-  // gets set. metadata.json missing or unparseable → no deps, which is
-  // fine for cards that use only ESM imports.
-  const metaPath = join(classDir, "metadata.json");
-  let depScripts: string[] = [];
-  let depStyles:  string[] = [];
-  if (existsSync(metaPath)) {
-    try {
-      const meta = JSON.parse(await readFile(metaPath, "utf-8")) as {
-        dependencies?: { scripts?: unknown; styles?: unknown };
-      };
-      const s = meta.dependencies?.scripts;
-      const t = meta.dependencies?.styles;
-      if (Array.isArray(s)) depScripts = s.filter((x): x is string => typeof x === "string");
-      if (Array.isArray(t)) depStyles  = t.filter((x): x is string => typeof x === "string");
-    } catch { /* malformed metadata.json — skip deps */ }
-  }
-
-  const pageHtml = buildMountPage({ cardHtml, cardJs, cardCss, shim, depScripts, depStyles });
+  const cardJsPath = join(classDir, "card.js");  // used below for problem.file
+  const pageHtml = buildMountPage(sources);
 
   // Browser + context. If Chromium isn't installed, swallow and return
   // a skip — the agent shouldn't be blocked because dev-tooling isn't set
@@ -199,18 +173,57 @@ export async function runLiveMount(
 
 let loggedMissingBrowser = false;
 
-/** Build the self-contained page that mounts the card under a stub `mica`.
- *  Mirrors what CardRuntime.tsx injects when a card renders in the real
- *  host: same async-IIFE wrap, same `container` binding, plus a minimal
- *  shim that records `mica.*` calls without actually opening channels. */
-function buildMountPage(p: {
+/** Source bundle for a card class — what `buildMountPage` needs as input.
+ *  Shared between the live-mount verifier (cardLiveMount.ts) and the
+ *  introspection-for-text-LLM path (cardIntrospect.ts) so both mount the
+ *  card exactly the same way. */
+export interface CardMountSources {
   cardHtml: string;
   cardJs: string;
   cardCss: string;
   shim: string;
   depScripts: string[];
   depStyles: string[];
-}): string {
+}
+
+/** Load every file the headless mount needs from a card-class directory:
+ *  card.html / card.js / card.css plus dependencies.scripts + .styles from
+ *  metadata.json (the same shape CardRuntime injects). Returns null when
+ *  card.html or card.js is missing — the caller treats that as a skip. */
+export async function loadCardMountSources(classDir: string): Promise<CardMountSources | null> {
+  const cardJsPath = join(classDir, "card.js");
+  const cardHtmlPath = join(classDir, "card.html");
+  const cardCssPath = join(classDir, "card.css");
+  if (!existsSync(cardJsPath) || !existsSync(cardHtmlPath)) return null;
+  const cardJs = await readFile(cardJsPath, "utf-8");
+  const cardHtml = await readFile(cardHtmlPath, "utf-8");
+  const cardCss = existsSync(cardCssPath) ? await readFile(cardCssPath, "utf-8") : "";
+  const shim = await getCardShim();
+  let depScripts: string[] = [];
+  let depStyles: string[] = [];
+  const metaPath = join(classDir, "metadata.json");
+  if (existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(await readFile(metaPath, "utf-8")) as {
+        dependencies?: { scripts?: unknown; styles?: unknown };
+      };
+      const s = meta.dependencies?.scripts;
+      const t = meta.dependencies?.styles;
+      if (Array.isArray(s)) depScripts = s.filter((x): x is string => typeof x === "string");
+      if (Array.isArray(t)) depStyles  = t.filter((x): x is string => typeof x === "string");
+    } catch { /* malformed metadata.json — skip deps */ }
+  }
+  return { cardHtml, cardJs, cardCss, shim, depScripts, depStyles };
+}
+
+/** Build the self-contained page that mounts the card under a stub `mica`.
+ *  Mirrors what CardRuntime.tsx injects when a card renders in the real
+ *  host: same async-IIFE wrap, same `container` binding, plus a minimal
+ *  shim that records `mica.*` calls without actually opening channels.
+ *  Exported so cardIntrospect can mount the card with the exact same
+ *  semantics as the live-mount verifier — same shim, same error-collection
+ *  globals, same async-IIFE wrap. */
+export function buildMountPage(p: CardMountSources): string {
   // The wrapped form is identical to CardRuntime.tsx's: async IIFE with
   // (mica, _c) parameters, CARD_SHIM prepended, trailing \n before the
   // closing }) — same shape the wrapper-parse verifier checks.

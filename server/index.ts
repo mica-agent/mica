@@ -84,6 +84,12 @@ import {
 } from "./files.js";
 import { readSnapshot } from "./turnSnapshots.js";
 import { getOpenrouterModels } from "./contextWindow.js";
+import {
+  getCalibrationDetail,
+  writeCalibrationOverride,
+  deleteCalibrationOverride,
+  type CalibrationOverride,
+} from "./modelCalibration.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
 import { createWriteStream } from "fs";
 import mimeTypes from "mime-types";
@@ -848,6 +854,62 @@ app.get("/api/inference/defaults", (_req, res) => {
     openrouter: resolveDefaultModel("openrouter"),
     "openai-compat": resolveDefaultModel("openai-compat"),
   });
+});
+
+// ── Model calibration (gear-panel transparency + tuning) ────────────────
+//
+// GET resolves the calibration the agent would actually receive for a
+// (provider, model), plus `source` (basis of the classification) and
+// `overridden` (which fields differ from the rule default). The server
+// derives the introspection baseUrl itself — local → LLAMA_URL, openai-compat
+// → the project's configured base URL — so the client only sends provider +
+// model. PUT/DELETE manage the workspace-wide override store.
+app.get("/api/calibration", async (req, res) => {
+  const provider = (req.query.provider as string | undefined)?.trim() || resolveDefaultProvider();
+  const model = (req.query.model as string | undefined)?.trim() || resolveDefaultModel(provider as CardSettings["provider"]);
+  const proj = getRequestProject(req) || undefined;
+  let baseUrl: string | undefined;
+  if (provider === "local") {
+    baseUrl = process.env.LLAMA_URL || "http://127.0.0.1:8012";
+  } else if (provider === "openai-compat") {
+    const cfg = await readOpenAICompatConfig(proj);
+    baseUrl = cfg.baseUrl || undefined;
+  }
+  try {
+    const detail = await getCalibrationDetail({ provider, modelName: model, baseUrl });
+    res.json(detail);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.put("/api/calibration/override", (req, res) => {
+  const body = (req.body || {}) as { model?: string } & CalibrationOverride;
+  const model = typeof body.model === "string" ? body.model.trim() : "";
+  if (!model) { res.status(400).json({ error: "missing model" }); return; }
+  const override: CalibrationOverride = {};
+  if (body.recallProfile && typeof body.recallProfile === "object") override.recallProfile = body.recallProfile;
+  if (Array.isArray(body.notes)) override.notes = body.notes.filter((n) => typeof n === "string");
+  if (body.knownFacts && typeof body.knownFacts === "object") override.knownFacts = body.knownFacts;
+  try {
+    writeCalibrationOverride(model, override);
+    console.log(`[calibration] override saved for "${model}": ${Object.keys(override).join(", ") || "(empty)"}`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/calibration/override", (req, res) => {
+  const model = (req.query.model as string | undefined)?.trim();
+  if (!model) { res.status(400).json({ error: "missing ?model=" }); return; }
+  try {
+    deleteCalibrationOverride(model);
+    console.log(`[calibration] override reset to default for "${model}"`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 app.put("/api/cards/settings", async (req, res) => {

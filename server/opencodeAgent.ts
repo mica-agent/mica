@@ -53,6 +53,7 @@ import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
 import { recordUserMessage } from "./userMessageTracker.js";
+import { recordSkillInvocation } from "./skillInvocationTracker.js";
 import {
   attachReactiveCoalesce,
   registerReactiveSession,
@@ -66,6 +67,7 @@ import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
 import { markProjectActivity } from "./projectActivity.js";
 import {
   setLastActiveOpencodeProject,
+  setLastActiveOpencodeChatFilename,
   registerOpencodeSession,
   unregisterOpencodeSession,
 } from "./agentTools/registry.js";
@@ -76,6 +78,8 @@ import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { resolveCtxWindow } from "./contextWindow.js";
 import { estimateTurnCost } from "./costEstimator.js";
+import { getModelCalibration, type ModelCalibration } from "./modelCalibration.js";
+import { buildRuntimeBanner } from "./micaAgent.js";
 import type { Event, Part } from "@opencode-ai/sdk";
 
 interface TurnTokens {
@@ -200,8 +204,27 @@ const lastTurnAt = new Map<string, number>();
 export function recordTurnEnd(chatFilename: string): void { lastTurnAt.set(chatFilename, Date.now()); }
 export function getLastTurnAt(chatFilename: string): number | undefined { return lastTurnAt.get(chatFilename); }
 
-export async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
+export async function buildContext(
+  agentFilename: string,
+  project: string | null,
+  since?: number,
+  modelName?: string | null,
+  contextWindowTokens?: number,
+  calibration?: ModelCalibration | null,
+): Promise<string> {
   const parts: string[] = [];
+
+  // Runtime banner FIRST — model + context-window numbers + the calibration
+  // self-awareness block, authoritative over any model-class rule of thumb in
+  // canvas-back / skills. Mirrors micaAgent.buildContext (tenet 4, one
+  // mechanism — same buildRuntimeBanner). 200K matches resolveCtxWindow's
+  // own unknown-model fallback; only hit when a caller omits the window
+  // (e.g. the non-prompt buildContext call).
+  parts.push(buildRuntimeBanner({
+    modelName: modelName ?? null,
+    contextWindowTokens: contextWindowTokens ?? 200_000,
+    calibration,
+  }));
 
   if (since) {
     try {
@@ -923,6 +946,19 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
                 reactive.markAgentWrite(rel);
               }
             }
+            // Record skill invocations so session-scoped predicate gates
+            // (toolPrerequisites.ts: session-has-card-class-handbook) can be
+            // SATISFIED on the opencode path — the SDK-side recorder lives in
+            // micaAgent.ts and never ran for opencode. The gate fail-opens when
+            // chatFilename is null, so this was masked until chatFilename began
+            // resolving reliably; once it does, an unrecorded skill makes the
+            // gate block card creation. opencode's skill tool carries the name
+            // under `name` (per describeOpencodeTool); tolerate alternates.
+            if (lower.replace(/[_-]/g, "") === "skill" && sessionProject) {
+              const si = tp.state.input as Record<string, unknown> | undefined;
+              const skillName = String(si?.name || si?.skill || si?.skill_name || "");
+              if (skillName) recordSkillInvocation(sessionProject, ctx.filename, skillName);
+            }
           }
         } else if (part.type === "step-finish") {
           const sf = part as Extract<Part, { type: "step-finish" }>;
@@ -1122,6 +1158,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       // pass session-scoped headers; Mica's /api/tools/* endpoints fall back
       // to this when X-Mica-Project is absent. See server/agentTools/registry.ts.
       setLastActiveOpencodeProject(sessionProject);
+      // Same publish for the chat filename — lets render_capture's captioner
+      // routing resolve THIS card's {provider, model} (so it captions with the
+      // card's own vision model) when the per-call session header doesn't
+      // carry a chatFilename. Mirrors the project fallback above.
+      setLastActiveOpencodeChatFilename(ctx.filename);
 
       // Reset per-turn collectors
       Object.keys(turnToolCalls).forEach((k) => delete turnToolCalls[k]);
@@ -1167,8 +1208,9 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           }
         }
 
-        const context = await buildContext(ctx.filename, sessionProject, since);
-        void writeSnapshot(sessionProject, chatId, turnId, context);
+        // NB: buildContext is called AFTER the per-turn model/context-window
+        // resolution below, so the runtime banner carries the resolved model
+        // + calibration. (Nothing between here and there reads `context`.)
 
         // History injection — opencode's session keeps its own conversation
         // memory server-side (it's stateful), so we ONLY include the current
@@ -1286,6 +1328,22 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         });
         sessionCtxWindow = effectiveCtxWindow;
         console.log(`[opencode-agent:${sessionProject ?? "-"}/${ctx.filename}] effective context window: ${effectiveCtxWindow} (provider=${provider}, model=${settings.model || "(default)"}, ocSession=${ocSessionId?.slice(0, 8) ?? "?"})`);
+
+        // Model calibration for this turn's resolved (provider, model). Fed
+        // into the runtime banner (via buildContext) so the agent gets its
+        // self-awareness block — same mechanism micaAgent uses. Cached 1h,
+        // keyed provider:model, so a per-turn call for an unchanged model is a
+        // map lookup, not a network fetch.
+        const modelName = modelOverride?.modelID ?? null;
+        const calBaseUrl =
+          provider === "local" ? (process.env.LLAMA_URL || "http://127.0.0.1:8012")
+          : provider === "openai-compat" ? openaiBaseUrl
+          : undefined; // openrouter derives the HF id from the org/model slug
+        const calibration = await getModelCalibration({ provider, modelName: modelName ?? "", baseUrl: calBaseUrl });
+        console.log(`[opencode-agent:${sessionProject ?? "-"}/${ctx.filename}] calibration: class="${calibration.identity.class}" arch=${calibration.knownFacts.architecture ?? "?"} assetUrlPaths=${calibration.recallProfile.assetUrlPaths}`);
+
+        const context = await buildContext(ctx.filename, sessionProject, since, modelName, effectiveCtxWindow, calibration);
+        void writeSnapshot(sessionProject, chatId, turnId, context);
 
         // Build message parts. Text always present. When the user attached a
         // screenshot via the 📷 picker, capture the rendered card from the

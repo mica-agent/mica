@@ -147,7 +147,7 @@ function fmtKB(bytes: number): string {
  *  agent reads the banner, then applies the rules-of-thumb in canvas-back
  *  in light of what's actually running. See task-decomposer.md and
  *  decompose-task/SKILL.md for the readers. */
-function buildRuntimeBanner(opts: {
+export function buildRuntimeBanner(opts: {
   modelName: string | null;
   contextWindowTokens: number;
   calibration?: ModelCalibration | null;
@@ -2111,6 +2111,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           return safety;
         }
 
+        // Declared BEFORE queryFn() so the catch block at the bottom of this
+        // try can reference resultText in its diagnostic log even if the SDK
+        // throws during the query-setup phase (between queryFn() and the
+        // for-await loop). Previously declared after the query setup → if
+        // the qwen-code CLI subprocess exited mid-setup (exit code 53 hits
+        // this path), the catch handler hit a temporal-dead-zone
+        // ReferenceError on `resultText`, the unhandled rejection killed the
+        // turn-end broadcast, and the file-watcher saw the (already-written)
+        // class files and re-triggered the whole build as a reactive turn.
+        let resultText = "";
+
         const q = queryFn({
           prompt: promptWithHistory,
           options: {
@@ -2281,7 +2292,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // see node_modules/@qwen-code/sdk/dist/index.d.ts:839-876.
         activeQuery = q as unknown as { interrupt: () => Promise<void>; close: () => Promise<void>; isClosed: () => boolean };
 
-        let resultText = "";
+        // resultText hoisted to before queryFn() (see comment ~line 2113) so
+        // the catch handler at the bottom of this try can log it on an
+        // SDK-setup throw without hitting a temporal-dead-zone ReferenceError.
         // When a turn aborts thinking-only with no visible text, we suppress
         // its (empty) assistant bubble entirely — the enqueued recovery turn
         // produces the real reply, so a placeholder "continuing" bubble would
