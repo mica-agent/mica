@@ -21,6 +21,7 @@ import type { Config, AgentConfig, McpLocalConfig } from "@opencode-ai/sdk";
 import { loadProjectSubagents, type ParsedSubagent } from "./subagents.js";
 import { AGENT_TOOL_AUTH_SECRET } from "./agentTools/registry.js";
 import { readPasteKey } from "./connections.js";
+import { readOpenAICompatConfig } from "./files.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
@@ -104,6 +105,12 @@ export async function buildOpencodeConfig(): Promise<Config> {
   // `Config.provider.openrouter.models` so opencode accepts whatever
   // OpenRouter actually exposes — no models.dev refresh required.
   await injectOpenRouterModels(config);
+
+  // Point the builtin `openai` provider at Google's OpenAI-compatible endpoint
+  // and register the Gemini model ids when openai-compat resolved to Gemini
+  // (the one-key fallback). Without this opencode rejects `gemini-3.5-flash`
+  // with "Model not found". No-op otherwise.
+  await injectOpenaiGeminiProvider(config);
 
   // ── MCP servers ─────────────────────────────────────────────────
   const mcp: Record<string, McpLocalConfig> = {};
@@ -435,4 +442,42 @@ async function injectOpenRouterModels(config: Config): Promise<void> {
   console.log(
     `[opencode-config] openrouter provider extended with ${Object.keys(models).length} model(s) from openrouter.ai/api/v1/models`,
   );
+}
+
+/** Point opencode's builtin `openai` provider at Google's OpenAI-compatible
+ *  endpoint and register the Gemini model ids — but ONLY when openai-compat
+ *  resolved to Gemini (via the one-key fallback in readOpenAICompatConfig, or
+ *  an explicit Gemini openai-compat config). opencode validates modelID
+ *  against the provider's models map before forwarding, so without this it
+ *  rejects `gemini-3.5-flash` with "Model not found" even though the endpoint
+ *  serves it. Mirrors injectOpenRouterModels (merge into the builtin provider,
+ *  only touch options.baseURL/apiKey + models). No-op when openai-compat
+ *  isn't Gemini, so a user's real OpenAI/other openai-compat endpoint is
+ *  untouched. */
+async function injectOpenaiGeminiProvider(config: Config): Promise<void> {
+  const oc = await readOpenAICompatConfig(undefined);
+  if (!oc.baseUrl || !oc.baseUrl.includes("generativelanguage.googleapis.com")) return;
+  // Confirmed present via the live /v1beta/models listing (2026-06-02).
+  const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-flash"];
+  const models: Record<string, { name?: string }> = {};
+  for (const id of GEMINI_MODELS) models[id] = { name: id };
+  config.provider = config.provider || {};
+  // Register a distinct `gemini` provider via the NATIVE @ai-sdk/google
+  // adapter (not openai-compatible). Two earlier attempts failed:
+  //   - builtin `openai` providerID → opencode forces OpenAI's Responses API
+  //     (`Z.responses is not a function`).
+  //   - @ai-sdk/openai-compatible → single calls work, but Gemini 3.x rejects
+  //     multi-step tool loops with "Function call is missing a
+  //     thought_signature" — the chat/completions shim drops Gemini's
+  //     thought_signature, breaking the generate→present loop.
+  // The native @ai-sdk/google provider speaks Gemini's generateContent API and
+  // round-trips thought_signatures, so multi-step tool use works. opencodeAgent
+  // routes the openai-compat→Gemini case to this provider id.
+  config.provider.gemini = {
+    npm: "@ai-sdk/google",
+    name: "Google Gemini",
+    options: { apiKey: oc.key ?? "" },
+    models,
+  };
+  console.log(`[opencode-config] gemini provider registered via @ai-sdk/google; ${GEMINI_MODELS.length} model(s)`);
 }

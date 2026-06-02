@@ -5,7 +5,7 @@
 // shape hints).
 
 export function buildAgentToolsPrelude(): string {
-  return `## Mica tools (available across all agent backends)
+  const prelude = `## Mica tools (available across all agent backends)
 
 These tools come from Mica itself — same names, same input/output shape, same prose regardless of which backend you are (qwen, Claude, or opencode). They reach Mica's REST surface via your SDK's MCP plumbing; you call them by name like any other tool.
 
@@ -201,4 +201,20 @@ Two card-class tools have prerequisites that they enforce server-side. If you ca
   - \`skill('card-class-handbook')\` has been invoked in this chat session. Bug fixes and refactors don't need a fresh spec, but they DO need the contract the handbook documents.
 
 These gates exist because the develop flow keeps getting compressed in working memory across multi-turn builds — the handbook step in particular tends to be skipped. The rejection makes the gate self-correcting: read the error, take the next move it tells you, retry. You don't have to remember the prerequisites — the tool reminds you.`;
+
+  // Gemini media tools are key-gated in registry.ts — only describe them when
+  // GEMINI_API_KEY is set, so non-gemini workspaces pay no context cost and
+  // never see tools they can't use.
+  if (process.env.GEMINI_API_KEY) return prelude + GEMINI_MEDIA_PRELUDE;
+  return prelude;
 }
+
+const GEMINI_MEDIA_PRELUDE = `
+
+### Google media generation (Gemini)
+
+\`mica_generate_image\` — generate an image from a text prompt (Google Nano Banana / gemini-2.5-flash-image) and save it under the canvas. Returns the saved path. Input: \`{ prompt, filename? }\`.
+
+\`mica_generate_video\` — generate a short video from a text prompt (Google Veo). **Slow (~1-3 min)** — tell the user you're generating BEFORE you call it, then call it and wait. On timeout it returns an error naming the operation. Input: \`{ prompt, filename? }\`.
+
+Both SAVE the media under \`<canvasRoot>/generated/\` and return a canvas-relative path. To show it on the canvas, create a \`media-viewer\` card instance referencing that path (or embed the path in a card you build). Generate → save → present is the loop.`;

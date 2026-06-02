@@ -498,6 +498,14 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // Reactive-coalesce session handle. Same mechanism qwen + Claude use;
     // gives opencode chat cards file-edit reactivity for free. Onset is
     // the next 60s-idle after any user edit in canvas scope.
+    // True once the user has explicitly started the session (clicked Get
+    // Started, which fires the initialize scan, or sent a first message).
+    // Until then nothing runs — no auto-initialize turn and no reactive
+    // turn — so the user can pick a model in the gear before any turn spends
+    // tokens on the default. Set true for reopened sessions (history present)
+    // in onAttach. See plan: defer on-open auto-start behind Get Started.
+    let sessionStarted = false;
+
     const reactiveCfg = await readCanvasConfig(sessionProject || undefined);
     const reactive: ReactiveSessionHandle = registerReactiveSession({
       project: sessionProject,
@@ -505,6 +513,9 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       canvasRoot: reactiveCfg.canvasRoot,
       pinnedFiles: reactiveCfg.pinned,
       onDeliver: (message, source) => {
+        // Don't let file-edit reactivity start a turn before the user has
+        // started the session — that would run on the default model unprompted.
+        if (!sessionStarted) return;
         if (busy) enqueueMessage(message, source);
         else void processMessage(message, source);
       },
@@ -834,10 +845,15 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       pendingQuestion = null;
       try {
         const { client } = await getOpencodeServer();
-        // Body shape: { id, sessionID, answers: string[] }. The id + sessionID
-        // route opencode's response back to the queued question tool call.
+        // Body shape: { id, sessionID, answers: string[][] } — answers is
+        // an array of PER-QUESTION arrays, each holding the selected label(s).
+        // opencode does `answers.map(n => [...n])`, so a FLAT `[answerText]`
+        // gets the answer STRING spread into individual characters → the
+        // option never matches → the question tool never resolves → the turn
+        // hangs. One question + one answer → `[[answerText]]`. (Verified
+        // against opencode's bundle: `answers: Array(Array(Answer))`.)
         await client.tui.control.response({
-          body: { id: q.id, sessionID: q.sessionID, answers: [answerText] },
+          body: { id: q.id, sessionID: q.sessionID, answers: [[answerText]] } as never,
         });
         console.log(`[opencode-agent] sent TUI answer for ${q.id.slice(0, 12)}: ${answerText.slice(0, 80)}`);
       } catch (err) {
@@ -1146,6 +1162,9 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       // Mirrors the same pattern in micaAgent.ts (qwen) and claudeAgent.ts.
       if (source === "user" || source === "voice") {
         recordUserMessage(sessionProject, ctx.filename);
+        // A real user turn (Get Started's initialize scan, or a typed first
+        // message) marks the session started — unlocks reactive turns.
+        sessionStarted = true;
       }
       busy = true;
       reactive.setBusy(true);
@@ -1290,7 +1309,16 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           modelOverride = { providerID: "openrouter", modelID };
         } else if (provider === "openai-compat") {
           const modelID = settings.model || resolveDefaultModel("openai-compat");
-          modelOverride = { providerID: "openai", modelID };
+          // When openai-compat resolves to Google's Gemini endpoint (the
+          // one-key fallback in readOpenAICompatConfig), route to the custom
+          // `gemini` provider opencodeConfig registers (@ai-sdk/openai-compatible
+          // → chat/completions). The builtin `openai` providerID can't be used
+          // for Gemini — opencode forces OpenAI's Responses API there, which
+          // Gemini doesn't implement. Real OpenAI/other endpoints stay on
+          // "openai".
+          const oc = await readOpenAICompatConfig(sessionProject || undefined);
+          const providerID = oc.baseUrl && oc.baseUrl.includes("generativelanguage.googleapis.com") ? "gemini" : "openai";
+          modelOverride = { providerID, modelID };
         } else if (provider === "local") {
           // Pick the user's chosen model when present, then the LOCAL_DEFAULT_MODEL
           // env, otherwise probe the local endpoint for its served set and take
@@ -1670,20 +1698,17 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // ── Channel lifecycle ───────────────────────────────────────
 
     let initialScanDone = false;
-    // Guards concurrent attaches from double-scheduling the (async) health-
-    // gated scan; reset on probe failure so Retry (retry_init) can re-run it.
-    let initialScanScheduled = false;
 
     const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back), then scan the project files, set up context, and report what you found.";
 
-    // Health-gate the auto initialize turn: probe the configured model
-    // endpoint first. On failure, surface an inline actionable error (retry:true
-    // → card shows a Retry button) and leave the scan pending instead of firing
-    // a turn that throws deep in opencode. Fired from onAttach and retry_init.
+    // Health-gate the initialize turn: probe the configured model endpoint
+    // first. On failure, surface an inline actionable error (retry:true → card
+    // shows a Retry button) and leave the scan pending instead of firing a turn
+    // that throws deep in opencode. Fired from start_session (Get Started) and
+    // retry_init — never auto-scheduled.
     async function fireInitialScanIfHealthy(): Promise<void> {
       const probe = await probeModelEndpoint(sessionProject || undefined, ctx.filename);
       if (!probe.ok) {
-        initialScanScheduled = false;
         ctx.broadcast({ type: "error", error: probe.reason || "Model endpoint not reachable.", retry: true });
         return;
       }
@@ -1727,13 +1752,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           })),
         });
 
-        // Trigger the initial scan only after a model-endpoint health check
-        // passes (see fireInitialScanIfHealthy). Schedule once; concurrent
-        // attaches are guarded by initialScanScheduled.
-        if (!initialScanDone && !initialScanScheduled && messages.length === 0) {
-          initialScanScheduled = true;
-          setTimeout(() => { void fireInitialScanIfHealthy(); }, 2000);
-        }
+        // Do NOT auto-start. A fresh (empty-history) session waits for the
+        // user to click Get Started (→ start_session) or type a first message,
+        // so they can pick a model in the gear first. A reopened session
+        // (history present) is already "started" — unlock reactive turns.
+        if (messages.length > 0) sessionStarted = true;
       },
 
       onData(clientId, data) {
@@ -1743,6 +1766,14 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         // settings: re-probe, fire the pending scan if healthy, else re-emit
         // the actionable error.
         if (msg.type === "retry_init") {
+          if (!initialScanDone) void fireInitialScanIfHealthy();
+          return;
+        }
+
+        // User clicked "Get Started" on a fresh session — run the same
+        // health-gated initialize scan the old 2s auto-timer used to fire.
+        // (Same handler as retry_init; distinct name for log/intent clarity.)
+        if (msg.type === "start_session") {
           if (!initialScanDone) void fireInitialScanIfHealthy();
           return;
         }

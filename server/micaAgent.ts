@@ -1458,12 +1458,21 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
     // timer, snapshot map, and synthetic-turn composition. We just give
     // it a callback for delivery (queue vs immediate) and feed it
     // markAgentWrite / setBusy from the tool loop and busy toggles.
+    // True once the user has explicitly started the session (Get Started →
+    // initialize scan, or a typed first message). Until then nothing runs —
+    // no auto-initialize turn, no reactive turn — so the user can pick a model
+    // in the gear first. Set true for reopened sessions (history) in onAttach.
+    let sessionStarted = false;
+
     const reactive: ReactiveSessionHandle = registerReactiveSession({
       project: sessionProject,
       sessionFilename: ctx.filename,
       canvasRoot: cfg.canvasRoot,
       pinnedFiles: cfg.pinned,
       onDeliver: (message, source) => {
+        // Don't let file-edit reactivity start a turn before the user has
+        // started the session — that would run on the default model unprompted.
+        if (!sessionStarted) return;
         if (busy) enqueueMessage(message, source);
         else processMessage(message, source);
       },
@@ -1493,6 +1502,9 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
       // "file-changes" and "recovery" are Mica-injected and don't count.
       if (source === "user" || source === "voice") {
         recordUserMessage(sessionProject, ctx.filename);
+        // A real user turn (Get Started's initialize scan, or a typed first
+        // message) marks the session started — unlocks reactive turns.
+        sessionStarted = true;
       }
       console.log(`[mica-agent] processMessage START: ${message.slice(0, 60)}`);
       // Reset the per-turn render_capture cap. Fresh user message ⇒ fresh
@@ -3419,23 +3431,17 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
 
     // Track if initial scan has been triggered
     let initialScanDone = false;
-    // Set synchronously in onAttach so concurrent attaches don't double-schedule
-    // the (async) health-gated scan. Reset only when a probe fails, so the
-    // Retry path (retry_init) can re-run it.
-    let initialScanScheduled = false;
 
     const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back), then scan the project files, set up context, and report what you found.";
 
-    // Health-gate the auto initialize turn: probe the configured model
-    // endpoint first. If it's unreachable/misconfigured, surface an inline,
-    // actionable error (with retry:true so the card shows a Retry button) and
-    // leave the scan pending rather than firing a turn that would throw deep
-    // in the SDK. Fired from onAttach (first attach, empty history) and from
-    // the retry_init message.
+    // Health-gate the initialize turn: probe the configured model endpoint
+    // first. If it's unreachable/misconfigured, surface an inline, actionable
+    // error (with retry:true so the card shows a Retry button) and leave the
+    // scan pending rather than firing a turn that would throw deep in the SDK.
+    // Fired from start_session (Get Started) and retry_init — never auto.
     async function fireInitialScanIfHealthy(): Promise<void> {
       const probe = await probeModelEndpoint(sessionProject || undefined, ctx.filename);
       if (!probe.ok) {
-        initialScanScheduled = false; // allow a later Retry to re-run
         ctx.broadcast({ type: "error", error: probe.reason || "Model endpoint not reachable.", retry: true });
         return;
       }
@@ -3488,15 +3494,11 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
           ctx.sendTo(clientId, event);
         }
 
-        // On first attach with no history, trigger the initial project scan —
-        // but only after a model-endpoint health check passes (see
-        // fireInitialScanIfHealthy). Schedule once; concurrent attaches are
-        // guarded by initialScanScheduled.
-        if (!initialScanDone && !initialScanScheduled && messages.length === 0) {
-          initialScanScheduled = true;
-          // Delay slightly to let the UI settle
-          setTimeout(() => { void fireInitialScanIfHealthy(); }, 2000);
-        }
+        // Do NOT auto-start. A fresh (empty-history) session waits for the
+        // user to click Get Started (→ start_session) or type a first message,
+        // so they can pick a model in the gear first. A reopened session
+        // (history present) is already "started" — unlock reactive turns.
+        if (messages.length > 0) sessionStarted = true;
       },
 
       onData(clientId, data) {
@@ -3515,6 +3517,13 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
         // settings. Re-probes; fires the pending scan if healthy, otherwise
         // re-broadcasts the actionable error.
         if (msg.type === "retry_init") {
+          if (!initialScanDone) void fireInitialScanIfHealthy();
+          return;
+        }
+
+        // User clicked "Get Started" on a fresh session — run the same
+        // health-gated initialize scan the old 2s auto-timer used to fire.
+        if (msg.type === "start_session") {
           if (!initialScanDone) void fireInitialScanIfHealthy();
           return;
         }

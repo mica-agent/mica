@@ -221,9 +221,20 @@ Decomposition gates. Default to inline.
   `canvas/decomposition.md`, `canvas/plan.todo`, and orchestrates
   `component-coder` dispatches per plan item.
 - **Either gate fails** → inline. Record the inline decision and
-  rationale in the spec ("Inline because: <reason>").
+  rationale in the spec ("Inline because: <reason>"). **Fold this into
+  the spec during step 2, before the approval ask** — see the
+  no-post-approval-edits rule under step 4.
 
 ### 4. Execute — branch by artifact type
+
+**Do not write or edit `<name>-spec.md` after the approval gate.** The
+gate is mtime-based: `mica_create_class` fires only once a real user
+message is newer than the spec file. Any spec write *after* the user
+approved re-arms the gate and forces a second "OK to build?" round-trip.
+Finalize the spec completely in step 2 — including the inline-vs-decompose
+decision and any implementation notes — so the user approves the final
+spec and step 4 never touches it. Re-edit the spec only when the user
+asks for a change (which requires fresh approval anyway).
 
 #### 4a. Canvas artifact
 

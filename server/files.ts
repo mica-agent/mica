@@ -850,6 +850,32 @@ export async function readOpenRouterKey(project: string | undefined): Promise<st
   return typeof envKey === "string" && envKey.length > 0 ? envKey : null;
 }
 
+/** Read the Google Gemini API key (Google AI Studio). Same four-step
+ *  resolution as readOpenRouterKey: per-project config.json:geminiApiKey →
+ *  workspace credentials.json:gemini.api_key → legacy workspace
+ *  config.json:geminiApiKey → GEMINI_API_KEY env. Returns null if unset.
+ *  One key powers both the gemini-media tools and (when wired) the
+ *  openai-compat chat route. */
+export async function readGeminiKey(project: string | undefined): Promise<string | null> {
+  if (project) {
+    try {
+      const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, project, ".mica", "config.json"), "utf-8"));
+      if (typeof cfg.geminiApiKey === "string" && cfg.geminiApiKey.length > 0) return cfg.geminiApiKey;
+    } catch { /* no project override */ }
+  }
+  try {
+    const creds = JSON.parse(await readFile(join(WORKSPACE_DIR, ".mica", "credentials.json"), "utf-8"));
+    const entry = creds && typeof creds === "object" ? creds.gemini : undefined;
+    if (entry && typeof entry.api_key === "string" && entry.api_key.length > 0) return entry.api_key;
+  } catch { /* no credentials.json or no gemini entry */ }
+  try {
+    const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, ".mica", "config.json"), "utf-8"));
+    if (typeof cfg.geminiApiKey === "string" && cfg.geminiApiKey.length > 0) return cfg.geminiApiKey;
+  } catch { /* no legacy workspace config */ }
+  const envKey = process.env.GEMINI_API_KEY;
+  return typeof envKey === "string" && envKey.length > 0 ? envKey : null;
+}
+
 /** Write or clear the project-wide OpenRouter API key in .mica/config.json. Empty string clears. */
 export async function writeOpenRouterKey(project: string | undefined, key: string): Promise<void> {
   const configPath = project
@@ -902,6 +928,20 @@ export async function readOpenAICompatConfig(
   }
   if (!key && typeof process.env.OPENAI_API_KEY === "string" && process.env.OPENAI_API_KEY.length > 0) {
     key = process.env.OPENAI_API_KEY;
+  }
+  // One-key Gemini fallback: when openai-compat is entirely unconfigured but a
+  // GEMINI_API_KEY is present, route openai-compat to Google's OpenAI-compatible
+  // endpoint with that key. Lets the gemini-showcase template run chat on
+  // gemini-3.5-flash with ONE key (which also powers the media tools).
+  // Centralized here so every consumer — the model-health probe, the opencode
+  // env injection, and render_capture's captioner routing — resolves it
+  // consistently. Explicit openai-compat config (above) always wins.
+  if (!baseUrl && !key) {
+    const gk = await readGeminiKey(project);
+    if (gk) {
+      baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/";
+      key = gk;
+    }
   }
   return { baseUrl, key };
 }
@@ -1376,6 +1416,38 @@ export async function overlayTemplate(
       if (f.type === "file") await getOrCreateCardId(projectName, f.name);
     }
   } catch { /* best-effort */ }
+
+  // Apply template-declared default card settings. A template may ship
+  // `.mica/card-defaults.json` mapping a canvas-relative filename to
+  // { provider, model } — e.g. to pin its agent card to a specific model.
+  // Applied AFTER the id-prewarm so each project keeps a UNIQUE id:
+  // writeCardSettings preserves the freshly-minted id and only sets
+  // `.settings` (getOrCreateCardId never persists settings, and a fixed
+  // shipped id would collide across projects — hence this indirection).
+  // No-op for templates that don't ship the file, so existing templates
+  // are byte-for-byte unaffected.
+  try {
+    const defaultsPath = join(src, ".mica", "card-defaults.json");
+    if (existsSync(defaultsPath)) {
+      const raw = JSON.parse(await readFile(defaultsPath, "utf-8")) as Record<string, unknown>;
+      for (const [rawFilename, rawSettings] of Object.entries(raw)) {
+        // Remap the template's canvas-root prefix to the project's if they differ.
+        const filename =
+          targetCanvasRoot !== templateCanvasRoot && rawFilename.startsWith(templateCanvasRoot + "/")
+            ? targetCanvasRoot + rawFilename.slice(templateCanvasRoot.length)
+            : rawFilename;
+        const s = (rawSettings && typeof rawSettings === "object") ? (rawSettings as Record<string, unknown>) : {};
+        const settings: CardSettings = {};
+        if (s.provider === "local" || s.provider === "openrouter" || s.provider === "openai-compat") settings.provider = s.provider;
+        if (typeof s.model === "string" && s.model.trim()) settings.model = s.model.trim();
+        if (settings.provider || settings.model) {
+          await writeCardSettings(projectName, filename, settings);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[overlayTemplate] card-defaults.json apply failed for ${templateName}: ${(err as Error).message}`);
+  }
 }
 
 export async function createProjectFromTemplate(projectName: string, templateName: string): Promise<void> {

@@ -29,6 +29,7 @@ import { z } from "zod";
 import { randomBytes } from "crypto";
 import { renderCaptureTool } from "./renderCapture.js";
 import { renderInspectTool } from "./renderInspect.js";
+import { geminiImageTool, geminiVideoTool } from "./geminiMediaTools.js";
 import {
   createClassTool,
   editClassFileTool,
@@ -120,6 +121,15 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   pinSharedDocTool,
   proposeChangesTool,
 ];
+
+// Gemini media tools (mica_generate_image / mica_generate_video) are
+// KEY-GATED — added only when GEMINI_API_KEY is set, mirroring the Tavily MCP
+// gate (opencodeConfig.ts). A workspace without the key never sees them in any
+// agent's tool surface or prompt prelude. Evaluated once at module load from
+// env (set via .env / ambient env); the handlers also guard via readGeminiKey.
+if (process.env.GEMINI_API_KEY) {
+  AGENT_TOOLS.push(geminiImageTool, geminiVideoTool);
+}
 
 // ── Project resolution for opencode bridge ───────────────────────────
 //

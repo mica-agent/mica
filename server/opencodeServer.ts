@@ -155,6 +155,9 @@ async function injectWorkspaceCredentials(): Promise<void> {
   } catch (err) {
     console.warn(`[opencode-server] OpenAI-compat config read failed: ${(err as Error).message}`);
   }
+  // Note: the one-key Gemini fallback lives in readOpenAICompatConfig (files.ts)
+  // so the openai-compat read above already yields the Gemini endpoint+key when
+  // appropriate — no separate injection needed here.
 }
 
 /** Shutdown hook for server/index.ts. No-op if the server was never spawned. */

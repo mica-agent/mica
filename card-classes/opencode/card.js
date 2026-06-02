@@ -1422,7 +1422,21 @@ ch.onData(function(data) {
           addMessage(m.role, m.content, m.agent, undefined, m.turn_id);
         }
       } else {
-        messagesEl.innerHTML = '<div style="color:#8b949e;font-size:12px;text-align:center;padding:16px 0;">Send a message to start OpenCode.</div>';
+        // Fresh session: do NOT auto-start. Show a Get Started button so the
+        // user can pick a model in the gear first. Single centered child so
+        // addMessage()'s placeholder-clear (and a typed first message) removes
+        // it. Clicking sends start_session → server's health-gated scan.
+        messagesEl.innerHTML =
+          '<div style="color:#8b949e;font-size:12px;text-align:center;padding:24px 12px;line-height:1.6;">' +
+          'Set your model in &#9881; first, then start &mdash; or just type a message.<br><br>' +
+          '<button id="chat-get-started" style="background:#7c3aed;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Get Started</button>' +
+          '</div>';
+        var gsBtn = messagesEl.querySelector("#chat-get-started");
+        if (gsBtn) gsBtn.addEventListener("click", function() {
+          messagesEl.innerHTML = "";
+          setStatus("Starting…", ACCENT, true);
+          ch.send({ type: "start_session" });
+        });
       }
       setStatus("Ready", "#3fb950", false);
       break;

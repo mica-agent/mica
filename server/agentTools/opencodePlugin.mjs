@@ -138,6 +138,23 @@ export default async () => ({
       );
     }
 
+    // Refuse opencode's native `question` tool. Its request/response flow
+    // (TUI control bridge in opencodeAgent.ts) does NOT reliably resume the
+    // turn after the user answers in this opencode version — the answer POST
+    // is accepted but never resolves the pending question, so the turn hangs
+    // (observed 2026-06-02). Mica's reliable pattern is plain-text asking:
+    // write the question in your chat reply and END the turn; the user's next
+    // message is the answer (a normal turn). The prelude already documents
+    // this — steer the model there instead of letting it hang.
+    if (tool.toLowerCase() === "question") {
+      throw new Error(
+        "The `question` tool is disabled in Mica. To ask the user something, " +
+        "just write the question as plain text in your reply (offer options in " +
+        "prose if helpful) and END your turn. The user's next chat message is " +
+        "the answer — you'll continue from there. Do not call a tool to ask.",
+      );
+    }
+
     // ── Job 1: session-ID stamp for mica-builtins ────────────────────
     if (tool.startsWith(PREFIX) && sessionID && output && typeof output === "object") {
       if (!output.args || typeof output.args !== "object") output.args = {};
