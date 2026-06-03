@@ -146,14 +146,15 @@ const RULES: CalibrationRule[] = [
     profile: {
       libraryNames: "high",
       libraryVersions: "medium",
-      assetUrlPaths: "low",
+      assetUrlPaths: "very-low",
       apiEndpoints: "medium",
       browserApis: "high",
       geographicCoordinates: "very-low",
     },
     notes: [
       "Library names and browser APIs: recall freely.",
-      "Library versions, asset URL specifics: recall + verify via mica_inspect_url against the package registry; advance to Search craft + Asset URL Extract Pattern in discover-dependency Step 3b if verify fails. Frontier-tier reliability — search-first would add unnecessary wallclock.",
+      "Library versions: recall + verify via mica_inspect_url against the package registry; advance to Search craft + Asset URL Extract Pattern in discover-dependency Step 3b if verify fails. Frontier-tier reliability on names/versions — search-first would add unnecessary wallclock.",
+      "Asset URL specifics (image hosts, file paths inside repos): skip recall. Go directly to the Asset URL Extract Pattern in discover-dependency Step 3b (tavily_extract with include_images on a description page, or tavily_search with max_results:5 + site-restricted query). The frontier-tier lift on library names does NOT extend to specific asset paths — empirically (qwen3.7-plus in 'birthday planner' build) recalled image URLs 404 just like the smaller Qwen checkpoints, and the recall→verify-fail→search retry loop is slower than search-first. Verify the chosen URL loads before commit.",
       "API endpoint RESPONSE SHAPES: docs-first, not recall-first. Per discover-dependency § 3c, locate the official endpoint docs (tavily/exa search → mica_inspect_url to fetch the doc page), cite the doc URL in a code comment alongside the documented field layout, then verify the live response matches via one sample fetch. The frontier-tier lift on names/versions does NOT extend to response-shape recall — field-level schema (array index orders, key names, optional/nullable fields) fails silently and the debug loop never converges because every iteration re-reads the same wrong recall.",
     ],
   },

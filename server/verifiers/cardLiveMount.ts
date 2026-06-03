@@ -158,7 +158,11 @@ export async function runLiveMount(
       fix_hint:
         "The URL did not load. Common: 404 (path / version wrong), CORS blocked (use a CDN that serves `*`), " +
         "or the URL is a source-style ESM (`import 'three'` inside) that the browser can't resolve. For jsdelivr " +
-        "ESM addon paths (Three.js examples/jsm/...), append `/+esm` so jsdelivr pre-bundles bare specifiers.",
+        "ESM addon paths (Three.js examples/jsm/...), append `/+esm` so jsdelivr pre-bundles bare specifiers. " +
+        "If this is an IMAGE / asset URL you recalled from memory, do NOT guess a replacement — recalled asset paths " +
+        "404 often. Find a real one via the discover-dependency Asset URL Extract Pattern: `mcp__tavily__tavily_extract` " +
+        "with `include_images: true` on a description page, or `mcp__tavily__tavily_search` with `max_results: 5` " +
+        "(pass it as a number; the MCP rejects fewer than 5 and string values), then verify the chosen URL loads.",
     });
   }
 
