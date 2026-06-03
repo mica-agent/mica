@@ -1,0 +1,3 @@
+{
+  "canvas/agent.qwen": { "provider": "openrouter", "model": "qwen/qwen3.7-plus" }
+}
