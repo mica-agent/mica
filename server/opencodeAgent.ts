@@ -74,7 +74,7 @@ import {
 } from "./agentTools/registry.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
-import { getOpencodeServer, setOpencodeProject } from "./opencodeServer.js";
+import { getOpencodeServer } from "./opencodeServer.js";
 import { getCurrentTenant, runWithTenant } from "./tenantContext.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
@@ -682,7 +682,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     let ocSessionGeneration = -1;
 
     async function ensureOpencodeSession(): Promise<string> {
-      const server = await getOpencodeServer();
+      const server = await getOpencodeServer(sessionTenant, sessionProject || undefined);
       const { client } = server;
       if (ocSessionId && ocSessionGeneration === server.generation) {
         // Already resolved against the current daemon; ensure the map mirrors
@@ -733,7 +733,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       if (sseStarted) return;
       sseStarted = true;
       sseAbort = new AbortController();
-      const { client } = await getOpencodeServer();
+      const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
 
       let result;
       try {
@@ -843,7 +843,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       console.warn(`[opencode-agent] unknown TUI request path=${path}; sending null response`);
       void (async () => {
         try {
-          const { client } = await getOpencodeServer();
+          const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
           await client.tui.control.response({ body: null });
         } catch (err) {
           console.warn(`[opencode-agent] tui.control.response (null) failed: ${(err as Error).message}`);
@@ -862,7 +862,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       const q = pendingQuestion;
       pendingQuestion = null;
       try {
-        const { client } = await getOpencodeServer();
+        const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
         // Body shape: { id, sessionID, answers: string[][] } — answers is
         // an array of PER-QUESTION arrays, each holding the selected label(s).
         // opencode does `answers.map(n => [...n])`, so a FLAT `[answerText]`
@@ -1111,7 +1111,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           (async () => {
             if (!sid) return;
             try {
-              const { client } = await getOpencodeServer();
+              const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
               // session.summarize requires explicit providerID + modelID
               // (the SDK doesn't infer from the session's last-used model).
               // Reuse the override captured for the LAST prompt — that's
@@ -1156,7 +1156,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     }
 
     async function autoApprovePermission(sid: string, permissionId: string): Promise<void> {
-      const { client } = await getOpencodeServer();
+      const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
       // The per-permission API takes "once" | "always" | "reject" — NOT
       // "allow" (which is the value the Config.permission defaults use).
       // We send "always" so opencode caches the approval at the (tool,
@@ -1205,11 +1205,6 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       // pass session-scoped headers; Mica's /api/tools/* endpoints fall back
       // to this when X-Mica-Project is absent. See server/agentTools/registry.ts.
       setLastActiveOpencodeProject(sessionProject);
-      // Tell the shared opencode daemon which project's credentials to use this
-      // turn. Set BEFORE any getOpencodeServer() call so the daemon re-spawns
-      // with this project's keys if they differ from the running one. See the
-      // concurrency note on getOpencodeServer (opencodeServer.ts).
-      setOpencodeProject(sessionProject || undefined);
       // Same publish for the chat filename — lets render_capture's captioner
       // routing resolve THIS card's {provider, model} (so it captions with the
       // card's own vision model) when the per-call session header doesn't
@@ -1287,7 +1282,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         // opencode itself which providers can serve a prompt — covers
         // both cloud auth and locally-configured providers (llama-server,
         // ollama-cloud, etc.).
-        if (!(await hasUsableProvider())) {
+        if (!(await hasUsableProvider(sessionTenant, sessionProject || undefined))) {
           throw new Error(
             "OpenCode has no usable provider — either run `opencode providers login` " +
             "to add a cloud credential (Anthropic / OpenAI / OpenRouter / Claude Pro), " +
@@ -1298,7 +1293,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
 
         const idlePromise = new Promise<void>((resolve) => { idleResolver = resolve; });
 
-        const { client } = await getOpencodeServer();
+        const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
         // Per-prompt abort — flipped only by user-initiated interrupt.
         const promptAbort = new AbortController();
         activePromptAbort = promptAbort;
@@ -1680,7 +1675,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           const compactModel = lastModelOverride;
           (async () => {
             try {
-              const { client } = await getOpencodeServer();
+              const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
               const result = await client.session.summarize({
                 path: { id: compactSid },
                 body: compactModel,
@@ -1825,7 +1820,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           if (ocSessionId) {
             (async () => {
               try {
-                const { client } = await getOpencodeServer();
+                const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
                 await client.session.abort({ path: { id: ocSessionId! } });
               } catch (err) {
                 console.warn(`[opencode-agent] abort failed: ${(err as Error).message}`);
@@ -1916,7 +1911,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         if (ocSessionId) {
           (async () => {
             try {
-              const { client } = await getOpencodeServer();
+              const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
               await client.session.abort({ path: { id: ocSessionId! } });
             } catch { /* already gone */ }
           })();
@@ -1934,9 +1929,9 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
  *  The earlier auth.json-only check missed the second case. config/providers
  *  is opencode's authoritative answer to "which providers can route a prompt
  *  right now," so we defer to it instead of pattern-matching on disk state. */
-async function hasUsableProvider(): Promise<boolean> {
+async function hasUsableProvider(tenant?: string, project?: string): Promise<boolean> {
   try {
-    const { client } = await getOpencodeServer();
+    const { client } = await getOpencodeServer(tenant, project);
     const res = await client.config.providers();
     const providers = res.data?.providers ?? [];
     return providers.some((p) => p.models && Object.keys(p.models).length > 0);

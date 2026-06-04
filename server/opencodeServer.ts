@@ -1,97 +1,106 @@
-// opencodeServer.ts — module-level singleton wrapping a single `opencode serve`
-// subprocess for the lifetime of this backend.
+// opencodeServer.ts — a POOL of `opencode serve` daemons, one per
+// (tenant, credential-signature).
 //
-// One server, many .opencode chat cards across many projects. The server
-// itself is project-agnostic; the per-card directory is supplied at session-
-// create time (via `query.directory`) so each card's session sees the right
-// cwd. This matches opencode's HTTP-server design — the daemon is a
-// long-lived endpoint, sessions are the unit of project scope.
+// Earlier this was a single shared daemon. That couldn't isolate concurrent
+// sessions: opencode's `/global/event` stream + per-call sessionID stamping
+// cross between sessions running at the same time, so two tenants building
+// concurrently bled each other's progress/tool events. A shared daemon also
+// can't hold more than one credential set, which forced a churning respawn.
 //
-// Lazy: not spawned until the first .opencode card mounts in this backend's
-// lifetime. If the user never opens an .opencode card, no opencode subprocess
-// runs.
+// The pool fixes both: each (tenant, creds) gets its OWN daemon — its own port,
+// its own event stream, its own XDG_DATA_HOME session store, its own baked-in
+// credentials. Different tenants → different daemons → no bleed. Same tenant +
+// same creds → shared daemon (correct; same trust + key). A creds change just
+// routes to a different pool entry instead of respawning one slot.
 //
-// Lifecycle: spawned via the SDK's createOpencodeServer() helper. The SDK
-// handles the cross-spawn + URL parsing + ready-wait for us. Shutdown happens
-// via the global reapChildProcesses() in server/index.ts (the opencode subproc
-// is a child of this backend, so the existing pgrep-based reaper kills it on
-// graceful exit). server.close() from the SDK is also called at shutdown for
-// a more graceful path.
+// Bounded: daemons idle > IDLE_MS are reaped; at most MAX_DAEMONS live at once
+// (LRU-evicted beyond that). Single-tenant main → key "" + one signature → a
+// single daemon, exactly as before.
+//
+// Spawns are serialized (spawnChain) because each spawn temporarily sets
+// process.env (creds + XDG_DATA_HOME) for the SDK's cross-spawn to capture, then
+// restores it — concurrent spawns would race on that shared env.
 
 import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { createOpencodeServer, createOpencodeClient, type OpencodeClient, type OpencodeClientConfig } from "@opencode-ai/sdk";
 import { buildOpencodeConfig } from "./opencodeConfig.js";
 import { readOpenRouterKey, readOpenAICompatConfig } from "./files.js";
+import { runWithTenant } from "./tenantContext.js";
 import { AGENT_TOOL_AUTH_SECRET } from "./agentTools/registry.js";
 
 interface ServerHandle {
   url: string;
   client: OpencodeClient;
   close(): void;
-  /** Credential signature this daemon was spawned with (see credentialSignature). */
-  signature: string;
-  /** Monotonic spawn counter — lets a caller detect that the daemon re-spawned
-   *  under it (opencodeAgent recreates its session when this changes). */
+  /** Pool key (`${tenant}::${credSig}`) this daemon serves. */
+  key: string;
+  /** Monotonic spawn counter — lets a caller detect that ITS daemon was reaped
+   *  and re-spawned (opencodeAgent revalidates its session when this changes). */
   generation: number;
 }
 
-let cached: ServerHandle | null = null;
-let opChain: Promise<unknown> = Promise.resolve();
+interface PoolEntry {
+  handle: ServerHandle;
+  lastUsedAt: number;
+}
+
+const IDLE_MS = 10 * 60 * 1000;   // reap daemons unused for 10 minutes
+const MAX_DAEMONS = 6;            // hard ceiling (~366MB RSS each); LRU beyond
+const REAP_INTERVAL_MS = 60 * 1000;
+const DATA_BASE = process.env.MICA_OPENCODE_DATA_BASE || join(tmpdir(), "mica-opencode-data");
+
+const pool = new Map<string, PoolEntry>();
+let spawnChain: Promise<unknown> = Promise.resolve();
 let generation = 0;
-let activeProject: string | undefined = undefined;
+let reapTimer: ReturnType<typeof setInterval> | null = null;
 
-// Snapshot the credential-related env vars at module load. A per-project
-// (re)spawn resets to this baseline before overlaying the project's keys, so a
-// previous project's injected key never leaks into the next spawn (and a user's
-// explicit .env / shell export remains the fallback when a project sets none).
-const ENV_BASE: Record<string, string | undefined> = {
-  OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-};
+// Managed env vars: set per-spawn for the SDK's cross-spawn to capture, then
+// restored to this module-load baseline so a spawn's tenant key never lingers in
+// the main process's env (where readOpenAICompatConfig's env fallback would pick
+// it up for a DIFFERENT tenant).
+const MANAGED_ENV = ["OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY", "XDG_DATA_HOME"] as const;
+const ENV_BASE: Record<string, string | undefined> = Object.fromEntries(
+  MANAGED_ENV.map((k) => [k, process.env[k]]),
+);
 
-/** The agent sets the project whose credentials the daemon should use for the
- *  current turn, BEFORE any getOpencodeServer() call in that turn. Module-global
- *  because opencode is ONE shared daemon (see the concurrency note below). */
-export function setOpencodeProject(project?: string): void { activeProject = project; }
+/** Bind the tenant (if any) for a callback so getEffectiveWorkspaceDir-based
+ *  config/credential reads resolve to the right tenant. The pool's spawn runs in
+ *  a detached promise chain, so we can't rely on ambient AsyncLocalStorage. */
+function runT<T>(tenant: string | undefined, fn: () => Promise<T>): Promise<T> {
+  return tenant ? runWithTenant(tenant, fn) : fn();
+}
 
-/** Get (or lazily spawn) the shared opencode daemon, configured for the
- *  credentials of the project set via setOpencodeProject(). If those credentials
- *  differ from the running daemon's, the daemon is torn down and re-spawned —
- *  this is how a per-project / per-tenant key (e.g. set in the card gear) takes
- *  effect without a manual restart.
- *
- *  CONCURRENCY: opencode is a single shared daemon, so it can hold only ONE
- *  credential set at a time. Sequential / single-active use is correct. Two
- *  tenants running opencode turns with DIFFERENT keys *concurrently* will fight
- *  over respawns — serialized through opChain so they never corrupt each other,
- *  but each turn restarts the daemon and a turn can land on a daemon respawned
- *  by the other. True concurrent multi-tenant opencode is NOT supported; use the
- *  .qwen card (per-turn key resolution) for that. */
-export async function getOpencodeServer(): Promise<ServerHandle> {
-  const project = activeProject;
-  const run = opChain.then(async () => {
-    const sig = await credentialSignature(project);
-    if (cached && cached.signature === sig) return cached;
-    if (cached) {
-      console.log(`[opencode-server] credentials changed — respawning daemon (was gen ${generation})`);
-      try { cached.close(); } catch { /* ignore */ }
-      cached = null;
-    }
-    cached = await spawn(project, sig);
-    return cached;
+/** Get (or lazily spawn) the opencode daemon for (tenant, project)'s
+ *  credentials. Different tenants / credential sets get different daemons. */
+export async function getOpencodeServer(tenant?: string, project?: string): Promise<ServerHandle> {
+  ensureReapTimer();
+  const sig = await runT(tenant, () => credentialSignature(project));
+  const key = `${tenant || ""}::${sig}`;
+
+  const hit = pool.get(key);
+  if (hit) { hit.lastUsedAt = Date.now(); return hit.handle; }
+
+  // Miss → spawn, serialized (env mutation during spawn must not race).
+  const run = spawnChain.then(async () => {
+    const again = pool.get(key);
+    if (again) { again.lastUsedAt = Date.now(); return again.handle; }
+    evictIfAtCap();
+    const handle = await runT(tenant, () => doSpawn(tenant, project, key));
+    pool.set(key, { handle, lastUsedAt: Date.now() });
+    console.log(`[opencode-server] pool size=${pool.size} (spawned ${key})`);
+    return handle;
   });
-  // Keep the chain alive regardless of this run's outcome so a failed spawn
-  // doesn't wedge every future call.
-  opChain = run.then(() => undefined, () => undefined);
+  spawnChain = run.then(() => undefined, () => undefined);
   return run as Promise<ServerHandle>;
 }
 
-/** Signature of the credentials a daemon would be built with for `project`.
- *  Equal signatures ⇒ the running daemon already has the right keys (no respawn).
- *  Covers the credential sources baked in at spawn: the OpenRouter key and the
- *  OpenAI-compat baseUrl+key (the latter also carries the one-key Gemini
- *  endpoint+key via readOpenAICompatConfig's fallback). */
+/** Signature of the credentials a daemon would be built with for `project` —
+ *  the OpenRouter key and the OpenAI-compat baseUrl+key (the latter also carries
+ *  the one-key Gemini endpoint+key via readOpenAICompatConfig's fallback).
+ *  Equal signatures ⇒ the same daemon can serve them. */
 async function credentialSignature(project?: string): Promise<string> {
   let orKey: string | null = null;
   let oc: { baseUrl: string | null; key: string | null } = { baseUrl: null, key: null };
@@ -103,78 +112,83 @@ async function credentialSignature(project?: string): Promise<string> {
     .slice(0, 16);
 }
 
-async function spawn(project: string | undefined, signature: string): Promise<ServerHandle> {
-  // Plumb workspace API credentials into env BEFORE spawning opencode so
-  // its subprocess inherits them. opencode auto-discovers cloud providers
-  // by env var convention (OPENROUTER_API_KEY → openrouter,
-  // OPENAI_API_KEY + OPENAI_BASE_URL → openai), so populating these is
-  // the cheapest way to make the chat card's "OpenRouter" and
-  // "OpenAI-compatible" radio options actually route through opencode.
-  // Project-scope: read the credentials for the project this daemon is being
-  // spawned for (set via setOpencodeProject) so a per-project / per-tenant key
-  // takes effect. Resets to the env baseline first so a prior project's key
-  // doesn't leak. Failure to read leaves the env at baseline (opencode reports
-  // "no usable provider" at spawn — reportProviderState() surfaces that loudly).
-  await injectProjectCredentials(project);
+async function doSpawn(tenant: string | undefined, project: string | undefined, key: string): Promise<ServerHandle> {
+  // Per-daemon session store so instances don't share opencode's SQLite. Stable
+  // per key (not random) so sessions persist across idle-reap → respawn.
+  const dataDir = join(DATA_BASE, createHash("sha1").update(key).digest("hex").slice(0, 16));
+  mkdirSync(dataDir, { recursive: true });
 
-  // Plumb the agent-tool auth + base URL into process.env BEFORE the
-  // opencode-serve child inherits it. opencodePlugin.mjs (loaded inside
-  // opencode-serve via config.plugin) reads these to call back into Mica
-  // for per-session path-scope lookups. Same env-var names as the MCP
-  // bridge uses so the plugin and bridge share one config surface.
-  // Idempotent — overwriting on re-spawn is fine (the secret is stable
-  // per Mica startup).
+  await applySpawnEnv(project, dataDir);
+  try {
+    const config = await buildOpencodeConfig(project);
+    console.log(`[opencode-server] spawning daemon for tenant=${tenant ?? "-"} project=${project ?? "(workspace)"} data=${dataDir} (mcp: ${Object.keys(config.mcp ?? {}).join(", ") || "none"})`);
+    const start = Date.now();
+    const { url, close } = await createOpencodeServer({
+      hostname: "127.0.0.1",
+      port: 0,            // auto-assign — each daemon its own port
+      timeout: 60_000,    // first spawn into a fresh data dir runs a one-time DB migration
+      config,
+    });
+    const clientConfig: OpencodeClientConfig = { baseUrl: url };
+    const client = createOpencodeClient(clientConfig);
+    generation += 1;
+    const gen = generation;
+    console.log(`[opencode-server] ready at ${url} (${Date.now() - start}ms, gen ${gen}, key ${key})`);
+    await reportProviderState(client);
+    return {
+      url,
+      client,
+      key,
+      generation: gen,
+      close: () => {
+        try { close(); } catch (err) {
+          console.warn(`[opencode-server] close() failed: ${(err as Error).message}`);
+        }
+      },
+    };
+  } finally {
+    restoreSpawnEnv();
+  }
+}
+
+/** Set the managed env for ONE spawn: the project's resolved credentials (so
+ *  opencode auto-discovers the right provider) + this daemon's XDG_DATA_HOME +
+ *  the agent-tool callback config. Resets to baseline first so nothing leaks
+ *  from the previous spawn. Called under the serialized spawn + bound tenant. */
+async function applySpawnEnv(project: string | undefined, dataDir: string): Promise<void> {
+  restoreSpawnEnv();
+  process.env.XDG_DATA_HOME = dataDir;
   process.env.MICA_TOOLS_AUTH_SECRET = AGENT_TOOL_AUTH_SECRET;
   if (!process.env.MICA_TOOLS_BASE_URL) {
     process.env.MICA_TOOLS_BASE_URL = `http://127.0.0.1:${process.env.MICA_PORT || "3002"}`;
   }
+  try {
+    const orKey = await readOpenRouterKey(project);
+    if (orKey) process.env.OPENROUTER_API_KEY = orKey;
+  } catch (err) {
+    console.warn(`[opencode-server] OpenRouter key read failed: ${(err as Error).message}`);
+  }
+  try {
+    const oc = await readOpenAICompatConfig(project);
+    if (oc.baseUrl) process.env.OPENAI_BASE_URL = oc.baseUrl;
+    if (oc.key) process.env.OPENAI_API_KEY = oc.key;
+  } catch (err) {
+    console.warn(`[opencode-server] OpenAI-compat config read failed: ${(err as Error).message}`);
+  }
+}
 
-  // Build config at spawn time. Subagents from server/builtin-agents/ + any
-  // workspace-level MCPs from env (Tavily). Per-project MCPs are NOT merged
-  // here — opencode is one daemon per backend, so all projects share the
-  // same MCP set. v1 limitation; upgrade path is a per-session
-  // ConfigUpdate call once we need it.
-  const config = await buildOpencodeConfig(project);
-
-  console.log(`[opencode-server] spawning opencode serve for project=${project ?? "(workspace)"} (mcp servers: ${Object.keys(config.mcp ?? {}).join(", ") || "none"}, agents: ${Object.keys(config.agent ?? {}).join(", ") || "none"})`);
-
-  const start = Date.now();
-  const { url, close } = await createOpencodeServer({
-    hostname: "127.0.0.1",
-    port: 0,            // auto-assign
-    timeout: 30_000,    // 30s ready-wait — first-launch SQLite migration can take a beat
-    config,
-  });
-
-  const clientConfig: OpencodeClientConfig = { baseUrl: url };
-  const client = createOpencodeClient(clientConfig);
-  generation += 1;
-  const gen = generation;
-  console.log(`[opencode-server] ready at ${url} (${Date.now() - start}ms, gen ${gen}, sig ${signature})`);
-
-  // Pre-flight provider check. If opencode has zero usable providers,
-  // session.prompt would hang waiting for a model response that never
-  // arrives — warn loudly at spawn time so the failure mode shows up in
-  // startup logs, not just as a frozen chat UI.
-  await reportProviderState(client);
-
-  return {
-    url,
-    client,
-    signature,
-    generation: gen,
-    close: () => {
-      try { close(); } catch (err) {
-        console.warn(`[opencode-server] close() failed: ${(err as Error).message}`);
-      }
-    },
-  };
+/** Restore managed env vars to the module-load baseline. */
+function restoreSpawnEnv(): void {
+  for (const k of MANAGED_ENV) {
+    const v = ENV_BASE[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
 }
 
 async function reportProviderState(client: OpencodeClient): Promise<void> {
-  // Asks opencode which providers can serve a prompt — covers both
-  // cloud auth (auth.json) AND user-configured providers in opencode.jsonc
-  // (llama-server, ollama-cloud, custom OpenAI-compatible endpoints).
+  // Asks opencode which providers can serve a prompt — covers cloud auth and
+  // user-configured providers. Zero usable ⇒ prompts would hang; warn loudly.
   try {
     const res = await client.config.providers();
     const providers = res.data?.providers ?? [];
@@ -182,61 +196,59 @@ async function reportProviderState(client: OpencodeClient): Promise<void> {
     if (usable.length === 0) {
       console.warn(
         "[opencode-server] WARNING: no usable provider found. " +
-        ".opencode chat cards will fail on first prompt. " +
-        "Run `opencode providers login` for cloud auth, or add a local provider to ~/.config/opencode/opencode.jsonc.",
+        ".opencode cards will fail on first prompt. Configure a key in the gear, " +
+        "or add a provider via `opencode providers login` / opencode.jsonc.",
       );
       return;
     }
-    const names = usable.map((p) => p.id).join(", ");
-    console.log(`[opencode-server] ${usable.length} usable provider(s): ${names}`);
+    console.log(`[opencode-server] ${usable.length} usable provider(s): ${usable.map((p) => p.id).join(", ")}`);
   } catch (err) {
     console.warn(`[opencode-server] provider check failed: ${(err as Error).message}`);
   }
 }
 
-/** Read `project`'s OpenRouter key + OpenAI-compat baseUrl/key from Mica's
- *  persisted config and inject into `process.env` so opencode's subprocess
- *  (inheriting our env) sees the credentials and auto-registers the matching
- *  providers. Resets the managed vars to the module-load baseline first, so a
- *  prior project's injected key doesn't leak and a user's explicit `.env` /
- *  shell export still wins when the project sets no key of its own.
- *  (Gemini is carried in the config object, not env — see injectOpenaiGemini-
- *  Provider — but the one-key fallback in readOpenAICompatConfig also surfaces
- *  the Gemini endpoint+key here for opencode's env-based auto-discovery.) */
-async function injectProjectCredentials(project?: string): Promise<void> {
-  for (const k of Object.keys(ENV_BASE)) {
-    const v = ENV_BASE[k];
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
+/** Evict the least-recently-used daemon when the pool is at capacity. */
+function evictIfAtCap(): void {
+  if (pool.size < MAX_DAEMONS) return;
+  let lruKey: string | undefined;
+  let lruAt = Infinity;
+  for (const [k, e] of pool) {
+    if (e.lastUsedAt < lruAt) { lruAt = e.lastUsedAt; lruKey = k; }
   }
-  try {
-    const orKey = await readOpenRouterKey(project);
-    if (orKey) {
-      process.env.OPENROUTER_API_KEY = orKey;
-      console.log("[opencode-server] injected OPENROUTER_API_KEY from credentials");
-    }
-  } catch (err) {
-    console.warn(`[opencode-server] OpenRouter key read failed: ${(err as Error).message}`);
-  }
-  try {
-    const oc = await readOpenAICompatConfig(project);
-    if (oc.baseUrl) {
-      process.env.OPENAI_BASE_URL = oc.baseUrl;
-      console.log(`[opencode-server] injected OPENAI_BASE_URL=${oc.baseUrl} from credentials`);
-    }
-    if (oc.key) {
-      process.env.OPENAI_API_KEY = oc.key;
-      console.log("[opencode-server] injected OPENAI_API_KEY from credentials");
-    }
-  } catch (err) {
-    console.warn(`[opencode-server] OpenAI-compat config read failed: ${(err as Error).message}`);
+  if (lruKey) {
+    const e = pool.get(lruKey)!;
+    console.log(`[opencode-server] pool at cap (${MAX_DAEMONS}) — evicting LRU ${lruKey}`);
+    try { e.handle.close(); } catch { /* ignore */ }
+    pool.delete(lruKey);
   }
 }
 
-/** Shutdown hook for server/index.ts. No-op if the server was never spawned. */
+/** Close daemons idle longer than IDLE_MS. Their session store persists on disk
+ *  (stable XDG_DATA_HOME), so a later turn re-spawns and resumes sessions. */
+function reapIdle(): void {
+  const now = Date.now();
+  for (const [k, e] of pool) {
+    if (now - e.lastUsedAt > IDLE_MS) {
+      console.log(`[opencode-server] reaping idle daemon ${k} (idle ${Math.round((now - e.lastUsedAt) / 1000)}s)`);
+      try { e.handle.close(); } catch { /* ignore */ }
+      pool.delete(k);
+    }
+  }
+}
+
+function ensureReapTimer(): void {
+  if (reapTimer) return;
+  reapTimer = setInterval(reapIdle, REAP_INTERVAL_MS);
+  reapTimer.unref?.(); // don't keep the process alive just for reaping
+}
+
+/** Shutdown hook for server/index.ts — close every daemon. */
 export function stopOpencodeServer(): void {
-  if (!cached) return;
-  console.log("[opencode-server] shutting down");
-  try { cached.close(); } catch { /* ignore */ }
-  cached = null;
+  if (pool.size === 0 && !reapTimer) return;
+  console.log(`[opencode-server] shutting down ${pool.size} daemon(s)`);
+  for (const [, e] of pool) {
+    try { e.handle.close(); } catch { /* ignore */ }
+  }
+  pool.clear();
+  if (reapTimer) { clearInterval(reapTimer); reapTimer = null; }
 }
