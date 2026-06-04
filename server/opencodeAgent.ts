@@ -496,13 +496,13 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     ctx: SessionContext,
   ): Promise<ChannelHandler> {
     const sessionProject = ctx.project;
-    // Owning tenant, captured at channel-open while the WS message context still
-    // has it bound (multi-tenant fork). Used explicitly thereafter — the per-turn
-    // work runs detached from the open's async context, so we re-bind it via
-    // runWithTenant rather than relying on ambient AsyncLocalStorage (which leaks
-    // across concurrent tenants under the shared opencode daemon). Undefined in
-    // single-tenant main → all the runWithTenant wrapping below is skipped.
-    const sessionTenant = getCurrentTenant();
+    // Owning tenant (multi-tenant fork). Read from ctx.tenant — threaded
+    // explicitly by channelManager from the WS connection's tenant at channel
+    // creation — NOT from ambient getCurrentTenant(), which doesn't reliably
+    // propagate into handler creation (and would capture undefined, dropping
+    // writes into the bare workspace root). Each turn re-binds it via
+    // runWithTenant. Undefined in single-tenant main → wrapping below skipped.
+    const sessionTenant = ctx.tenant ?? getCurrentTenant();
     const chatId = ctx.sessionId;
     // Reactive-coalesce session handle. Same mechanism qwen + Claude use;
     // gives opencode chat cards file-edit reactivity for free. Onset is

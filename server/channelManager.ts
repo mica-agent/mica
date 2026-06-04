@@ -42,6 +42,12 @@ export interface SessionContext {
    *  bug from referencing a global activeProject. May be null only for
    *  workspace-level sessions (none today). */
   project: string | null;
+  /** Owning tenant (multi-tenant fork), captured at session creation from the
+   *  WS connection's tenant. Threaded explicitly (not read from ambient
+   *  AsyncLocalStorage, which doesn't reliably propagate into handler creation)
+   *  so a handler can bind it around its own long-lived async work. Undefined in
+   *  single-tenant main. */
+  tenant?: string;
   broadcast(data: unknown): void;
   sendTo(clientId: string, data: unknown): void;
   clientCount(): number;
@@ -70,6 +76,8 @@ interface Session {
   /** Captured project at session creation. Sessions stay tied to the project
    *  they were created in even if the user later switches the active project. */
   project: string | null;
+  /** Owning tenant (multi-tenant fork), captured at creation. See SessionContext.tenant. */
+  tenant?: string;
   state: SessionState;
   clients: Map<string, ClientHandle>;
   handler: ChannelHandler | null;
@@ -146,6 +154,7 @@ export class ChannelManager {
       sessionId: session.sessionId,
       filename: session.filename,
       project: session.project,
+      tenant: session.tenant,
 
       broadcast(data: unknown): void {
         // One-line visibility for assistant_speech in particular, since
@@ -247,6 +256,7 @@ export class ChannelManager {
     onData: (data: unknown) => void,
     onClose: () => void,
     getProject?: () => string | null,
+    tenant?: string,
   ): Promise<void> {
     let session = this.sessions.get(sessionId);
 
@@ -260,7 +270,7 @@ export class ChannelManager {
     if (!session) {
       let creation = this.creating.get(sessionId);
       if (!creation) {
-        creation = this.createSession(sessionId, project, filename, args);
+        creation = this.createSession(sessionId, project, filename, args, tenant);
         this.creating.set(sessionId, creation);
         // The real rejection surfaces via `await creation` below; this cleanup
         // chain must swallow it, else its floating promise becomes an UNHANDLED
@@ -303,6 +313,7 @@ export class ChannelManager {
     project: string | null,
     filename: string,
     args: Record<string, unknown>,
+    tenant?: string,
   ): Promise<Session> {
     // Routing: if the card class declares `metadata.handler`, route to that
     // built-in (or developer-registered custom plugin). Otherwise fall back
@@ -350,6 +361,7 @@ export class ChannelManager {
       sessionId,
       filename,
       project,
+      tenant,
       state: "registered",
       clients: new Map(),
       handler: null,

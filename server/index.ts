@@ -3000,7 +3000,7 @@ wss.on("connection", (ws, req) => {
             // wsProjects live every time it's called, so subscribe-project
             // updates (line 2690) take effect on the next broadcast.
             const getProject = (): string | null => wsProjects.get(ws) ?? null;
-            const openPromise = channelManager.open(cid, sessionId, wsProject, fname, fn as string, channelArgs, msgTabId, onData, onClose, getProject);
+            const openPromise = channelManager.open(cid, sessionId, wsProject, fname, fn as string, channelArgs, msgTabId, onData, onClose, getProject, wsTenants.get(ws) || undefined);
             pendingChannelOpens.set(cid, openPromise.then(() => { /* swallow */ }).catch(() => { /* errored open — pending channel_data will check has() and drop */ }));
             try {
               await openPromise;
