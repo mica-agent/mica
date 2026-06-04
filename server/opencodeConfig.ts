@@ -29,7 +29,7 @@ import { dirname, join } from "path";
  *  Project parameter is null for v1 (we use workspace-shared subagents only,
  *  not per-project overrides — same set of subagents across all .opencode
  *  cards in any project, until per-session ConfigUpdate lands). */
-export async function buildOpencodeConfig(): Promise<Config> {
+export async function buildOpencodeConfig(project?: string): Promise<Config> {
   const config: Config = {};
 
   // Permission: yolo for v1 — matches existing chat card trust model.
@@ -109,8 +109,9 @@ export async function buildOpencodeConfig(): Promise<Config> {
   // Point the builtin `openai` provider at Google's OpenAI-compatible endpoint
   // and register the Gemini model ids when openai-compat resolved to Gemini
   // (the one-key fallback). Without this opencode rejects `gemini-3.5-flash`
-  // with "Model not found". No-op otherwise.
-  await injectOpenaiGeminiProvider(config);
+  // with "Model not found". No-op otherwise. Project-scoped so a per-project
+  // Gemini key (set in the card gear) is the one baked into the provider.
+  await injectOpenaiGeminiProvider(config, project);
 
   // ── MCP servers ─────────────────────────────────────────────────
   const mcp: Record<string, McpLocalConfig> = {};
@@ -454,8 +455,8 @@ async function injectOpenRouterModels(config: Config): Promise<void> {
  *  only touch options.baseURL/apiKey + models). No-op when openai-compat
  *  isn't Gemini, so a user's real OpenAI/other openai-compat endpoint is
  *  untouched. */
-async function injectOpenaiGeminiProvider(config: Config): Promise<void> {
-  const oc = await readOpenAICompatConfig(undefined);
+async function injectOpenaiGeminiProvider(config: Config, project?: string): Promise<void> {
+  const oc = await readOpenAICompatConfig(project);
   if (!oc.baseUrl || !oc.baseUrl.includes("generativelanguage.googleapis.com")) return;
   // Confirmed present via the live /v1beta/models listing (2026-06-02).
   const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-2.5-flash"];

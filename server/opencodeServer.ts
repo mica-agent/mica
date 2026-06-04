@@ -18,6 +18,7 @@
 // graceful exit). server.close() from the SDK is also called at shutdown for
 // a more graceful path.
 
+import { createHash } from "node:crypto";
 import { createOpencodeServer, createOpencodeClient, type OpencodeClient, type OpencodeClientConfig } from "@opencode-ai/sdk";
 import { buildOpencodeConfig } from "./opencodeConfig.js";
 import { readOpenRouterKey, readOpenAICompatConfig } from "./files.js";
@@ -27,32 +28,94 @@ interface ServerHandle {
   url: string;
   client: OpencodeClient;
   close(): void;
+  /** Credential signature this daemon was spawned with (see credentialSignature). */
+  signature: string;
+  /** Monotonic spawn counter — lets a caller detect that the daemon re-spawned
+   *  under it (opencodeAgent recreates its session when this changes). */
+  generation: number;
 }
 
 let cached: ServerHandle | null = null;
-let inflight: Promise<ServerHandle> | null = null;
+let opChain: Promise<unknown> = Promise.resolve();
+let generation = 0;
+let activeProject: string | undefined = undefined;
 
+// Snapshot the credential-related env vars at module load. A per-project
+// (re)spawn resets to this baseline before overlaying the project's keys, so a
+// previous project's injected key never leaks into the next spawn (and a user's
+// explicit .env / shell export remains the fallback when a project sets none).
+const ENV_BASE: Record<string, string | undefined> = {
+  OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+};
+
+/** The agent sets the project whose credentials the daemon should use for the
+ *  current turn, BEFORE any getOpencodeServer() call in that turn. Module-global
+ *  because opencode is ONE shared daemon (see the concurrency note below). */
+export function setOpencodeProject(project?: string): void { activeProject = project; }
+
+/** Get (or lazily spawn) the shared opencode daemon, configured for the
+ *  credentials of the project set via setOpencodeProject(). If those credentials
+ *  differ from the running daemon's, the daemon is torn down and re-spawned —
+ *  this is how a per-project / per-tenant key (e.g. set in the card gear) takes
+ *  effect without a manual restart.
+ *
+ *  CONCURRENCY: opencode is a single shared daemon, so it can hold only ONE
+ *  credential set at a time. Sequential / single-active use is correct. Two
+ *  tenants running opencode turns with DIFFERENT keys *concurrently* will fight
+ *  over respawns — serialized through opChain so they never corrupt each other,
+ *  but each turn restarts the daemon and a turn can land on a daemon respawned
+ *  by the other. True concurrent multi-tenant opencode is NOT supported; use the
+ *  .qwen card (per-turn key resolution) for that. */
 export async function getOpencodeServer(): Promise<ServerHandle> {
-  if (cached) return cached;
-  if (inflight) return inflight;
-  inflight = spawn().finally(() => { inflight = null; });
-  cached = await inflight;
-  return cached;
+  const project = activeProject;
+  const run = opChain.then(async () => {
+    const sig = await credentialSignature(project);
+    if (cached && cached.signature === sig) return cached;
+    if (cached) {
+      console.log(`[opencode-server] credentials changed — respawning daemon (was gen ${generation})`);
+      try { cached.close(); } catch { /* ignore */ }
+      cached = null;
+    }
+    cached = await spawn(project, sig);
+    return cached;
+  });
+  // Keep the chain alive regardless of this run's outcome so a failed spawn
+  // doesn't wedge every future call.
+  opChain = run.then(() => undefined, () => undefined);
+  return run as Promise<ServerHandle>;
 }
 
-async function spawn(): Promise<ServerHandle> {
+/** Signature of the credentials a daemon would be built with for `project`.
+ *  Equal signatures ⇒ the running daemon already has the right keys (no respawn).
+ *  Covers the credential sources baked in at spawn: the OpenRouter key and the
+ *  OpenAI-compat baseUrl+key (the latter also carries the one-key Gemini
+ *  endpoint+key via readOpenAICompatConfig's fallback). */
+async function credentialSignature(project?: string): Promise<string> {
+  let orKey: string | null = null;
+  let oc: { baseUrl: string | null; key: string | null } = { baseUrl: null, key: null };
+  try { orKey = await readOpenRouterKey(project); } catch { /* ignore */ }
+  try { oc = await readOpenAICompatConfig(project); } catch { /* ignore */ }
+  return createHash("sha256")
+    .update(JSON.stringify([orKey || "", oc.baseUrl || "", oc.key || ""]))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+async function spawn(project: string | undefined, signature: string): Promise<ServerHandle> {
   // Plumb workspace API credentials into env BEFORE spawning opencode so
   // its subprocess inherits them. opencode auto-discovers cloud providers
   // by env var convention (OPENROUTER_API_KEY → openrouter,
   // OPENAI_API_KEY + OPENAI_BASE_URL → openai), so populating these is
   // the cheapest way to make the chat card's "OpenRouter" and
   // "OpenAI-compatible" radio options actually route through opencode.
-  // Workspace-scope here (project=undefined) because opencode is one
-  // daemon per backend, not per-project — the credentials are shared
-  // across every .opencode card in the workspace. Failure to read leaves
-  // the env unset (opencode reports "no usable provider" at spawn — the
-  // existing reportProviderState() surfaces that loudly).
-  await injectWorkspaceCredentials();
+  // Project-scope: read the credentials for the project this daemon is being
+  // spawned for (set via setOpencodeProject) so a per-project / per-tenant key
+  // takes effect. Resets to the env baseline first so a prior project's key
+  // doesn't leak. Failure to read leaves the env at baseline (opencode reports
+  // "no usable provider" at spawn — reportProviderState() surfaces that loudly).
+  await injectProjectCredentials(project);
 
   // Plumb the agent-tool auth + base URL into process.env BEFORE the
   // opencode-serve child inherits it. opencodePlugin.mjs (loaded inside
@@ -71,9 +134,9 @@ async function spawn(): Promise<ServerHandle> {
   // here — opencode is one daemon per backend, so all projects share the
   // same MCP set. v1 limitation; upgrade path is a per-session
   // ConfigUpdate call once we need it.
-  const config = await buildOpencodeConfig();
+  const config = await buildOpencodeConfig(project);
 
-  console.log(`[opencode-server] spawning opencode serve (mcp servers: ${Object.keys(config.mcp ?? {}).join(", ") || "none"}, agents: ${Object.keys(config.agent ?? {}).join(", ") || "none"})`);
+  console.log(`[opencode-server] spawning opencode serve for project=${project ?? "(workspace)"} (mcp servers: ${Object.keys(config.mcp ?? {}).join(", ") || "none"}, agents: ${Object.keys(config.agent ?? {}).join(", ") || "none"})`);
 
   const start = Date.now();
   const { url, close } = await createOpencodeServer({
@@ -85,7 +148,9 @@ async function spawn(): Promise<ServerHandle> {
 
   const clientConfig: OpencodeClientConfig = { baseUrl: url };
   const client = createOpencodeClient(clientConfig);
-  console.log(`[opencode-server] ready at ${url} (${Date.now() - start}ms)`);
+  generation += 1;
+  const gen = generation;
+  console.log(`[opencode-server] ready at ${url} (${Date.now() - start}ms, gen ${gen}, sig ${signature})`);
 
   // Pre-flight provider check. If opencode has zero usable providers,
   // session.prompt would hang waiting for a model response that never
@@ -96,6 +161,8 @@ async function spawn(): Promise<ServerHandle> {
   return {
     url,
     client,
+    signature,
+    generation: gen,
     close: () => {
       try { close(); } catch (err) {
         console.warn(`[opencode-server] close() failed: ${(err as Error).message}`);
@@ -127,37 +194,43 @@ async function reportProviderState(client: OpencodeClient): Promise<void> {
   }
 }
 
-/** Read workspace-level OpenRouter key + OpenAI-compat baseUrl/key from
- *  Mica's persisted config and inject into `process.env` so opencode's
- *  subprocess (inheriting our env) sees the credentials and auto-registers
- *  the matching providers. Skips any env var that's already set so a
- *  user's explicit `.env` / shell export wins. */
-async function injectWorkspaceCredentials(): Promise<void> {
+/** Read `project`'s OpenRouter key + OpenAI-compat baseUrl/key from Mica's
+ *  persisted config and inject into `process.env` so opencode's subprocess
+ *  (inheriting our env) sees the credentials and auto-registers the matching
+ *  providers. Resets the managed vars to the module-load baseline first, so a
+ *  prior project's injected key doesn't leak and a user's explicit `.env` /
+ *  shell export still wins when the project sets no key of its own.
+ *  (Gemini is carried in the config object, not env — see injectOpenaiGemini-
+ *  Provider — but the one-key fallback in readOpenAICompatConfig also surfaces
+ *  the Gemini endpoint+key here for opencode's env-based auto-discovery.) */
+async function injectProjectCredentials(project?: string): Promise<void> {
+  for (const k of Object.keys(ENV_BASE)) {
+    const v = ENV_BASE[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
   try {
-    const orKey = await readOpenRouterKey(undefined);
-    if (orKey && !process.env.OPENROUTER_API_KEY) {
+    const orKey = await readOpenRouterKey(project);
+    if (orKey) {
       process.env.OPENROUTER_API_KEY = orKey;
-      console.log("[opencode-server] injected OPENROUTER_API_KEY from workspace credentials");
+      console.log("[opencode-server] injected OPENROUTER_API_KEY from credentials");
     }
   } catch (err) {
     console.warn(`[opencode-server] OpenRouter key read failed: ${(err as Error).message}`);
   }
   try {
-    const oc = await readOpenAICompatConfig(undefined);
-    if (oc.baseUrl && !process.env.OPENAI_BASE_URL) {
+    const oc = await readOpenAICompatConfig(project);
+    if (oc.baseUrl) {
       process.env.OPENAI_BASE_URL = oc.baseUrl;
-      console.log(`[opencode-server] injected OPENAI_BASE_URL=${oc.baseUrl} from workspace credentials`);
+      console.log(`[opencode-server] injected OPENAI_BASE_URL=${oc.baseUrl} from credentials`);
     }
-    if (oc.key && !process.env.OPENAI_API_KEY) {
+    if (oc.key) {
       process.env.OPENAI_API_KEY = oc.key;
-      console.log("[opencode-server] injected OPENAI_API_KEY from workspace credentials");
+      console.log("[opencode-server] injected OPENAI_API_KEY from credentials");
     }
   } catch (err) {
     console.warn(`[opencode-server] OpenAI-compat config read failed: ${(err as Error).message}`);
   }
-  // Note: the one-key Gemini fallback lives in readOpenAICompatConfig (files.ts)
-  // so the openai-compat read above already yields the Gemini endpoint+key when
-  // appropriate — no separate injection needed here.
 }
 
 /** Shutdown hook for server/index.ts. No-op if the server was never spawned. */

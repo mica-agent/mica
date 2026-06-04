@@ -74,7 +74,7 @@ import {
 } from "./agentTools/registry.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
-import { getOpencodeServer } from "./opencodeServer.js";
+import { getOpencodeServer, setOpencodeProject } from "./opencodeServer.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { resolveCtxWindow } from "./contextWindow.js";
@@ -668,16 +668,23 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // case we re-use the persisted opencode sessionID. Otherwise create a
     // fresh one and persist it.
     let ocSessionId: string | null = null;
+    // The daemon generation ocSessionId was created against. If the daemon
+    // re-spawns (credentials changed), the cached id is stale on the new daemon,
+    // so we re-resolve/recreate rather than short-circuit.
+    let ocSessionGeneration = -1;
 
     async function ensureOpencodeSession(): Promise<string> {
-      if (ocSessionId) {
-        // Already resolved this turn; ensure the map mirrors current state
-        // in case sessionProject changed (it shouldn't, but cheap insurance).
+      const server = await getOpencodeServer();
+      const { client } = server;
+      if (ocSessionId && ocSessionGeneration === server.generation) {
+        // Already resolved against the current daemon; ensure the map mirrors
+        // current state in case sessionProject changed (it shouldn't).
         registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
         return ocSessionId;
       }
+      // First turn, or the daemon re-spawned under us — (re)resolve the session.
+      ocSessionId = null;
       const sidecar = await loadSidecar(chatId, sessionProject);
-      const { client } = await getOpencodeServer();
       if (sidecar) {
         // Validate that the opencode server still has this session (it
         // would NOT after a backend restart since opencode runs in this
@@ -686,6 +693,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           const got = await client.session.get({ path: { id: sidecar.sessionID } });
           if (got && (got.data || got.error === undefined)) {
             ocSessionId = sidecar.sessionID;
+            ocSessionGeneration = server.generation;
             // Map this session ID to its project so per-tool-call routing
             // works as soon as the bridge sends the first call.
             registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
@@ -705,6 +713,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         throw new Error(`opencode session.create returned no id: ${errBody}`);
       }
       ocSessionId = newId;
+      ocSessionGeneration = server.generation;
       registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
       await saveSidecar(chatId, sessionProject, { sessionID: newId });
       console.log(`[opencode-agent] created session ${newId.slice(0, 8)} for ${ctx.filename}`);
@@ -1178,6 +1187,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       // pass session-scoped headers; Mica's /api/tools/* endpoints fall back
       // to this when X-Mica-Project is absent. See server/agentTools/registry.ts.
       setLastActiveOpencodeProject(sessionProject);
+      // Tell the shared opencode daemon which project's credentials to use this
+      // turn. Set BEFORE any getOpencodeServer() call so the daemon re-spawns
+      // with this project's keys if they differ from the running one. See the
+      // concurrency note on getOpencodeServer (opencodeServer.ts).
+      setOpencodeProject(sessionProject || undefined);
       // Same publish for the chat filename — lets render_capture's captioner
       // routing resolve THIS card's {provider, model} (so it captions with the
       // card's own vision model) when the per-call session header doesn't
