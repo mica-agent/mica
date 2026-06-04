@@ -135,6 +135,14 @@ if (process.env.GEMINI_API_KEY) {
   AGENT_TOOLS.push(geminiImageTool, geminiVideoTool);
 }
 
+// The same media tools, exported separately so consumers can expose them
+// per-request when a Gemini key is configured PER-PROJECT (not via the global
+// env above) — e.g. the opencode bridge requests them when the card's provider
+// is "Google (Gemini)". Their REST routes are always registered (see
+// restRoutes.ts), so they're callable whenever listed; the handlers guard via
+// readGeminiKey, which resolves the per-project gear key.
+export const GEMINI_MEDIA_TOOLS: AgentToolDef<any>[] = [geminiImageTool, geminiVideoTool];
+
 // ── Project resolution for opencode bridge ───────────────────────────
 //
 // opencode-serve is a single daemon shared across all .opencode card

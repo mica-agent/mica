@@ -909,6 +909,22 @@ export async function readGeminiKey(project: string | undefined): Promise<string
     const cfg = JSON.parse(await readFile(join(base, ".mica", "config.json"), "utf-8"));
     if (typeof cfg.geminiApiKey === "string" && cfg.geminiApiKey.length > 0) return cfg.geminiApiKey;
   } catch { /* no legacy workspace config */ }
+  // The gear's "Google (Gemini)" preset stores the key as openai-compat
+  // (openaiCompatBaseUrl = Google's OpenAI-compatible endpoint + openaiCompatApiKey).
+  // Surface that as the Gemini key too, so ONE key set in the gear powers both the
+  // chat path AND the media tools (which resolve here). Read the fields DIRECTLY —
+  // NOT via readOpenAICompatConfig, whose reverse gemini→openai-compat fallback
+  // would recurse back into this function.
+  const compatPaths = (project ? [join(base, project, ".mica", "config.json")] : [])
+    .concat([join(base, ".mica", "config.json")]);
+  for (const p of compatPaths) {
+    try {
+      const cfg = JSON.parse(await readFile(p, "utf-8"));
+      const burl = cfg.openaiCompatBaseUrl, k = cfg.openaiCompatApiKey;
+      if (typeof burl === "string" && burl.includes("generativelanguage.googleapis.com")
+          && typeof k === "string" && k.length > 0) return k;
+    } catch { /* no openai-compat config here */ }
+  }
   const envKey = process.env.GEMINI_API_KEY;
   return typeof envKey === "string" && envKey.length > 0 ? envKey : null;
 }

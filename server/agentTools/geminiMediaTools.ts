@@ -14,7 +14,7 @@ import { z } from "zod";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import type { AgentToolDef, AgentToolResult } from "./registry.js";
-import { WORKSPACE_DIR, readCanvasConfig } from "../files.js";
+import { getEffectiveWorkspaceDir, readCanvasConfig } from "../files.js";
 import { generateImage, generateVideo } from "../geminiMedia.js";
 
 function slug(s: string): string {
@@ -41,7 +41,7 @@ async function writeCanvasAsset(
   const { canvasRoot } = await readCanvasConfig(project);
   const canvasRel = `generated/${base}.${ext}`;
   const projectRel = canvasRoot ? `${canvasRoot}/${canvasRel}` : canvasRel;
-  const abs = join(WORKSPACE_DIR, project, projectRel);
+  const abs = join(getEffectiveWorkspaceDir(), project, projectRel);
   await mkdir(dirname(abs), { recursive: true });
   await writeFile(abs, bytes);
   return { canvasRel, projectRel };

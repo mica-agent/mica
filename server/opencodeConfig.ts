@@ -154,12 +154,20 @@ export async function buildOpencodeConfig(project?: string): Promise<Config> {
   // multi-session tool calls can race — accepted v1 limitation.
   const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "agentTools", "opencodeBridge.mjs");
   const micaPort = process.env.MICA_PORT || "3002";
+  // When this spawn's project uses the "Google (Gemini)" provider, ask the
+  // bridge to include the Gemini media tools (mica_generate_image/video) in the
+  // tool surface it pulls from /api/tools. opencode re-spawns per credential
+  // signature (opencodeServer.ts), so this flag tracks the active project's
+  // provider. The media handlers resolve the per-project key via readGeminiKey.
+  const oc = await readOpenAICompatConfig(project);
+  const isGemini = !!oc.baseUrl && oc.baseUrl.includes("generativelanguage.googleapis.com");
   mcp["mica-builtins"] = {
     type: "local",
     command: ["node", bridgePath],
     environment: {
       MICA_TOOLS_AUTH_SECRET: AGENT_TOOL_AUTH_SECRET,
       MICA_TOOLS_BASE_URL: `http://127.0.0.1:${micaPort}`,
+      ...(isGemini ? { MICA_INCLUDE_GEMINI_MEDIA: "1" } : {}),
     },
     enabled: true,
   };

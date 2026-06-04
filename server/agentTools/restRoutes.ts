@@ -7,6 +7,7 @@ import { z } from "zod";
 import { join } from "node:path";
 import {
   AGENT_TOOLS,
+  GEMINI_MEDIA_TOOLS,
   AGENT_TOOL_AUTH_HEADER,
   AGENT_TOOL_AUTH_SECRET,
   AGENT_TOOL_PROJECT_HEADER,
@@ -21,6 +22,15 @@ import { WORKSPACE_DIR, getEffectiveWorkspaceDir, SHARED_DIR, getIncludeProjects
 const AGENT_TOOL_OPENCODE_SESSION_HEADER = "x-mica-opencode-session-id";
 
 export function registerAgentToolRoutes(app: Express): void {
+  // Media tools that aren't already in AGENT_TOOLS (i.e. when GEMINI_API_KEY
+  // wasn't set globally at startup). We still register their POST routes so a
+  // per-project Gemini config can call them; they're only LISTED in /api/tools
+  // when the request opts in (env key, or the opencode bridge's gemini flag).
+  const extraMediaTools = GEMINI_MEDIA_TOOLS.filter(
+    (m) => !AGENT_TOOLS.some((t) => t.restPath === m.restPath),
+  );
+  const ALL_ROUTE_TOOLS = [...AGENT_TOOLS, ...extraMediaTools];
+
   // Discovery endpoint — the opencode stdio MCP bridge fetches this at
   // startup to learn the full tool surface and registers each entry
   // dynamically with opencode's MCP SDK. Eliminates the drift that
@@ -40,7 +50,14 @@ export function registerAgentToolRoutes(app: Express): void {
       res.status(401).json({ error: "agent auth required" });
       return;
     }
-    res.json(AGENT_TOOLS.map((tool) => ({
+    // Include the Gemini media tools when this caller has a Gemini key in scope:
+    // either the global env key, or the opencode bridge signalling that its
+    // spawn's project uses the "Google (Gemini)" provider (x-mica-gemini-media).
+    // Without this opt-in they stay hidden (no prelude pollution for non-Gemini
+    // agents/projects). The per-call handler still guards via readGeminiKey.
+    const wantMedia = !!process.env.GEMINI_API_KEY || req.header("x-mica-gemini-media") === "1";
+    const listed = wantMedia ? [...AGENT_TOOLS, ...extraMediaTools] : AGENT_TOOLS;
+    res.json(listed.map((tool) => ({
       name: tool.name,
       description: tool.description,
       restPath: tool.restPath,
@@ -89,7 +106,7 @@ export function registerAgentToolRoutes(app: Express): void {
     res.json({ project, allowlist });
   });
 
-  for (const tool of AGENT_TOOLS) {
+  for (const tool of ALL_ROUTE_TOOLS) {
     app.post(tool.restPath, async (req, res) => {
       // Auth — reject any request that doesn't carry the per-startup secret.
       const supplied = req.header(AGENT_TOOL_AUTH_HEADER);
@@ -155,7 +172,7 @@ export function registerAgentToolRoutes(app: Express): void {
       }
     });
   }
-  console.log(`[agent-tools] registered ${AGENT_TOOLS.length} tool route(s): ${AGENT_TOOLS.map((t) => t.restPath).join(", ")}`);
+  console.log(`[agent-tools] registered ${ALL_ROUTE_TOOLS.length} tool route(s): ${ALL_ROUTE_TOOLS.map((t) => t.restPath).join(", ")}`);
 }
 
 /** Extract a serializable parameter summary from a tool's zod input

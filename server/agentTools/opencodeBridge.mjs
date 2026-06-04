@@ -35,6 +35,9 @@ import { z } from "zod";
 
 const MICA_BASE = process.env.MICA_TOOLS_BASE_URL || "http://127.0.0.1:3002";
 const AUTH = process.env.MICA_TOOLS_AUTH_SECRET || "";
+// Set by opencodeConfig when the spawn's project uses the "Google (Gemini)"
+// provider — opts the Gemini media tools into the /api/tools surface.
+const INCLUDE_GEMINI_MEDIA = process.env.MICA_INCLUDE_GEMINI_MEDIA === "1";
 
 if (!AUTH) {
   console.error("[opencode-bridge] FATAL: MICA_TOOLS_AUTH_SECRET env var not set");
@@ -51,7 +54,10 @@ async function fetchTools() {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const res = await fetch(`${MICA_BASE}/api/tools`, {
-        headers: { "x-mica-agent-auth": AUTH },
+        headers: {
+          "x-mica-agent-auth": AUTH,
+          ...(INCLUDE_GEMINI_MEDIA ? { "x-mica-gemini-media": "1" } : {}),
+        },
       });
       if (!res.ok) {
         lastErr = new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
