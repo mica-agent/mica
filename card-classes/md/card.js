@@ -14,8 +14,12 @@ const body = fmMatch ? content.slice(fmMatch[0].length) : content;
 
 const editorEl = container.querySelector('#editor');
 
-// Initialize mermaid for rendering diagrams in code blocks
-mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+// Initialize mermaid for rendering diagrams in code blocks. Optional CDN dep —
+// guard on window.mermaid so a missing/failed load degrades a diagram to plain
+// code text rather than throwing "Can't find variable: mermaid" and blanking
+// the whole card.
+var mermaid = (typeof window !== 'undefined' && window.mermaid) || null;
+if (mermaid) mermaid.initialize({ startOnLoad: false, theme: 'dark' });
 var mermaidId = 0;
 
 // Preserve scroll position across re-renders
@@ -46,6 +50,7 @@ const editor = new toastui.Editor({
         setTimeout(function() {
           var el = container.querySelector('#' + id);
           if (!el) return;
+          if (!mermaid) { el.textContent = node.literal || ''; return; }
           mermaid.render(id + '-svg', node.literal || '').then(function(result) {
             el.innerHTML = result.svg;
           }).catch(function() {

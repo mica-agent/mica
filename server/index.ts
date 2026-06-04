@@ -275,8 +275,15 @@ app.use((_req, res, next) => {
     "Content-Security-Policy",
     [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
-      "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com",
+      // uicdn.toast.com: the built-in `md` card class loads the Toast UI editor
+      // (script + styles) from there. Without it the dependency loader's
+      // sequential fetch fails on the first script and never reaches mermaid,
+      // blanking the card with "Can't find variable: mermaid". Only bites when
+      // the backend serves the SPA (cloud single-process build); in dev Vite
+      // serves it and this CSP doesn't apply. Card-class CDN hosts: keep this in
+      // sync with card-classes/*/metadata.json dependencies.
+      "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://uicdn.toast.com",
+      "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://uicdn.toast.com",
       // wss: and https: schemes added so the page can open WebSockets +
       // fetches back to the same origin when served from any HTTPS host
       // (Tailscale Serve, Caddy, cloud LB, etc). 'self' alone is scheme-
