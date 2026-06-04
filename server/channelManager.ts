@@ -262,7 +262,11 @@ export class ChannelManager {
       if (!creation) {
         creation = this.createSession(sessionId, project, filename, args);
         this.creating.set(sessionId, creation);
-        creation.finally(() => this.creating.delete(sessionId));
+        // The real rejection surfaces via `await creation` below; this cleanup
+        // chain must swallow it, else its floating promise becomes an UNHANDLED
+        // REJECTION that crashes the process (hit in tier-1 when a card opens a
+        // channel for a dropped handler, e.g. a .voice card with voice disabled).
+        creation.finally(() => this.creating.delete(sessionId)).catch(() => { /* surfaced by the awaiter */ });
       }
       session = await creation;
     }
@@ -509,7 +513,9 @@ export class ChannelManager {
       if (!creation && !this.sessions.has(sessionId)) {
         creation = this.createSession(sessionId, project, filename, {});
         this.creating.set(sessionId, creation);
-        creation.finally(() => this.creating.delete(sessionId!));
+        // Swallow on the cleanup chain so a rejected createSession doesn't
+        // become an unhandled rejection (the awaiter below surfaces the error).
+        creation.finally(() => this.creating.delete(sessionId!)).catch(() => { /* surfaced by the awaiter */ });
         created = true;
       }
       if (creation) {
