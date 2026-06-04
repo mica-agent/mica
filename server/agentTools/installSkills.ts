@@ -18,7 +18,7 @@ import { mkdir, readdir, readFile, symlink, writeFile, lstat, unlink } from "fs/
 import { existsSync } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { WORKSPACE_DIR, micaDir } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir, micaDir } from "../files.js";
 import type { AgentToolDef, AgentToolResult } from "./registry.js";
 
 const execFileP = promisify(execFile);
@@ -256,7 +256,7 @@ export const installSkillsTool: AgentToolDef<typeof inputSchema> = {
       };
     }
     const name = rawName;
-    const projDir = join(WORKSPACE_DIR, ctx.project);
+    const projDir = join(getEffectiveWorkspaceDir(), ctx.project);
     const qwenTarget = join(projDir, ".qwen", "skills", name);
     const claudeTarget = join(projDir, ".claude", "skills", name);
     if (existsSync(qwenTarget)) {

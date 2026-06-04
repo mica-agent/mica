@@ -30,7 +30,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { readFile } from "fs/promises";
 import { createConnection } from "net";
-import { WORKSPACE_DIR, readCanvasConfig } from "./files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir, readCanvasConfig } from "./files.js";
 
 // Per-backend-startup secret. Sidecars include this in the `x-mica-sidecar-auth`
 // header on every call to Mica's internal REST APIs (POST /api/llm/chat etc.).
@@ -364,7 +364,7 @@ export async function ensureCardSidecar(
   // files via MICA_PROJECT_DIR would miss the canvasRoot prefix — using
   // MICA_CANVAS_DIR gives them the right base directly. Falls back gracefully
   // to project root for projects whose config has no/empty canvasRoot.
-  const projectRoot = join(WORKSPACE_DIR, project);
+  const projectRoot = join(getEffectiveWorkspaceDir(), project);
   let canvasRoot = "";
   try { canvasRoot = (await readCanvasConfig(project)).canvasRoot || ""; } catch { /* default empty */ }
   const canvasDir = canvasRoot ? join(projectRoot, canvasRoot) : projectRoot;

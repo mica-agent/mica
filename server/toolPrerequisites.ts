@@ -39,7 +39,7 @@
 
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { WORKSPACE_DIR } from "./files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "./files.js";
 import { hasSkillBeenInvoked } from "./skillInvocationTracker.js";
 import { getLastUserMessageAt } from "./userMessageTracker.js";
 import { readSpecForClass } from "./specFrontmatter.js";
@@ -432,7 +432,7 @@ export function buildPredicateContext(
 ): PredicateContext {
   return {
     project,
-    projectDir: join(WORKSPACE_DIR, project),
+    projectDir: join(getEffectiveWorkspaceDir(), project),
     chatFilename,
     toolArgs,
   };

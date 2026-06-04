@@ -22,7 +22,10 @@ import { DEFAULT_CANVAS_ROOT } from "./files.js";
 export interface FileChangeEvent {
   type: "created" | "changed" | "deleted";
   filename: string;  // Relative path from project root (e.g., "docs/spec.md")
-  project: string;   // Project name the event belongs to
+  project: string;   // Project name the event belongs to (BARE name, for path/session ops)
+  tenant?: string;   // Owning tenant, when multi-tenant. Undefined in single-tenant.
+                     // Routing (broadcast match) keys on (project, tenant); path/session
+                     // ops use `project` (within the tenant's workspace via the seam).
 }
 
 /** Directories to skip while scanning. */
@@ -57,6 +60,11 @@ interface PinnedParentEntry {
 }
 
 interface ProjectWatch {
+  /** Bare project name (the Map key may be tenant-prefixed; this is the
+   *  un-prefixed name emitted in events for path/session resolution). */
+  project: string;
+  /** Owning tenant, when multi-tenant; undefined in single-tenant. */
+  tenant?: string;
   projectDir: string;
   canvasRoot: string;
   pinned: string[];
@@ -85,11 +93,17 @@ export class FileWatcher extends EventEmitter {
    *  live outside canvasRoot. We watch their parent directories non-recursively
    *  and filter events to just those files. */
   async addProject(
-    project: string,
+    projectName: string,
     projectDir: string,
     canvasRoot: string = DEFAULT_CANVAS_ROOT,
     pinned: string[] = [],
+    tenant?: string,
   ): Promise<void> {
+    // The Map / all internal ops key on a tenant-scoped composite so two
+    // tenants' same-named projects (e.g. everyone's seeded showcase) get
+    // independent watchers. Single-tenant: no tenant ⇒ key === bare name,
+    // byte-identical to before. Events still emit the BARE project + tenant.
+    const project = tenant ? `${tenant}::${projectName}` : projectName;
     const existing = this.projects.get(project);
     if (existing) {
       existing.refCount++;
@@ -109,6 +123,8 @@ export class FileWatcher extends EventEmitter {
     // Pre-register the project so installPinnedWatch (called below) can find
     // the in-progress entry to mutate. The schedule callback also uses this.
     const projectWatch: ProjectWatch = {
+      project: projectName,
+      tenant,
       projectDir,
       canvasRoot: normalizedRoot,
       pinned: [...pinned],
@@ -413,7 +429,8 @@ export class FileWatcher extends EventEmitter {
   /** Sync the watcher's pinned set to a new list. Diffs against the current
    *  state; only adds/removes the differences. Cheap to call even for
    *  identical lists. No-op if the project isn't currently watched. */
-  async refreshPinned(project: string, newPinned: string[]): Promise<void> {
+  async refreshPinned(projectName: string, newPinned: string[], tenant?: string): Promise<void> {
+    const project = tenant ? `${tenant}::${projectName}` : projectName;
     const w = this.projects.get(project);
     if (!w) return;
     const newSet = new Set(newPinned);
@@ -451,7 +468,8 @@ export class FileWatcher extends EventEmitter {
   }
 
   /** Decrement ref count for a project. Stops the watcher when count hits zero. */
-  releaseProject(project: string): void {
+  releaseProject(projectName: string, tenant?: string): void {
+    const project = tenant ? `${tenant}::${projectName}` : projectName;
     const w = this.projects.get(project);
     if (!w) return;
     w.refCount--;
@@ -514,15 +532,15 @@ export class FileWatcher extends EventEmitter {
       if (s.isDirectory()) return;
 
       if (w.knownFiles.has(filename)) {
-        this.emit(eventName, { type: "changed", filename, project } as FileChangeEvent);
+        this.emit(eventName, { type: "changed", filename, project: w.project, tenant: w.tenant } as FileChangeEvent);
       } else {
         w.knownFiles.add(filename);
-        this.emit(eventName, { type: "created", filename, project } as FileChangeEvent);
+        this.emit(eventName, { type: "created", filename, project: w.project, tenant: w.tenant } as FileChangeEvent);
       }
     } catch {
       if (w.knownFiles.has(filename)) {
         w.knownFiles.delete(filename);
-        this.emit(eventName, { type: "deleted", filename, project } as FileChangeEvent);
+        this.emit(eventName, { type: "deleted", filename, project: w.project, tenant: w.tenant } as FileChangeEvent);
       }
     }
   }

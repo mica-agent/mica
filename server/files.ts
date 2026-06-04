@@ -12,11 +12,28 @@ import { exec as execCb } from "child_process";
 import { promisify } from "util";
 import { archiveSnapshots } from "./turnSnapshots.js";
 import { archiveTurnEvents } from "./turnEvents.js";
+import { getCurrentTenant } from "./tenantContext.js";
+import { resolveInjectedKey } from "./auth/hooks.js";
+import { decryptSecret } from "./auth/secrets.js";
 
 const execAsync = promisify(execCb);
 
-/** The workspace root. Defaults to /project (Docker mount point). */
+/** The workspace ROOT. Defaults to /project (Docker mount point). In
+ *  single-tenant Mica this is where project subdirectories live directly. */
 export const WORKSPACE_DIR = process.env.PROJECT_DIR || "/project";
+
+/** The EFFECTIVE workspace dir for the current request/turn. Single-tenant
+ *  (no tenant bound): returns WORKSPACE_DIR unchanged — byte-identical to the
+ *  old `WORKSPACE_DIR` references this replaced. Multi-tenant fork (a tenant is
+ *  bound via tenantContext): returns `WORKSPACE_DIR/<tenantId>`, so every
+ *  project/.mica path lands one level deeper, per tenant. This is the single
+ *  seam that makes the whole codebase tenant-aware without threading a param.
+ *  DORMANT until a fork's middleware calls runWithTenant(). */
+export function getEffectiveWorkspaceDir(): string {
+  const tenantId = getCurrentTenant();
+  const base = WORKSPACE_DIR;
+  return tenantId ? join(base, tenantId) : base;
+}
 
 /** Workspace-shared docs directory. Files here are pinnable into any project
  *  via the `shared/` virtual prefix — see `isSharedFilename` /
@@ -185,7 +202,7 @@ export async function getCardClassMeta(ext: string, project: string | null | und
   if (cached) return cached;
 
   const candidates: string[] = [];
-  if (project) candidates.push(join(WORKSPACE_DIR, project, ".mica", "card-classes", className));
+  if (project) candidates.push(join(getEffectiveWorkspaceDir(), project, ".mica", "card-classes", className));
   // Library-project search path — same precedence as resolveCardClassDir
   // (project > library > built-in). Without this, library-resolved cards
   // appear in the list endpoint and render their HTML, but the channel
@@ -341,16 +358,16 @@ const IGNORE_EXTENSIONS = new Set([
 /** The .mica metadata directory for a given project. */
 export function micaDir(projectName?: string): string {
   if (projectName) {
-    return join(WORKSPACE_DIR, projectName, ".mica");
+    return join(getEffectiveWorkspaceDir(), projectName, ".mica");
   }
   // Workspace-level .mica (for workspace config)
-  return join(WORKSPACE_DIR, ".mica");
+  return join(getEffectiveWorkspaceDir(), ".mica");
 }
 
 /** Get the project directory path. */
 export function projectDir(projectName: string): string {
   validateProjectName(projectName);
-  return join(WORKSPACE_DIR, projectName);
+  return join(getEffectiveWorkspaceDir(), projectName);
 }
 
 /** Get the workspace name from the directory basename. */
@@ -385,7 +402,7 @@ export interface ProjectInfo {
 /** Path to the per-project last-opened marker. The file's mtime is the
  *  timestamp; the file content is unused. */
 function lastOpenedMarkerPath(projectName: string): string {
-  return join(WORKSPACE_DIR, projectName, ".mica", "last-opened");
+  return join(getEffectiveWorkspaceDir(), projectName, ".mica", "last-opened");
 }
 
 /** Mark a project as just opened. Writes an empty file (or refreshes its
@@ -404,9 +421,10 @@ export async function markProjectOpened(projectName: string): Promise<void> {
 
 /** List all projects (subdirectories) in the workspace. */
 export async function listProjects(): Promise<ProjectInfo[]> {
-  if (!existsSync(WORKSPACE_DIR)) return [];
+  const workspaceDir = getEffectiveWorkspaceDir();
+  if (!existsSync(workspaceDir)) return [];
 
-  const entries = await readdir(WORKSPACE_DIR, { withFileTypes: true });
+  const entries = await readdir(workspaceDir, { withFileTypes: true });
   const projects: ProjectInfo[] = [];
 
   for (const entry of entries) {
@@ -414,7 +432,7 @@ export async function listProjects(): Promise<ProjectInfo[]> {
     if (!entry.isDirectory()) continue;
     if (IGNORE_DIRS.has(entry.name)) continue;
 
-    const projPath = join(WORKSPACE_DIR, entry.name);
+    const projPath = join(getEffectiveWorkspaceDir(), entry.name);
     const hasGit = existsSync(join(projPath, ".git"));
     const hasMica = existsSync(join(projPath, ".mica"));
 
@@ -474,14 +492,14 @@ export async function initProject(projectName: string, canvasRoot?: string): Pro
 
   // Create canvas root directory (everything on canvas lives here)
   if (root !== ".") {
-    await mkdir(join(WORKSPACE_DIR, projectName, root), { recursive: true });
+    await mkdir(join(getEffectiveWorkspaceDir(), projectName, root), { recursive: true });
   }
 }
 
 /** Create a new empty project directory and initialize it. */
 export async function createProject(projectName: string, docsDir?: string): Promise<void> {
   validateProjectName(projectName);
-  const dir = join(WORKSPACE_DIR, projectName);
+  const dir = join(getEffectiveWorkspaceDir(), projectName);
   if (existsSync(dir)) {
     throw new Error(`Project already exists: ${projectName}`);
   }
@@ -493,8 +511,8 @@ export async function createProject(projectName: string, docsDir?: string): Prom
 export async function renameProject(oldName: string, newName: string): Promise<void> {
   validateProjectName(oldName);
   validateProjectName(newName);
-  const oldDir = join(WORKSPACE_DIR, oldName);
-  const newDir = join(WORKSPACE_DIR, newName);
+  const oldDir = join(getEffectiveWorkspaceDir(), oldName);
+  const newDir = join(getEffectiveWorkspaceDir(), newName);
   if (!existsSync(oldDir)) throw new Error(`Project not found: ${oldName}`);
   if (existsSync(newDir)) throw new Error(`Project already exists: ${newName}`);
   await rename(oldDir, newDir);
@@ -504,7 +522,7 @@ export async function renameProject(oldName: string, newName: string): Promise<v
 /** Delete a project directory entirely. */
 export async function deleteProject(projectName: string): Promise<void> {
   validateProjectName(projectName);
-  const dir = join(WORKSPACE_DIR, projectName);
+  const dir = join(getEffectiveWorkspaceDir(), projectName);
   if (!existsSync(dir)) throw new Error(`Project not found: ${projectName}`);
   await rm(dir, { recursive: true, force: true });
 }
@@ -544,7 +562,15 @@ const cardIdCache = new Map<string, string>();             // `${project}|${file
 const cardIdPending = new Map<string, Promise<string>>();  // single-flight
 
 function cardIdKey(project: string | null | undefined, filename: string): string {
-  return `${project ?? "<workspace>"}|${filename}`;
+  // The on-disk sidecar (.mica/cards/<file>.id.json) is already tenant-scoped via
+  // micaDir → getEffectiveWorkspaceDir. This in-memory cache key must ALSO carry the
+  // tenant, or two tenants with a same-named project+file (e.g. everyone's seeded
+  // showcase) would collide on one cache entry and share a session UUID — the
+  // cross-tenant channel-session leak. Inert single-tenant: no tenant bound ⇒
+  // getCurrentTenant() is undefined ⇒ key is exactly the old `${project}|${filename}`.
+  const tenant = getCurrentTenant();
+  const base = `${project ?? "<workspace>"}|${filename}`;
+  return tenant ? `${tenant}::${base}` : base;
 }
 
 /** Server-side mirror of src/api/canvasPaths.ts canonicalizeCardPath. Translates
@@ -775,8 +801,8 @@ export async function readCanvasConfig(project?: string): Promise<CanvasConfig> 
   };
   try {
     const configPath = project
-      ? join(WORKSPACE_DIR, project, ".mica", "config.json")
-      : join(WORKSPACE_DIR, ".mica", "config.json");
+      ? join(getEffectiveWorkspaceDir(), project, ".mica", "config.json")
+      : join(getEffectiveWorkspaceDir(), ".mica", "config.json");
     const raw = await readFile(configPath, "utf-8");
     const cfg = JSON.parse(raw);
     return {
@@ -795,8 +821,8 @@ export async function updateCanvasConfig(
   updates: { canvasRoot?: string; pinned?: string[]; sharedPinned?: string[] },
 ): Promise<void> {
   const configPath = project
-    ? join(WORKSPACE_DIR, project, ".mica", "config.json")
-    : join(WORKSPACE_DIR, ".mica", "config.json");
+    ? join(getEffectiveWorkspaceDir(), project, ".mica", "config.json")
+    : join(getEffectiveWorkspaceDir(), ".mica", "config.json");
   let cfg: Record<string, unknown> = {};
   try {
     cfg = JSON.parse(await readFile(configPath, "utf-8"));
@@ -820,10 +846,15 @@ export async function updateCanvasConfig(
  *  directly rather than importing connections.ts to avoid a module
  *  cycle (connections.ts already imports WORKSPACE_DIR/micaDir from here). */
 export async function readOpenRouterKey(project: string | undefined): Promise<string | null> {
+  // 0. Injected resolver (multi-tenant fork: sponsor / per-tenant token). Returns
+  //    undefined in main (no resolver registered) ⇒ fall through to the normal
+  //    config → credentials → env chain unchanged.
+  const injected = await resolveInjectedKey({ provider: "openrouter", project, tenant: getCurrentTenant() });
+  if (injected) return injected;
   // 1. Per-project override.
   if (project) {
     try {
-      const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, project, ".mica", "config.json"), "utf-8"));
+      const cfg = JSON.parse(await readFile(join(getEffectiveWorkspaceDir(), project, ".mica", "config.json"), "utf-8"));
       if (typeof cfg.openrouterApiKey === "string" && cfg.openrouterApiKey.length > 0) {
         return cfg.openrouterApiKey;
       }
@@ -831,8 +862,8 @@ export async function readOpenRouterKey(project: string | undefined): Promise<st
   }
   // 2. Workspace credentials.json (Connections panel home).
   try {
-    const credRaw = await readFile(join(WORKSPACE_DIR, ".mica", "credentials.json"), "utf-8");
-    const creds = JSON.parse(credRaw);
+    const credRaw = await readFile(join(getEffectiveWorkspaceDir(), ".mica", "credentials.json"), "utf-8");
+    const creds = JSON.parse(decryptSecret(credRaw));
     const entry = creds && typeof creds === "object" ? creds.openrouter : undefined;
     if (entry && typeof entry.api_key === "string" && entry.api_key.length > 0) {
       return entry.api_key;
@@ -840,7 +871,7 @@ export async function readOpenRouterKey(project: string | undefined): Promise<st
   } catch { /* no credentials.json or no openrouter entry */ }
   // 3. Legacy workspace config.json (pre-Connections setups).
   try {
-    const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, ".mica", "config.json"), "utf-8"));
+    const cfg = JSON.parse(await readFile(join(getEffectiveWorkspaceDir(), ".mica", "config.json"), "utf-8"));
     if (typeof cfg.openrouterApiKey === "string" && cfg.openrouterApiKey.length > 0) {
       return cfg.openrouterApiKey;
     }
@@ -853,8 +884,8 @@ export async function readOpenRouterKey(project: string | undefined): Promise<st
 /** Write or clear the project-wide OpenRouter API key in .mica/config.json. Empty string clears. */
 export async function writeOpenRouterKey(project: string | undefined, key: string): Promise<void> {
   const configPath = project
-    ? join(WORKSPACE_DIR, project, ".mica", "config.json")
-    : join(WORKSPACE_DIR, ".mica", "config.json");
+    ? join(getEffectiveWorkspaceDir(), project, ".mica", "config.json")
+    : join(getEffectiveWorkspaceDir(), ".mica", "config.json");
   await mkdir(dirname(configPath), { recursive: true });
   let cfg: Record<string, unknown> = {};
   try {
@@ -878,18 +909,22 @@ export async function readOpenAICompatConfig(
 ): Promise<{ baseUrl: string | null; key: string | null }> {
   let baseUrl: string | null = null;
   let key: string | null = null;
+  // Injected resolver (fork: sponsor / per-tenant key). Undefined in main ⇒
+  // fall through. Only the key is injected; baseUrl still resolves from config/env.
+  const injectedKey = await resolveInjectedKey({ provider: "openai-compat", project, tenant: getCurrentTenant() });
+  if (injectedKey) key = injectedKey;
   // Per-project override.
   if (project) {
     try {
-      const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, project, ".mica", "config.json"), "utf-8"));
+      const cfg = JSON.parse(await readFile(join(getEffectiveWorkspaceDir(), project, ".mica", "config.json"), "utf-8"));
       if (typeof cfg.openaiCompatBaseUrl === "string" && cfg.openaiCompatBaseUrl.length > 0) baseUrl = cfg.openaiCompatBaseUrl;
-      if (typeof cfg.openaiCompatApiKey === "string" && cfg.openaiCompatApiKey.length > 0) key = cfg.openaiCompatApiKey;
+      if (!key && typeof cfg.openaiCompatApiKey === "string" && cfg.openaiCompatApiKey.length > 0) key = cfg.openaiCompatApiKey;
     } catch { /* no project override */ }
   }
   // Workspace fallback.
   if (!baseUrl || !key) {
     try {
-      const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, ".mica", "config.json"), "utf-8"));
+      const cfg = JSON.parse(await readFile(join(getEffectiveWorkspaceDir(), ".mica", "config.json"), "utf-8"));
       if (!baseUrl && typeof cfg.openaiCompatBaseUrl === "string" && cfg.openaiCompatBaseUrl.length > 0) baseUrl = cfg.openaiCompatBaseUrl;
       if (!key && typeof cfg.openaiCompatApiKey === "string" && cfg.openaiCompatApiKey.length > 0) key = cfg.openaiCompatApiKey;
     } catch { /* no workspace config */ }
@@ -914,8 +949,8 @@ export async function writeOpenAICompatConfig(
   cfg: { baseUrl?: string | null; key?: string | null },
 ): Promise<void> {
   const configPath = project
-    ? join(WORKSPACE_DIR, project, ".mica", "config.json")
-    : join(WORKSPACE_DIR, ".mica", "config.json");
+    ? join(getEffectiveWorkspaceDir(), project, ".mica", "config.json")
+    : join(getEffectiveWorkspaceDir(), ".mica", "config.json");
   await mkdir(dirname(configPath), { recursive: true });
   let stored: Record<string, unknown> = {};
   try {
@@ -946,7 +981,7 @@ export async function writeOpenAICompatConfig(
  */
 export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
   const { canvasRoot, pinned, sharedPinned } = await readCanvasConfig(project);
-  const projectRoot = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
+  const projectRoot = project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir();
   const normalizedRoot = canvasRoot === "." || canvasRoot === "" ? "" : canvasRoot.replace(/\/$/, "");
   const canvasAbs = normalizedRoot === "" ? projectRoot : join(projectRoot, normalizedRoot);
 
@@ -1030,7 +1065,7 @@ export async function listCanvasFiles(project?: string): Promise<FileMeta[]> {
  * filtered set.
  */
 export async function listFiles(project?: string, opts: { showHidden?: boolean } = {}): Promise<FileMeta[]> {
-  const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
+  const root = project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir();
   if (!existsSync(root)) return [];
 
   const files: FileMeta[] = [];
@@ -1095,7 +1130,7 @@ async function scanDir(dir: string, root: string, files: FileMeta[], showHidden:
 export function resolveFilePath(filename: string, project?: string): string {
   if (isSharedFilename(filename)) return resolveSharedPath(filename);
   validateFilename(filename);
-  const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
+  const root = project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir();
   return join(root, filename);
 }
 
@@ -1106,7 +1141,7 @@ export function resolveFilePath(filename: string, project?: string): string {
 export async function readProjectFile(filename: string, project?: string): Promise<FileInfo> {
   const filePath = isSharedFilename(filename)
     ? resolveSharedPath(filename)
-    : (validateFilename(filename), join(project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR, filename));
+    : (validateFilename(filename), join(project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir(), filename));
   const content = await readFile(filePath, "utf-8");
   const fileStat = await stat(filePath);
   return {
@@ -1123,7 +1158,7 @@ export async function readProjectFile(filename: string, project?: string): Promi
 export async function writeProjectFile(filename: string, content: string, project?: string): Promise<void> {
   const filePath = isSharedFilename(filename)
     ? resolveSharedPath(filename)
-    : (validateFilename(filename), join(project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR, filename));
+    : (validateFilename(filename), join(project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir(), filename));
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, content, "utf-8");
 }
@@ -1138,7 +1173,7 @@ export async function deleteProjectFile(filename: string, project?: string): Pro
     throw new Error(`Shared files cannot be deleted through a project context: ${filename}`);
   }
   validateFilename(filename);
-  const root = project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
+  const root = project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir();
   await unlink(join(root, filename));
 }
 
@@ -1148,6 +1183,20 @@ export function validateProjectName(name: string): void {
   if (!name || name.includes("/") || name.includes("\\") || name.includes("..") || name.startsWith(".")) {
     throw new Error(`Invalid project name: ${name}`);
   }
+}
+
+/** True for credential-bearing files that must never be served through the
+ *  generic file API or read by an agent file tool. `.mica/credentials.json`
+ *  (Connections panel store) and `.mica/config.json` (holds per-project /
+ *  legacy provider keys) both carry secrets; nothing legitimate reads them via
+ *  the file path (dedicated endpoints + internal direct-join reads handle them),
+ *  so blocking here is a pure hardening. ALWAYS ON — protects single-tenant BYO
+ *  keys from a prompt-injected card, and is the linchpin of the sponsored-token
+ *  "use but not copy" guarantee (the sponsor token itself lives outside the
+ *  workspace tree entirely). */
+export function isProtectedCredentialPath(filename: string): boolean {
+  const normalized = filename.split(sep).join("/").toLowerCase();
+  return /(^|\/)\.mica\/(credentials|config)\.json$/.test(normalized);
 }
 
 function validateFilename(filename: string): void {
@@ -1160,6 +1209,13 @@ function validateFilename(filename: string): void {
   const normalized = filename.split(sep).join("/");
   if (normalized.startsWith("/")) {
     throw new Error(`Invalid filename (absolute path): ${filename}`);
+  }
+  // Credential read/write guard (always-on). The file API + agent file tools
+  // funnel through here; internal key resolution (readOpenRouterKey) and the
+  // Connections panel use direct fs joins that bypass this, so they're
+  // unaffected. See isProtectedCredentialPath.
+  if (isProtectedCredentialPath(normalized)) {
+    throw new Error(`Access to credential files is not permitted: ${filename}`);
   }
 }
 
@@ -1202,7 +1258,7 @@ async function readSkillSummary(skillPath: string): Promise<{ description: strin
 /** List skills for a project — flat list from <project>/.qwen/skills/<name>/SKILL.md */
 export async function listSkills(project?: string): Promise<SkillMeta[]> {
   if (!project) return [];
-  const projSkillsDir = join(WORKSPACE_DIR, project, ".qwen", "skills");
+  const projSkillsDir = join(getEffectiveWorkspaceDir(), project, ".qwen", "skills");
   if (!existsSync(projSkillsDir)) return [];
   const out: SkillMeta[] = [];
   try {
@@ -1225,7 +1281,7 @@ function validateSkillName(name: string): void {
 /** Resolve the SKILL.md path for a project-scoped skill */
 function skillPath(name: string, project: string): string {
   validateSkillName(name);
-  return join(WORKSPACE_DIR, project, ".qwen", "skills", name, "SKILL.md");
+  return join(getEffectiveWorkspaceDir(), project, ".qwen", "skills", name, "SKILL.md");
 }
 
 /** Read SKILL.md content for a skill */
@@ -1299,7 +1355,7 @@ export async function overlayTemplate(
     throw new Error(`Invalid template name: ${templateName}`);
   }
   const src = join(TEMPLATES_DIR, templateName);
-  const dst = join(WORKSPACE_DIR, projectName);
+  const dst = join(getEffectiveWorkspaceDir(), projectName);
   if (!existsSync(src)) throw new Error(`Template not found: ${templateName}`);
   if (!existsSync(dst)) throw new Error(`Project directory does not exist: ${projectName}`);
 
@@ -1380,7 +1436,7 @@ export async function overlayTemplate(
 
 export async function createProjectFromTemplate(projectName: string, templateName: string): Promise<void> {
   validateProjectName(projectName);
-  const dst = join(WORKSPACE_DIR, projectName);
+  const dst = join(getEffectiveWorkspaceDir(), projectName);
   if (existsSync(dst)) throw new Error(`Project already exists: ${projectName}`);
   await mkdir(dst, { recursive: true });
   // Overlay the template FIRST so its canvas-back.md / config.json / skills /
@@ -1648,7 +1704,7 @@ export async function cloneProjectFromRepo(
   options: { templateName?: string; canvasRoot?: string } = {},
 ): Promise<void> {
   validateProjectName(projectName);
-  const dst = join(WORKSPACE_DIR, projectName);
+  const dst = join(getEffectiveWorkspaceDir(), projectName);
   if (existsSync(dst)) throw new Error(`Project already exists: ${projectName}`);
 
   console.log(`[mica] Cloning ${url} -> ${dst}`);

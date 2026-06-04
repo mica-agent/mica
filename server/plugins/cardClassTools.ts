@@ -11,7 +11,7 @@ import { mkdir, writeFile, readFile, rm, readdir, stat, access } from "fs/promis
 import { runVerifiers, formatVerifyFailure } from "../verifiers/index.js";
 import { existsSync } from "fs";
 import { z } from "zod";
-import { WORKSPACE_DIR, micaDir, readCanvasConfig, clearCardClassMetaCache, findCardClassInLibraries } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir, micaDir, readCanvasConfig, clearCardClassMetaCache, findCardClassInLibraries } from "../files.js";
 import { lintCardJsContent } from "../cardValidators.js";
 import { readSpecForClass, urlFromDep, type ParsedSpec } from "../specFrontmatter.js";
 
@@ -54,7 +54,7 @@ function normalizeExtension(raw: string | undefined, name: string): string {
 }
 
 function projectDir(project: string): string {
-  return join(WORKSPACE_DIR, project);
+  return join(getEffectiveWorkspaceDir(), project);
 }
 
 function classDir(project: string, name: string): string {

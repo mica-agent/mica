@@ -21,7 +21,7 @@ import { spawn } from "child_process";
 import { writeFile, mkdir, appendFile } from "fs/promises";
 import { existsSync, readFileSync } from "fs";
 import { z } from "zod";
-import { WORKSPACE_DIR } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "../files.js";
 
 // SDK helpers populated by bindSdk. Same lazy-binding pattern as
 // server/plugins/cardClassTools.ts.
@@ -68,7 +68,7 @@ interface ToolsJson {
 // ── Manifest loading ──────────────────────────────────────────────
 
 function manifestPath(project: string): string {
-  return join(WORKSPACE_DIR, project, ".mica", "tools.json");
+  return join(getEffectiveWorkspaceDir(), project, ".mica", "tools.json");
 }
 
 // Sync read so buildCliMcpServer can be called from the SDK options' IIFE.

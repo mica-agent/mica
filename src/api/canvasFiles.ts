@@ -8,6 +8,8 @@
 // Endpoints that are NOT project-scoped (workspace, project listing/create/etc.)
 // use the bare `fetch` and don't need the header.
 
+import { getAuthToken } from "./authToken.js";
+
 const API_BASE = import.meta.env.VITE_MICA_API || "";
 
 /** Wrap fetch with the X-Mica-Project header for project-scoped endpoints.
@@ -16,6 +18,10 @@ const API_BASE = import.meta.env.VITE_MICA_API || "";
 function projFetch(project: string, url: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   headers.set("X-Mica-Project", project);
+  // Attach the session token when a fork has registered one (DORMANT in main:
+  // getAuthToken() is null → no header → unchanged).
+  const token = getAuthToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
   return fetch(url, { ...init, headers, cache: "no-store" });
 }
 

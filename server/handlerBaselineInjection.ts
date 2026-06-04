@@ -24,7 +24,7 @@
 
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { WORKSPACE_DIR } from "./files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "./files.js";
 import { readSpecForClass } from "./specFrontmatter.js";
 import { getManifest } from "./handlerManifest.js";
 
@@ -35,7 +35,7 @@ async function collectDeclaredHandlers(
   project: string,
 ): Promise<Map<string, string[]>> {
   const handlers = new Map<string, Set<string>>();
-  const projectRoot = join(WORKSPACE_DIR, project);
+  const projectRoot = join(getEffectiveWorkspaceDir(), project);
 
   // 1. Specs under canvas/
   try {

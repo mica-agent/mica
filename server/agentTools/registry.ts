@@ -108,7 +108,11 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   inspectUrlTool,
   inspectPythonPackageTool,
   listHandlersTool,
-  micaShellTool,
+  // Shell-exec tool — the multi-tenant risk. Gated OUT when MICA_DISABLE_SHELL_TOOLS
+  // is set (tier-1 cloud profile), so no agent has arbitrary shell on the shared
+  // host. Included by default (single-tenant main unchanged). The SDK's own
+  // run_shell_command is already excluded separately in micaAgent.ts.
+  ...(process.env.MICA_DISABLE_SHELL_TOOLS ? [] : [micaShellTool]),
   restartSidecarTool,
   sidecarLogTool,
   verifySidecarTool,

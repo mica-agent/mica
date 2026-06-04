@@ -7,7 +7,7 @@
 
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
-import { WORKSPACE_DIR } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "../files.js";
 
 const execAsync = promisify(execCb);
 
@@ -29,7 +29,7 @@ export async function execHandler(method: string, params: unknown, _project: str
       if (!command) throw new Error("command required");
 
       const execTimeout = Math.min(timeout || 30000, MAX_TIMEOUT);
-      const execCwd = cwd ? (cwd.startsWith("/") ? cwd : `${WORKSPACE_DIR}/${cwd}`) : WORKSPACE_DIR;
+      const execCwd = cwd ? (cwd.startsWith("/") ? cwd : `${getEffectiveWorkspaceDir()}/${cwd}`) : getEffectiveWorkspaceDir();
 
       try {
         const { stdout, stderr } = await execAsync(command, {

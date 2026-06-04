@@ -19,7 +19,7 @@
 
 import { spawn, ChildProcess } from "child_process";
 import { join } from "path";
-import { WORKSPACE_DIR } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "../files.js";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 import type { HandlerManifest } from "../handlerManifest.js";
 
@@ -65,7 +65,7 @@ export function createProcessHandler() {
       const envArg = (args.env && typeof args.env === "object")
         ? (args.env as Record<string, string>)
         : {};
-      const cwd = cwdArg ?? (ctx.project ? join(WORKSPACE_DIR, ctx.project) : WORKSPACE_DIR);
+      const cwd = cwdArg ?? (ctx.project ? join(getEffectiveWorkspaceDir(), ctx.project) : getEffectiveWorkspaceDir());
 
       const env: Record<string, string> = { ...(process.env as Record<string, string>) };
       for (const [k, v] of Object.entries(envArg)) {

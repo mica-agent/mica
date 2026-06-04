@@ -9,6 +9,8 @@
 import { appendFile, mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import { micaDir } from "./files.js";
+import { recordUsage } from "./auth/hooks.js";
+import { getCurrentTenant } from "./tenantContext.js";
 
 export interface TurnRecord {
   turn_id: string;
@@ -61,6 +63,17 @@ export function countTavilyCalls(toolCalls: Record<string, number>): number {
 }
 
 export async function recordTurn(project: string | null, rec: TurnRecord): Promise<void> {
+  // Usage-metering hook — fires for every agent turn (this is the shared
+  // chokepoint all agents call). No-op in main (no meter registered); a
+  // multi-tenant fork's meter uses this for free-period budget enforcement.
+  recordUsage({
+    tenant: getCurrentTenant(),
+    project: project ?? undefined,
+    provider: rec.agent,
+    model: rec.model,
+    inputTokens: rec.input_tokens,
+    outputTokens: rec.output_tokens,
+  });
   if (!project) return;
   try {
     const path = join(micaDir(project), "metrics", "turns.jsonl");

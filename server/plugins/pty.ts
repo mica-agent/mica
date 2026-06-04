@@ -3,7 +3,7 @@
 // Any card class can open a PTY with mica.openChannel("pty", { shell, cols, rows }).
 
 import * as pty from "node-pty";
-import { WORKSPACE_DIR } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "../files.js";
 import { join } from "path";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 
@@ -31,7 +31,7 @@ export function createPtyHandler() {
     // the session's life. Multiple tabs with different active projects each
     // get their own correct cwd; subsequent project-switches in any tab
     // don't redirect this already-open terminal.
-    const cwd = ctx.project ? join(WORKSPACE_DIR, ctx.project) : WORKSPACE_DIR;
+    const cwd = ctx.project ? join(getEffectiveWorkspaceDir(), ctx.project) : getEffectiveWorkspaceDir();
 
     // Scrollback buffer for reconnecting clients
     let scrollback = "";

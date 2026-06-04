@@ -5,7 +5,7 @@
 import { readFile, writeFile, mkdir, readdir } from "fs/promises";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import { WORKSPACE_DIR, micaDir, listCanvasFiles, readProjectFile, readCardSettings, resolveDefaultProvider, resolveDefaultModel, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir, micaDir, listCanvasFiles, readProjectFile, readCardSettings, resolveDefaultProvider, resolveDefaultModel, readOpenRouterKey, readOpenAICompatConfig, readCanvasConfig, BINARY_EXTS, isLikelyBinary, CONTEXT_SOFT_CAP_CHARS, getCardClassMeta, readChatCursor, writeChatCursor, DEFAULT_CANVAS_ROOT, loadChatQueue, saveChatQueue } from "./files.js";
 import { estimateTurnCost } from "./costEstimator.js";
 import { loadValidator, extensionFromWriteInput, contentFromWriteInput, pathFromWriteInput, pathFromReadInput, checkCardClassPrecondition, checkCardClassMetadataConsistency, checkLibraryDiscoveryPrecondition, checkProtectedPathPrecondition } from "./cardValidators.js";
 import { runVerifiers, formatVerifyFailure } from "./verifiers/index.js";
@@ -67,7 +67,7 @@ const WRITE_TOOL_NAMES = new Set([
 // the project-open endpoint, but no longer drives this module.
 export function setActiveProject(_project: string | null) { void _project; }
 function getProjectDir(project: string | null) {
-  return project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
+  return project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir();
 }
 function getMicaDir(project: string | null) { return micaDir(project || undefined); }
 
@@ -2562,7 +2562,7 @@ export function createAgentHandler(fileWatcher: FileWatcher) {
                     const writtenPath = String((block.input as Record<string, unknown>)?.file_path || (block.input as Record<string, unknown>)?.filePath || "");
                     if (writtenPath) {
                       const writtenFile = writtenPath.split("/").pop();
-                      const projRoot = sessionProject ? join(WORKSPACE_DIR, sessionProject) : "";
+                      const projRoot = sessionProject ? join(getEffectiveWorkspaceDir(), sessionProject) : "";
                       const relPath = projRoot && writtenPath.startsWith(projRoot + "/")
                         ? writtenPath.slice(projRoot.length + 1)
                         : writtenFile || writtenPath;

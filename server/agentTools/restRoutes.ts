@@ -15,7 +15,7 @@ import {
   getOpencodeSessionProject,
   getOpencodeSessionChatFilename,
 } from "./registry.js";
-import { WORKSPACE_DIR, SHARED_DIR, getIncludeProjects } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir, SHARED_DIR, getIncludeProjects } from "../files.js";
 
 const AGENT_TOOL_OPENCODE_SESSION_HEADER = "x-mica-opencode-session-id";
 
@@ -80,8 +80,8 @@ export function registerAgentToolRoutes(app: Express): void {
       return;
     }
     const allowlist: string[] = [
-      join(WORKSPACE_DIR, project),
-      join(WORKSPACE_DIR, ".mica"),
+      join(getEffectiveWorkspaceDir(), project),
+      join(getEffectiveWorkspaceDir(), ".mica"),
       SHARED_DIR,
       ...getIncludeProjects(),
     ];

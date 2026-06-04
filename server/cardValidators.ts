@@ -23,7 +23,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { stat } from "fs/promises";
 import { pathToFileURL } from "url";
-import { WORKSPACE_DIR, micaDir } from "./files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir, micaDir } from "./files.js";
 
 export type Validator = (content: string) => string | null | Promise<string | null>;
 
@@ -46,7 +46,7 @@ function cacheKey(project: string | null | undefined, ext: string): string {
 
 function resolveValidatorPath(project: string | null | undefined, ext: string): string | null {
   if (project) {
-    const projPath = join(WORKSPACE_DIR, project, ".mica", "card-classes", ext, "validate.js");
+    const projPath = join(getEffectiveWorkspaceDir(), project, ".mica", "card-classes", ext, "validate.js");
     if (existsSync(projPath)) return projPath;
   }
   const builtinPath = join(CARD_CLASSES_DIR, ext, "validate.js");

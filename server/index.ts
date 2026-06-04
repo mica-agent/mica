@@ -22,6 +22,7 @@ import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   WORKSPACE_DIR,
+  getEffectiveWorkspaceDir,
   micaDir,
   projectDir,
   getWorkspaceName,
@@ -82,6 +83,8 @@ import {
   type FileMeta,
   type CardSettings,
 } from "./files.js";
+import { getCurrentTenant, enterTenant } from "./tenantContext.js";
+import { hasAuthVerifier, verifyRequest } from "./auth/hooks.js";
 import { readSnapshot } from "./turnSnapshots.js";
 import { getOpenrouterModels } from "./contextWindow.js";
 import { readFile, writeFile, mkdir, stat as fsStat } from "fs/promises";
@@ -288,6 +291,23 @@ app.use((_req, res, next) => {
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Vary", "X-Mica-Project");
+  next();
+});
+
+// ── Tenant auth (multi-tenant fork enabler; DORMANT in main) ─────────
+// A fork installs a verifier via registerAuthVerifier(); it derives a tenant id
+// from the request (e.g. a Supabase JWT), which we bind via enterTenant() for
+// the rest of the request so the getEffectiveWorkspaceDir seam scopes all
+// paths/keys to that tenant. Main registers nothing → fast-path, behavior
+// unchanged. Mounted after body-parse so verifiers can read parsed fields.
+app.use("/api", async (req, res, next) => {
+  if (!hasAuthVerifier()) return next();
+  try {
+    const { tenantId } = await verifyRequest(req);
+    if (tenantId) enterTenant(tenantId);
+  } catch (err) {
+    console.warn(`[auth] verifyRequest failed: ${(err as Error).message}`);
+  }
   next();
 });
 
@@ -2020,7 +2040,7 @@ app.post("/api/canvas/pin", async (req, res) => {
       // arrive as `file-changed` broadcasts. Without this, the watcher only
       // covers what was pinned at addProject time — pins added mid-session
       // would silently drop edits until a reconnect.
-      if (proj) await fileWatcher.refreshPinned(proj, cfg.pinned);
+      if (proj) await fileWatcher.refreshPinned(proj, cfg.pinned, getCurrentTenant());
       // Tell subscribers a new file just became canvas-visible. Reusing the
       // existing `file-created` event piggy-backs on CanvasCardRuntime's
       // existing handler (which calls fetchFiles to reconcile children).
@@ -2046,7 +2066,7 @@ app.delete("/api/canvas/pin", async (req, res) => {
     // Tear down the parent-dir watcher (if this was the last pin in that
     // dir). Otherwise the watcher would keep the inotify slot alive for
     // the rest of the session and re-emit edits as ghost broadcasts.
-    if (wasPinned && proj) await fileWatcher.refreshPinned(proj, cfg.pinned);
+    if (wasPinned && proj) await fileWatcher.refreshPinned(proj, cfg.pinned, getCurrentTenant());
     // Mirror the pin-add broadcast: when a pinned root file is unpinned,
     // it disappears from the canvas-files list. The frontend listens for
     // `file-deleted` to filter the children array, which is the right
@@ -2122,7 +2142,7 @@ app.put("/api/canvas/config", async (req, res) => {
     // Same reasoning as the /api/canvas/pin handlers: keep the watcher's
     // pinned set in sync with the persisted config so mid-session edits
     // to the new pin list don't silently drop file-change broadcasts.
-    if (proj && updates.pinned) await fileWatcher.refreshPinned(proj, updates.pinned);
+    if (proj && updates.pinned) await fileWatcher.refreshPinned(proj, updates.pinned, getCurrentTenant());
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -2321,7 +2341,7 @@ app.post("/api/files/:filename/upload", async (req, res) => {
     return;
   }
   const reqProject = getRequestProject(req);
-  const root = reqProject ? join(WORKSPACE_DIR, reqProject) : WORKSPACE_DIR;
+  const root = reqProject ? join(getEffectiveWorkspaceDir(), reqProject) : getEffectiveWorkspaceDir();
   const filePath = join(root, filename);
   if (!filePath.startsWith(root + "/")) {
     res.status(400).json({ error: "Invalid filename" });
@@ -2394,7 +2414,7 @@ app.post("/api/proposals/apply", jsonParser, async (req, res) => {
     return;
   }
 
-  const projectRoot = join(WORKSPACE_DIR, proposal.project);
+  const projectRoot = join(getEffectiveWorkspaceDir(), proposal.project);
   const results: Array<{ file: string; appliedHunks: number; error?: string }> = [];
   let totalApplied = 0;
 
@@ -2707,6 +2727,10 @@ const pendingChannelOpens = new Map<string, Promise<void>>();
 // Per-WS subscribed project (one project per tab). Used by broadcastToProject
 // to fan out file events only to interested clients.
 const wsProjects = new Map<WebSocket, string>();
+// Per-WS owning tenant (multi-tenant fork only — populated by the fork's WS auth).
+// EMPTY in single-tenant main, so broadcast routing matches on project alone, as
+// before. When set, broadcasts only reach connections of the same (project, tenant).
+const wsTenants = new Map<WebSocket, string>();
 // Per-WS short id for log readability — answers "is the same tab toggling
 // projects, or are these different tabs?". Assigned on connection. See
 // reportSubscriptionState() below.
@@ -2762,7 +2786,8 @@ wss.on("connection", (ws) => {
     const subscribed = wsProjects.get(ws);
     if (subscribed) {
       wsProjects.delete(ws);
-      fileWatcher.releaseProject(subscribed);
+      fileWatcher.releaseProject(subscribed, wsTenants.get(ws));
+      wsTenants.delete(ws);
     }
     const channels = wsChannels.get(ws);
     if (channels) {
@@ -2807,11 +2832,11 @@ wss.on("connection", (ws) => {
         if (!proj) break;
         const prev = wsProjects.get(ws);
         if (prev === proj) break;
-        if (prev) fileWatcher.releaseProject(prev);
+        if (prev) fileWatcher.releaseProject(prev, wsTenants.get(ws));
         wsProjects.set(ws, proj);
         try {
           const { canvasRoot, pinned } = await readCanvasConfig(proj);
-          await fileWatcher.addProject(proj, projectDir(proj), canvasRoot, pinned);
+          await fileWatcher.addProject(proj, projectDir(proj), canvasRoot, pinned, wsTenants.get(ws));
         } catch (err) {
           console.error(`[ws] subscribe-project ${proj} failed:`, (err as Error).message);
         }
@@ -2823,7 +2848,7 @@ wss.on("connection", (ws) => {
         const prev = wsProjects.get(ws);
         if (!prev) break;
         wsProjects.delete(ws);
-        fileWatcher.releaseProject(prev);
+        fileWatcher.releaseProject(prev, wsTenants.get(ws));
         reportSubscriptionState(`unsubscribe ws#${wsIds.get(ws) ?? "?"} from ${prev}`);
         break;
       }
@@ -2994,21 +3019,29 @@ function classifyErrorSurface(filename: string): "overlay" | "bubble" {
 
 /** Send a message only to WS clients subscribed to the given project.
  *  Returns the number of clients the message was successfully queued to. */
-function broadcastToProject(project: string, msg: Record<string, unknown>): number {
+function broadcastToProject(project: string, msg: Record<string, unknown>, tenant: string | undefined = getCurrentTenant()): number {
   const data = JSON.stringify(msg);
   let count = 0;
   for (const [ws, proj] of wsProjects) {
     if (proj !== project) continue;
+    // Tenant gate: in single-tenant main both sides are undefined, so this is
+    // a no-op. In the fork, only a subscriber of the SAME tenant receives the
+    // event — prevents two tenants' same-named projects from cross-broadcasting.
+    if ((wsTenants.get(ws) || undefined) !== (tenant || undefined)) continue;
     if (ws.readyState !== WebSocket.OPEN) continue;
-    try { ws.send(data); count++; } catch { wsClients.delete(ws); wsProjects.delete(ws); }
+    try { ws.send(data); count++; } catch { wsClients.delete(ws); wsProjects.delete(ws); wsTenants.delete(ws); }
   }
-  console.log(`[broadcast:${project}] ${msg.type} → ${count} subscribers`);
+  console.log(`[broadcast:${tenant ? tenant + "/" : ""}${project}] ${msg.type} → ${count} subscribers`);
   return count;
 }
 
 // ── File Watcher Events ──────────────────────────────────────
 
-fileWatcher.on("file-change", async (event: { type: string; filename: string; project: string }) => {
+fileWatcher.on("file-change", async (event: { type: string; filename: string; project: string; tenant?: string }) => {
+  // Bind the owning tenant for this handler's async execution so path/session
+  // ops (projectDir, cardId, validators) resolve in-tenant and broadcasts route
+  // to that tenant. No-op in single-tenant (event.tenant undefined).
+  if (event.tenant) enterTenant(event.tenant);
   console.log(`[file-watcher:${event.project}] ${event.type}: ${event.filename}`);
 
   // Capture whether this file had a validator error BEFORE we clear it.
@@ -3109,7 +3142,8 @@ fileWatcher.on("file-change", async (event: { type: string; filename: string; pr
   }
 });
 
-fileWatcher.on("card-class-change", (event: { type: string; filename: string; project: string }) => {
+fileWatcher.on("card-class-change", (event: { type: string; filename: string; project: string; tenant?: string }) => {
+  if (event.tenant) enterTenant(event.tenant);
   console.log(`[file-watcher:${event.project}] card-class ${event.type}: ${event.filename}`);
   broadcastToProject(event.project, { type: "card-class-changed", filename: event.filename, change: event.type });
 
@@ -3258,12 +3292,19 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // (TS). See server/plugins/llmRestApi.ts.
   registerLlmRestApi(app, MICA_SIDECAR_TOKEN);
 
-  // Register channel-based plugins
+  // Register channel-based plugins.
+  // TIER1 (cloud "tier-1 cards only" profile, MICA_TIER1_ONLY=1) drops the
+  // handlers that do server-side process execution / need local machinery or
+  // host creds: voice (STT/TTS sidecars), terminal (PTY), claude (per-host
+  // Anthropic creds), process (generic subprocess spawner). An unregistered
+  // extension fails with a clean "no handler" error. Unset (single-tenant main)
+  // ⇒ everything registers exactly as before.
+  const TIER1 = Boolean(process.env.MICA_TIER1_ONLY);
   channelManager.registerHandler("qwen", createAgentHandler(fileWatcher));  // .qwen files -> Qwen Code (renamed from .chat 2026-05-19)
-  channelManager.registerHandler("voice", createVoiceAgentHandler(channelManager));  // .voice files -> canvas-aware voice assistant
-  channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
+  if (!TIER1) channelManager.registerHandler("voice", createVoiceAgentHandler(channelManager));  // .voice files -> canvas-aware voice assistant
+  if (!TIER1) channelManager.registerHandler("claude", createClaudeAgentHandler(fileWatcher));  // .claude files -> Claude Code agent
   channelManager.registerHandler("opencode", createOpencodeAgentHandler(fileWatcher));  // .opencode files -> OpenCode agent (lazy-spawned opencode serve)
-  channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
+  if (!TIER1) channelManager.registerHandler("terminal", createPtyHandler());  // .terminal files -> PTY
   channelManager.registerHandler("llm-chat", createLlmChatHandler());  // .llm-chat files -> direct LLM chat (legacy binding)
   channelManager.registerHandler("skills", createSkillComposeHandler());  // .skills files -> collaborative SKILL.md authoring
   channelManager.registerHandler("canvas-back", createCanvasBackComposeHandler());  // .canvas-back files -> propose-then-apply canvas-back editor
@@ -3278,7 +3319,7 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   // args, cwd, env }). Companion to cli-mcp (which is for stateless agent-
   // callable tools); this is for stateful, persistent subprocesses (autoresearch
   // training loops, language servers, daemons). See server/plugins/processChannel.ts.
-  channelManager.registerHandler("process", createProcessHandler(), processManifest);
+  if (!TIER1) channelManager.registerHandler("process", createProcessHandler(), processManifest);
 
   // Start llama-server for local AI — unless disabled via env. The
   // MICA_DISABLE_LLAMA=1 escape hatch lets OpenRouter-only users skip

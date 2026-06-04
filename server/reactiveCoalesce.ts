@@ -23,7 +23,7 @@ import { readFileSync as fsReadFileSync, existsSync } from "fs";
 import { join } from "path";
 import type { FileWatcher } from "./fileWatcher.js";
 import { formatLineDiff, hasChanges } from "./lineDiff.js";
-import { WORKSPACE_DIR } from "./files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "./files.js";
 
 const USER_IDLE_BEFORE_AGENT_MS = 30_000;
 // Wait this long after the last user edit before delivering a synthetic
@@ -89,7 +89,7 @@ function consumeCascadeSuppression(project: string, filename: string): boolean {
 /** Project-keyed absolute path for a canvas-relative filename. */
 function absPathFor(project: string | null, relPath: string): string | null {
   if (!project) return null;
-  return join(WORKSPACE_DIR, project, relPath);
+  return join(getEffectiveWorkspaceDir(), project, relPath);
 }
 
 function readCurrent(project: string | null, relPath: string): string | null {

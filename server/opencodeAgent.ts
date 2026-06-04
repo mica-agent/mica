@@ -32,6 +32,7 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import {
   WORKSPACE_DIR,
+  getEffectiveWorkspaceDir,
   micaDir,
   listCanvasFiles,
   readProjectFile,
@@ -121,7 +122,7 @@ const OPENCODE_CTX_WINDOW_FALLBACK = 200_000;
 export function setActiveProject(_project: string | null) { void _project; }
 
 function getProjectDir(project: string | null) {
-  return project ? join(WORKSPACE_DIR, project) : WORKSPACE_DIR;
+  return project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir();
 }
 function getMicaDir(project: string | null) { return micaDir(project || undefined); }
 
@@ -917,7 +918,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
             if (lower === "write" || lower === "edit" || lower === "apply_patch") {
               const fp = String((tp.state.input as Record<string, unknown>)?.file_path || (tp.state.input as Record<string, unknown>)?.filePath || "");
               if (fp) {
-                const projRoot = sessionProject ? join(WORKSPACE_DIR, sessionProject) : "";
+                const projRoot = sessionProject ? join(getEffectiveWorkspaceDir(), sessionProject) : "";
                 const rel = projRoot && fp.startsWith(projRoot + "/") ? fp.slice(projRoot.length + 1) : fp;
                 markAgentWrite(rel);
                 reactive.markAgentWrite(rel);

@@ -134,6 +134,65 @@ The fork builds on these; main intends to keep them stable:
 
 ---
 
+## 5. In-process multi-tenancy enablers (pool model)
+
+The original contract assumed the fork isolates tenants with **one container per
+user** (the container is the boundary). Main now ALSO ships dormant seams for an
+**in-process / pool** model — one backend serving many tenants under
+`WORKSPACE_DIR/<tenantId>/<project>` — which is the customary shape for a
+self-serve/demo tier. Everything here is **inert unless a fork opts in**; a stock
+single-tenant run never binds a tenant, so behavior is byte-identical.
+
+**Tenant context + path seam.** `server/tenantContext.ts` carries an optional
+tenant via `AsyncLocalStorage` (`runWithTenant` for callbacks, `enterTenant` for
+event-handler entry points). `getEffectiveWorkspaceDir()` (server/files.ts)
+returns `WORKSPACE_DIR/<tenantId>` when a tenant is bound, else bare
+`WORKSPACE_DIR`. All workspace path/key builders route through it, so binding a
+tenant scopes the whole backend with no per-callsite changes.
+
+**Identity-key namespacing.** The in-memory `cardId`/session-UUID cache, the
+file-watcher's project map, `broadcastToProject`, and WS subscriptions all carry
+an optional tenant dimension (`wsTenants`). Empty tenant ⇒ keys are the bare
+project, so single-tenant routing/sessions are unchanged; a fork's tenant
+prevents two tenants' same-named projects from colliding or cross-broadcasting.
+
+**Pluggable hooks** (`server/auth/hooks.ts`, all no-op until registered):
+- `registerAuthVerifier(req → { tenantId })` — consulted by the `/api` auth
+  middleware, which binds the tenant via `enterTenant`. Main fast-paths when none
+  is registered.
+- `registerKeyResolver({provider, project, tenant} → key?)` — consulted by
+  `readOpenRouterKey` / `readOpenAICompatConfig` BEFORE the on-disk chain. The
+  sponsor-token / per-tenant key injection point (the "free periods" feature).
+- `registerUsageMeter(event)` — fired from `recordTurn` (the shared per-turn
+  chokepoint) for token→$ accounting / budget enforcement.
+
+**Credential read-guard (ALWAYS ON).** The file API + agent file tools refuse to
+read/write `.mica/credentials.json` and `.mica/config.json`
+(`isProtectedCredentialPath` in `validateFilename`). Internal key resolution uses
+direct `fs` joins that bypass this, so it's unaffected. Hardens single-tenant BYO
+keys too, and underpins the sponsored-token "use but not copy" guarantee.
+
+**Encrypt-at-rest** (`server/auth/secrets.ts`). Set `MICA_SECRET_KEY` to store the
+credential store AES-256-GCM-encrypted; unset (main) ⇒ plaintext as before.
+Decryption is robust to plaintext, so toggling it on doesn't break existing files.
+
+**Tier-1 / cloud env flags:**
+```sh
+MICA_TIER1_ONLY=1        # drop handlers that need server-side execution / host
+                         # creds: voice, terminal, claude, process
+MICA_DISABLE_SHELL_TOOLS=1  # drop the agent shell-exec tool (mica_shell)
+MICA_SECRET_KEY=<secret> # encrypt the credential store at rest
+```
+
+**Frontend auth seam** (`src/api/authToken.ts`). `registerAuthTokenProvider(() →
+jwt)` lets a fork attach a session token; `projFetch` sends it as a `Bearer`
+header and the WS client includes it on `subscribe-project` / `channel_open`.
+Null in main ⇒ nothing attached.
+
+The fork still owns the IMPLEMENTATIONS (the Supabase verifier, the sponsor-token
+resolver + campaign/budget store, the metering sink, tenant migration). Main ships
+only the dormant seams above.
+
 ## Boundary — what stays in the fork
 
 Main provides the enablers above and nothing more. The fork owns:
@@ -142,6 +201,9 @@ Main provides the enablers above and nothing more. The fork owns:
 - The per-user container spawner, lifecycle, idle-reaping.
 - Routing / reverse-proxy config, subdomain-or-path per user.
 - Per-user secret injection and per-user Claude credentials.
-- Any in-app multi-tenant isolation (there is none in main — the **container is
-  the boundary**).
+- The multi-tenant isolation IMPLEMENTATION. Main ships dormant in-process seams
+  (§5) and still supports container-per-tenant; the fork picks a model and owns
+  the impl — auth verifier, key/sponsor resolver, usage/budget sink, tenant
+  derivation + migration. A container-per-tenant fork can ignore §5 entirely (the
+  container stays the boundary); a pool fork wires §5's hooks.
 - Thin/CPU image packaging beyond the `INSTALL_*` build args.

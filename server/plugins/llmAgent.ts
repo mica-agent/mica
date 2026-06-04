@@ -7,7 +7,7 @@
 import { join } from "path";
 import type { ChannelHandler, SessionContext } from "../channelManager.js";
 import type { HandlerManifest } from "../handlerManifest.js";
-import { WORKSPACE_DIR } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "../files.js";
 import { probeModelEndpoint } from "../modelHealth.js";
 import { resolveServedModel } from "./llmModelResolver.js";
 
@@ -150,7 +150,7 @@ export function createLlmAgentHandler() {
             ? `${lines.join("\n\n")}\n\n---\n\nUSER: ${userMessage}`
             : userMessage;
 
-          const projectDir = ctx.project ? join(WORKSPACE_DIR, ctx.project) : WORKSPACE_DIR;
+          const projectDir = ctx.project ? join(getEffectiveWorkspaceDir(), ctx.project) : getEffectiveWorkspaceDir();
           // SDK-bound: the qwen-code SDK gates image modality off the model
           // name via `/^qwen3-vl-/` regex (see micaAgent.ts ~line 1620 for the
           // full naming convention). Both preferred names below satisfy that

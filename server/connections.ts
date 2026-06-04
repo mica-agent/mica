@@ -31,6 +31,7 @@ import { execSync } from "child_process";
 import { join } from "path";
 import { homedir } from "os";
 import { WORKSPACE_DIR, micaDir } from "./files.js";
+import { encryptSecret, decryptSecret } from "./auth/secrets.js";
 
 // ── Service registry ────────────────────────────────────────────────
 
@@ -241,7 +242,7 @@ function credentialsPath(): string {
 async function readCredentialsFile(): Promise<CredentialsFile> {
   try {
     const raw = await readFile(credentialsPath(), "utf-8");
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(decryptSecret(raw));
     return (parsed && typeof parsed === "object") ? parsed as CredentialsFile : {};
   } catch {
     return {};
@@ -250,7 +251,7 @@ async function readCredentialsFile(): Promise<CredentialsFile> {
 
 async function writeCredentialsFile(file: CredentialsFile): Promise<void> {
   await mkdir(micaDir(), { recursive: true });
-  await writeFile(credentialsPath(), JSON.stringify(file, null, 2) + "\n", "utf-8");
+  await writeFile(credentialsPath(), encryptSecret(JSON.stringify(file, null, 2) + "\n"), "utf-8");
 }
 
 /** Read a paste-key service's stored API key. Resolution order:

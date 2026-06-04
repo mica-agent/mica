@@ -27,7 +27,7 @@ import { join } from "path";
 import type { AgentToolDef, AgentToolResult } from "./registry.js";
 import { createProposal, type ProposalFile } from "../proposalStore.js";
 import { getActiveChannelManager } from "../channelManager.js";
-import { WORKSPACE_DIR } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "../files.js";
 
 const inputSchema = {
   files: z
@@ -91,7 +91,7 @@ export const proposeChangesTool: AgentToolDef<typeof inputSchema> = {
     // Best-effort existence check. Reject early if the agent named a
     // file that isn't on disk — the apply step would fail anyway, and
     // catching it here gives a same-turn fixup hint.
-    const projectRoot = join(WORKSPACE_DIR, ctx.project);
+    const projectRoot = join(getEffectiveWorkspaceDir(), ctx.project);
     const missing: string[] = [];
     const ambiguous: string[] = [];
     const filesValidated: ProposalFile[] = [];

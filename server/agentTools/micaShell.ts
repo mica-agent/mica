@@ -15,7 +15,7 @@
 import { z } from "zod";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
-import { WORKSPACE_DIR } from "../files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "../files.js";
 import type { AgentToolDef, AgentToolResult } from "./registry.js";
 import { DANGEROUS_BASH_PATTERNS, isBackgroundWithoutRedirect } from "../micaAgentGuards.js";
 
@@ -91,8 +91,8 @@ export const micaShellTool: AgentToolDef<typeof inputSchema> = {
     const cwd = input.cwd
       ? input.cwd.startsWith("/")
         ? input.cwd
-        : `${WORKSPACE_DIR}/${input.cwd}`
-      : WORKSPACE_DIR;
+        : `${getEffectiveWorkspaceDir()}/${input.cwd}`
+      : getEffectiveWorkspaceDir();
 
     const timeoutMs = Math.max(1, Math.min(input.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS));
 

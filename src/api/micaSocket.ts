@@ -15,6 +15,8 @@
  *   The server session stays alive — the card filename is the session identity.
  */
 
+import { getAuthToken } from "./authToken.js";
+
 export type CanvasId = string;
 
 interface PendingCall {
@@ -363,6 +365,14 @@ function waitForConnection(): Promise<void> {
 function sendMsg(msg: Record<string, unknown>): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     throw new Error("WebSocket not connected");
+  }
+  // Attach the session token on connection-establishing messages so the
+  // server's (fork-installed) WS auth can derive the tenant. DORMANT in main:
+  // getAuthToken() is null → no `auth` field → unchanged. Kept off data
+  // messages to avoid shipping the token with every payload.
+  if (msg.type === "subscribe-project" || msg.type === "channel_open") {
+    const token = getAuthToken();
+    if (token) msg = { ...msg, auth: token };
   }
   ws.send(JSON.stringify(msg));
 }

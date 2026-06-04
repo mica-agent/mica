@@ -19,7 +19,7 @@ import { readFile, readdir } from "fs/promises";
 import { existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { WORKSPACE_DIR } from "./files.js";
+import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "./files.js";
 
 // Mirror Qwen SDK's SubagentConfig shape. Intentionally typed structurally
 // here rather than importing from @qwen-code/sdk because claudeAgent.ts has
@@ -49,7 +49,7 @@ const BUILTIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "builtin-agent
 /** Project-level agents directory for a given SDK flavor. */
 function projectAgentsDir(project: string, flavor: "qwen" | "claude"): string {
   const host = flavor === "qwen" ? ".qwen" : ".claude";
-  return join(WORKSPACE_DIR, project, host, "agents");
+  return join(getEffectiveWorkspaceDir(), project, host, "agents");
 }
 
 /** Minimal YAML-subset frontmatter parser. Handles:
