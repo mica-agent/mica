@@ -85,6 +85,7 @@ import {
 } from "./files.js";
 import { getCurrentTenant, enterTenant } from "./tenantContext.js";
 import { hasAuthVerifier, verifyRequest } from "./auth/hooks.js";
+import { runBootstrap } from "./bootstrap.js";
 import { readSnapshot } from "./turnSnapshots.js";
 import { getOpenrouterModels } from "./contextWindow.js";
 import {
@@ -299,6 +300,13 @@ app.use("/api", (_req, res, next) => {
   res.setHeader("Vary", "X-Mica-Project");
   next();
 });
+
+// ── Fork bootstrap (multi-tenant/cloud enabler; DORMANT in main) ─────
+// Let a fork mount its own middleware/routes here — after core middleware but
+// BEFORE the tenant-auth middleware below, so a fork that mints an anonymous-
+// tenant cookie can do so in time for verifyRequest to read it on the SAME
+// request. Main registers no bootstrap → no-op, behavior unchanged.
+runBootstrap(app);
 
 // ── Tenant auth (multi-tenant fork enabler; DORMANT in main) ─────────
 // A fork installs a verifier via registerAuthVerifier(); it derives a tenant id
@@ -2816,9 +2824,24 @@ wss.on("error", (err) => {
   console.error("[websocket-server] Error:", (err as Error).message);
 });
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
   wsClients.add(ws);
   wsIds.set(ws, nextWsId++);
+
+  // ── Tenant binding (multi-tenant fork enabler; DORMANT in main) ─────
+  // Derive the owning tenant from the WS handshake request using the SAME
+  // verifier as the /api middleware (the browser auto-attaches a same-origin
+  // cookie/bearer to the upgrade request). Stored in wsTenants so broadcast
+  // routing and the file-watcher project map scope to this tenant. Resolved
+  // once per connection; the message handler awaits this before dispatch so the
+  // first subscribe-project already carries the tenant. Main registers no
+  // verifier → resolves immediately with no tenant and wsTenants stays empty,
+  // so routing matches on project alone, exactly as before.
+  const tenantReady: Promise<void> = hasAuthVerifier()
+    ? Promise.resolve(verifyRequest(req))
+        .then(({ tenantId }) => { if (tenantId) wsTenants.set(ws, tenantId); })
+        .catch((err) => { console.warn(`[ws-auth] verifyRequest failed: ${(err as Error).message}`); })
+    : Promise.resolve();
 
   // Keepalive heartbeat. Without this, idle WebSockets get dropped by
   // intermediate proxies (Tailscale Serve idles after ~60s, iOS Safari
@@ -2871,6 +2894,16 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("message", async (raw) => {
+    // Ensure the connection's tenant is resolved (see tenantReady above) before
+    // handling any message, then bind it for the remainder of this message's
+    // async work so getEffectiveWorkspaceDir() and key resolution scope to the
+    // tenant. Each message invocation is its own async context, so enterTenant
+    // (enterWith) does not leak across messages. No-op in main (tenant undefined),
+    // matching the file-watcher event handlers' existing enterTenant pattern.
+    await tenantReady;
+    const _tenant = wsTenants.get(ws);
+    if (_tenant) enterTenant(_tenant);
+
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(raw.toString());
