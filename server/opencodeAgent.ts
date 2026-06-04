@@ -75,6 +75,7 @@ import {
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
 import { getOpencodeServer, setOpencodeProject } from "./opencodeServer.js";
+import { getCurrentTenant, runWithTenant } from "./tenantContext.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { resolveCtxWindow } from "./contextWindow.js";
@@ -495,6 +496,13 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     ctx: SessionContext,
   ): Promise<ChannelHandler> {
     const sessionProject = ctx.project;
+    // Owning tenant, captured at channel-open while the WS message context still
+    // has it bound (multi-tenant fork). Used explicitly thereafter — the per-turn
+    // work runs detached from the open's async context, so we re-bind it via
+    // runWithTenant rather than relying on ambient AsyncLocalStorage (which leaks
+    // across concurrent tenants under the shared opencode daemon). Undefined in
+    // single-tenant main → all the runWithTenant wrapping below is skipped.
+    const sessionTenant = getCurrentTenant();
     const chatId = ctx.sessionId;
     // Reactive-coalesce session handle. Same mechanism qwen + Claude use;
     // gives opencode chat cards file-edit reactivity for free. Onset is
@@ -679,7 +687,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       if (ocSessionId && ocSessionGeneration === server.generation) {
         // Already resolved against the current daemon; ensure the map mirrors
         // current state in case sessionProject changed (it shouldn't).
-        registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
+        registerOpencodeSession(ocSessionId, sessionProject, ctx.filename, sessionTenant);
         return ocSessionId;
       }
       // First turn, or the daemon re-spawned under us — (re)resolve the session.
@@ -696,7 +704,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
             ocSessionGeneration = server.generation;
             // Map this session ID to its project so per-tool-call routing
             // works as soon as the bridge sends the first call.
-            registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
+            registerOpencodeSession(ocSessionId, sessionProject, ctx.filename, sessionTenant);
             return ocSessionId;
           }
         } catch {
@@ -714,7 +722,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       }
       ocSessionId = newId;
       ocSessionGeneration = server.generation;
-      registerOpencodeSession(ocSessionId, sessionProject, ctx.filename);
+      registerOpencodeSession(ocSessionId, sessionProject, ctx.filename, sessionTenant);
       await saveSidecar(chatId, sessionProject, { sessionID: newId });
       console.log(`[opencode-agent] created session ${newId.slice(0, 8)} for ${ctx.filename}`);
       return newId;
@@ -1163,7 +1171,17 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
 
     // ── Per-turn process ────────────────────────────────────────
 
+    // Bind the captured tenant around the whole turn so session.create's
+    // directory, buildContext file reads, and any getEffectiveWorkspaceDir path
+    // resolution scope to THIS card's tenant — even though the turn runs detached
+    // from the channel-open async context. runWithTenant gives proper context
+    // isolation (no cross-tenant leak under the shared daemon). No-op wrap when
+    // single-tenant (sessionTenant undefined).
     async function processMessage(message: string, source: QueuedMsg["source"] = "user", attachmentFilename?: string): Promise<void> {
+      if (!sessionTenant) return processMessageInner(message, source, attachmentFilename);
+      return runWithTenant(sessionTenant, () => processMessageInner(message, source, attachmentFilename));
+    }
+    async function processMessageInner(message: string, source: QueuedMsg["source"] = "user", attachmentFilename?: string): Promise<void> {
       if (busy) { enqueueMessage(message, source, attachmentFilename); return; }
       const turnSource = source;
       // Record real-user messages so toolPrerequisites' spec-approval-gate

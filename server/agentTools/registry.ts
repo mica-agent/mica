@@ -173,16 +173,24 @@ interface OpencodeSessionInfo {
    *  opencode-routed tool calls (the bridge can't supply the
    *  x-mica-chat-filename header directly; restRoutes.ts falls back to this). */
   chatFilename: string;
+  /** Owning tenant (multi-tenant fork) — captured by opencodeAgent.ts at
+   *  channel-open. opencode is ONE shared daemon and its mica-builtins tool
+   *  calls reach /api/tools as internal HTTP with no user cookie, so the REST
+   *  handler can't recover the tenant from the request — it reads it here and
+   *  binds it (runWithTenant) so the tool operates in the right tenant's
+   *  workspace. Undefined in single-tenant main. */
+  tenant?: string;
 }
 const opencodeSessions = new Map<string, OpencodeSessionInfo>();
 
 /** Map an opencode session ID to the Mica project + the .opencode card
- *  filename it belongs to. Idempotent. Called by opencodeAgent.ts on
- *  session attach. chatFilename enables the spec-approval-gate predicate
- *  (and any other session-scoped gate) to run for opencode-routed calls. */
-export function registerOpencodeSession(sessionId: string, project: string | null, chatFilename: string | null): void {
+ *  filename (+ owning tenant) it belongs to. Idempotent. Called by
+ *  opencodeAgent.ts on session attach. chatFilename enables the
+ *  spec-approval-gate predicate (and any other session-scoped gate) to run for
+ *  opencode-routed calls; tenant scopes the tool's filesystem to the caller. */
+export function registerOpencodeSession(sessionId: string, project: string | null, chatFilename: string | null, tenant?: string): void {
   if (!sessionId || !project) return;
-  opencodeSessions.set(sessionId, { project, chatFilename: chatFilename ?? "" });
+  opencodeSessions.set(sessionId, { project, chatFilename: chatFilename ?? "", tenant });
 }
 
 /** Remove a session's mapping. Called by opencodeAgent.ts in onDestroy
@@ -209,6 +217,14 @@ export function getOpencodeSessionChatFilename(sessionId: string | null | undefi
   const info = opencodeSessions.get(sessionId);
   if (!info || !info.chatFilename) return null;
   return info.chatFilename;
+}
+
+/** Look up the owning tenant for an opencode session ID (multi-tenant fork).
+ *  restRoutes.ts binds this around the tool handler so opencode-routed tool
+ *  calls touch the right tenant's workspace. Null in single-tenant main. */
+export function getOpencodeSessionTenant(sessionId: string | null | undefined): string | null {
+  if (!sessionId) return null;
+  return opencodeSessions.get(sessionId)?.tenant ?? null;
 }
 
 let lastActiveOpencodeProject: string | null = null;
