@@ -28,6 +28,8 @@
 import { z } from "zod";
 import { randomBytes } from "crypto";
 import { renderCaptureTool } from "./renderCapture.js";
+import { renderInspectTool } from "./renderInspect.js";
+import { geminiImageTool, geminiVideoTool } from "./geminiMediaTools.js";
 import {
   createClassTool,
   editClassFileTool,
@@ -45,6 +47,7 @@ import { listHandlersTool } from "./listHandlers.js";
 import { restartSidecarTool } from "./restartSidecar.js";
 import { sidecarLogTool } from "./sidecarLog.js";
 import { verifySidecarTool } from "./verifySidecar.js";
+import { verifySpecConformanceTool } from "./verifySpecConformance.js";
 import { listSharedDocsTool, pinSharedDocTool } from "./sharedDocs.js";
 import { proposeChangesTool } from "./proposeChanges.js";
 
@@ -97,6 +100,7 @@ export interface AgentToolDef<
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const AGENT_TOOLS: AgentToolDef<any>[] = [
   renderCaptureTool,
+  renderInspectTool,
   createClassTool,
   editClassFileTool,
   createInstanceTool,
@@ -116,10 +120,20 @@ export const AGENT_TOOLS: AgentToolDef<any>[] = [
   restartSidecarTool,
   sidecarLogTool,
   verifySidecarTool,
+  verifySpecConformanceTool,
   listSharedDocsTool,
   pinSharedDocTool,
   proposeChangesTool,
 ];
+
+// Gemini media tools (mica_generate_image / mica_generate_video) are
+// KEY-GATED — added only when GEMINI_API_KEY is set, mirroring the Tavily MCP
+// gate (opencodeConfig.ts). A workspace without the key never sees them in any
+// agent's tool surface or prompt prelude. Evaluated once at module load from
+// env (set via .env / ambient env); the handlers also guard via readGeminiKey.
+if (process.env.GEMINI_API_KEY) {
+  AGENT_TOOLS.push(geminiImageTool, geminiVideoTool);
+}
 
 // ── Project resolution for opencode bridge ───────────────────────────
 //
@@ -197,4 +211,20 @@ export function setLastActiveOpencodeProject(project: string | null): void {
 
 export function getLastActiveOpencodeProject(): string | null {
   return lastActiveOpencodeProject;
+}
+
+// Parallel fallback for the originating .opencode card filename — same role
+// as lastActiveOpencodeProject, for when the per-call session header doesn't
+// resolve a chatFilename (e.g. render_capture's captioner routing needs the
+// card's {provider, model} to caption with the card's own vision model
+// instead of silently falling back to local vLLM). Single-active-session
+// caveat is identical to the project fallback's.
+let lastActiveOpencodeChatFilename: string | null = null;
+
+export function setLastActiveOpencodeChatFilename(chatFilename: string | null): void {
+  lastActiveOpencodeChatFilename = chatFilename;
+}
+
+export function getLastActiveOpencodeChatFilename(): string | null {
+  return lastActiveOpencodeChatFilename;
 }

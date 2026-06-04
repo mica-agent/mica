@@ -5,7 +5,7 @@
 // shape hints).
 
 export function buildAgentToolsPrelude(): string {
-  return `## Mica tools (available across all agent backends)
+  const prelude = `## Mica tools (available across all agent backends)
 
 These tools come from Mica itself — same names, same input/output shape, same prose regardless of which backend you are (qwen, Claude, or opencode). They reach Mica's REST surface via your SDK's MCP plumbing; you call them by name like any other tool.
 
@@ -18,6 +18,10 @@ These tools come from Mica itself — same names, same input/output shape, same 
 **Don't verify post-interaction state on the initial render.** If the user's request is about content that only appears AFTER a user action (an image preview after upload, a result after clicking analyze, output after submitting a form), DON'T pass that as \`user_intent\` immediately after editing — the captioner will see the empty pre-action state and (correctly) return UNVERIFIABLE, but agents reading "no match" sometimes loop on phantom bugs. Instead: verify in describe-only mode (omit \`user_intent\`) that the initial-state controls + layout are correct, then in your reply tell the user what they should see when they take the next step. Reserve \`user_intent\` for the FOLLOW-UP turn after the user has actually performed the action, or for verifications that are about the visible-on-load state.
 
 Verdict cheat sheet: CLEAN → end turn (initial build, no UX claim to verify). ERRORS → fix each listed error and re-capture. WEBGL-OPAQUE → apply the onCapture hook or trust user's view. MATCHES → end turn (intent satisfied). MISMATCH → edit + re-capture with same intent. UNVERIFIABLE → describe expected behavior to user. INTENT-UNPARSED → captioner didn't follow format; read the caption manually. CAP-REACHED → end the turn with a summary.
+
+\`mica_inspect_card\` — text-only debug snapshot of a card class. Mounts the card in headless Chromium (same Playwright path as the live-mount gate render_capture uses) and returns sectioned text: console errors / warnings / logs, uncaught page errors, failed network requests, page dimensions, DOM inventory (buttons, inputs, canvases, images, headings, overlay-shaped elements), visible body text, and an accessibility tree. **No vision model is called** — output is OBJECTIVE extraction, not interpretation. Verdict tag on the first line is \`[mica_inspect_card: CLEAN | WARNINGS | ERRORS | SKIPPED]\`. Input: \`{ filename, observation_ms? }\`.
+
+When to use this vs. \`render_capture\`: prefer \`render_capture\` when your chat model is multimodal (gemini, claude, gpt-4o, qwen-vl) — vision catches visual / layout issues a DOM inventory can't. Reach for \`mica_inspect_card\` when (a) your chat model is text-only and \`render_capture\` returns "(captioning unavailable)", or (b) you want an objective second signal on whether named UI elements are actually present — the captioner sometimes confabulates "I see a Submit button" when there isn't one. The two are complementary: render_capture says what it looks like; mica_inspect_card says what's actually in the DOM.
 
 ### Card-class server compute — pick the cheapest viable tier
 
@@ -197,4 +201,20 @@ Two card-class tools have prerequisites that they enforce server-side. If you ca
   - \`skill('card-class-handbook')\` has been invoked in this chat session. Bug fixes and refactors don't need a fresh spec, but they DO need the contract the handbook documents.
 
 These gates exist because the develop flow keeps getting compressed in working memory across multi-turn builds — the handbook step in particular tends to be skipped. The rejection makes the gate self-correcting: read the error, take the next move it tells you, retry. You don't have to remember the prerequisites — the tool reminds you.`;
+
+  // Gemini media tools are key-gated in registry.ts — only describe them when
+  // GEMINI_API_KEY is set, so non-gemini workspaces pay no context cost and
+  // never see tools they can't use.
+  if (process.env.GEMINI_API_KEY) return prelude + GEMINI_MEDIA_PRELUDE;
+  return prelude;
 }
+
+const GEMINI_MEDIA_PRELUDE = `
+
+### Google media generation (Gemini)
+
+\`mica_generate_image\` — generate an image from a text prompt (Google Nano Banana / gemini-2.5-flash-image) and save it under the canvas. Returns the saved path. Input: \`{ prompt, filename? }\`.
+
+\`mica_generate_video\` — generate a short video from a text prompt (Google Veo). **Slow (~1-3 min)** — tell the user you're generating BEFORE you call it, then call it and wait. On timeout it returns an error naming the operation. Input: \`{ prompt, filename? }\`.
+
+Both SAVE the media under \`<canvasRoot>/generated/\` and return a canvas-relative path. To show it on the canvas, create a \`media-viewer\` card instance referencing that path (or embed the path in a card you build). Generate → save → present is the loop.`;

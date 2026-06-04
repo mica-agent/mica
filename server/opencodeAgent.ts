@@ -54,6 +54,7 @@ import type { ChannelHandler, SessionContext } from "./channelManager.js";
 import type { FileWatcher } from "./fileWatcher.js";
 import { markAgentWrite } from "./writeSource.js";
 import { recordUserMessage } from "./userMessageTracker.js";
+import { recordSkillInvocation } from "./skillInvocationTracker.js";
 import {
   attachReactiveCoalesce,
   registerReactiveSession,
@@ -67,6 +68,7 @@ import { resetRenderCaptureCount } from "./renderCaptureCounter.js";
 import { markProjectActivity } from "./projectActivity.js";
 import {
   setLastActiveOpencodeProject,
+  setLastActiveOpencodeChatFilename,
   registerOpencodeSession,
   unregisterOpencodeSession,
 } from "./agentTools/registry.js";
@@ -77,6 +79,8 @@ import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { resolveCtxWindow } from "./contextWindow.js";
 import { estimateTurnCost } from "./costEstimator.js";
+import { getModelCalibration, type ModelCalibration } from "./modelCalibration.js";
+import { buildRuntimeBanner } from "./micaAgent.js";
 import type { Event, Part } from "@opencode-ai/sdk";
 
 interface TurnTokens {
@@ -201,8 +205,27 @@ const lastTurnAt = new Map<string, number>();
 export function recordTurnEnd(chatFilename: string): void { lastTurnAt.set(chatFilename, Date.now()); }
 export function getLastTurnAt(chatFilename: string): number | undefined { return lastTurnAt.get(chatFilename); }
 
-export async function buildContext(agentFilename: string, project: string | null, since?: number): Promise<string> {
+export async function buildContext(
+  agentFilename: string,
+  project: string | null,
+  since?: number,
+  modelName?: string | null,
+  contextWindowTokens?: number,
+  calibration?: ModelCalibration | null,
+): Promise<string> {
   const parts: string[] = [];
+
+  // Runtime banner FIRST — model + context-window numbers + the calibration
+  // self-awareness block, authoritative over any model-class rule of thumb in
+  // canvas-back / skills. Mirrors micaAgent.buildContext (tenet 4, one
+  // mechanism — same buildRuntimeBanner). 200K matches resolveCtxWindow's
+  // own unknown-model fallback; only hit when a caller omits the window
+  // (e.g. the non-prompt buildContext call).
+  parts.push(buildRuntimeBanner({
+    modelName: modelName ?? null,
+    contextWindowTokens: contextWindowTokens ?? 200_000,
+    calibration,
+  }));
 
   if (since) {
     try {
@@ -476,6 +499,14 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // Reactive-coalesce session handle. Same mechanism qwen + Claude use;
     // gives opencode chat cards file-edit reactivity for free. Onset is
     // the next 60s-idle after any user edit in canvas scope.
+    // True once the user has explicitly started the session (clicked Get
+    // Started, which fires the initialize scan, or sent a first message).
+    // Until then nothing runs — no auto-initialize turn and no reactive
+    // turn — so the user can pick a model in the gear before any turn spends
+    // tokens on the default. Set true for reopened sessions (history present)
+    // in onAttach. See plan: defer on-open auto-start behind Get Started.
+    let sessionStarted = false;
+
     const reactiveCfg = await readCanvasConfig(sessionProject || undefined);
     const reactive: ReactiveSessionHandle = registerReactiveSession({
       project: sessionProject,
@@ -483,6 +514,9 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       canvasRoot: reactiveCfg.canvasRoot,
       pinnedFiles: reactiveCfg.pinned,
       onDeliver: (message, source) => {
+        // Don't let file-edit reactivity start a turn before the user has
+        // started the session — that would run on the default model unprompted.
+        if (!sessionStarted) return;
         if (busy) enqueueMessage(message, source);
         else void processMessage(message, source);
       },
@@ -812,10 +846,15 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       pendingQuestion = null;
       try {
         const { client } = await getOpencodeServer();
-        // Body shape: { id, sessionID, answers: string[] }. The id + sessionID
-        // route opencode's response back to the queued question tool call.
+        // Body shape: { id, sessionID, answers: string[][] } — answers is
+        // an array of PER-QUESTION arrays, each holding the selected label(s).
+        // opencode does `answers.map(n => [...n])`, so a FLAT `[answerText]`
+        // gets the answer STRING spread into individual characters → the
+        // option never matches → the question tool never resolves → the turn
+        // hangs. One question + one answer → `[[answerText]]`. (Verified
+        // against opencode's bundle: `answers: Array(Array(Answer))`.)
         await client.tui.control.response({
-          body: { id: q.id, sessionID: q.sessionID, answers: [answerText] },
+          body: { id: q.id, sessionID: q.sessionID, answers: [[answerText]] } as never,
         });
         console.log(`[opencode-agent] sent TUI answer for ${q.id.slice(0, 12)}: ${answerText.slice(0, 80)}`);
       } catch (err) {
@@ -923,6 +962,19 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
                 markAgentWrite(rel);
                 reactive.markAgentWrite(rel);
               }
+            }
+            // Record skill invocations so session-scoped predicate gates
+            // (toolPrerequisites.ts: session-has-card-class-handbook) can be
+            // SATISFIED on the opencode path — the SDK-side recorder lives in
+            // micaAgent.ts and never ran for opencode. The gate fail-opens when
+            // chatFilename is null, so this was masked until chatFilename began
+            // resolving reliably; once it does, an unrecorded skill makes the
+            // gate block card creation. opencode's skill tool carries the name
+            // under `name` (per describeOpencodeTool); tolerate alternates.
+            if (lower.replace(/[_-]/g, "") === "skill" && sessionProject) {
+              const si = tp.state.input as Record<string, unknown> | undefined;
+              const skillName = String(si?.name || si?.skill || si?.skill_name || "");
+              if (skillName) recordSkillInvocation(sessionProject, ctx.filename, skillName);
             }
           }
         } else if (part.type === "step-finish") {
@@ -1111,6 +1163,9 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       // Mirrors the same pattern in micaAgent.ts (qwen) and claudeAgent.ts.
       if (source === "user" || source === "voice") {
         recordUserMessage(sessionProject, ctx.filename);
+        // A real user turn (Get Started's initialize scan, or a typed first
+        // message) marks the session started — unlocks reactive turns.
+        sessionStarted = true;
       }
       busy = true;
       reactive.setBusy(true);
@@ -1123,6 +1178,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       // pass session-scoped headers; Mica's /api/tools/* endpoints fall back
       // to this when X-Mica-Project is absent. See server/agentTools/registry.ts.
       setLastActiveOpencodeProject(sessionProject);
+      // Same publish for the chat filename — lets render_capture's captioner
+      // routing resolve THIS card's {provider, model} (so it captions with the
+      // card's own vision model) when the per-call session header doesn't
+      // carry a chatFilename. Mirrors the project fallback above.
+      setLastActiveOpencodeChatFilename(ctx.filename);
 
       // Reset per-turn collectors
       Object.keys(turnToolCalls).forEach((k) => delete turnToolCalls[k]);
@@ -1168,8 +1228,9 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           }
         }
 
-        const context = await buildContext(ctx.filename, sessionProject, since);
-        void writeSnapshot(sessionProject, chatId, turnId, context);
+        // NB: buildContext is called AFTER the per-turn model/context-window
+        // resolution below, so the runtime banner carries the resolved model
+        // + calibration. (Nothing between here and there reads `context`.)
 
         // History injection — opencode's session keeps its own conversation
         // memory server-side (it's stateful), so we ONLY include the current
@@ -1249,7 +1310,16 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           modelOverride = { providerID: "openrouter", modelID };
         } else if (provider === "openai-compat") {
           const modelID = settings.model || resolveDefaultModel("openai-compat");
-          modelOverride = { providerID: "openai", modelID };
+          // When openai-compat resolves to Google's Gemini endpoint (the
+          // one-key fallback in readOpenAICompatConfig), route to the custom
+          // `gemini` provider opencodeConfig registers (@ai-sdk/openai-compatible
+          // → chat/completions). The builtin `openai` providerID can't be used
+          // for Gemini — opencode forces OpenAI's Responses API there, which
+          // Gemini doesn't implement. Real OpenAI/other endpoints stay on
+          // "openai".
+          const oc = await readOpenAICompatConfig(sessionProject || undefined);
+          const providerID = oc.baseUrl && oc.baseUrl.includes("generativelanguage.googleapis.com") ? "gemini" : "openai";
+          modelOverride = { providerID, modelID };
         } else if (provider === "local") {
           // Pick the user's chosen model when present, then the LOCAL_DEFAULT_MODEL
           // env, otherwise probe the local endpoint for its served set and take
@@ -1287,6 +1357,22 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         });
         sessionCtxWindow = effectiveCtxWindow;
         console.log(`[opencode-agent:${sessionProject ?? "-"}/${ctx.filename}] effective context window: ${effectiveCtxWindow} (provider=${provider}, model=${settings.model || "(default)"}, ocSession=${ocSessionId?.slice(0, 8) ?? "?"})`);
+
+        // Model calibration for this turn's resolved (provider, model). Fed
+        // into the runtime banner (via buildContext) so the agent gets its
+        // self-awareness block — same mechanism micaAgent uses. Cached 1h,
+        // keyed provider:model, so a per-turn call for an unchanged model is a
+        // map lookup, not a network fetch.
+        const modelName = modelOverride?.modelID ?? null;
+        const calBaseUrl =
+          provider === "local" ? (process.env.LLAMA_URL || "http://127.0.0.1:8012")
+          : provider === "openai-compat" ? openaiBaseUrl
+          : undefined; // openrouter derives the HF id from the org/model slug
+        const calibration = await getModelCalibration({ provider, modelName: modelName ?? "", baseUrl: calBaseUrl });
+        console.log(`[opencode-agent:${sessionProject ?? "-"}/${ctx.filename}] calibration: class="${calibration.identity.class}" arch=${calibration.knownFacts.architecture ?? "?"} assetUrlPaths=${calibration.recallProfile.assetUrlPaths}`);
+
+        const context = await buildContext(ctx.filename, sessionProject, since, modelName, effectiveCtxWindow, calibration);
+        void writeSnapshot(sessionProject, chatId, turnId, context);
 
         // Build message parts. Text always present. When the user attached a
         // screenshot via the 📷 picker, capture the rendered card from the
@@ -1613,20 +1699,17 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // ── Channel lifecycle ───────────────────────────────────────
 
     let initialScanDone = false;
-    // Guards concurrent attaches from double-scheduling the (async) health-
-    // gated scan; reset on probe failure so Retry (retry_init) can re-run it.
-    let initialScanScheduled = false;
 
     const INITIAL_SCAN_MESSAGE = "This is a new project session. Read your behavior instructions (from your card back), then scan the project files, set up context, and report what you found.";
 
-    // Health-gate the auto initialize turn: probe the configured model
-    // endpoint first. On failure, surface an inline actionable error (retry:true
-    // → card shows a Retry button) and leave the scan pending instead of firing
-    // a turn that throws deep in opencode. Fired from onAttach and retry_init.
+    // Health-gate the initialize turn: probe the configured model endpoint
+    // first. On failure, surface an inline actionable error (retry:true → card
+    // shows a Retry button) and leave the scan pending instead of firing a turn
+    // that throws deep in opencode. Fired from start_session (Get Started) and
+    // retry_init — never auto-scheduled.
     async function fireInitialScanIfHealthy(): Promise<void> {
       const probe = await probeModelEndpoint(sessionProject || undefined, ctx.filename);
       if (!probe.ok) {
-        initialScanScheduled = false;
         ctx.broadcast({ type: "error", error: probe.reason || "Model endpoint not reachable.", retry: true });
         return;
       }
@@ -1670,13 +1753,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           })),
         });
 
-        // Trigger the initial scan only after a model-endpoint health check
-        // passes (see fireInitialScanIfHealthy). Schedule once; concurrent
-        // attaches are guarded by initialScanScheduled.
-        if (!initialScanDone && !initialScanScheduled && messages.length === 0) {
-          initialScanScheduled = true;
-          setTimeout(() => { void fireInitialScanIfHealthy(); }, 2000);
-        }
+        // Do NOT auto-start. A fresh (empty-history) session waits for the
+        // user to click Get Started (→ start_session) or type a first message,
+        // so they can pick a model in the gear first. A reopened session
+        // (history present) is already "started" — unlock reactive turns.
+        if (messages.length > 0) sessionStarted = true;
       },
 
       onData(clientId, data) {
@@ -1686,6 +1767,14 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         // settings: re-probe, fire the pending scan if healthy, else re-emit
         // the actionable error.
         if (msg.type === "retry_init") {
+          if (!initialScanDone) void fireInitialScanIfHealthy();
+          return;
+        }
+
+        // User clicked "Get Started" on a fresh session — run the same
+        // health-gated initialize scan the old 2s auto-timer used to fire.
+        // (Same handler as retry_init; distinct name for log/intent clarity.)
+        if (msg.type === "start_session") {
           if (!initialScanDone) void fireInitialScanIfHealthy();
           return;
         }

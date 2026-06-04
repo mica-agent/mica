@@ -15,11 +15,24 @@
 import { z } from "zod";
 import { exec as execCb } from "child_process";
 import { promisify } from "util";
+import { fileURLToPath } from "url";
+import { dirname, resolve } from "path";
 import { WORKSPACE_DIR, getEffectiveWorkspaceDir } from "../files.js";
 import type { AgentToolDef, AgentToolResult } from "./registry.js";
 import { DANGEROUS_BASH_PATTERNS, isBackgroundWithoutRedirect } from "../micaAgentGuards.js";
 
 const execAsync = promisify(execCb);
+
+// Mica's own install/source tree. micaShell.ts lives at
+// <framework>/server/agentTools/micaShell.ts, so the root is two levels up.
+// Agents work inside the projects dir (WORKSPACE_DIR) and never need to
+// touch the framework source — refusing it closes the vector where an agent
+// edited server/*.ts or ran scripts/restart.sh (2026-06-01). The guard is
+// skipped when the framework tree is INSIDE WORKSPACE_DIR (single-tree dev
+// layout) so it can't block legitimate project access.
+const FRAMEWORK_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const GUARD_FRAMEWORK_DIR =
+  FRAMEWORK_DIR !== WORKSPACE_DIR && !FRAMEWORK_DIR.startsWith(WORKSPACE_DIR + "/");
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 600_000;     // 10 min, same as Bash tool
@@ -72,6 +85,23 @@ export const micaShellTool: AgentToolDef<typeof inputSchema> = {
       }
     }
 
+    // 1b. Framework-source guard. Refuse commands that reference Mica's own
+    // install tree. Substring match on the absolute framework path — agents
+    // operating under WORKSPACE_DIR never legitimately name it, so this is
+    // low-false-positive. (A determined agent can still obfuscate the path;
+    // this is a deterministic speed-bump consistent with the restart.sh
+    // denylist above, not an OS-level boundary.)
+    if (GUARD_FRAMEWORK_DIR && command.includes(FRAMEWORK_DIR)) {
+      console.warn(`[mica_shell] BLOCKED framework-dir access: "${command.slice(0, 200)}"`);
+      return {
+        isError: true,
+        text:
+          `Refused: command references Mica's framework directory (${FRAMEWORK_DIR}). ` +
+          `Agents work inside their project under ${WORKSPACE_DIR}; the framework source ` +
+          `and lifecycle scripts are off-limits. If you genuinely need this, ask the user.`,
+      };
+    }
+
     // 2. Background-without-redirect guard. Catches `cmd &` with no redirect —
     // the spawned process inherits the tool-call shell's stdio and dies when
     // the shell exits. Tell the agent how to fix it.
@@ -93,6 +123,14 @@ export const micaShellTool: AgentToolDef<typeof inputSchema> = {
         ? input.cwd
         : `${getEffectiveWorkspaceDir()}/${input.cwd}`
       : getEffectiveWorkspaceDir();
+
+    // Same framework-dir guard for an absolute cwd that targets the install tree.
+    if (GUARD_FRAMEWORK_DIR && (cwd === FRAMEWORK_DIR || cwd.startsWith(FRAMEWORK_DIR + "/"))) {
+      return {
+        isError: true,
+        text: `Refused: cwd "${cwd}" is inside Mica's framework directory (${FRAMEWORK_DIR}). Run commands from your project under ${WORKSPACE_DIR}.`,
+      };
+    }
 
     const timeoutMs = Math.max(1, Math.min(input.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS));
 

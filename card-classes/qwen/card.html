@@ -83,6 +83,14 @@
         <input id="chat-settings-key" type="password" placeholder="sk-or-..." autocomplete="off" style="width:100%;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:6px 8px;color:#e6edf3;font-size:12px;font-family:inherit;outline:none;box-sizing:border-box;" />
         <div id="chat-settings-key-status" style="color:#6e7681;font-size:11px;margin-top:3px;"></div>
       </div>
+
+      <div id="chat-cal-section" style="border-top:1px solid rgba(48,54,61,0.6);padding-top:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <div style="color:#ccc;font-weight:600;">Model calibration <span style="color:#6e7681;font-weight:normal;font-size:11px;">(how much the agent trusts its own recall)</span></div>
+          <span id="chat-cal-source" style="color:#6e7681;font-size:10px;"></span>
+        </div>
+        <div id="chat-cal-body" style="color:#8b949e;font-size:11px;">Loading...</div>
+      </div>
     </div>
 
     <div style="display:flex;gap:8px;justify-content:flex-end;padding:10px 16px;flex-shrink:0;border-top:1px solid rgba(48,54,61,0.6);background:rgba(13,17,23,0.96);">

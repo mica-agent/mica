@@ -115,6 +115,46 @@ export default async () => ({
     const tool = typeof input?.tool === "string" ? input.tool : "";
     const sessionID = typeof input?.sessionID === "string" ? input.sessionID : "";
 
+    // ── Job 0: refuse opencode's native `bash` tool ──────────────────
+    // Native bash is ungated — it bypasses the path-sandbox below (which
+    // only covers read/write/edit/list/glob/grep) and Mica's
+    // DANGEROUS_BASH_PATTERNS guard. An agent used it to edit framework
+    // source under /workspaces/mica and to run scripts/restart.sh
+    // (2026-06-01). The qwen/Claude SDK path already excludes its native
+    // shell (micaAgent.ts excludeTools) and routes all shell through the
+    // guarded `mica_shell` (mica-builtins) tool; this brings opencode in
+    // line. We enforce here in the hook rather than via opencode's
+    // permission system, which is unreliable in this version (a non-"allow"
+    // value stalls the tool instead of denying — see opencodeConfig.ts).
+    // A thrown error aborts the tool deterministically and surfaces to the
+    // model as a tool failure with the redirect.
+    if (tool.toLowerCase() === "bash") {
+      throw new Error(
+        "The native `bash` tool is disabled in Mica. Use `mica_shell` " +
+        "(the mica-builtins shell tool) for all shell commands — it runs the " +
+        "same `/bin/bash -c` but with Mica's safety guards (won't kill the " +
+        "backend, won't restart the stack, won't write to framework source). " +
+        "Pass your command as `mica_shell({ command: \"...\" })`.",
+      );
+    }
+
+    // Refuse opencode's native `question` tool. Its request/response flow
+    // (TUI control bridge in opencodeAgent.ts) does NOT reliably resume the
+    // turn after the user answers in this opencode version — the answer POST
+    // is accepted but never resolves the pending question, so the turn hangs
+    // (observed 2026-06-02). Mica's reliable pattern is plain-text asking:
+    // write the question in your chat reply and END the turn; the user's next
+    // message is the answer (a normal turn). The prelude already documents
+    // this — steer the model there instead of letting it hang.
+    if (tool.toLowerCase() === "question") {
+      throw new Error(
+        "The `question` tool is disabled in Mica. To ask the user something, " +
+        "just write the question as plain text in your reply (offer options in " +
+        "prose if helpful) and END your turn. The user's next chat message is " +
+        "the answer — you'll continue from there. Do not call a tool to ask.",
+      );
+    }
+
     // ── Job 1: session-ID stamp for mica-builtins ────────────────────
     if (tool.startsWith(PREFIX) && sessionID && output && typeof output === "object") {
       if (!output.args || typeof output.args !== "object") output.args = {};

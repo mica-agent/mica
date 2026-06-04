@@ -1,0 +1,7 @@
+{
+  "extension": ".media-viewer",
+  "badge": "MEDIA",
+  "primaryFile": "media.media-viewer",
+  "defaultTitle": "Media",
+  "dependencies": { "scripts": [], "styles": [] }
+}
