@@ -231,7 +231,17 @@ const MODEL_DEFAULTS = {
   local: 'opencode default',
   openrouter: 'qwen/qwen3.6-35b-a3b',
   'openai-compat': 'deepseek/deepseek-v4-flash',
+  google: 'gemini-3.5-flash',
 };
+
+// "Google (Gemini)" is a preset of the openai-compat mechanism: Google exposes
+// an OpenAI-compatible endpoint, so selecting it persists provider:"openai-compat"
+// with this fixed base URL (the gear hides the base-URL field). Nothing new on
+// the server side. Re-opening the panel detects this URL and re-selects Google.
+const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
+function isGeminiBaseUrl(u) {
+  return typeof u === 'string' && u.toLowerCase().indexOf('generativelanguage.googleapis.com') !== -1;
+}
 
 let currentSettings = { provider: 'local', model: '' };
 
@@ -245,7 +255,7 @@ function renderModelLabel() {
   const provider = currentSettings.provider || 'local';
   let providerShort;
   if (provider === 'openrouter') providerShort = 'OpenRouter';
-  else if (provider === 'openai-compat') providerShort = 'OpenAI';
+  else if (provider === 'openai-compat') providerShort = (currentSettings.model || '').toLowerCase().indexOf('gemini') === 0 ? 'Gemini' : 'OpenAI';
   else providerShort = 'OpenCode';
   const model = currentSettings.model || '';
   const display = model ? providerShort + ' · ' + model : providerShort;
@@ -406,6 +416,15 @@ function updateProviderUI(provider) {
     settingsModel.placeholder = MODEL_DEFAULTS['openai-compat'] + ' (default)';
     settingsModelHint.textContent = 'Type the model id your endpoint expects (e.g. gpt-4o-mini, mistralai/Mixtral-8x7B-Instruct-v0.1, your-vllm-model-name).';
     hideModelDropdown();
+  } else if (provider === 'google') {
+    // Gemini via Google's OpenAI-compatible endpoint. Base URL is fixed, so the
+    // base-URL field stays hidden — the user only supplies a key + model.
+    settingsKeyRow.style.display = 'block';
+    settingsBaseurlRow.style.display = 'none';
+    settingsKeyLabel.innerHTML = 'Gemini API key <span style="color:#6e7681;font-weight:normal;">(saved per project)</span>';
+    settingsModel.placeholder = MODEL_DEFAULTS.google + ' (default)';
+    settingsModelHint.textContent = 'Type a Gemini model id, e.g. gemini-3.5-flash, gemini-3-pro. Get a key at aistudio.google.com.';
+    hideModelDropdown();
   } else {
     settingsKeyRow.style.display = 'none';
     settingsBaseurlRow.style.display = 'none';
@@ -439,12 +458,18 @@ function openSettings() {
       if (d['openai-compat']) MODEL_DEFAULTS['openai-compat'] = d['openai-compat'];
     }
     const provider = s.provider || 'local';
-    providerRadios.forEach(function(r) { r.checked = (r.value === provider); });
+    // Persisted openai-compat + a Google base URL means the user picked the
+    // Google (Gemini) preset — re-select that radio (not "OpenAI-compatible").
+    const displayProvider = (provider === 'openai-compat' && isGeminiBaseUrl(oc.baseUrl)) ? 'google' : provider;
+    providerRadios.forEach(function(r) { r.checked = (r.value === displayProvider); });
     settingsModel.value = s.model || '';
     settingsKey.value = '';
     settingsBaseurl.value = oc.baseUrl || '';
     let hasKeyForProvider, keyHint;
-    if (provider === 'openai-compat') {
+    if (displayProvider === 'google') {
+      hasKeyForProvider = !!oc.hasKey;
+      keyHint = hasKeyForProvider ? 'AIza••••••••••••••••' : 'AIza... (your Google AI Studio key)';
+    } else if (provider === 'openai-compat') {
       hasKeyForProvider = !!oc.hasKey;
       keyHint = hasKeyForProvider ? 'sk-••••••••••••••••' : 'sk-... (or any token your endpoint expects)';
     } else {
@@ -457,11 +482,11 @@ function openSettings() {
     settingsKeyStatus.textContent = hasKeyForProvider
       ? 'Key set ✓ — paste a new one to replace, or clear it to remove.'
       : 'No key set yet.';
-    updateProviderUI(provider);
+    updateProviderUI(displayProvider);
     settingsPanel.style.display = 'flex';
     loadCalibration(true);
     setTimeout(function() {
-      (provider === 'openrouter' || provider === 'openai-compat' ? settingsKey : settingsModel).focus();
+      ((displayProvider === 'openrouter' || displayProvider === 'openai-compat' || displayProvider === 'google') ? settingsKey : settingsModel).focus();
     }, 0);
   });
 }
@@ -650,9 +675,17 @@ settingsModel.addEventListener('blur', function() { setTimeout(function() { load
 settingsSave.addEventListener('click', function() {
   let provider = 'local';
   providerRadios.forEach(function(r) { if (r.checked) provider = r.value; });
-  const model = settingsModel.value.trim();
+  let model = settingsModel.value.trim();
   const keyValue = settingsKey.value;
-  const baseurlValue = settingsBaseurl.value.trim();
+  let baseurlValue = settingsBaseurl.value.trim();
+  // "Google (Gemini)" is the openai-compat mechanism with a fixed endpoint, so
+  // it persists as openai-compat. Supply the base URL and a default Gemini model.
+  let effectiveProvider = provider;
+  if (provider === 'google') {
+    effectiveProvider = 'openai-compat';
+    baseurlValue = GEMINI_BASE_URL;
+    if (!model) model = MODEL_DEFAULTS.google;
+  }
   settingsSave.disabled = true;
   settingsSave.textContent = 'Saving...';
 
@@ -660,7 +693,7 @@ settingsSave.addEventListener('click', function() {
   settingsModelHint.style.color = '#6e7681';
 
   // OpenAI-compat requires baseUrl. Surface a clean message before save.
-  if (provider === 'openai-compat' && !baseurlValue) {
+  if (effectiveProvider === 'openai-compat' && !baseurlValue) {
     settingsModelHint.textContent = 'Base URL required (e.g., https://api.openai.com/v1).';
     settingsModelHint.style.color = '#f87171';
     settingsSave.disabled = false;
@@ -693,7 +726,7 @@ settingsSave.addEventListener('click', function() {
     const cardP = fetch(settingsUrl(''), {
       method: 'PUT',
       headers: projectHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ provider: provider, model: model }),
+      body: JSON.stringify({ provider: effectiveProvider, model: model }),
     }).then(function(r) { return r.json(); });
     let credP;
     if (provider === 'openrouter') {
@@ -704,7 +737,7 @@ settingsSave.addEventListener('click', function() {
             body: JSON.stringify({ key: keyValue }),
           }).then(function(r) { return r.json(); })
         : Promise.resolve(null);
-    } else if (provider === 'openai-compat') {
+    } else if (effectiveProvider === 'openai-compat') {
       const body = { baseUrl: baseurlValue };
       if (keyValue.length > 0) body.key = keyValue;
       credP = fetch('/api/openai-config', {
@@ -719,7 +752,7 @@ settingsSave.addEventListener('click', function() {
       return { warning: v.warning };
     });
   }).then(function(meta) {
-    currentSettings = { provider: provider, model: model };
+    currentSettings = { provider: effectiveProvider, model: model };
     renderModelLabel();
     closeSettings();
     const saveMsg = meta && meta.warning ? 'Saved. ' + meta.warning : 'Settings saved.';
