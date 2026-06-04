@@ -888,19 +888,25 @@ export async function readOpenRouterKey(project: string | undefined): Promise<st
  *  One key powers both the gemini-media tools and (when wired) the
  *  openai-compat chat route. */
 export async function readGeminiKey(project: string | undefined): Promise<string | null> {
+  // Tenant-scoped, same as readOpenRouterKey / readOpenAICompatConfig: resolve
+  // against getEffectiveWorkspaceDir() so a per-tenant key set in the gear (which
+  // writes under the tenant dir) is found. Bare WORKSPACE_DIR here meant pool-fork
+  // tenants' Gemini keys were written but never read. Identical in single-tenant
+  // main (no tenant ⇒ getEffectiveWorkspaceDir() === WORKSPACE_DIR).
+  const base = getEffectiveWorkspaceDir();
   if (project) {
     try {
-      const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, project, ".mica", "config.json"), "utf-8"));
+      const cfg = JSON.parse(await readFile(join(base, project, ".mica", "config.json"), "utf-8"));
       if (typeof cfg.geminiApiKey === "string" && cfg.geminiApiKey.length > 0) return cfg.geminiApiKey;
     } catch { /* no project override */ }
   }
   try {
-    const creds = JSON.parse(await readFile(join(WORKSPACE_DIR, ".mica", "credentials.json"), "utf-8"));
+    const creds = JSON.parse(await readFile(join(base, ".mica", "credentials.json"), "utf-8"));
     const entry = creds && typeof creds === "object" ? creds.gemini : undefined;
     if (entry && typeof entry.api_key === "string" && entry.api_key.length > 0) return entry.api_key;
   } catch { /* no credentials.json or no gemini entry */ }
   try {
-    const cfg = JSON.parse(await readFile(join(WORKSPACE_DIR, ".mica", "config.json"), "utf-8"));
+    const cfg = JSON.parse(await readFile(join(base, ".mica", "config.json"), "utf-8"));
     if (typeof cfg.geminiApiKey === "string" && cfg.geminiApiKey.length > 0) return cfg.geminiApiKey;
   } catch { /* no legacy workspace config */ }
   const envKey = process.env.GEMINI_API_KEY;
