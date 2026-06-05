@@ -120,7 +120,7 @@ async function doSpawn(tenant: string | undefined, project: string | undefined, 
 
   await applySpawnEnv(project, dataDir);
   try {
-    const config = await buildOpencodeConfig(project);
+    const config = await buildOpencodeConfig(project, tenant);
     console.log(`[opencode-server] spawning daemon for tenant=${tenant ?? "-"} project=${project ?? "(workspace)"} data=${dataDir} (mcp: ${Object.keys(config.mcp ?? {}).join(", ") || "none"})`);
     const start = Date.now();
     const { url, close } = await createOpencodeServer({

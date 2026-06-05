@@ -165,12 +165,16 @@ export function registerAgentToolRoutes(app: Express): void {
 
       // Tenant binding (multi-tenant fork). opencode's mica-builtins tool calls
       // reach here as internal HTTP with no user cookie, so the /api auth
-      // middleware bound no tenant — recover it from the per-session map and
-      // bind it for the handler so getEffectiveWorkspaceDir() scopes file ops to
-      // the calling tenant (not the bare root / a stray minted tenant). Falls
-      // back to whatever's ambient (qwen/Claude SDK calls authenticated via the
-      // request) when the session has no tenant. No-op in single-tenant main.
-      const ocTenant = getOpencodeSessionTenant(typeof headerOcSession === "string" ? headerOcSession.trim() : null);
+      // middleware bound no tenant — recover it and bind it for the handler so
+      // getEffectiveWorkspaceDir() scopes file ops to the calling tenant (not the
+      // bare root). Primary: the per-session map (via the sessionID stamp).
+      // Fallback: x-mica-tenant, which the opencode bridge sends unconditionally
+      // (the pool runs one daemon per tenant) — reliable even when the per-call
+      // sessionID stamp is absent. No-op in single-tenant main (both empty).
+      const headerTenant = req.header("x-mica-tenant");
+      const ocTenant =
+        getOpencodeSessionTenant(typeof headerOcSession === "string" ? headerOcSession.trim() : null) ||
+        (typeof headerTenant === "string" && headerTenant.trim() ? headerTenant.trim() : null);
       const runHandler = () => tool.handler(parsed.data, { project, chatFilename });
       try {
         const result = ocTenant ? await runWithTenant(ocTenant, runHandler) : await runHandler();

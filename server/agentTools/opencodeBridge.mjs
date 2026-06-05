@@ -38,6 +38,11 @@ const AUTH = process.env.MICA_TOOLS_AUTH_SECRET || "";
 // Set by opencodeConfig when the spawn's project uses the "Google (Gemini)"
 // provider — opts the Gemini media tools into the /api/tools surface.
 const INCLUDE_GEMINI_MEDIA = process.env.MICA_INCLUDE_GEMINI_MEDIA === "1";
+// Owning tenant of this daemon (multi-tenant fork). The pool spawns one daemon
+// per tenant and sets this, so every tool call from this bridge is for this
+// tenant — sent as x-mica-tenant so Mica scopes file ops correctly even when the
+// per-call sessionID stamp is missing. Empty in single-tenant main.
+const TENANT = process.env.MICA_TENANT || "";
 
 if (!AUTH) {
   console.error("[opencode-bridge] FATAL: MICA_TOOLS_AUTH_SECRET env var not set");
@@ -130,6 +135,12 @@ for (const t of tools) {
         "x-mica-agent-auth": AUTH,
       };
       if (ocSessionId) headers["x-mica-opencode-session-id"] = ocSessionId;
+      // Tenant is fixed per daemon (the pool spawns one daemon per tenant and
+      // sets MICA_TENANT), so carry it directly. This is the reliable tenant
+      // signal — the per-call sessionID stamp above can be absent on some
+      // opencode versions, which would otherwise drop tool writes into the bare
+      // workspace root instead of the tenant's project.
+      if (TENANT) headers["x-mica-tenant"] = TENANT;
       try {
         const res = await fetch(`${MICA_BASE}${t.restPath}`, {
           method: "POST",

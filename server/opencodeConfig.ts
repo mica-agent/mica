@@ -29,7 +29,7 @@ import { dirname, join } from "path";
  *  Project parameter is null for v1 (we use workspace-shared subagents only,
  *  not per-project overrides — same set of subagents across all .opencode
  *  cards in any project, until per-session ConfigUpdate lands). */
-export async function buildOpencodeConfig(project?: string): Promise<Config> {
+export async function buildOpencodeConfig(project?: string, tenant?: string): Promise<Config> {
   const config: Config = {};
 
   // Permission: yolo for v1 — matches existing chat card trust model.
@@ -167,6 +167,10 @@ export async function buildOpencodeConfig(project?: string): Promise<Config> {
     environment: {
       MICA_TOOLS_AUTH_SECRET: AGENT_TOOL_AUTH_SECRET,
       MICA_TOOLS_BASE_URL: `http://127.0.0.1:${micaPort}`,
+      // This daemon serves ONE tenant (the pool spawns per tenant); the bridge
+      // sends it as x-mica-tenant so tool writes scope to the tenant's project
+      // even if the per-call sessionID stamp is missing. Empty in single-tenant.
+      ...(tenant ? { MICA_TENANT: tenant } : {}),
       ...(isGemini ? { MICA_INCLUDE_GEMINI_MEDIA: "1" } : {}),
     },
     enabled: true,
