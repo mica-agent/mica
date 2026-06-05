@@ -74,7 +74,7 @@ import {
 } from "./agentTools/registry.js";
 import { buildAgentToolsPrelude } from "./agentTools/promptPrelude.js";
 import { writeSnapshot } from "./turnSnapshots.js";
-import { getOpencodeServer } from "./opencodeServer.js";
+import { getOpencodeServer, touchOpencodeServer } from "./opencodeServer.js";
 import { getCurrentTenant, runWithTenant } from "./tenantContext.js";
 import { captureCard } from "./screenshot.js";
 import { readFile as fsReadFile } from "fs/promises";
@@ -535,6 +535,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // each open a long-lived /event stream against the opencode server.
     let sseStarted = false;
     let sseAbort: AbortController | null = null;
+    // The daemon this card's SSE loop is bound to, + last time we bumped its
+    // pool freshness. Touching on streaming activity stops the idle-reaper from
+    // killing a daemon mid-turn during a long, quiet generation.
+    let sseDaemon: { key: string } | null = null;
+    let lastDaemonTouch = 0;
     // Promise resolved by session.idle event — populated each turn so the
     // run-loop knows when to declare the turn finished.
     let idleResolver: (() => void) | null = null;
@@ -733,7 +738,10 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
       if (sseStarted) return;
       sseStarted = true;
       sseAbort = new AbortController();
-      const { client } = await getOpencodeServer(sessionTenant, sessionProject || undefined);
+      const server = await getOpencodeServer(sessionTenant, sessionProject || undefined);
+      const { client } = server;
+      // Keep the pool from reaping THIS daemon while it's actively streaming.
+      sseDaemon = server;
 
       let result;
       try {
@@ -920,6 +928,16 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           ? ` turn_tokens: in=${turnInputTokens} out=${turnOutputTokens}${reasoningPart}${cachePart} peak_in=${peakInputTokens} ctx=${sessionCtxWindow} peak/ctx=${Math.round((peakInputTokens / sessionCtxWindow) * 100)}%`
           : "";
         console.log(`[opencode-agent:${sessionProject ?? "-"}/${ctx.filename}] event counts so far: ${JSON.stringify(eventTypeCounts)}${tokenSummary}`);
+      }
+
+      // Keep this daemon fresh in the pool while it's streaming real work, so a
+      // long/quiet generation isn't reaped mid-turn. Skip server.heartbeat (it
+      // ticks even when idle — touching on it would defeat idle-reaping
+      // entirely). Throttled to once per 60s.
+      const etype = t as string;
+      if (sseDaemon && etype !== "server.heartbeat" && etype !== "server.connected") {
+        const now = Date.now();
+        if (now - lastDaemonTouch > 60_000) { lastDaemonTouch = now; touchOpencodeServer(sseDaemon); }
       }
 
       // Fast filter: only events for OUR session matter.

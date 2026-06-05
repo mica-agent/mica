@@ -97,6 +97,16 @@ export async function getOpencodeServer(tenant?: string, project?: string): Prom
   return run as Promise<ServerHandle>;
 }
 
+/** Mark a daemon as recently used so the idle-reaper won't kill it mid-turn.
+ *  The agent calls this on streaming activity (non-heartbeat SSE events), because
+ *  a long, quiet model generation can otherwise go >IDLE_MS without a
+ *  getOpencodeServer() call and get reaped out from under the live turn. Cheap
+ *  (Map lookup by the handle's key); no-op if the daemon was already evicted. */
+export function touchOpencodeServer(handle: { key: string }): void {
+  const e = pool.get(handle.key);
+  if (e) e.lastUsedAt = Date.now();
+}
+
 /** Signature of the credentials a daemon would be built with for `project` —
  *  the OpenRouter key and the OpenAI-compat baseUrl+key (the latter also carries
  *  the one-key Gemini endpoint+key via readOpenAICompatConfig's fallback).
