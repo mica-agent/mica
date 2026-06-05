@@ -514,6 +514,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // writes into the bare workspace root). Each turn re-binds it via
     // runWithTenant. Undefined in single-tenant main → wrapping below skipped.
     const sessionTenant = ctx.tenant ?? getCurrentTenant();
+    // This card's opencode working directory. Cards of the SAME tenant share one
+    // pooled daemon and its /global/event stream, so events must be filtered to
+    // THIS project. The envelope's `directory` is reliable (unlike the per-event
+    // sessionID), so we match on it — see handleEvent.
+    const myProjectDir = projectDirFor(sessionTenant, sessionProject);
     const chatId = ctx.sessionId;
     // Reactive-coalesce session handle. Same mechanism qwen + Claude use;
     // gives opencode chat cards file-edit reactivity for free. Onset is
@@ -551,6 +556,11 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     // killing a daemon mid-turn during a long, quiet generation.
     let sseDaemon: { key: string } | null = null;
     let lastDaemonTouch = 0;
+    // The directory filter is only trusted once we've seen one of OUR OWN events
+    // whose envelope directory matches myProjectDir — proving opencode echoes the
+    // path in the same format we set. Until then we use the sessionID filter, so
+    // a path-format mismatch can never silently drop every event.
+    let dirFilterConfirmed = false;
     // Promise resolved by session.idle event — populated each turn so the
     // run-loop knows when to declare the turn finished.
     let idleResolver: (() => void) | null = null;
@@ -785,12 +795,13 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
             count++;
             // /global/event wraps as { directory, payload }; /event would
             // emit Event directly. Be permissive: unwrap if wrapped.
+            const evDir = (wrapped as { directory?: string }).directory;
             const ev = (wrapped as { payload?: Event; type?: string }).payload
               ?? (wrapped as Event);
             if (count <= 3) {
-              console.log(`[opencode-agent] SSE event #${count}: ${(ev as { type?: string })?.type ?? "(no-type)"}`);
+              console.log(`[opencode-agent] SSE event #${count}: ${(ev as { type?: string })?.type ?? "(no-type)"} dir=${evDir ?? "-"}`);
             }
-            handleEvent(ev as Event);
+            handleEvent(ev as Event, evDir);
           }
           console.log(`[opencode-agent] SSE stream ended after ${count} events for ${ctx.filename}`);
         } catch (err) {
@@ -922,7 +933,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
     const eventTypeCounts: Record<string, number> = {};
     let lastEventTypeLog = 0;
 
-    function handleEvent(ev: Event): void {
+    function handleEvent(ev: Event, evDir?: string): void {
       const t = ev.type;
       eventTypeCounts[t] = (eventTypeCounts[t] || 0) + 1;
       // Periodic summary so we can see what's flowing without log spam.
@@ -956,12 +967,21 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         if (now - lastDaemonTouch > 60_000) { lastDaemonTouch = now; touchOpencodeServer(sseDaemon); }
       }
 
-      // Fast filter: only events for OUR session matter.
+      // Cross-project isolation on a shared (per-tenant) daemon. Cards of the
+      // same tenant share one daemon + one /global/event stream, so we must drop
+      // other projects' events. PRIMARY filter: the envelope's `directory` — it's
+      // reliable even when the per-event sessionID is absent, and subagent events
+      // carry the PARENT's directory, so matching on it keeps a card's own
+      // subagent progress (which the sessionID filter wrongly dropped). FALLBACK:
+      // when the envelope carried no directory, fall back to the sessionID match.
       const sid = eventSessionId(ev);
-      if (sid && ocSessionId && sid !== ocSessionId) {
-        // Cross-session event (would happen if multiple .opencode cards share
-        // the daemon). Counted above; not handled here.
-        return;
+      const a = evDir ? evDir.replace(/\/+$/, "") : undefined;
+      const b = myProjectDir ? myProjectDir.replace(/\/+$/, "") : undefined;
+      if (a && b && a === b) dirFilterConfirmed = true; // our path format matches
+      if (dirFilterConfirmed && a && b) {
+        if (a !== b) return;               // trustworthy: another project's event
+      } else if (sid && ocSessionId && sid !== ocSessionId) {
+        return;                            // fallback until directory format confirmed
       }
       if (t === "message.part.updated") {
         const part = (ev.properties as { part: Part }).part;
