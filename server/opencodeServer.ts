@@ -13,7 +13,8 @@
 // same creds → shared daemon (correct; same trust + key). A creds change just
 // routes to a different pool entry instead of respawning one slot.
 //
-// Bounded: daemons idle > IDLE_MS are reaped; at most MAX_DAEMONS live at once
+// Bounded: a daemon is reaped once its tenant has no connected client and has
+// been quiet for a grace period; at most MAX_DAEMONS live at once
 // (LRU-evicted beyond that). Single-tenant main → key "" + one signature → a
 // single daemon, exactly as before.
 //
@@ -45,12 +46,34 @@ interface ServerHandle {
 interface PoolEntry {
   handle: ServerHandle;
   lastUsedAt: number;
+  /** Owning tenant ("" for single-tenant main) — used by the reaper's liveness
+   *  check to keep a daemon while that tenant has connected clients. */
+  tenant: string;
 }
 
-const IDLE_MS = 10 * 60 * 1000;   // reap daemons unused for 10 minutes
+// Reap a daemon only when BOTH (a) its tenant has no connected clients AND
+// (b) it's been quiet for REAP_GRACE_MS. A connected tenant's daemon is never
+// reaped from under them (no cold-start mid-session); a departed tenant's daemon
+// frees shortly after they leave. touchOpencodeServer keeps a daemon "recent"
+// during active turns (incl. background/reactive turns with no connected client).
+// MAX_DAEMONS is the hard backstop in case a disconnect signal is missed.
+//
+// NOTE (auth phase): once tenants are accounts, "connected" = ANY of the
+// account's devices (the liveness check already unions all sockets for a tenant)
+// and durable accounts may warrant a longer grace / pinning — tune REAP_GRACE_MS
+// per tenant-class there. The mechanism below generalizes unchanged.
+const REAP_GRACE_MS = 2 * 60 * 1000;
 const MAX_DAEMONS = 6;            // hard ceiling (~366MB RSS each); LRU beyond
 const REAP_INTERVAL_MS = 60 * 1000;
 const DATA_BASE = process.env.MICA_OPENCODE_DATA_BASE || join(tmpdir(), "mica-opencode-data");
+
+// Liveness seam: the WS layer (server/index.ts) registers a check for whether a
+// tenant currently has any connected client. Until registered (or in contexts
+// without it), the reaper falls back to grace-only so it still bounds memory.
+let _tenantLiveness: ((tenant: string) => boolean) | null = null;
+/** Install the "does this tenant have a connected client?" check (from the WS
+ *  layer). Empty tenant ⇒ single-tenant main (check any connection). */
+export function registerTenantLiveness(fn: (tenant: string) => boolean): void { _tenantLiveness = fn; }
 
 const pool = new Map<string, PoolEntry>();
 let spawnChain: Promise<unknown> = Promise.resolve();
@@ -89,7 +112,7 @@ export async function getOpencodeServer(tenant?: string, project?: string): Prom
     if (again) { again.lastUsedAt = Date.now(); return again.handle; }
     evictIfAtCap();
     const handle = await runT(tenant, () => doSpawn(tenant, project, key));
-    pool.set(key, { handle, lastUsedAt: Date.now() });
+    pool.set(key, { handle, lastUsedAt: Date.now(), tenant: tenant || "" });
     console.log(`[opencode-server] pool size=${pool.size} (spawned ${key})`);
     return handle;
   });
@@ -99,7 +122,7 @@ export async function getOpencodeServer(tenant?: string, project?: string): Prom
 
 /** Mark a daemon as recently used so the idle-reaper won't kill it mid-turn.
  *  The agent calls this on streaming activity (non-heartbeat SSE events), because
- *  a long, quiet model generation can otherwise go >IDLE_MS without a
+ *  a long, quiet model generation can otherwise go past the grace window without a
  *  getOpencodeServer() call and get reaped out from under the live turn. Cheap
  *  (Map lookup by the handle's key); no-op if the daemon was already evicted. */
 export function touchOpencodeServer(handle: { key: string }): void {
@@ -233,16 +256,19 @@ function evictIfAtCap(): void {
   }
 }
 
-/** Close daemons idle longer than IDLE_MS. Their session store persists on disk
- *  (stable XDG_DATA_HOME), so a later turn re-spawns and resumes sessions. */
+/** Reap a daemon only when its tenant has no connected client AND it's been
+ *  quiet for REAP_GRACE_MS. Connected tenants keep their daemon (no mid-session
+ *  cold-start); active turns keep theirs via touchOpencodeServer (so background/
+ *  reactive turns with no connected client survive too). The session store
+ *  persists on disk, so a reaped daemon re-spawns and resumes on the next turn. */
 function reapIdle(): void {
   const now = Date.now();
   for (const [k, e] of pool) {
-    if (now - e.lastUsedAt > IDLE_MS) {
-      console.log(`[opencode-server] reaping idle daemon ${k} (idle ${Math.round((now - e.lastUsedAt) / 1000)}s)`);
-      try { e.handle.close(); } catch { /* ignore */ }
-      pool.delete(k);
-    }
+    if (now - e.lastUsedAt <= REAP_GRACE_MS) continue;      // recent activity → keep
+    if (_tenantLiveness && _tenantLiveness(e.tenant)) continue; // a client is connected → keep
+    console.log(`[opencode-server] reaping daemon ${k} (no connected client, quiet ${Math.round((now - e.lastUsedAt) / 1000)}s)`);
+    try { e.handle.close(); } catch { /* ignore */ }
+    pool.delete(k);
   }
 }
 

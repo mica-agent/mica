@@ -114,7 +114,7 @@ import { createAgentHandler, setActiveProject as setAgentProject, buildContext a
 import { createVoiceAgentHandler } from "./voiceAgent.js";
 import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, buildContext as buildClaudeAgentContext } from "./claudeAgent.js";
 import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
-import { stopOpencodeServer } from "./opencodeServer.js";
+import { stopOpencodeServer, registerTenantLiveness } from "./opencodeServer.js";
 import { registerAgentToolRoutes } from "./agentTools/restRoutes.js";
 import { registerLlmRestApi } from "./plugins/llmRestApi.js";
 import { MICA_SIDECAR_TOKEN } from "./cardSidecar.js";
@@ -2808,6 +2808,21 @@ const wsProjects = new Map<WebSocket, string>();
 // EMPTY in single-tenant main, so broadcast routing matches on project alone, as
 // before. When set, broadcasts only reach connections of the same (project, tenant).
 const wsTenants = new Map<WebSocket, string>();
+
+// Tell the opencode daemon pool whether a tenant has a connected client, so its
+// reaper keeps a daemon alive while someone's there and only reaps after they've
+// left (+ a grace window). Empty tenant = single-tenant main → any open socket
+// counts. For a tenant, this unions all of its sockets (tabs/devices) — correct
+// for anonymous browsers now and for multi-device accounts at the auth phase.
+registerTenantLiveness((tenant) => {
+  if (!tenant) {
+    for (const ws of wsClients) if (ws.readyState === WebSocket.OPEN) return true;
+    return false;
+  }
+  for (const [ws, t] of wsTenants) if (t === tenant && ws.readyState === WebSocket.OPEN) return true;
+  return false;
+});
+
 // Per-WS short id for log readability — answers "is the same tab toggling
 // projects, or are these different tabs?". Assigned on connection. See
 // reportSubscriptionState() below.
