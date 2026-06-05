@@ -188,7 +188,11 @@ export default function App() {
   // project is active. The "— Mica" suffix preserves the app identity for
   // tab grouping and bookmarking.
   useEffect(() => {
-    document.title = activeProject ? `${activeProject.name} — Mica` : "Mica — Magic Canvas";
+    // Brand name is injectable per-deployment: the server writes
+    // window.__MICA_BRAND__ into the served index.html from MICA_DEMO_TITLE
+    // (e.g. "Mica · Gemini"). Defaults to "Mica" when unset (single-tenant main).
+    const brand = (typeof window !== "undefined" && (window as { __MICA_BRAND__?: string }).__MICA_BRAND__) || "Mica";
+    document.title = activeProject ? `${activeProject.name} — ${brand}` : `${brand} — Magic Canvas`;
   }, [activeProject]);
 
   useEffect(() => {

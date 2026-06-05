@@ -10,7 +10,7 @@
 // Variables already set in process.env (e.g. from `docker run -e`) win —
 // dotenv's default `override: false` preserves them.
 import dotenv from "dotenv";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 const _workspaceEnv = joinPath(process.env.PROJECT_DIR || "/project", ".env");
 if (existsSync(_workspaceEnv)) dotenv.config({ path: _workspaceEnv });
@@ -3496,8 +3496,18 @@ fileWatcher.on("card-class-change", (event: { type: string; filename: string; pr
   const frontendDist = process.env.MICA_FRONTEND_DIST;
   if (frontendDist) {
     console.log(`[startup] MICA_FRONTEND_DIST set — serving prebuilt frontend from ${frontendDist}`);
-    app.use(express.static(frontendDist));
-    app.get(/^\/(?!api\/|ws\b).*/, (_req, res) => res.sendFile(join(frontendDist, "index.html")));
+    // Read index.html once and inject a per-deployment brand name (MICA_DEMO_TITLE)
+    // as window.__MICA_BRAND__ so the SPA's document.title reflects the demo (e.g.
+    // "Mica · Gemini"). No-op when unset. express.static is set index:false so the
+    // catch-all (with the injected HTML) serves "/" too, not the raw file.
+    let indexHtml = readFileSync(join(frontendDist, "index.html"), "utf8");
+    const brand = process.env.MICA_DEMO_TITLE;
+    if (brand) {
+      indexHtml = indexHtml.replace(/<\/head>/i, `<script>window.__MICA_BRAND__=${JSON.stringify(brand)}</script></head>`);
+      console.log(`[startup] SPA brand → ${brand}`);
+    }
+    app.use(express.static(frontendDist, { index: false }));
+    app.get(/^\/(?!api\/|ws\b).*/, (_req, res) => res.type("html").send(indexHtml));
   }
 
   const workspaceName = getWorkspaceName();
