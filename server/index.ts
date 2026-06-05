@@ -116,6 +116,7 @@ import { createClaudeAgentHandler, setActiveProject as setClaudeAgentProject, bu
 import { createOpencodeAgentHandler, setActiveProject as setOpencodeAgentProject } from "./opencodeAgent.js";
 import { stopOpencodeServer, registerTenantLiveness } from "./opencodeServer.js";
 import { registerAgentToolRoutes } from "./agentTools/restRoutes.js";
+import { AGENT_TOOL_AUTH_SECRET } from "./agentTools/registry.js";
 import { registerLlmRestApi } from "./plugins/llmRestApi.js";
 import { MICA_SIDECAR_TOKEN } from "./cardSidecar.js";
 import { execHandler, setActiveProject as setExecProject } from "./plugins/exec.js";
@@ -333,11 +334,19 @@ app.use("/api", async (req, res, next) => {
   if (!hasAuthVerifier()) return next();
   try {
     const { tenantId } = await verifyRequest(req);
-    if (tenantId) enterTenant(tenantId);
+    if (tenantId) { enterTenant(tenantId); return next(); }
   } catch (err) {
     console.warn(`[auth] verifyRequest failed: ${(err as Error).message}`);
   }
-  next();
+  // No tenant resolved. With a verifier installed, falling through tenant-less
+  // would let getEffectiveWorkspaceDir() resolve to the bare WORKSPACE_DIR root
+  // — i.e. expose every tenant's files — so reject (defense-in-depth; the fork's
+  // mint middleware normally guarantees a tenant). EXCEPT internal agent-tool
+  // calls: a valid x-mica-agent-auth carries no user cookie and recovers its
+  // tenant server-side in restRoutes (x-mica-tenant / the opencode session map).
+  const agentAuth = req.headers["x-mica-agent-auth"];
+  if (typeof agentAuth === "string" && agentAuth === AGENT_TOOL_AUTH_SECRET) return next();
+  return res.status(403).json({ error: "no tenant resolved" });
 });
 
 // ── Active project tracking ─────────────────────────────────
