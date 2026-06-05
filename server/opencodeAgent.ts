@@ -129,6 +129,17 @@ export function setActiveProject(_project: string | null) { void _project; }
 function getProjectDir(project: string | null) {
   return project ? join(getEffectiveWorkspaceDir(), project) : getEffectiveWorkspaceDir();
 }
+
+// Explicit-tenant variant of getProjectDir. getProjectDir resolves the tenant
+// from ambient AsyncLocalStorage (getCurrentTenant), which can be empty at some
+// call sites inside a turn (e.g. right after `await getOpencodeServer()` on a
+// pool spawn) — leaving opencode's session `directory` at the bare workspace
+// root, so the agent's NATIVE writes land outside the tenant. The handler always
+// holds the correct tenant explicitly (sessionTenant, captured from ctx.tenant),
+// so bind it directly for anything that sets opencode's working directory.
+function projectDirFor(tenant: string | undefined, project: string | null): string {
+  return tenant ? runWithTenant(tenant, () => getProjectDir(project)) : getProjectDir(project);
+}
 function getMicaDir(project: string | null) { return micaDir(project || undefined); }
 
 /** Cache the first served model id from Mica's local LLM endpoint
@@ -716,9 +727,14 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
           // not-found / 404 — fall through to fresh
         }
       }
+      const dir = projectDirFor(sessionTenant, sessionProject);
+      const ambientDir = getProjectDir(sessionProject);
+      if (dir !== ambientDir) {
+        console.warn(`[opencode-agent] session dir tenant-corrected: explicit=${dir} ambient=${ambientDir} (sessionTenant=${sessionTenant ?? "-"} getCurrentTenant=${getCurrentTenant() ?? "-"})`);
+      }
       const created = await client.session.create({
         body: { title: ctx.filename },
-        query: { directory: getProjectDir(sessionProject) },
+        query: { directory: dir },
       });
       const newId = created.data?.id;
       if (!newId) {
@@ -992,7 +1008,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
             if (lower === "write" || lower === "edit" || lower === "apply_patch") {
               const fp = String((tp.state.input as Record<string, unknown>)?.file_path || (tp.state.input as Record<string, unknown>)?.filePath || "");
               if (fp) {
-                const projRoot = sessionProject ? join(getEffectiveWorkspaceDir(), sessionProject) : "";
+                const projRoot = sessionProject ? projectDirFor(sessionTenant, sessionProject) : "";
                 const rel = projRoot && fp.startsWith(projRoot + "/") ? fp.slice(projRoot.length + 1) : fp;
                 markAgentWrite(rel);
                 reactive.markAgentWrite(rel);
@@ -1143,7 +1159,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
               const result = await client.session.summarize({
                 path: { id: sid },
                 body: lastModelOverride,
-                query: { directory: getProjectDir(sessionProject) },
+                query: { directory: projectDirFor(sessionTenant, sessionProject) },
               });
               if (result.error) {
                 console.warn(`[opencode-agent] session.summarize error: ${JSON.stringify(result.error).slice(0, 200)}`);
@@ -1263,7 +1279,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
         if (sessionProject) {
           // Match buildContext: count only fresh errors so the UI matches
           // what the agent actually sees this turn.
-          const { fresh: incoming } = getFreshPendingValidatorErrors(sessionProject, getProjectDir(sessionProject));
+          const { fresh: incoming } = getFreshPendingValidatorErrors(sessionProject, projectDirFor(sessionTenant, sessionProject));
           if (incoming.length > 0) {
             const files = Array.from(new Set(incoming.map((e) => e.filename)));
             const desc = incoming.length === 1
@@ -1464,7 +1480,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
             system: context,
             ...(modelOverride ? { model: modelOverride } : {}),
           },
-          query: { directory: getProjectDir(sessionProject) },
+          query: { directory: projectDirFor(sessionTenant, sessionProject) },
           signal: promptAbort.signal,
         });
         if (sendResult.error) {
@@ -1697,7 +1713,7 @@ export function createOpencodeAgentHandler(fileWatcher: FileWatcher) {
               const result = await client.session.summarize({
                 path: { id: compactSid },
                 body: compactModel,
-                query: { directory: getProjectDir(sessionProject) },
+                query: { directory: projectDirFor(sessionTenant, sessionProject) },
               });
               if (result.error) {
                 console.warn(
