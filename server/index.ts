@@ -290,7 +290,15 @@ app.use((_req, res, next) => {
       // sensitive in browsers — an HTTPS-served page would otherwise have
       // its WSS connection blocked.
       "connect-src 'self' ws://localhost:* http://localhost:* ws://127.0.0.1:* http://127.0.0.1:* wss: https: https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com",
-      "img-src 'self' data: blob:",
+      // https: so card classes can load remote raster images — most importantly
+      // map tiles (Leaflet/MapLibre pull <img> tiles from tile servers like
+      // tile.openstreetmap.org / basemaps.cartocdn.com). Without it the map area
+      // renders blank. connect-src already allows https: for the matching fetches.
+      "img-src 'self' data: blob: https:",
+      // MapLibre GL and other WebGL/canvas libs spawn blob: web workers; worker-src
+      // otherwise falls back to script-src (no blob:) and the worker — hence the
+      // whole map engine — is blocked.
+      "worker-src 'self' blob:",
       "font-src 'self' data: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     ].join("; ")
   );
