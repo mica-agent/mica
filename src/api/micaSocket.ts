@@ -461,6 +461,7 @@ export interface Channel {
   send: (data: unknown) => void;
   close: () => void;
   destroy: () => void;
+  reattach: () => void;
   onData: (cb: (data: unknown) => void) => void;
   onClose: (cb: () => void) => void;
 }
@@ -513,6 +514,22 @@ export function openChannel(
       activeChannels.delete(id);
       waitForConnection().then(() => {
         sendMsg({ type: "channel_close", id });
+      }).catch(() => {});
+    },
+    reattach: () => {
+      // Ask the server to re-deliver this channel's attach-time state (e.g.
+      // chat history) without a fresh channel_open. Used when a REMOUNTED card
+      // reuses this channel via the bridge dedup (navigate away + back on the
+      // same WebSocket): the new, empty DOM needs the replay, but no
+      // channel_open fired so the server's onAttach never re-ran. Null onData
+      // and RE-ARM the early buffer so the replayed messages queue until the
+      // new card instance registers its onData (which flushes them), rather
+      // than racing the not-yet-registered handler or hitting the prior
+      // instance's stale callback.
+      handle.onData = null;
+      handle.earlyBuffer = [];
+      waitForConnection().then(() => {
+        sendMsg({ type: "channel_reattach", id });
       }).catch(() => {});
     },
     onData: (cb) => {
@@ -645,6 +662,11 @@ export function createBridge(sessionId: string, project: string, canvas: CanvasI
       // The card script will set new callbacks via ch.onData()/ch.onClose().
       const existing = bridgeChannels.get(fn);
       if (existing && activeChannels.has(existing.id)) {
+        // This is a REMOUNT reusing a live channel (navigate away + back). The
+        // new DOM is empty, so ask the server to re-fire onAttach and re-deliver
+        // state (e.g. chat history) — otherwise the transcript only reappears
+        // after a full reload that rebuilds the bridge. Idempotent server-side.
+        existing.reattach();
         return existing;
       }
       // New channel — send channel_open to server with the file's sessionId

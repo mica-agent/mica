@@ -3115,6 +3115,17 @@ wss.on("connection", (ws, req) => {
         }
         break;
       }
+
+      case "channel_reattach": {
+        // A remounted card reused its channel via the client-side bridge dedup
+        // (navigate away + back on the same WebSocket): no channel_open was
+        // sent, so re-fire onAttach to re-deliver state (chat history, queue,
+        // in-flight turn) to the now-empty DOM. No-op if the client isn't
+        // still attached (then a fresh channel_open/reconnect-replay handles it).
+        const cid = id as string;
+        if (channelManager.has(cid)) channelManager.reattach(cid, (args || {}) as Record<string, unknown>);
+        break;
+      }
     }
   });
 });
