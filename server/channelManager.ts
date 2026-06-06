@@ -561,6 +561,22 @@ export class ChannelManager {
     session.handler?.onDetach?.(clientId);
   }
 
+  /** Re-fire onAttach for an already-attached client, re-delivering the
+   *  handler's attach-time state (e.g. chat history). Used when a card REMOUNTS
+   *  (navigate away + back, same WebSocket) and reuses its channel via the
+   *  client-side bridge dedup — no fresh channel_open is sent, so onAttach never
+   *  re-fires and the freshly-rendered (empty) DOM never receives the replay.
+   *  onAttach is written to be idempotent (the chat card clears + re-renders),
+   *  so re-running it is safe. No-op if the client isn't attached. */
+  reattach(clientId: string, args: Record<string, unknown> = {}): void {
+    const key = this.clientToSession.get(clientId);
+    if (!key) return;
+    const session = this.sessions.get(key);
+    if (!session || session.state === "destroyed") return;
+    if (!session.clients.has(clientId)) return;
+    session.handler?.onAttach?.(clientId, args);
+  }
+
   /** Destroy a session by its UUID. */
   destroySession(sessionId: string): void {
     this.destroySessionByKey(sessionId);
